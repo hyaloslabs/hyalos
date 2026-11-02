@@ -1,6 +1,6 @@
 # Hyalos
 
-Clean-room Rust rewrite of hivrr. Currently in the planning phase: docs only, no product code. The only code is throwaway spike rigs under `spikes/`, which are not part of the workspace and not trusted core.
+Clean-room Rust rewrite of hivrr. Currently moving from planning into the first code. The Cargo workspace skeleton and CI exist but the crates are empty. Throwaway spike rigs under `spikes/` are not part of the workspace and not trusted core.
 
 ## Documentation rules (see docs/README.md)
 
@@ -12,3 +12,10 @@ Clean-room Rust rewrite of hivrr. Currently in the planning phase: docs only, no
 ## Planned stack (ADR-0001)
 
 Single Cargo workspace producing one `hyalos` binary (engine + broker). Trusted-core paths require human code-owner review.
+
+## Code layout (ADR-0017, Proposed)
+
+- `core/` is the trusted core: code that runs in the engine or broker process. It has a 30,000-line budget.
+- `crates/` holds everything else (`xtask` checks, later the simulator and test kits). It is not counted.
+- Before pushing, run what CI runs: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, `cargo xtask layout`, `cargo xtask lines`. The toolchain is pinned in `rust-toolchain.toml`.
+- The broker never depends on the engine, log or substrate crates, and the engine never depends on the broker. `cargo xtask layout` enforces this; a new `core/` crate means editing its table and the ADR.

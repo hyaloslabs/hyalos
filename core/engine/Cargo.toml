@@ -1,0 +1,16 @@
+[package]
+name = "hyalos-engine"
+description = "The state machine: projections, gates and job lifecycle. Reaches the world only through traits it is given."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hyalos-types = { path = "../types" }
+hyalos-log = { path = "../log" }
+hyalos-policy = { path = "../policy" }
+hyalos-substrate = { path = "../substrate" }

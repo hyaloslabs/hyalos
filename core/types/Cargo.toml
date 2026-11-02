@@ -1,0 +1,10 @@
+[package]
+name = "hyalos-types"
+description = "Shared domain types: ids, provenance, verdicts, manifests, event envelopes, channel messages. No I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

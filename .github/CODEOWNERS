@@ -1,13 +1,26 @@
-# Trusted-core paths require human code-owner review from day one (ADR-0014).
-# Enable "Require review from Code Owners" in branch protection for main.
-# Paths below anticipate the Cargo workspace (ADR-0001); adjust when the layout is fixed.
+# Trusted-core paths require human code-owner review (ADR-0014, ADR-0017).
+#
+# Enforcement: the ruleset on main requires a pull request and a code-owner review. Repository
+# administrators can bypass the review only through a pull request, never by pushing, because GitHub does
+# not let an author approve their own pull request (issue #96). While there is one maintainer, the control
+# for these paths is the explicit human instruction for each merge (ADR-0014). A second code owner added
+# below makes the review rule bind without any other change.
 
-/crates/            @retroboot
-/policy/            @retroboot
-/Cargo.toml         @retroboot
-/Cargo.lock         @retroboot
+# The trusted core: everything that runs in the engine or broker process (ADR-0017).
+/core/
+
+# The workspace, the toolchain and the policies that every crate is built and checked under.
+/Cargo.toml
+/Cargo.lock
+/rust-toolchain.toml
+/clippy.toml
+/deny.toml
+/.cargo/
+
+# The checks that enforce the layout and the size budget, and the CI that runs them.
+/crates/xtask/
+/.github/
 
 # Decisions, product intent and the review rules themselves.
-/docs/adr/          @retroboot
-/docs/prd/          @retroboot
-/.github/           @retroboot
+/docs/adr/    @retroboot
+/docs/prd/    @retroboot
