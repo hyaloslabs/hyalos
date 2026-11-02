@@ -1,0 +1,13 @@
+# Trusted-core paths require human code-owner review from day one (ADR-0014).
+# Enable "Require review from Code Owners" in branch protection for main.
+# Paths below anticipate the Cargo workspace (ADR-0001); adjust when the layout is fixed.
+
+/crates/            @retroboot
+/policy/            @retroboot
+/Cargo.toml         @retroboot
+/Cargo.lock         @retroboot
+
+# Decisions, product intent and the review rules themselves.
+/docs/adr/          @retroboot
+/docs/prd/          @retroboot
+/.github/           @retroboot
