@@ -16,7 +16,7 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | --- | --- | --- |
 | [0001](0001-rust-for-the-trusted-core.md) | Rust for the trusted core | Accepted |
 | [0002](0002-one-binary-two-processes-sandboxes.md) | One binary, two processes, sandboxes | Accepted |
-| [0003](0003-event-log-is-the-database.md) | The event log is the database | Proposed |
+| [0003](0003-event-log-is-the-database.md) | The event log is the database | Accepted |
 | [0004](0004-one-signed-manifest-per-job.md) | One signed manifest per job, enforced only by the broker | Accepted |
 | [0005](0005-provenance-is-a-type.md) | Provenance is a type; step roles are checked at install | Accepted |
 | [0006](0006-plugins-are-skills-and-wasm-components.md) | Plugins are Agent Skills and WASM components; MCP servers run contained | Accepted |
