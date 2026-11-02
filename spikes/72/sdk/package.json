@@ -1,0 +1,11 @@
+{
+  "name": "spike-72-sdk",
+  "private": true,
+  "description": "Throwaway test scripts for spike #72. Not product code.",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.316",
+    "@openai/agents": "0.21.0",
+    "zod": "4.6.7"
+  }
+}
