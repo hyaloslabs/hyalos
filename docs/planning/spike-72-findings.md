@@ -85,4 +85,4 @@ Codex's sandbox starts inside the container in `workspace-write` and `read-only`
 - Concurrent jobs sharing one forwarder.
 - macOS and other substrates. This ran on Linux with Docker.
 
-The rig is about 300 lines and is not in the repository, which holds docs only for now.
+The rig is about 350 lines and lives in [`spikes/72/`](../../spikes/72/), with a README that says how to run it. It is throwaway tooling, not product code.

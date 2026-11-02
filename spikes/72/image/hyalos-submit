@@ -1,0 +1,5 @@
+#!/bin/bash
+# Posts a typed result through the forwarder to the broker. Reads the argument or stdin.
+data="${1:-$(cat)}"
+curl -sS --max-time 10 -X POST -H 'content-type: application/json' --data-binary "$data" http://127.0.0.1:8089/hyalos/submit
+echo

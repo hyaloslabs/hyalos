@@ -1,6 +1,6 @@
 # Hyalos
 
-Clean-room Rust rewrite of hivrr. Currently in the planning phase: docs only, no code.
+Clean-room Rust rewrite of hivrr. Currently in the planning phase: docs only, no product code. The only code is throwaway spike rigs under `spikes/`, which are not part of the workspace and not trusted core.
 
 ## Documentation rules (see docs/README.md)
 
