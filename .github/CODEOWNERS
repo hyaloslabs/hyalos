@@ -7,20 +7,20 @@
 # below makes the review rule bind without any other change.
 
 # The trusted core: everything that runs in the engine or broker process (ADR-0017).
-/core/
+/core/                  @retroboot
 
 # The workspace, the toolchain and the policies that every crate is built and checked under.
-/Cargo.toml
-/Cargo.lock
-/rust-toolchain.toml
-/clippy.toml
-/deny.toml
-/.cargo/
+/Cargo.toml             @retroboot
+/Cargo.lock             @retroboot
+/rust-toolchain.toml    @retroboot
+/clippy.toml            @retroboot
+/deny.toml              @retroboot
+/.cargo/                @retroboot
 
 # The checks that enforce the layout and the size budget, and the CI that runs them.
-/crates/xtask/
-/.github/
+/crates/xtask/          @retroboot
+/.github/               @retroboot
 
 # Decisions, product intent and the review rules themselves.
-/docs/adr/    @retroboot
-/docs/prd/    @retroboot
+/docs/adr/              @retroboot
+/docs/prd/              @retroboot
