@@ -10,7 +10,7 @@ Does a real harness (Claude Code or Codex) work when its only route out is a loo
 
 - **Sandbox:** an Ubuntu 24.04 container run with `--network none --user 1000:1000 --read-only --tmpfs /tmp`. The only interface is loopback. The harness binary is mounted read-only from the host.
 - **Forwarder:** `socat TCP-LISTEN:8089,bind=127.0.0.1,fork,reuseaddr UNIX-CONNECT:/run/broker.sock`, started by the image entrypoint. A Unix socket on the host is the broker's channel and is the only thing mounted in.
-- **Broker stand-in:** a small Node server on that socket. In scripted mode it speaks Anthropic Messages and OpenAI Responses (streaming) with no model, replaying one tool call that runs `hyalos-submit`, then a final answer. In passthrough mode (OpenAI only) it behaves as the real broker would: it drops the placeholder credential, adds the real key on the upstream call, removes provider-hosted tools, and never logs the key.
+- **Broker stand-in:** a small Node server on that socket. In scripted mode it speaks Anthropic Messages and OpenAI Responses (streaming) with no model, replaying one tool call that runs `hyalos-submit`, then a final answer. In passthrough mode (both providers) it behaves as the real broker would: it drops the placeholder credential, adds the real key on the upstream call, removes provider-hosted tools, and never logs the key.
 - **`hyalos-submit`:** a shell script that POSTs a JSON result to the forwarder.
 - **Traffic observation:** an internal Docker network with a DNS sinkhole that logs every name a harness looks up. It records names asked for, not connections by IP.
 - **Versions:** Claude Code 2.1.316, Codex 0.114.0, Docker 29.1.3 on an Ubuntu 24.04 host under WSL2.
@@ -20,13 +20,13 @@ Does a real harness (Claude Code or Codex) work when its only route out is a loo
 | Check | Claude Code | Codex |
 | --- | --- | --- |
 | Completes with base URL on the forwarder and a placeholder key (scripted broker) | Yes, 0.8 s | Yes, 1.1 s with the settings below |
-| Completes a task against a live model | Not run: no Anthropic key was available | Yes: `gpt-5-mini`, two upstream calls, both 200, about 6,600 tokens |
+| Completes a task against a live model | Yes: `claude-haiku-5-5`, two upstream calls, both 200, 4.2 s | Yes: `gpt-5-mini`, two upstream calls, both 200, about 6,600 tokens |
 | Placeholder reaches the broker as | `x-api-key` header | `Authorization: Bearer` header |
 | Sends tool definitions on every request | Yes | Yes |
 | Other requests through the base URL | None | None |
 | Direct outbound connection from the sandbox | Fails (no route, DNS fails) | Fails |
 
-The live Codex task wrote a file, read it back, and submitted a typed result through `hyalos-submit`. The broker received the result, and the sandbox never held anything but the placeholder.
+Each live task wrote a file, read it back, and submitted a typed result through `hyalos-submit`. The broker received the result, and the sandbox never held anything but the placeholder.
 
 ## Background traffic and the settings that stop it
 
@@ -53,7 +53,7 @@ The Claude Code settings are documented in its environment-variables reference. 
 
 ## Not tested
 
-- Claude Code against a live model.
+- Removal of Anthropic-hosted tools by the broker. With `--tools` limited, Claude Code sent none, so only the OpenAI side of the rule was exercised against a live API.
 - The providers' Agent SDKs, which ADR-0016 lists as supported.
 - Needed non-model traffic through the egress allowlist, for example a proxy setting that points at the forwarder.
 - Real streaming timing, retries, rate-limit errors and prompt caching. The scripted broker sends each response in one burst, and the forwarder is a plain TCP relay.
