@@ -1,0 +1,448 @@
+//! Repository checks for the rules in ADR-0017.
+//!
+//! * `cargo xtask layout` fails if the workspace breaks a dependency or placement rule.
+//! * `cargo xtask lines` reports the trusted-core size and fails if it passes the budget.
+//!
+//! This crate is the control, so it is listed in `CODEOWNERS`. It is not trusted core and is not counted.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode};
+
+/// The trusted-core budget from the PRD's success metrics.
+const BUDGET: usize = 30_000;
+
+/// For each crate in `core/`, the workspace crates it may depend on outside dev-dependencies.
+/// A new core crate, or a new edge, is a change to this table and so is reviewed (ADR-0017).
+const CORE: &[(&str, &[&str])] = &[
+    ("hyalos-types", &[]),
+    ("hyalos-log", &["hyalos-types"]),
+    ("hyalos-policy", &["hyalos-types"]),
+    ("hyalos-substrate", &["hyalos-types"]),
+    (
+        "hyalos-engine",
+        &[
+            "hyalos-types",
+            "hyalos-log",
+            "hyalos-policy",
+            "hyalos-substrate",
+        ],
+    ),
+    ("hyalos-broker", &["hyalos-types"]),
+    (
+        "hyalos",
+        &[
+            "hyalos-types",
+            "hyalos-log",
+            "hyalos-policy",
+            "hyalos-substrate",
+            "hyalos-engine",
+            "hyalos-broker",
+        ],
+    ),
+];
+
+#[derive(Debug, Clone)]
+struct Package {
+    name: String,
+    /// Directory relative to the repository root, with forward slashes, such as `core/engine`.
+    dir: String,
+    /// Workspace crates this one depends on.
+    deps: Vec<Dep>,
+}
+
+#[derive(Debug, Clone)]
+struct Dep {
+    name: String,
+    dev: bool,
+}
+
+fn main() -> ExitCode {
+    let root = repo_root();
+    let result = match std::env::args().nth(1).as_deref() {
+        Some("layout") => layout(&root),
+        Some("lines") => lines(&root),
+        _ => {
+            eprintln!("usage: cargo xtask <layout|lines>");
+            return ExitCode::from(2);
+        }
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(message) => {
+            eprintln!("{message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn repo_root() -> PathBuf {
+    // crates/xtask -> repository root
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+// ---- layout ---------------------------------------------------------------------------------
+
+fn layout(root: &Path) -> Result<(), String> {
+    let output = Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps", "--locked"])
+        .current_dir(root)
+        .output()
+        .map_err(|e| format!("could not run cargo metadata: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let packages = parse_metadata(&output.stdout, root)?;
+    let problems = violations(&packages);
+    if problems.is_empty() {
+        println!("layout ok: {} workspace crates", packages.len());
+        Ok(())
+    } else {
+        Err(format!(
+            "layout violations (ADR-0017):\n  - {}",
+            problems.join("\n  - ")
+        ))
+    }
+}
+
+fn parse_metadata(json: &[u8], root: &Path) -> Result<Vec<Package>, String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(json).map_err(|e| format!("bad cargo metadata: {e}"))?;
+    let raw = value["packages"]
+        .as_array()
+        .ok_or("cargo metadata has no packages")?;
+    let names: BTreeSet<&str> = raw.iter().filter_map(|p| p["name"].as_str()).collect();
+    let mut packages = Vec::new();
+    for p in raw {
+        let name = p["name"].as_str().ok_or("package without a name")?;
+        let manifest = p["manifest_path"]
+            .as_str()
+            .ok_or("package without a path")?;
+        let dir = Path::new(manifest)
+            .parent()
+            .and_then(|d| d.strip_prefix(root).ok())
+            .map(|d| d.to_string_lossy().replace('\\', "/"))
+            .ok_or_else(|| format!("{name} is outside the repository"))?;
+        let mut deps = Vec::new();
+        for d in p["dependencies"].as_array().into_iter().flatten() {
+            let dep_name = d["name"].as_str().unwrap_or_default();
+            // A workspace dependency is a path dependency on another workspace member.
+            if d["path"].is_string() && names.contains(dep_name) {
+                deps.push(Dep {
+                    name: dep_name.to_string(),
+                    dev: d["kind"].as_str() == Some("dev"),
+                });
+            }
+        }
+        packages.push(Package {
+            name: name.to_string(),
+            dir,
+            deps,
+        });
+    }
+    Ok(packages)
+}
+
+fn violations(packages: &[Package]) -> Vec<String> {
+    let allowed: BTreeMap<&str, BTreeSet<&str>> = CORE
+        .iter()
+        .map(|(name, deps)| (*name, deps.iter().copied().collect()))
+        .collect();
+    let dir_of: BTreeMap<&str, &str> = packages
+        .iter()
+        .map(|p| (p.name.as_str(), p.dir.as_str()))
+        .collect();
+    let mut out = Vec::new();
+
+    for p in packages {
+        let in_core = p.dir.starts_with("core/");
+        if !in_core && !p.dir.starts_with("crates/") {
+            out.push(format!(
+                "{} is in `{}`; workspace crates live in `core/` or `crates/`",
+                p.name, p.dir
+            ));
+            continue;
+        }
+        if !in_core {
+            continue;
+        }
+        let Some(permitted) = allowed.get(p.name.as_str()) else {
+            out.push(format!(
+                "{} is a new crate in `core/`; add it to the table in crates/xtask and to ADR-0017",
+                p.name
+            ));
+            continue;
+        };
+        for d in p.deps.iter().filter(|d| !d.dev) {
+            let target_dir = dir_of.get(d.name.as_str()).copied().unwrap_or("");
+            if target_dir.starts_with("crates/") {
+                out.push(format!(
+                    "{} depends on {} from `crates/`; the trusted core never depends on it except as a dev-dependency",
+                    p.name, d.name
+                ));
+            } else if !permitted.contains(d.name.as_str()) {
+                out.push(format!("{} must not depend on {}", p.name, d.name));
+            }
+        }
+    }
+    for (name, _) in CORE {
+        if !dir_of.contains_key(name) {
+            out.push(format!(
+                "{name} is in the layout table but missing from the workspace"
+            ));
+        }
+    }
+    out
+}
+
+// ---- lines ----------------------------------------------------------------------------------
+
+fn lines(root: &Path) -> Result<(), String> {
+    let core = root.join("core");
+    let mut per_crate: BTreeMap<String, usize> = BTreeMap::new();
+    let mut files = Vec::new();
+    collect(&core, &mut files).map_err(|e| format!("could not read core/: {e}"))?;
+    for file in files {
+        let rel = file.strip_prefix(&core).map_err(|e| e.to_string())?;
+        let mut parts = rel.components();
+        let Some(krate) = parts
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+        else {
+            continue;
+        };
+        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let in_src = parts.next().is_some_and(|c| c.as_os_str() == "src");
+        let text = fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let n = match ext {
+            "rs" if in_src => count_rust(&text),
+            "cedar" | "cedarschema" => count_cedar(&text),
+            _ => 0,
+        };
+        *per_crate.entry(krate).or_default() += n;
+    }
+    let total: usize = per_crate.values().sum();
+    println!(
+        "trusted core: {total} / {BUDGET} lines ({:.1}%)",
+        total as f64 * 100.0 / BUDGET as f64
+    );
+    for (name, n) in &per_crate {
+        println!("  {name:<12} {n}");
+    }
+    if total > BUDGET {
+        Err(format!(
+            "the trusted core is {} lines over its budget of {BUDGET} (PRD success metrics)",
+            total - BUDGET
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn collect(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    let mut entries: Vec<_> = fs::read_dir(dir)?.collect::<Result<_, _>>()?;
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let path = e.path();
+        if path.is_dir() {
+            collect(&path, out)?;
+        } else {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Non-blank, non-comment lines up to the file's `#[cfg(test)]` module, which clippy requires to come last.
+fn count_rust(source: &str) -> usize {
+    let mut n = 0;
+    for line in source.lines() {
+        if line.starts_with("#[cfg(test)]") {
+            break;
+        }
+        let t = line.trim();
+        if !t.is_empty() && !t.starts_with("//") {
+            n += 1;
+        }
+    }
+    n
+}
+
+fn count_cedar(source: &str) -> usize {
+    source
+        .lines()
+        .map(str::trim)
+        .filter(|t| !t.is_empty() && !t.starts_with("//"))
+        .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pkg(name: &str, dir: &str, deps: &[(&str, bool)]) -> Package {
+        Package {
+            name: name.into(),
+            dir: dir.into(),
+            deps: deps
+                .iter()
+                .map(|(n, dev)| Dep {
+                    name: (*n).into(),
+                    dev: *dev,
+                })
+                .collect(),
+        }
+    }
+
+    /// The layout the ADR describes, with each crate's real dependencies.
+    fn good() -> Vec<Package> {
+        let mut v = Vec::new();
+        for (name, deps) in CORE {
+            let dir = if *name == "hyalos" {
+                "core/hyalos".to_string()
+            } else {
+                format!("core/{}", name.trim_start_matches("hyalos-"))
+            };
+            let deps: Vec<(&str, bool)> = deps.iter().map(|d| (*d, false)).collect();
+            v.push(pkg(name, &dir, &deps));
+        }
+        v.push(pkg("xtask", "crates/xtask", &[]));
+        v
+    }
+
+    fn replace(v: &mut [Package], name: &str, deps: &[(&str, bool)]) {
+        let dir = v
+            .iter()
+            .find(|p| p.name == name)
+            .map(|p| p.dir.clone())
+            .unwrap();
+        *v.iter_mut().find(|p| p.name == name).unwrap() = pkg(name, &dir, deps);
+    }
+
+    #[test]
+    fn the_described_layout_passes() {
+        assert_eq!(violations(&good()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn broker_may_not_depend_on_the_engine() {
+        let mut v = good();
+        replace(
+            &mut v,
+            "hyalos-broker",
+            &[("hyalos-types", false), ("hyalos-engine", false)],
+        );
+        assert_eq!(
+            violations(&v),
+            ["hyalos-broker must not depend on hyalos-engine"]
+        );
+    }
+
+    #[test]
+    fn broker_may_not_link_the_log_or_substrate() {
+        let mut v = good();
+        replace(
+            &mut v,
+            "hyalos-broker",
+            &[
+                ("hyalos-types", false),
+                ("hyalos-log", false),
+                ("hyalos-substrate", false),
+            ],
+        );
+        assert_eq!(violations(&v).len(), 2);
+    }
+
+    #[test]
+    fn engine_may_not_depend_on_the_broker() {
+        let mut v = good();
+        replace(
+            &mut v,
+            "hyalos-engine",
+            &[("hyalos-types", false), ("hyalos-broker", false)],
+        );
+        assert_eq!(
+            violations(&v),
+            ["hyalos-engine must not depend on hyalos-broker"]
+        );
+    }
+
+    #[test]
+    fn types_is_a_leaf() {
+        let mut v = good();
+        replace(&mut v, "hyalos-types", &[("hyalos-log", false)]);
+        assert_eq!(
+            violations(&v),
+            ["hyalos-types must not depend on hyalos-log"]
+        );
+    }
+
+    #[test]
+    fn core_may_use_crates_only_as_a_dev_dependency() {
+        let mut v = good();
+        replace(
+            &mut v,
+            "hyalos-log",
+            &[("hyalos-types", false), ("xtask", true)],
+        );
+        assert!(violations(&v).is_empty());
+        replace(
+            &mut v,
+            "hyalos-log",
+            &[("hyalos-types", false), ("xtask", false)],
+        );
+        assert_eq!(violations(&v).len(), 1);
+    }
+
+    #[test]
+    fn a_new_core_crate_must_be_added_to_the_table() {
+        let mut v = good();
+        v.push(pkg("hyalos-new", "core/new", &[]));
+        assert_eq!(violations(&v).len(), 1);
+    }
+
+    #[test]
+    fn crates_outside_core_and_crates_are_refused() {
+        let mut v = good();
+        v.push(pkg("stray", "tools/stray", &[]));
+        assert_eq!(violations(&v).len(), 1);
+    }
+
+    #[test]
+    fn a_missing_core_crate_is_reported() {
+        let v: Vec<Package> = good()
+            .into_iter()
+            .filter(|p| p.name != "hyalos-log")
+            .collect();
+        assert!(
+            violations(&v)
+                .iter()
+                .any(|m| m.contains("hyalos-log is in the layout table"))
+        );
+    }
+
+    #[test]
+    fn rust_lines_skip_blanks_comments_and_the_test_module() {
+        let src = "//! doc\n\nfn a() {}\n    // note\nfn b() {}\n\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n";
+        assert_eq!(count_rust(src), 2);
+    }
+
+    #[test]
+    fn cedar_lines_skip_blanks_and_comments() {
+        assert_eq!(
+            count_cedar("// why\npermit (principal, action, resource);\n\n"),
+            1
+        );
+    }
+}

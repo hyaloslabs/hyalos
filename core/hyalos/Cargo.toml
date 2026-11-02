@@ -1,0 +1,18 @@
+[package]
+name = "hyalos"
+description = "The hyalos binary: wires the engine and broker together and holds the command line."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hyalos-types = { path = "../types" }
+hyalos-log = { path = "../log" }
+hyalos-policy = { path = "../policy" }
+hyalos-substrate = { path = "../substrate" }
+hyalos-engine = { path = "../engine" }
+hyalos-broker = { path = "../broker" }

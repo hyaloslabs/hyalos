@@ -1,0 +1,35 @@
+# Dependency policy for the workspace (ADR-0017). Checked by `cargo deny check` in CI.
+# The trusted core has a size budget, and every third-party crate is code we run but do not count,
+# so what we allow in is deliberate: known licenses, a known registry, and no known vulnerabilities.
+
+[graph]
+all-features = true
+
+[advisories]
+# Fail on any RustSec advisory, including unmaintained crates. An exception needs an entry here with a reason.
+ignore = []
+
+[licenses]
+# Only the licenses in use today. A dependency under another license fails CI, and allowing it is a reviewed change here.
+allow = [
+    "MIT",
+    "Apache-2.0",
+]
+confidence-threshold = 0.93
+
+# Our own crates are unpublished and declare no license. The project license is decided in S10.5 (#65).
+[licenses.private]
+ignore = true
+
+[bans]
+# Two versions of one crate is a warning for now: it costs build time and review attention.
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace members depend on each other by path, which has no version.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

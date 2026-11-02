@@ -1,0 +1,14 @@
+# Determinism (ADR-0013, ADR-0017). A crate-level clippy.toml replaces the root one, so the test allowances repeat here.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+disallowed-methods = [
+    { path = "std::time::SystemTime::now", reason = "time comes from the injected clock (ADR-0013)" },
+    { path = "std::time::Instant::now", reason = "time comes from the injected clock (ADR-0013)" },
+]
+
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "iteration order is not deterministic; use BTreeMap (ADR-0013)" },
+    { path = "std::collections::HashSet", reason = "iteration order is not deterministic; use BTreeSet (ADR-0013)" },
+]
