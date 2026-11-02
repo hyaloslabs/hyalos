@@ -1,6 +1,6 @@
 # ADR-0017: Workspace layout and the trusted-core boundary
 
-**Status:** Proposed
+**Status:** Accepted on November 2, 2026, after the workspace skeleton and its checks were built and run in CI (#109). The layout table and dependency rules are a first cut; a crate that straddles a rule is handled by a new ADR.
 
 ## Context
 

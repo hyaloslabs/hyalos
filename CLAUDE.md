@@ -13,7 +13,7 @@ Clean-room Rust rewrite of hivrr. Currently moving from planning into the first 
 
 Single Cargo workspace producing one `hyalos` binary (engine + broker). Trusted-core paths require human code-owner review.
 
-## Code layout (ADR-0017, Proposed)
+## Code layout (ADR-0017)
 
 - `core/` is the trusted core: code that runs in the engine or broker process. It has a 30,000-line budget.
 - `crates/` holds everything else (`xtask` checks, later the simulator and test kits). It is not counted.
