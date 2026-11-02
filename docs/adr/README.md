@@ -26,7 +26,7 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0010](0010-mcp-primary-interface-two-principals.md) | MCP is the primary interface; two principals | Accepted |
 | [0011](0011-pluggable-substrates.md) | Pluggable substrates; best isolation by default; attestation recorded | Proposed |
 | [0012](0012-humans-approve-only-irreversible-actions.md) | Humans set policy and approve only irreversible actions | Accepted |
-| [0013](0013-deterministic-simulation-and-evidence-gated-releases.md) | Deterministic simulation testing and evidence-gated releases | Proposed |
+| [0013](0013-deterministic-simulation-and-evidence-gated-releases.md) | Deterministic simulation testing and evidence-gated releases | Accepted |
 | [0014](0014-tracker-holds-status.md) | The tracker holds status; PRDs hold intent; ADRs hold decisions | Accepted |
 | [0015](0015-project-named-hyalos.md) | The project is named Hyalos | Accepted |
 | [0016](0016-agent-runtime-and-broker-protocols.md) | Agent runtime, broker protocols and model credentials | Proposed |
