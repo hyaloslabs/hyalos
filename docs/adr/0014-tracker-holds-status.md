@@ -10,7 +10,7 @@ Status lived in both the PRD YAML and the tracker, which took about 100 KB of gu
 
 GitHub issues are the only source of work status: each epic is a parent issue with its stories as sub-issues, grouped by milestone (M1 to M4). An ADR's own status (Proposed, Accepted, Superseded) belongs to the decision record, not to work status, and lives in the ADR and its index.
 
-PRDs hold intent and scope. ADRs live in `docs/adr/`, one decision each, and are never edited once accepted, except that the Status line changes when a later ADR supersedes them. Planning working material lives in `docs/planning/` and is never authoritative: it is deleted, or its content folded into an ADR, once it is filed or settled. Reference docs are generated from types, manifests and ADRs wherever possible.
+PRDs hold intent and scope. ADRs live in `docs/adr/`, one decision each, and are never edited once accepted, except that the Status line changes when a later ADR supersedes them. Planning working material lives in `docs/planning/` and is never authoritative: it is deleted, or its content folded into an ADR, once it is filed or settled. A working file that a PRD or ADR still cites stays until those citations are replaced. Reference docs are generated from types, manifests and ADRs wherever possible.
 
 Trusted-core paths require human code-owner review, and `CODEOWNERS` records which paths. While the repository is private on a plan without branch protection, the platform cannot enforce this. The control until then is that a human gives an explicit instruction for each merge to `main`, and automation carries that instruction out without substituting for it. Platform enforcement is the story S10.6.
 
