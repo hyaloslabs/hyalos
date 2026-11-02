@@ -29,3 +29,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0013](0013-deterministic-simulation-and-evidence-gated-releases.md) | Deterministic simulation testing and evidence-gated releases | Proposed |
 | [0014](0014-tracker-holds-status.md) | The tracker holds status; PRDs hold intent; ADRs hold decisions | Proposed |
 | [0015](0015-project-named-hyalos.md) | The project is named Hyalos | Accepted |
+| [0016](0016-agent-runtime-and-broker-protocols.md) | Agent runtime, broker protocols and model credentials | Proposed |

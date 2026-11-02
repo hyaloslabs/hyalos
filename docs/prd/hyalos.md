@@ -44,6 +44,10 @@ Today's hivrr solves most of that, but as about 15 services, a long trail of ret
 - **Record:** every state change is a signed, hash-chained event; the log is the database, the audit trail and the backup. ([ADR-0003](../adr/0003-event-log-is-the-database.md))
 - **Ecosystem:** Agent Skills, WASM components and MCP servers run under declared capabilities; updates that add a capability never install silently. ([ADR-0006](../adr/0006-plugins-are-skills-and-wasm-components.md), [ADR-0007](../adr/0007-capability-based-marketplace-trust.md))
 
+## Reference job
+
+Every requirement above should be traceable through one real job: "From Claude Code, I ask Hyalos to fix issue #42 in my GitHub repo and open a PR." The walk, with the ADR or story behind each step, is in [`docs/planning/reference-job-walk.md`](../planning/reference-job-walk.md).
+
 ## Success metrics
 
 | Metric | Target |
@@ -59,9 +63,9 @@ Today's hivrr solves most of that, but as about 15 services, a long trail of ret
 
 | Milestone | Epics | Outcome |
 | --- | --- | --- |
-| M1 | E1 Event log and engine loop; E2 Substrates and the first contained job; E3 Broker and manifests | Proves the boundary: one job runs with no secrets inside its sandbox |
-| M2 | E4 Provenance, roles and the workflow language; E5 Agent interface and approvals | Safe for an agent to drive |
-| M3 | E6 Plugin runtime; E7 Marketplace and supply chain | Open to skills and plugins |
+| M1 | E1 Event log and engine loop; E2 Substrates and the first contained job; E3 Broker and manifests | Proves the boundary: a real harness (Claude Code or Codex) in a sandbox with no secrets fixes a given issue and opens a PR, driven from the CLI |
+| M2 | E4 Provenance, roles and the workflow language; E5 Agent interface and approvals | Safe for an agent to drive: the full reference job below runs through MCP |
+| M3 | E6 Plugin runtime; E7 Marketplace and supply chain; S2.5 Apple lightweight VMs | Open to skills and plugins |
 | M4 | E8 Verification and release gates; E9 Learnings and self-improvement; E10 Launch | Public release |
 
 Epic and story detail is tracked in GitHub issues: each epic is a parent issue (#1, #8, #15, #22, #28, #35, #41, #49, #56, #60) with its stories as sub-issues, grouped by milestone.
@@ -75,7 +79,7 @@ Epic and story detail is tracked in GitHub issues: each epic is a parent issue (
 
 ## Open questions
 
-Tracked in [`docs/planning/open-questions.md`](../planning/open-questions.md). They gate acceptance of some ADRs.
+Tracked in [`docs/planning/open-questions.md`](../planning/open-questions.md). They are facts to confirm by asking providers or running spikes, and they gate acceptance of some ADRs.
 
 ## References
 
