@@ -18,8 +18,9 @@ def write_cfg(root_path, out_path):
 
 
 def main():
-    shutil.rmtree(RUN, ignore_errors=True)
+    # Clear only what this script generates: run/rust holds the built verifier.
     for d in ("cfg", "tamper", "strip", "hist"):
+        shutil.rmtree(os.path.join(RUN, d), ignore_errors=True)
         os.makedirs(os.path.join(RUN, d))
     write_cfg(glob.glob(os.path.join(VEC, "trusted_root.*.json"))[0], os.path.join(RUN, "cfg", "current.json"))
 

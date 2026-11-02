@@ -37,7 +37,7 @@ Revocation remains for proven-malicious releases, but it cannot reach an air-gap
 
 The spike's verification took about 3 ms and ran with no network, so offline installs cost nothing extra. Not yet shown, and covered by the stories that build this: a bundle logged in Sigstore's new Rekor v2 (the current snapshot already lists that log), a bundle signed by a GitHub Actions workflow identity, and the verifier running inside the Hyalos binary on every supported platform. The library is a year old and pre-1.0, so its version is pinned and a change to it re-runs the vectors.
 
-## References (read November 2, 2026)
+## References (read November 1, 2026)
 
 - Spike #73 findings: [docs/planning/spike-73-findings.md](../planning/spike-73-findings.md). The evidence for the verification rules, the two verifiers' results and the snapshot dates above. The rig and test vectors are in `spikes/73/`.
 - Sigstore bundle format: [sigstore_bundle.proto](https://github.com/sigstore/protobuf-specs/blob/main/protos/sigstore_bundle.proto).
