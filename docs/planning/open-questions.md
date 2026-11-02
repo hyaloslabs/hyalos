@@ -1,8 +1,8 @@
-# Open questions for the planning session
+# Open questions
 
-These decide whether some ADRs stand as written. Settle them before accepting. When a question is settled, record the answer in the affected ADR (while still Proposed) or in a new ADR, then delete the entry here.
+The November 1, 2026 planning session settled the original four questions and folded the answers into ADR-0002, 0005, 0007, 0011 and 0012, and a new ADR-0016. What remains are facts we cannot settle by deciding. When one is answered, fold the answer into the affected ADR (while still Proposed) or a new ADR, then delete the entry here.
 
-1. **Provider keys in the broker ([ADR-0002](../adr/0002-one-binary-two-processes-sandboxes.md)):** LLM provider keys can't be scoped per job. Is holding them in the broker acceptable, or should LLM calls route broker to engine?
-2. **Verifier agent for escalations ([ADR-0012](../adr/0012-humans-approve-only-irreversible-actions.md)):** which escalations, if any, should always reach a human even when the verifier agrees?
-3. **Keyless signing and air gaps ([ADR-0007](../adr/0007-capability-based-marketplace-trust.md)):** is the offline bundle enough for air-gapped users, or do they also need a key-based path?
-4. **macOS substrate (S2.5, [ADR-0011](../adr/0011-pluggable-substrates.md)):** is Apple's lightweight VM support mature enough for M1, or does macOS start on containers?
+1. **Subscription-mode terms ([ADR-0016](../adr/0016-agent-runtime-and-broker-protocols.md)):** does an unmodified Claude Code or Codex binary, signed in inside a Hyalos sandbox with the user's own token, count as permitted use? Ask Anthropic and OpenAI directly. Not yet read: OpenAI's `developers.openai.com/siwc/token-sharing-open-source` pages. Until answered, v1 ships API keys only and subscription mode stays an experimental flag.
+2. **macOS broker channel ([ADR-0011](../adr/0011-pluggable-substrates.md)):** confirm that Docker Desktop and similar cannot pass an arbitrary host Unix socket into a container. If they can, the socket design holds on macOS. If not, M1 uses an authenticated network endpoint. Settled by a spike.
+3. **Forwarder with a real harness ([ADR-0016](../adr/0016-agent-runtime-and-broker-protocols.md)):** does Claude Code or Codex work through a loopback forwarder to a broker channel in a sandbox with no network? This is the M1 gate. Settled by a spike.
+4. **Offline Sigstore verification ([ADR-0007](../adr/0007-capability-based-marketplace-trust.md)):** does a Sigstore bundle verify fully offline against a shipped trusted-root snapshot, and what maximum age is right? Settled by a spike in E7.
