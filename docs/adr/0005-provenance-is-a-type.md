@@ -1,6 +1,6 @@
 # ADR-0005: Provenance is a type; step roles are checked at install
 
-**Status:** Proposed. Decisions on harness actors and plugin-authored text were made in the November 1, 2026 planning session; folded in below.
+**Status:** Accepted on November 1, 2026, after the planning session settled the harness-actor and plugin-authored-text decisions folded in below.
 
 ## Context
 

@@ -1,6 +1,6 @@
 # ADR-0012: Humans set policy and approve only irreversible actions
 
-**Status:** Proposed. The original open question on the verifier agent for escalations was settled in the November 1, 2026 planning session; folded in below.
+**Status:** Accepted on November 1, 2026, after the planning session settled the verifier-agent question folded in below.
 
 ## Context
 

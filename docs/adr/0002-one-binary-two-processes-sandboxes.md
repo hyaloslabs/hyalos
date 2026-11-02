@@ -1,6 +1,6 @@
 # ADR-0002: One binary, two processes, sandboxes
 
-**Status:** Proposed. The original open question on provider keys in the broker was settled in the November 1, 2026 planning session; folded in below.
+**Status:** Accepted on November 1, 2026, after the planning session settled the provider-key question folded in below.
 
 ## Context
 

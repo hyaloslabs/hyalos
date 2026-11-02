@@ -1,6 +1,6 @@
 # ADR-0006: Plugins are Agent Skills and WASM components; MCP servers run contained
 
-**Status:** Proposed. Local-install mode added in the November 1, 2026 planning session; folded in below.
+**Status:** Accepted on November 1, 2026, including the local-install mode added in the planning session.
 
 ## Context
 
