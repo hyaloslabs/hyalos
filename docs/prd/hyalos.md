@@ -64,7 +64,7 @@ Today's hivrr solves most of that, but as about 15 services, a long trail of ret
 | M3 | E6 Plugin runtime; E7 Marketplace and supply chain | Open to skills and plugins |
 | M4 | E8 Verification and release gates; E9 Learnings and self-improvement; E10 Launch | Public release |
 
-Epic and story detail is tracked in GitHub issues. The seed used to file them is in [`docs/planning/epics.md`](../planning/epics.md).
+Epic and story detail is tracked in GitHub issues: each epic is a parent issue (#1, #8, #15, #22, #28, #35, #41, #49, #56, #60) with its stories as sub-issues, grouped by milestone.
 
 ## Risks
 
