@@ -10,7 +10,7 @@ Identity-based trust (publisher keys, a human approving each signing, revocation
 
 Trust what a plugin can do, not who published it. Every release builds reproducibly in CI, is signed keylessly against the CI workflow's identity, is recorded in a public transparency log, and passes automated evidence: static analysis, sandboxed review agents, the red-team corpus and a capability diff. Publication is decided by policy: same or fewer capabilities publish automatically, new capabilities publish flagged for consent, failed checks block.
 
-Operators set install policy once; updates within policy install automatically. An update that adds a capability beyond that policy waits for **human** consent. A verifier agent can never grant it ([ADR-0012](0012-humans-approve-only-irreversible-actions.md)).
+Operators set install policy once; updates within policy install automatically. An update that adds a capability beyond that policy waits for **human** consent. A verifier agent can never grant it ([ADR-0012](0012-humans-approve-only-irreversible-actions.md)). Plugins that did not go through this pipeline install in local mode ([ADR-0006](0006-plugins-are-skills-and-wasm-components.md)), where every capability needs a human.
 
 **Air-gapped installs** use an offline signed bundle. A Sigstore bundle carries the certificate and the transparency-log inclusion proof, so it verifies offline against a shipped trusted-root snapshot. No key-based path is needed. The bundle and the trusted-root snapshot each carry a maximum age; an install past the limit refuses new installs until it is updated.
 

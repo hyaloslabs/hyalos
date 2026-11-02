@@ -18,6 +18,8 @@ Three tiers.
 
 In v1 the operator approves with `hyalos approve <id>` on the machine, signed with a local key that the driving agent's MCP credential cannot use. Passkeys come later.
 
+**Merging.** Hyalos performs merges in v1, and a merge to a protected branch always needs a human approval. The approval is bound to the PR's head commit SHA, so any push after approval voids it. The merge uses a per-job token from the GitHub App; no standing merge credential exists. The repository's branch protection must permit the App's merge, which the GitHub App setup story documents.
+
 ## Consequences
 
 Human attention goes where it matters. This closes the gap between [ADR-0007](0007-capability-based-marketplace-trust.md) ("waits for consent") and the verifier: consent means a human, so the PRD's "never installs silently" holds. Because the operator's install policy defines what is pre-approved, changing that policy is an irreversible action and is where capability breadth is really decided.

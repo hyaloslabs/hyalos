@@ -18,13 +18,15 @@ Today's hivrr already ran Claude Code in worker containers with `ANTHROPIC_BASE_
 
 **Harness traffic other than model calls is off by default** (telemetry, auto-update, built-in web fetch). Anything needed goes through the egress allowlist.
 
+**Typed results from a sandboxed harness.** A harness returns its result by running a small `hyalos-submit` helper that ships in the sandbox image. The helper posts the result through the forwarder to the broker, which validates it against the step's schema: size and depth caps, unknown fields rejected, and no unbounded free-text fields. Strings are bounded and constrained, and any string derived from tainted input stays tainted and reaches an actor only through a gated handle. The broker hands the engine only the typed values. The harness's chat output is discarded, and a missing or invalid submission fails the job. This works with any runtime that can run a command, and it does not couple the broker to each provider's tool-call format. A **planner** is an actor variant with a read-only repository mount, no push action and no egress except the broker, and it returns its plan this way.
+
 **Model credentials.** v1 default: API keys held by the broker, as in [ADR-0002](0002-one-binary-two-processes-sandboxes.md). The broker never stores or injects a subscription token.
 
 **Subscription mode (experimental flag).** The vendor's own unmodified client (Claude Code or Codex) signs in inside the sandbox with the user's own token. The broker does not handle it. It is recorded on the job event as a weaker tier, "credential inside sandbox," and is limited to jobs with no tainted input. Provider token formats are also added to the broker's content gate, but only as defense in depth: a pattern match cannot stop an agent that encodes or splits a token. The mode ships only after Anthropic and OpenAI answer whether this use is permitted.
 
 ## Consequences
 
-The sandbox image gains a forwarder; a spike with a real harness is the M1 gate, because "no secrets in the sandbox" only means something if a real agent is working there. Two protocol adapters count against the 30,000-line budget. If the providers say subscription mode is not permitted, it is removed without touching anything else. A subscription token in the sandbox can leave through any permitted output, so it stays restricted to untainted jobs until that risk is better bounded.
+The sandbox image gains a forwarder and the `hyalos-submit` helper; a spike with a real harness is the M1 gate, because "no secrets in the sandbox" only means something if a real agent is working there. Two protocol adapters count against the 30,000-line budget. If the providers say subscription mode is not permitted, it is removed without touching anything else. A subscription token in the sandbox can leave through any permitted output, so it stays restricted to untainted jobs until that risk is better bounded.
 
 ## References (read November 1, 2026)
 
