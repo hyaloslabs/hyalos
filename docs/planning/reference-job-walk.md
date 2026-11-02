@@ -1,7 +1,6 @@
 # Reference job walk
 
-Working material, not a status tracker. It traces real journeys end to end to find steps that no ADR or story covers. Accept ADRs only once every row has an owner. Issue numbers are GitHub issues in this repo. "Story to file" means the story is not yet filed.
-
+Working material, not a status tracker. It traces real journeys end to end to find steps that no ADR or story covers. Accept ADRs only once every row has an owner. Issue numbers are GitHub issues in this repo.
 Second re-walk: November 1, 2026, after the planning-session decisions (PR #66). Decisions D1 to D5 were made later the same day and are folded into the ADRs.
 
 ## Journey 1: "From Claude Code, I ask Hyalos to fix issue #42 in my GitHub repo and open a PR."
@@ -14,7 +13,7 @@ Second re-walk: November 1, 2026, after the planning-session decisions (PR #66).
 | 4. A planner makes a plan | ADR-0005, ADR-0016 (read-only actor variant; result submitted through the broker as typed values) | **D1 decided.** Filed as #84 (`hyalos-submit` and result validation) |
 | 5. An actor writes the code in a sandbox | ADR-0016, S2.8 (#72), S3.10 (#70), S4.4 (#26) | **D2 decided** (ADR-0005): repo contents are forge-authored, so an actor that reads them runs tainted, and harness actors are bounded by manifest, sandbox and gate. Filed as #85 (tainted-actor manifest) |
 | 6. The actor calls the model | S3.2 (#17), S3.8 (#68) | None |
-| 7. The model call is paid for | ADR-0002, ADR-0016, S3.8 (#68), decision #75 | Minor: `hyalos doctor` should remind the operator to set a provider-side spend cap |
+| 7. The model call is paid for | ADR-0002, ADR-0016, S3.8 (#68), decision #75 | Owned by S2.3 (#11): `hyalos doctor` reminds the operator to set a provider-side spend cap |
 | 8. The actor pushes a branch and opens a PR | S3.3 (#18), S3.4 (#19), S3.9 (#69), S4.5 (#27) | **G4.** Opening a PR is a forge API call, not a git push. No story covers it or its manifest action. Filed as #79 |
 | 9. Someone approves the merge, and Hyalos merges | ADR-0012, S5.4 (#32) | **D3 decided** (ADR-0012): Hyalos merges after a human approval bound to the head SHA. Filed as #86 (merge through the broker). **G5.** Where the operator sets repo, protected-branch, budget and egress policy once has no story; the engine needs it to mint manifests. Filed as #80 |
 | 10. Results return to Claude Code | S5.2 (#30), S5.3 (#31), S5.7 (#74) | None |

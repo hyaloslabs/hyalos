@@ -37,7 +37,7 @@ Today's hivrr solves most of that, but as about 15 services, a long trail of ret
 
 ## Requirements
 
-- **Containment:** no credentials and no network inside a sandbox, only a socket to the broker; best-available isolation, recorded per job. ([ADR-0002](../adr/0002-one-binary-two-processes-sandboxes.md), [ADR-0011](../adr/0011-pluggable-substrates.md))
+- **Containment:** no credentials and no network inside a sandbox, only a channel to the broker; best-available isolation, recorded per job. Two exceptions are recorded on the job as weaker tiers: macOS reaches the broker over one authenticated endpoint, and the experimental subscription mode keeps the user's own token in the sandbox. ([ADR-0002](../adr/0002-one-binary-two-processes-sandboxes.md), [ADR-0011](../adr/0011-pluggable-substrates.md), [ADR-0016](../adr/0016-agent-runtime-and-broker-protocols.md))
 - **Authority:** every job runs under a signed manifest; the broker enforces it and nothing else. ([ADR-0004](../adr/0004-one-signed-manifest-per-job.md))
 - **Provenance:** every value carries its source; workflows that let tainted text reach an actor fail to install. ([ADR-0005](../adr/0005-provenance-is-a-type.md))
 - **Fail closed:** every gate answers allow, deny or unknown; unknown holds the task with a decision. ([ADR-0009](../adr/0009-gates-answer-allow-deny-unknown.md))
@@ -64,7 +64,7 @@ Every requirement above should be traceable through one real job: "From Claude C
 | Milestone | Epics | Outcome |
 | --- | --- | --- |
 | M1 | E1 Event log and engine loop; E2 Substrates and the first contained job; E3 Broker and manifests | Proves the boundary: a real harness (Claude Code or Codex) in a sandbox with no secrets fixes a given issue and opens a PR, driven from the CLI |
-| M2 | E4 Provenance, roles and the workflow language; E5 Agent interface and approvals | Safe for an agent to drive: the full reference job below runs through MCP |
+| M2 | E4 Provenance, roles and the workflow language; E5 Agent interface and approvals | Safe for an agent to drive: the full reference job above runs through MCP |
 | M3 | E6 Plugin runtime; E7 Marketplace and supply chain; S2.5 Apple lightweight VMs | Open to skills and plugins |
 | M4 | E8 Verification and release gates; E9 Learnings and self-improvement; E10 Launch | Public release |
 
