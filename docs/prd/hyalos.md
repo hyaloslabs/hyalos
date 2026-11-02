@@ -23,7 +23,7 @@ Today's hivrr solves most of that, but as about 15 services, a long trail of ret
 
 ## Non-goals for v1
 
-- A web dashboard (approvals and results render as MCP Apps in the driving client).
+- A web dashboard (approvals and results are shown in the driving client, as MCP Apps where supported).
 - Trackers beyond GitHub, GitLab and a local tracker; notification channels beyond one webhook.
 - Autonomy modes, complex budgeting, live-config tiers.
 - Hosting a public service. v1 is self-hosted, MIT-licensed open source.
