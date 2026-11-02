@@ -8,7 +8,7 @@ Claims, virtual keys, job tokens, scoped git tokens and per-route ACLs each enco
 
 ## Decision
 
-The engine signs one manifest per job: repo and branch prefix, actions, egress hosts, tools, data flows, budget, deadline, the step's role, and taint. The broker enforces that document and nothing else. The signing key lives only in the engine ([ADR-0002](0002-one-binary-two-processes-sandboxes.md)).
+The engine signs one manifest per job: repo and branch prefix, actions, egress hosts, tools, data flows, budget, deadline, the step's role, and taint policy. The broker enforces that document and nothing else. The signing key lives only in the engine ([ADR-0002](0002-one-binary-two-processes-sandboxes.md)).
 
 **Taint is derived, not requested.** The engine computes it from the step's inputs. A step whose actor reads forge-authored content gets a tainted manifest, and the engine cannot sign an untainted one for it ([ADR-0005](0005-provenance-is-a-type.md)). A tainted manifest cannot push outside its branch prefix, merge, or use a subscription token, and the broker content-gates its outbound text.
 
@@ -18,7 +18,7 @@ The engine signs one manifest per job: repo and branch prefix, actions, egress h
 
 **Plugins narrow a job, never widen it.** Where a plugin runs in a job, the effective permissions are the intersection of the plugin's granted capabilities and the job's manifest ([ADR-0005](0005-provenance-is-a-type.md), [ADR-0006](0006-plugins-are-skills-and-wasm-components.md)). The manifest and plugin capabilities share one versioned vocabulary.
 
-**Forge tokens are minted by the engine.** The engine holds the GitHub App private key (or the GitLab credential), the long-lived secret, and mints a per-job token scoped to the repo and permissions in the manifest (GitHub App installation tokens, GitLab project tokens). It hands the token to the broker with the manifest, and the token expires with the job. No operator PAT exists.
+**Forge tokens are minted by the engine.** The engine holds the GitHub App private key (or the GitLab credential), the long-lived secret, and mints a per-job token scoped to the repo in the manifest and to the forge permissions its actions require (GitHub App installation tokens, GitLab project tokens). It hands the token to the broker with the manifest, and the token expires with the job. No operator PAT exists.
 
 **Manifests cannot be replayed.** A manifest carries a schema version, a job id and a deadline. The broker refuses an unknown version, an expired manifest, a job id that is not a live job, or an invalid signature.
 
