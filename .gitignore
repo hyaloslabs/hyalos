@@ -2,3 +2,5 @@
 .DS_Store
 .ai/
 .hivrr.json
+.env
+.env.local
