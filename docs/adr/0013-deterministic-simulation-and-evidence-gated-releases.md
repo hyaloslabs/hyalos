@@ -25,4 +25,4 @@ Run the engine as a state machine under a fake clock, fake substrate and seeded 
 
 ## Consequences
 
-Bugs reproduce from a seed. The engine's code is constrained by the lint, which costs some convenience. Simulation covers the engine's logic against faked boundaries, so it cannot prove the real sandbox and broker boundary; the contract suites and chaos scenarios carry that. Everything here assumes CI exists and runs on every change, which the repository does not have yet.
+Bugs reproduce from a seed. The engine's code is constrained by the lint, which costs some convenience. Simulation covers the engine's logic against faked boundaries, so it cannot prove the real sandbox and broker boundary; the contract suites and chaos scenarios carry that. Everything here assumes CI runs on every change, which story S8.7 provides.
