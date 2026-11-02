@@ -1,5 +1,5 @@
-import json, sys
-for l in open('run/broker.log'):
+import json, os
+for l in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run', 'broker.log')):
     o = json.loads(l)
     if 'url' in o:
         auth = o['hdr'].get('authorization') or o['hdr'].get('x-api-key')

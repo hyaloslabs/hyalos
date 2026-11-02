@@ -1,7 +1,8 @@
 #!/bin/bash
 # Usage: [NETARGS=...] [DISABLE=0|1] run-claude.sh [extra claude args...]
 cd "$(dirname "$0")"
-CL=$(readlink -f ~/.local/bin/claude)
+CL=${CLAUDE_BIN:-$(readlink -f ~/.local/bin/claude)}
+[ -f "$CL" ] || { echo "Claude Code binary not found at $CL: set CLAUDE_BIN" >&2; exit 1; }
 PROMPT="${PROMPT:-Run hyalos-submit with a short summary, then stop.}"
 OFF=()
 if [ "${DISABLE:-1}" = 1 ]; then
