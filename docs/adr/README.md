@@ -22,8 +22,8 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0006](0006-plugins-are-skills-and-wasm-components.md) | Plugins are Agent Skills and WASM components; MCP servers run contained | Accepted |
 | [0007](0007-capability-based-marketplace-trust.md) | Marketplace trust is capability-based and automated | Proposed |
 | [0008](0008-cedar-for-policy.md) | Cedar for policy | Proposed |
-| [0009](0009-gates-answer-allow-deny-unknown.md) | Every gate answers allow, deny or unknown | Proposed |
-| [0010](0010-mcp-primary-interface-two-principals.md) | MCP is the primary interface; two principals | Proposed |
+| [0009](0009-gates-answer-allow-deny-unknown.md) | Every gate answers allow, deny or unknown | Accepted |
+| [0010](0010-mcp-primary-interface-two-principals.md) | MCP is the primary interface; two principals | Accepted |
 | [0011](0011-pluggable-substrates.md) | Pluggable substrates; best isolation by default; attestation recorded | Proposed |
 | [0012](0012-humans-approve-only-irreversible-actions.md) | Humans set policy and approve only irreversible actions | Accepted |
 | [0013](0013-deterministic-simulation-and-evidence-gated-releases.md) | Deterministic simulation testing and evidence-gated releases | Proposed |
