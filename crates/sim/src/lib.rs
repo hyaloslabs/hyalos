@@ -27,12 +27,9 @@ impl FakeClock {
     /// add up: the update is one atomic step, not a read followed by a store.
     pub fn advance(&self, delta: Duration) {
         let millis = u64::try_from(delta.as_millis()).unwrap_or(u64::MAX);
-        // The closure always returns `Some`, so this cannot fail.
-        let _ = self
-            .0
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |t| {
-                Some(t.saturating_add(millis))
-            });
+        self.0.update(Ordering::SeqCst, Ordering::SeqCst, |t| {
+            t.saturating_add(millis)
+        });
     }
 }
 
