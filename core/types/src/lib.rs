@@ -2,10 +2,17 @@
 //!
 //! Layout rule (ADR-0017): this crate depends on no other workspace crate.
 
+pub mod digest;
 pub mod entropy;
+pub mod event;
+pub mod hex;
+pub mod ids;
 pub mod origin;
 pub mod time;
 
+pub use digest::Digest;
 pub use entropy::{Entropy, SeededRng};
+pub use event::{Event, EventError, Gate, HoldReason, JobOutcome, Resolution};
+pub use ids::{HoldId, JobId, TaskId};
 pub use origin::Origin;
 pub use time::{Clock, Timestamp};

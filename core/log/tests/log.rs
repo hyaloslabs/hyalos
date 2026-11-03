@@ -9,7 +9,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use hyalos_log::{
-    Head, Log, LogError, LogKey, Origin, PublicKey, Reason, VerifyError, format, verify,
+    Head, Log, LogError, LogKey, Origin, PublicKey, Reason, StoredEvent, VerifyError, format,
+    verify,
 };
 use hyalos_types::Timestamp;
 use rusqlite::Connection;
@@ -279,6 +280,35 @@ fn a_log_can_be_verified_while_the_engine_still_has_it_open() -> Res {
     // And the engine can keep appending afterwards.
     log.append(Timestamp::from_millis(6), Origin::Engine, "live", 1, b"{}")?;
     assert_eq!(verify(&path, &public(), None)?.events, 6);
+    Ok(())
+}
+
+#[test]
+fn events_come_back_in_order_exactly_as_appended() -> Res {
+    let (path, _) = filled("read-back")?;
+    let events = Log::open(&path, key())?.events()?;
+    assert_eq!(events.len(), EVENTS as usize);
+    for (i, e) in events.iter().enumerate() {
+        let n = i as u64 + 1;
+        let expected = StoredEvent {
+            seq: n,
+            at: Timestamp::from_millis(1_000 * n),
+            origin: if n.is_multiple_of(3) {
+                Origin::Broker
+            } else {
+                Origin::Engine
+            },
+            kind: format!("test.event.{n}"),
+            schema_version: 1,
+            payload: format!("{{\"n\":{n}}}").into_bytes(),
+        };
+        assert_eq!(e, &expected);
+    }
+    assert!(
+        Log::open(&fresh_path("read-empty")?, key())?
+            .events()?
+            .is_empty()
+    );
     Ok(())
 }
 

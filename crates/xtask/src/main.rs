@@ -56,18 +56,29 @@ const DETERMINISTIC: &[&str] = &[
 /// thread-local generator would get past the lint through a dependency, so each entry is a reviewed
 /// decision with the reason it is deterministic. A transitive dependency is not checked here;
 /// `cargo deny` and review cover it.
-const EXTERNAL_ALLOWED: &[(&str, &[&str])] = &[(
-    "hyalos-log",
-    &[
-        // SQLite, bundled so the engine runs the version we tested. Storage, not time or randomness.
-        "rusqlite",
-        // Ed25519 signatures. Signing is deterministic (RFC 8032); keys come in as bytes, and the
-        // `rand_core` feature that could generate one is off.
-        "ed25519-dalek",
-        // SHA-256 for the hash chain.
-        "sha2",
-    ],
-)];
+const EXTERNAL_ALLOWED: &[(&str, &[&str])] = &[
+    (
+        "hyalos-types",
+        &[
+            // Typed events and their JSON encoding (ADR-0019). Serialization is a pure function of
+            // the value; neither crate reads the clock or an entropy source.
+            "serde",
+            "serde_json",
+        ],
+    ),
+    (
+        "hyalos-log",
+        &[
+            // SQLite, bundled so the engine runs the version we tested. Storage, not time or randomness.
+            "rusqlite",
+            // Ed25519 signatures. Signing is deterministic (RFC 8032); keys come in as bytes, and the
+            // `rand_core` feature that could generate one is off.
+            "ed25519-dalek",
+            // SHA-256 for the hash chain.
+            "sha2",
+        ],
+    ),
+];
 
 #[derive(Debug, Clone)]
 struct Package {

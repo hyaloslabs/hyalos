@@ -14,3 +14,7 @@ hyalos-types = { path = "../types" }
 hyalos-log = { path = "../log" }
 hyalos-policy = { path = "../policy" }
 hyalos-substrate = { path = "../substrate" }
+
+[dev-dependencies]
+hyalos-sim = { path = "../../crates/sim" }
+rusqlite = { version = "0.41", features = ["bundled"] }
