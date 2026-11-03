@@ -1,20 +1,29 @@
 //! S1.4: a log written under an older event schema loads under a newer engine with no manual step
 //! (ADR-0023).
 //!
-//! There is only one real schema version so far, so these tests invent a history: version 1 events
-//! used other field names than today's, and a version 2 engine upcasts them. The logs are written raw,
+//! The real version 1 is only one step behind, so these tests invent a longer history: version 1
+//! events used other field names than today's, and a version 2 engine upcasts them (with the real
+//! step where one exists). The logs are written raw,
 //! exactly as an old build would have, then opened by the engine.
 
 use std::path::{Path, PathBuf};
 
-use hyalos_engine::{Engine, EngineError, replay_with};
+use hyalos_engine::{Decider, Engine, EngineError, replay_with};
 use hyalos_log::{Log, LogKey, copy_verified, verify};
+use hyalos_types::event::{SCHEMA, SCHEMA_VERSION};
 use hyalos_types::{
     Answer, Digest, Event, EventError, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin,
-    ReasonCode, Resolution, Schema, TaskId, Timestamp, Upcast, Value,
+    ReasonCode, Schema, Stakes, TaskId, Timestamp, Upcast, Value,
 };
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+/// A short reason code for a decision; these tests are about structure, not the code.
+fn why() -> ReasonCode {
+    ReasonCode::unavailable()
+}
+
+const SCHEMA_VERSION_PLUS_ONE: u32 = SCHEMA_VERSION + 1;
 
 fn key() -> LogKey {
     LogKey::from_seed([3; 32])
@@ -66,8 +75,16 @@ fn answered(mut v: Value) -> Result<Value, String> {
 }
 
 /// Version 1 called the request `digest`, the job's task `task_id`, and did not record a reason.
-/// Everything else is unchanged, so `job.ended`, `task.completed`, `hold.opened` and `hold.resolved`
-/// need no step.
+/// A version 1 hold had no stakes. Everything else is unchanged, so `job.ended`, `task.completed` and
+/// `hold.resolved` need no step.
+fn opened(v: Value) -> Result<Value, String> {
+    // The one change that really happened between the real versions 1 and 2 (ADR-0025): use the real
+    // step, so this test cannot drift from what the build does.
+    SCHEMA
+        .upcast("hold.opened", 1, v)
+        .map_err(|e| e.to_string())
+}
+
 static V2: Schema = Schema {
     current: 2,
     steps: &[
@@ -85,6 +102,11 @@ static V2: Schema = Schema {
             kind: "gate.answered",
             from: 1,
             step: answered,
+        },
+        Upcast {
+            kind: "hold.opened",
+            from: 1,
+            step: opened,
         },
     ],
 };
@@ -232,6 +254,7 @@ fn reference_state(path: &Path) -> Res<hyalos_engine::State> {
                     gate: Gate::Content,
                     inputs: d(8),
                     reason: HoldReason::Unknown,
+                    stakes: Stakes::irreversible(),
                 },
             ),
         ],
@@ -277,14 +300,8 @@ fn new_events_are_written_at_the_new_version_and_the_mixed_log_keeps_working() -
     let before = stored(&old)?;
 
     let mut e = Engine::open_with(&old, key(), &V2)?;
-    let head = e.submit(
-        at(11),
-        Origin::Engine,
-        Event::HoldResolved {
-            hold: HoldId::from_seq(10),
-            by: Resolution::Human,
-        },
-    )?;
+    // A hold written before stakes existed reads as the most cautious, so only a human releases it.
+    let head = e.decide_hold(at(11), HoldId::from_seq(10), Decider::Human, why())?;
     let head2 = e.submit(at(12), Origin::Engine, Event::TaskCreated { request: d(3) })?;
     // The atomic write path stamps the version too.
     let head3 = e.submit_all(
@@ -350,24 +367,24 @@ fn a_build_that_is_older_than_the_log_refuses_it_and_changes_nothing() -> Res {
     let mut e = Engine::open(&p, key())?;
     e.submit(at(1), Origin::Engine, Event::TaskCreated { request: d(1) })?;
     drop(e);
-    // A newer build appends an event at version 2.
+    // A newer build appends an event at the next version.
     raw(
         &mut Log::open(&p, key())?,
         2,
         "task.created",
-        2,
+        SCHEMA_VERSION + 1,
         &format!(r#"{{"kind":"task.created","request":"{}"}}"#, hex(2)),
     )?;
     let before = stored(&p)?;
 
-    // Today's build reads version 1 only.
+    // Today's build does not read that version.
     match Engine::open(&p, key()) {
         Err(EngineError::Event {
             seq: 2,
             error:
                 EventError::UnsupportedVersion {
-                    found: 2,
-                    current: 1,
+                    found: SCHEMA_VERSION_PLUS_ONE,
+                    current: SCHEMA_VERSION,
                 },
         }) => {}
         other => return Err(format!("expected a refusal naming event 2, got {other:?}").into()),

@@ -2,15 +2,20 @@
 
 use std::path::{Path, PathBuf};
 
-use hyalos_engine::{Engine, Ruling};
+use hyalos_engine::{Decider, Engine, Ruling};
 use hyalos_log::{Log, LogKey, copy_verified};
 use hyalos_policy::{GateRequest, Outcome};
 use hyalos_types::{
-    Digest, Event, Gate, HoldReason, JobId, JobOutcome, Origin, ReasonCode, Resolution, TaskId,
-    Timestamp,
+    Digest, Event, Gate, HoldReason, JobId, JobOutcome, Origin, ReasonCode, Resolution, Stakes,
+    TaskId, Timestamp,
 };
 
 type Res = Result<(), Box<dyn std::error::Error>>;
+
+/// A short reason code for a decision; these tests are about structure, not the code.
+fn why() -> ReasonCode {
+    ReasonCode::unavailable()
+}
 
 fn key() -> LogKey {
     LogKey::from_seed([3; 32])
@@ -37,6 +42,10 @@ fn busy(path: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
     let mut n = 0;
     let mut step = |e: &mut Engine, event: Event| -> Result<u64, Box<dyn std::error::Error>> {
         n += 1;
+        // A hold is released through the call that records who decided.
+        if let Event::HoldResolved { hold, reason, .. } = event {
+            return Ok(e.decide_hold(at(10 * n), hold, Decider::Human, reason)?.seq);
+        }
         Ok(e.submit(at(10 * n), Origin::Engine, event)?.seq)
     };
     let done = TaskId::from_seq(step(&mut e, Event::TaskCreated { request: d(1) })?);
@@ -55,6 +64,7 @@ fn busy(path: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
     let request = GateRequest {
         gate: Gate::Egress,
         inputs: d(9),
+        stakes: Stakes::irreversible(),
     };
     let ruling = e.rule_gate(
         at(65),
@@ -74,6 +84,7 @@ fn busy(path: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
         Event::HoldResolved {
             hold,
             by: Resolution::Human,
+            reason: why(),
         },
     )?;
     let job = JobId::from_seq(step(&mut e, Event::JobStarted { task: held })?);

@@ -3,16 +3,21 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use hyalos_engine::{Engine, EngineError, RuleViolation, Ruling, TaskStatus, replay};
+use hyalos_engine::{Decider, Engine, EngineError, RuleViolation, Ruling, TaskStatus, replay};
 use hyalos_log::{Log, LogKey};
 use hyalos_policy::{Evaluate, Fault, GateRequest, Outcome, Verdict, ask};
 use hyalos_sim::{FakeClock, START, Sim};
 use hyalos_types::{
     Answer, Clock, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode,
-    Resolution, TaskId, Timestamp,
+    Stakes, TaskId, Timestamp,
 };
 
 type Res = Result<(), Box<dyn std::error::Error>>;
+
+/// A short reason code for a decision; these tests are about structure, not the code.
+fn why() -> ReasonCode {
+    ReasonCode::unavailable()
+}
 
 fn key() -> LogKey {
     LogKey::from_seed([9; 32])
@@ -33,6 +38,7 @@ fn request() -> GateRequest {
     GateRequest {
         gate: Gate::Egress,
         inputs: d(8),
+        stakes: Stakes::irreversible(),
     }
 }
 
@@ -221,14 +227,7 @@ fn a_held_task_is_released_by_resolving_its_one_hold() -> Res {
             .submit(at, Origin::Engine, Event::JobStarted { task: r.task }),
         Err(EngineError::Rule(RuleViolation::TaskNotOpen { .. }))
     ));
-    r.engine.submit(
-        at,
-        Origin::Engine,
-        Event::HoldResolved {
-            hold,
-            by: Resolution::Human,
-        },
-    )?;
+    r.engine.decide_hold(at, hold, Decider::Human, why())?;
     assert_eq!(r.engine.state().tasks()[&r.task].status(), TaskStatus::Open);
     r.engine
         .submit(at, Origin::Engine, Event::JobStarted { task: r.task })?;
@@ -351,6 +350,7 @@ fn a_batch_that_breaks_a_rule_part_way_writes_nothing() -> Res {
                 gate: Gate::Content,
                 inputs: d(3),
                 reason: HoldReason::Unknown,
+                stakes: Stakes::irreversible(),
             },
         ),
     ];
@@ -410,6 +410,7 @@ fn replay_refuses_a_log_where_unknown_did_not_hold() -> Res {
         gate: Gate::Egress,
         inputs,
         reason: HoldReason::TimedOut,
+        stakes: Stakes::irreversible(),
     };
     let cases: Vec<(&str, Vec<Event>)> = vec![
         // Anything but the job's end right after an unknown answer.
@@ -508,6 +509,7 @@ fn a_complete_hand_written_hold_replays() -> Res {
         gate: Gate::Egress,
         inputs: d(8),
         reason: HoldReason::TimedOut,
+        stakes: Stakes::irreversible(),
     });
     write_raw(&path, &events)?;
     let e = Engine::open(&path, key())?;
@@ -576,14 +578,7 @@ fn random_gate_outcomes_never_let_unknown_through() -> Res {
                 let at = r.clock.now();
                 let open: Vec<HoldId> = task.open_holds.iter().copied().collect();
                 for hold in open {
-                    r.engine.submit(
-                        at,
-                        Origin::Engine,
-                        Event::HoldResolved {
-                            hold,
-                            by: Resolution::Human,
-                        },
-                    )?;
+                    r.engine.decide_hold(at, hold, Decider::Human, why())?;
                 }
                 r.job = JobId::from_seq(
                     r.engine

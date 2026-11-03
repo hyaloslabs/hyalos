@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use hyalos_types::{
-    Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, Resolution, TaskId,
-    Timestamp,
+    Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode,
+    Resolution, Stakes, TaskId, Timestamp,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,8 +59,18 @@ pub struct Hold {
     pub gate: Gate,
     pub inputs: Digest,
     pub reason: HoldReason,
+    /// How much the held action matters, which decides who may release it (ADR-0025).
+    pub stakes: Stakes,
     pub opened_at: Timestamp,
-    pub resolved: Option<(Timestamp, Resolution)>,
+    pub resolved: Option<Resolved>,
+}
+
+/// How and when a hold was released.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    pub at: Timestamp,
+    pub by: Resolution,
+    pub reason: ReasonCode,
 }
 
 /// An event that is not legal for the state it would land on.
@@ -102,6 +112,17 @@ pub enum RuleViolation {
         kind: &'static str,
         origin: Origin,
     },
+    /// This decider may not release a hold with these stakes (ADR-0025).
+    ResolutionNotAuthorized {
+        hold: HoldId,
+        by: Resolution,
+        stakes: Stakes,
+    },
+    /// A hold is released through `Engine::reevaluate_hold` or `Engine::decide_hold`, which record
+    /// what justifies it; a raw `hold.resolved` is refused (ADR-0025).
+    ResolveThroughTheEngineApi,
+    /// A re-evaluation asked a different gate, or about different inputs, than the hold holds.
+    ReevaluatedAnotherRequest(HoldId),
     /// An event is stamped earlier than the one before it (ADR-0024).
     TimeWentBackwards {
         previous: Timestamp,
@@ -144,6 +165,19 @@ impl fmt::Display for RuleViolation {
             RuleViolation::OutOfOrder { seq, last } => {
                 write!(f, "event {seq} arrived after event {last}")
             }
+            RuleViolation::ResolutionNotAuthorized { hold, by, stakes } => write!(
+                f,
+                "hold {hold} ({:?}, touching {:?}) may not be released by {by:?} (ADR-0025)",
+                stakes.tier, stakes.touches
+            ),
+            RuleViolation::ResolveThroughTheEngineApi => write!(
+                f,
+                "a hold is released through reevaluate_hold or decide_hold, not by submitting hold.resolved"
+            ),
+            RuleViolation::ReevaluatedAnotherRequest(h) => write!(
+                f,
+                "that answer is for a different gate or different inputs than hold {h} holds"
+            ),
             RuleViolation::OriginNotAllowed { kind, origin } => write!(
                 f,
                 "a `{kind}` event may not come from the {} (ADR-0024)",
@@ -311,9 +345,16 @@ impl State {
                 }
                 self.no_running_job(*task)
             }
-            Event::HoldResolved { hold, .. } => match self.holds.get(hold) {
+            Event::HoldResolved { hold, by, .. } => match self.holds.get(hold) {
                 None => Err(RuleViolation::UnknownHold(*hold)),
                 Some(h) if h.resolved.is_some() => Err(RuleViolation::HoldNotOpen(*hold)),
+                Some(h) if !h.stakes.may_be_resolved_by(*by) => {
+                    Err(RuleViolation::ResolutionNotAuthorized {
+                        hold: *hold,
+                        by: *by,
+                        stakes: h.stakes,
+                    })
+                }
                 Some(_) => Ok(()),
             },
         }
@@ -400,6 +441,7 @@ impl State {
                 gate,
                 inputs,
                 reason,
+                stakes,
             } => {
                 let id = HoldId::from_seq(seq);
                 self.holds.insert(
@@ -409,6 +451,7 @@ impl State {
                         gate: *gate,
                         inputs: *inputs,
                         reason: *reason,
+                        stakes: *stakes,
                         opened_at: at,
                         resolved: None,
                     },
@@ -419,9 +462,13 @@ impl State {
                 // This is the hold an unknown answer was waiting for, if there was one.
                 self.pending = None;
             }
-            Event::HoldResolved { hold, by } => {
+            Event::HoldResolved { hold, by, reason } => {
                 if let Some(h) = self.holds.get_mut(hold) {
-                    h.resolved = Some((at, *by));
+                    h.resolved = Some(Resolved {
+                        at,
+                        by: *by,
+                        reason: reason.clone(),
+                    });
                     if let Some(t) = self.tasks.get_mut(&h.task) {
                         t.open_holds.remove(hold);
                     }
@@ -482,6 +529,14 @@ impl State {
         for (id, hold) in &self.holds {
             if !self.tasks.contains_key(&hold.task) {
                 out.push(format!("hold {id} belongs to missing task {}", hold.task));
+            }
+            if let Some(r) = &hold.resolved
+                && !hold.stakes.may_be_resolved_by(r.by)
+            {
+                out.push(format!(
+                    "hold {id} was released by {:?}, which may not release it",
+                    r.by
+                ));
             }
         }
         out

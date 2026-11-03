@@ -3,15 +3,20 @@
 
 use std::path::{Path, PathBuf};
 
-use hyalos_engine::{Engine, EngineError, RuleViolation, Ruling};
+use hyalos_engine::{Decider, Engine, EngineError, RuleViolation, Ruling};
 use hyalos_log::{Log, LogKey};
 use hyalos_policy::{GateRequest, Outcome};
 use hyalos_types::{
     Answer, Digest, Event, Gate, HoldReason, JobId, JobOutcome, Origin, ReasonCode, Resolution,
-    TaskId, Timestamp,
+    Stakes, TaskId, Timestamp,
 };
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+/// A short reason code for a decision; these tests are about structure, not the code.
+fn why() -> ReasonCode {
+    ReasonCode::unavailable()
+}
 
 fn key() -> LogKey {
     LogKey::from_seed([4; 32])
@@ -30,6 +35,16 @@ fn at(n: u64) -> Timestamp {
 
 fn d(byte: u8) -> Digest {
     Digest::from_bytes([byte; 32])
+}
+
+/// Submits `event` as the engine would: a hold is released through the call that records who decided.
+fn accept(e: &mut Engine, n: u64, event: Event) -> Res {
+    if let Event::HoldResolved { hold, reason, .. } = event {
+        e.decide_hold(at(n), hold, Decider::Human, reason)?;
+    } else {
+        e.submit(at(n), Origin::Engine, event)?;
+    }
+    Ok(())
 }
 
 fn go(e: &mut Engine, n: u64, event: Event) -> Res<u64> {
@@ -78,6 +93,7 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
                 &GateRequest {
                     gate: Gate::Egress,
                     inputs: d(5),
+                    stakes: Stakes::irreversible(),
                 },
                 Outcome::Hold {
                     reason: ReasonCode::timed_out(),
@@ -90,6 +106,7 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
             Event::HoldResolved {
                 hold,
                 by: Resolution::Human,
+                reason: why(),
             }
         }
         other => return Err(format!("no scenario for {other}").into()),
@@ -131,7 +148,7 @@ fn the_broker_may_submit_nothing_but_a_gate_answer() -> Res {
         );
 
         // The very same event is accepted from the engine, so the refusal was about the origin alone.
-        e.submit(at(10), Origin::Engine, event)?;
+        accept(&mut e, 10, event)?;
     }
     Ok(())
 }
@@ -140,7 +157,7 @@ fn the_broker_may_submit_nothing_but_a_gate_answer() -> Res {
 fn the_engine_may_submit_every_kind_including_a_gate_answer() -> Res {
     for kind in Event::KINDS.into_iter().filter(|k| *k != "hold.opened") {
         let (mut e, event) = ready("engine", kind)?;
-        e.submit(at(10), Origin::Engine, event)?;
+        accept(&mut e, 10, event)?;
     }
     Ok(())
 }
@@ -189,6 +206,7 @@ fn unknown_batch(job: JobId, task: TaskId, ended: Origin, opened: Origin) -> Vec
                 gate: Gate::Content,
                 inputs: d(2),
                 reason: HoldReason::Unknown,
+                stakes: Stakes::irreversible(),
             },
         ),
     ]
@@ -243,6 +261,7 @@ fn a_gate_hold_is_recorded_with_the_gates_origin_and_the_engines_consequences() 
         &GateRequest {
             gate: Gate::Content,
             inputs: d(2),
+            stakes: Stakes::irreversible(),
         },
         Outcome::Hold {
             reason: ReasonCode::unavailable(),
@@ -329,6 +348,7 @@ fn time_is_enforced_for_batches_and_gates_and_nothing_is_half_written() -> Res {
         &GateRequest {
             gate: Gate::Content,
             inputs: d(2),
+            stakes: Stakes::irreversible(),
         },
         Outcome::Hold {
             reason: ReasonCode::unavailable(),

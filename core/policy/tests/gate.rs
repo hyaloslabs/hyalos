@@ -4,12 +4,13 @@ use std::time::Duration;
 
 use hyalos_policy::{Evaluate, Fault, GateRequest, Outcome, Verdict, ask};
 use hyalos_sim::{FakeClock, START};
-use hyalos_types::{Answer, Clock, Digest, Gate, HoldReason, ReasonCode, Timestamp};
+use hyalos_types::{Answer, Clock, Digest, Gate, HoldReason, ReasonCode, Stakes, Timestamp};
 
 fn request() -> GateRequest {
     GateRequest {
         gate: Gate::Egress,
         inputs: Digest::from_bytes([4; 32]),
+        stakes: Stakes::routine(),
     }
 }
 

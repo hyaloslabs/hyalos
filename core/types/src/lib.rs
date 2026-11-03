@@ -10,6 +10,7 @@ pub mod ids;
 pub mod origin;
 pub mod reason;
 pub mod schema;
+pub mod stakes;
 pub mod time;
 
 pub use digest::Digest;
@@ -19,4 +20,5 @@ pub use ids::{HoldId, JobId, TaskId};
 pub use origin::Origin;
 pub use reason::{Answer, ReasonCode};
 pub use schema::{Schema, Upcast, UpcastFn, Value};
+pub use stakes::{Sensitive, Stakes, Tier, Touches};
 pub use time::{Clock, Timestamp};
