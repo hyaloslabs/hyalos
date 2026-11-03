@@ -1,6 +1,6 @@
 # ADR-0029: Cancelling a held task, and recording a refusal
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
