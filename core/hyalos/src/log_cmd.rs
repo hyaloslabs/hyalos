@@ -4,12 +4,13 @@
 //! `--public-key-file`, or by default the `engine.pub` file the engine wrote when it created its key.
 //! The database is opened read-only.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use hyalos_log::{Head, PublicKey, verify};
 
-use crate::paths::{self, Paths};
+use crate::paths::{self, Env};
 
 const USAGE: &str = "usage: hyalos log verify [--db <path>] [--public-key <hex> | --public-key-file <path>] [--expect-head <seq>:<hash>]
   --db defaults to events.db in the data directory; the key defaults to engine.pub in the config directory
@@ -29,8 +30,8 @@ pub fn run(args: &[String]) -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     }
-    let resolve = || paths::resolve(&|name| std::env::var(name).ok());
-    let options = match parse(args.get(1..).unwrap_or_default(), &resolve) {
+    let env = |name: &str| std::env::var(name).ok();
+    let options = match parse(args.get(1..).unwrap_or_default(), &env) {
         Ok(o) => o,
         Err(message) => {
             eprintln!("hyalos: {message}\n{USAGE}");
@@ -57,7 +58,7 @@ pub fn run(args: &[String]) -> ExitCode {
     }
 }
 
-fn parse(args: &[String], resolve: &dyn Fn() -> Result<Paths, String>) -> Result<Options, String> {
+fn parse(args: &[String], env: Env<'_>) -> Result<Options, String> {
     let mut db = None;
     let mut key_hex = None;
     let mut key_file = None;
@@ -83,17 +84,29 @@ fn parse(args: &[String], resolve: &dyn Fn() -> Result<Paths, String>) -> Result
 
     let db = match db {
         Some(path) => PathBuf::from(path),
-        None => resolve()?.log(),
+        None => paths::log_file(env)?,
     };
     let (key_text, key_source) = match (key_hex, key_file) {
         (Some(hex), _) => (hex, "from --public-key".to_string()),
         (None, Some(path)) => (read_key_file(&path)?, format!("from {path}")),
         (None, None) => {
-            let path = resolve()?.engine_public_key();
+            let path = paths::engine_public_key(env)?;
             let shown = path.display().to_string();
             if !path.exists() {
                 return Err(format!(
                     "no public key was given and there is none at {shown}; pass --public-key or --public-key-file"
+                ));
+            }
+            // The default file is trusted without being asked for, so refuse one that other users could
+            // have replaced. A file named with --public-key-file is the operator's own choice.
+            let mode = std::fs::metadata(&path)
+                .map_err(|e| format!("cannot read {shown}: {e}"))?
+                .permissions()
+                .mode();
+            if mode & 0o022 != 0 {
+                return Err(format!(
+                    "{shown} can be written by other users (mode {:04o}), so it cannot be trusted; run chmod go-w on it, or pass --public-key or --public-key-file",
+                    mode & 0o7777
                 ));
             }
             (read_key_file(&shown)?, format!("from {shown}"))
@@ -130,17 +143,17 @@ mod tests {
 
     const KEY: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 
-    fn nowhere() -> Result<Paths, String> {
-        Err("cannot find a home directory; set HYALOS_DATA_DIR to an absolute path".into())
+    /// An environment with no home and no overrides.
+    fn nowhere(_: &str) -> Option<String> {
+        None
     }
 
-    fn at(dir: &str) -> impl Fn() -> Result<Paths, String> {
-        let dir = PathBuf::from(dir);
-        move || {
-            Ok(Paths {
-                data: dir.join("data"),
-                config: dir.join("config"),
-            })
+    /// An environment that puts both directories under `dir`.
+    fn at(dir: &'static str) -> impl Fn(&str) -> Option<String> {
+        move |name| match name {
+            "HYALOS_DATA_DIR" => Some(format!("{dir}/data")),
+            "HYALOS_CONFIG_DIR" => Some(format!("{dir}/config")),
+            _ => None,
         }
     }
 
@@ -170,10 +183,14 @@ mod tests {
     }
 
     #[test]
-    fn missing_directories_are_reported_only_when_a_default_is_needed() {
+    fn a_directory_is_looked_up_only_when_its_default_is_needed() {
         let err = parse(&args(&["--public-key", KEY]), &nowhere).unwrap_err();
         assert!(err.contains("set HYALOS_DATA_DIR"), "{err}");
         assert!(parse(&args(&["--db", "a.db", "--public-key", KEY]), &nowhere).is_ok());
+        // An explicit key file does not need the config directory, and the default log does not need it.
+        let only_data = |name: &str| (name == "HYALOS_DATA_DIR").then(|| "/d".to_string());
+        let o = parse(&args(&["--public-key", KEY]), &only_data).unwrap();
+        assert_eq!(o.db, PathBuf::from("/d/events.db"));
     }
 
     #[test]

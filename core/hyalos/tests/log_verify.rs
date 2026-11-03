@@ -303,3 +303,65 @@ fn without_any_home_the_error_names_the_variable_to_set() -> Res {
     assert!(err(&o).contains("set HYALOS_DATA_DIR"), "{}", err(&o));
     Ok(())
 }
+
+fn chmod(path: &Path, mode: u32) -> Res {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    Ok(())
+}
+
+#[test]
+fn a_default_key_file_that_others_can_write_is_refused() -> Res {
+    let (data, config, _f) = installed("writable", &good_key())?;
+    let env = [
+        ("HYALOS_DATA_DIR", data.as_path()),
+        ("HYALOS_CONFIG_DIR", config.as_path()),
+    ];
+    for mode in [0o666, 0o664, 0o646] {
+        chmod(&config.join("engine.pub"), mode)?;
+        let o = hyalos_with(&["log", "verify"], &env)?;
+        assert_eq!(o.status.code(), Some(2), "mode {mode:o}");
+        assert!(
+            err(&o).contains("can be written by other users"),
+            "{}",
+            err(&o)
+        );
+        assert!(err(&o).contains(&format!("mode {mode:04o}")), "{}", err(&o));
+        assert!(out(&o).is_empty(), "nothing may print as verified");
+    }
+    Ok(())
+}
+
+#[test]
+fn owner_only_modes_are_accepted_for_the_default_key_file() -> Res {
+    let (data, config, _f) = installed("modes", &good_key())?;
+    let env = [
+        ("HYALOS_DATA_DIR", data.as_path()),
+        ("HYALOS_CONFIG_DIR", config.as_path()),
+    ];
+    for mode in [0o444, 0o400, 0o600, 0o644] {
+        chmod(&config.join("engine.pub"), mode)?;
+        let o = hyalos_with(&["log", "verify"], &env)?;
+        assert!(o.status.success(), "mode {mode:o}: {}", err(&o));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_key_file_named_on_the_command_line_is_not_checked_for_permissions() -> Res {
+    let (data, config, _f) = installed("explicit", &good_key())?;
+    let key_file = config.join("engine.pub");
+    chmod(&key_file, 0o666)?;
+    let env = [("HYALOS_DATA_DIR", data.as_path())];
+    let o = hyalos_with(
+        &[
+            "log",
+            "verify",
+            "--public-key-file",
+            key_file.to_str().ok_or("path")?,
+        ],
+        &env,
+    )?;
+    assert!(o.status.success(), "{}", err(&o));
+    Ok(())
+}

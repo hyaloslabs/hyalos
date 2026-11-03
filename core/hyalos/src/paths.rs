@@ -12,38 +12,35 @@ use std::path::{Path, PathBuf};
 pub const LOG_FILE: &str = "events.db";
 pub const ENGINE_PUBLIC_KEY_FILE: &str = "engine.pub";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Paths {
-    pub data: PathBuf,
-    pub config: PathBuf,
+pub type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+/// `events.db` in the data directory. Only the data directory is looked up.
+pub fn log_file(env: Env<'_>) -> Result<PathBuf, String> {
+    Ok(data_dir(env)?.join(LOG_FILE))
 }
 
-impl Paths {
-    pub fn log(&self) -> PathBuf {
-        self.data.join(LOG_FILE)
-    }
-
-    pub fn engine_public_key(&self) -> PathBuf {
-        self.config.join(ENGINE_PUBLIC_KEY_FILE)
-    }
+/// `engine.pub` in the config directory. Only the config directory is looked up, so a command given an
+/// explicit key never fails because a directory it does not use cannot be found.
+pub fn engine_public_key(env: Env<'_>) -> Result<PathBuf, String> {
+    Ok(config_dir(env)?.join(ENGINE_PUBLIC_KEY_FILE))
 }
 
-/// Resolves both directories from the environment. `env` looks a variable up; an empty value counts
-/// as unset.
-pub fn resolve(env: &dyn Fn(&str) -> Option<String>) -> Result<Paths, String> {
-    let get = |name: &str| env(name).filter(|v| !v.is_empty());
-    Ok(Paths {
-        data: dir(&get, "HYALOS_DATA_DIR", "XDG_DATA_HOME", ".local/share")?,
-        config: dir(&get, "HYALOS_CONFIG_DIR", "XDG_CONFIG_HOME", ".config")?,
-    })
+fn data_dir(env: Env<'_>) -> Result<PathBuf, String> {
+    dir(env, "HYALOS_DATA_DIR", "XDG_DATA_HOME", ".local/share")
+}
+
+fn config_dir(env: Env<'_>) -> Result<PathBuf, String> {
+    dir(env, "HYALOS_CONFIG_DIR", "XDG_CONFIG_HOME", ".config")
 }
 
 fn dir(
-    get: &dyn Fn(&str) -> Option<String>,
+    env: Env<'_>,
     override_var: &str,
     xdg_var: &str,
     home_relative: &str,
 ) -> Result<PathBuf, String> {
+    // An empty value counts as unset.
+    let get = |name: &str| env(name).filter(|v| !v.is_empty());
     if let Some(path) = get(override_var) {
         return if Path::new(&path).is_absolute() {
             Ok(PathBuf::from(path))
@@ -80,53 +77,62 @@ mod tests {
 
     #[test]
     fn with_only_a_home_the_defaults_are_under_it() {
-        let p = resolve(&env(&[("HOME", "/home/o")])).unwrap();
-        assert_eq!(p.data, PathBuf::from("/home/o/.local/share/hyalos"));
-        assert_eq!(p.config, PathBuf::from("/home/o/.config/hyalos"));
+        let e = env(&[("HOME", "/home/o")]);
         assert_eq!(
-            p.log(),
+            log_file(&e).unwrap(),
             PathBuf::from("/home/o/.local/share/hyalos/events.db")
         );
         assert_eq!(
-            p.engine_public_key(),
+            engine_public_key(&e).unwrap(),
             PathBuf::from("/home/o/.config/hyalos/engine.pub")
         );
     }
 
     #[test]
     fn xdg_directories_are_used_when_absolute() {
-        let p = resolve(&env(&[
+        let e = env(&[
             ("HOME", "/home/o"),
             ("XDG_DATA_HOME", "/d"),
             ("XDG_CONFIG_HOME", "/c"),
-        ]))
-        .unwrap();
-        assert_eq!(p.data, PathBuf::from("/d/hyalos"));
-        assert_eq!(p.config, PathBuf::from("/c/hyalos"));
+        ]);
+        assert_eq!(log_file(&e).unwrap(), PathBuf::from("/d/hyalos/events.db"));
+        assert_eq!(
+            engine_public_key(&e).unwrap(),
+            PathBuf::from("/c/hyalos/engine.pub")
+        );
     }
 
     #[test]
     fn a_relative_xdg_value_is_ignored() {
-        let p = resolve(&env(&[("HOME", "/home/o"), ("XDG_CONFIG_HOME", "rel")])).unwrap();
-        assert_eq!(p.config, PathBuf::from("/home/o/.config/hyalos"));
+        let e = env(&[("HOME", "/home/o"), ("XDG_CONFIG_HOME", "rel")]);
+        assert_eq!(
+            engine_public_key(&e).unwrap(),
+            PathBuf::from("/home/o/.config/hyalos/engine.pub")
+        );
     }
 
     #[test]
     fn the_hyalos_override_wins_and_is_used_as_given() {
-        let p = resolve(&env(&[
+        let e = env(&[
             ("HOME", "/home/o"),
             ("XDG_DATA_HOME", "/d"),
             ("HYALOS_DATA_DIR", "/srv/hyalos"),
             ("HYALOS_CONFIG_DIR", "/etc/hy"),
-        ]))
-        .unwrap();
-        assert_eq!(p.data, PathBuf::from("/srv/hyalos"));
-        assert_eq!(p.config, PathBuf::from("/etc/hy"));
+        ]);
+        assert_eq!(
+            log_file(&e).unwrap(),
+            PathBuf::from("/srv/hyalos/events.db")
+        );
+        assert_eq!(
+            engine_public_key(&e).unwrap(),
+            PathBuf::from("/etc/hy/engine.pub")
+        );
     }
 
     #[test]
     fn a_relative_override_is_an_error_not_a_guess() {
-        let err = resolve(&env(&[("HOME", "/h"), ("HYALOS_CONFIG_DIR", "here")])).unwrap_err();
+        let e = env(&[("HOME", "/h"), ("HYALOS_CONFIG_DIR", "here")]);
+        let err = engine_public_key(&e).unwrap_err();
         assert!(
             err.contains("HYALOS_CONFIG_DIR must be an absolute path"),
             "{err}"
@@ -135,25 +141,33 @@ mod tests {
 
     #[test]
     fn without_a_home_or_an_override_it_says_what_to_set() {
-        let err = resolve(&env(&[])).unwrap_err();
-        assert!(err.contains("set HYALOS_DATA_DIR"), "{err}");
+        let e = env(&[]);
+        assert!(log_file(&e).unwrap_err().contains("set HYALOS_DATA_DIR"));
         assert!(
-            resolve(&env(&[
-                ("HYALOS_DATA_DIR", "/a"),
-                ("HYALOS_CONFIG_DIR", "/b")
-            ]))
-            .is_ok()
+            engine_public_key(&e)
+                .unwrap_err()
+                .contains("set HYALOS_CONFIG_DIR")
         );
     }
 
     #[test]
+    fn each_directory_is_looked_up_on_its_own() {
+        // Only the data directory is set: the log path resolves, and the key path is the one that fails.
+        let e = env(&[("HYALOS_DATA_DIR", "/a")]);
+        assert_eq!(log_file(&e).unwrap(), PathBuf::from("/a/events.db"));
+        assert!(engine_public_key(&e).is_err());
+    }
+
+    #[test]
     fn empty_values_count_as_unset() {
-        let p = resolve(&env(&[
+        let e = env(&[
             ("HOME", "/h"),
             ("HYALOS_DATA_DIR", ""),
             ("XDG_DATA_HOME", ""),
-        ]))
-        .unwrap();
-        assert_eq!(p.data, PathBuf::from("/h/.local/share/hyalos"));
+        ]);
+        assert_eq!(
+            log_file(&e).unwrap(),
+            PathBuf::from("/h/.local/share/hyalos/events.db")
+        );
     }
 }
