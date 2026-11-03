@@ -1,0 +1,20 @@
+[package]
+name = "hyalos-world"
+description = "A simulated world: a fake forge, model provider and substrate on one seed, and a runner that drives a job through the real engine, gates and broker admission (ADR-0013, ADR-0036). Not part of the trusted core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hyalos-types = { path = "../../core/types" }
+hyalos-log = { path = "../../core/log" }
+hyalos-engine = { path = "../../core/engine" }
+hyalos-policy = { path = "../../core/policy" }
+hyalos-broker = { path = "../../core/broker" }
+hyalos-substrate = { path = "../../core/substrate" }
+hyalos-sim = { path = "../sim" }
+sha2 = "0.11"
