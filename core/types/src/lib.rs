@@ -9,6 +9,7 @@ pub mod hex;
 pub mod ids;
 pub mod origin;
 pub mod reason;
+pub mod schema;
 pub mod time;
 
 pub use digest::Digest;
@@ -17,4 +18,5 @@ pub use event::{Event, EventError, Gate, HoldReason, JobOutcome, Resolution};
 pub use ids::{HoldId, JobId, TaskId};
 pub use origin::Origin;
 pub use reason::{Answer, ReasonCode};
+pub use schema::{Schema, Upcast, UpcastFn, Value};
 pub use time::{Clock, Timestamp};
