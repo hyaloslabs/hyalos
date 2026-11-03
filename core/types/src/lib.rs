@@ -14,6 +14,7 @@ pub mod schema;
 pub mod snapshot;
 pub mod stakes;
 pub mod time;
+pub mod wire;
 
 pub use digest::Digest;
 pub use entropy::{Entropy, SeededRng};

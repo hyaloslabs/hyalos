@@ -9,7 +9,8 @@
 use std::fmt;
 
 use hyalos_types::{
-    Clock, JobId, Manifest, ManifestPublicKey, OpenError, Role, SignedManifest, Timestamp,
+    Clock, JobId, Manifest, ManifestPublicKey, OpenError, ReasonCode, Role, SignedManifest,
+    Timestamp,
 };
 
 /// What a sandbox presents to the broker. The broker issued it for one job at one role (a reader's
@@ -74,6 +75,24 @@ impl fmt::Display for Refusal {
 }
 
 impl std::error::Error for Refusal {}
+
+impl Refusal {
+    /// The short code the engine is told, which says which check failed and nothing from the
+    /// document or the credential.
+    pub fn reason(&self) -> ReasonCode {
+        let code = match self {
+            Refusal::Manifest(OpenError::UnknownVersion { .. }) => "manifest.unknown_version",
+            Refusal::Manifest(OpenError::BadSignature) => "manifest.bad_signature",
+            Refusal::Manifest(OpenError::Malformed) => "manifest.malformed",
+            Refusal::Manifest(OpenError::VersionMismatch { .. }) => "manifest.version_mismatch",
+            Refusal::WrongJob { .. } => "admission.wrong_job",
+            Refusal::JobNotLive(_) => "admission.job_not_live",
+            Refusal::RoleMismatch { .. } => "admission.role_mismatch",
+            Refusal::Expired { .. } => "admission.expired",
+        };
+        ReasonCode::new(code).unwrap_or_else(ReasonCode::unavailable)
+    }
+}
 
 /// Admits jobs by the engine's public manifest key, which the engine hands the broker when it
 /// launches it (ADR-0022).
