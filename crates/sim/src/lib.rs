@@ -23,10 +23,16 @@ impl FakeClock {
         Self(Arc::new(AtomicU64::new(start.as_millis())))
     }
 
-    /// Moves time forward by `delta`. Time never goes backwards.
+    /// Moves time forward by `delta`. Time never goes backwards, and advances from several threads
+    /// add up: the update is one atomic step, not a read followed by a store.
     pub fn advance(&self, delta: Duration) {
-        let next = self.now().saturating_add(delta);
-        self.0.store(next.as_millis(), Ordering::SeqCst);
+        let millis = u64::try_from(delta.as_millis()).unwrap_or(u64::MAX);
+        // The closure always returns `Some`, so this cannot fail.
+        let _ = self
+            .0
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |t| {
+                Some(t.saturating_add(millis))
+            });
     }
 }
 
@@ -79,6 +85,25 @@ mod tests {
         assert_eq!(clock.now(), START);
         clock.advance(Duration::from_millis(250));
         assert_eq!(clock.now().as_millis(), START.as_millis() + 250);
+    }
+
+    #[test]
+    fn concurrent_advances_are_never_lost() {
+        let sim = Sim::new(1);
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let clock = sim.clock();
+                std::thread::spawn(move || {
+                    for _ in 0..2_000 {
+                        clock.advance(Duration::from_millis(1));
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(sim.clock().now().as_millis(), START.as_millis() + 16_000);
     }
 
     #[test]
