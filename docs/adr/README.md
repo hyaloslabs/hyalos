@@ -35,4 +35,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0019](0019-typed-events-and-in-memory-projections.md) | Typed events and in-memory projections | Accepted |
 | [0020](0020-gate-answers-timeouts-and-holds.md) | Gate answers, timeouts and holds in the engine | Accepted |
 | [0021](0021-backup-and-restore-of-the-event-log.md) | Backup and restore of the event log | Proposed |
-| [0022](0022-engine-keys-generation-storage-backup-and-loss.md) | The engine's keys: generation, storage, backup and loss | Proposed |
+| [0022](0022-engine-keys-generation-storage-backup-and-loss.md) | The engine's keys: generation, storage, backup and loss | Accepted |

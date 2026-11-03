@@ -1,6 +1,6 @@
 # ADR-0022: The engine's keys: generation, storage, backup and loss
 
-**Status:** Proposed
+**Status:** Accepted on November 2, 2026. The maintainer accepted the recommendations as written, including that v1 has no key rotation (a lost or leaked key ends that log and its state) and that the manifest key is ephemeral.
 
 ## Context
 
