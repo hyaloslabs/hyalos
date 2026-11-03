@@ -194,8 +194,13 @@ fn difference(path: &str, replay: &Value, snapshot: &Value) -> Option<String> {
     }
     match (replay, snapshot) {
         (Value::Object(a), Value::Object(b)) => {
-            // Alphabetical: serde_json keeps keys sorted, so the first difference is the same every time.
-            for (key, x) in a {
+            // Alphabetical, sorted here and not left to serde_json: a dependency anywhere in the build
+            // can turn on its `preserve_order` feature (cedar-policy does), which changes the order a
+            // map is walked in for every crate, and the first difference must not depend on that.
+            let mut keys: Vec<&String> = a.keys().collect();
+            keys.sort();
+            for key in keys {
+                let Some(x) = a.get(key) else { continue };
                 match b.get(key) {
                     Some(y) => {
                         if let Some(found) = difference(&format!("{path}.{key}"), x, y) {
@@ -205,8 +210,10 @@ fn difference(path: &str, replay: &Value, snapshot: &Value) -> Option<String> {
                     None => return Some(format!("{path}.{key}: only the replay has it")),
                 }
             }
-            b.keys()
-                .find(|k| !a.contains_key(*k))
+            let mut extra: Vec<&String> = b.keys().filter(|k| !a.contains_key(*k)).collect();
+            extra.sort();
+            extra
+                .first()
                 .map(|k| format!("{path}.{k}: only the snapshot has it"))
         }
         (Value::Array(a), Value::Array(b)) => {
@@ -325,6 +332,31 @@ mod tests {
         }
         .to_string();
         assert!(text.contains("Upgrade"), "{text}");
+    }
+
+    #[test]
+    fn a_field_only_one_side_has_is_named_alphabetically_whatever_order_the_map_keeps() {
+        // Built key by key in an order that is not alphabetical, as a map that keeps insertion order
+        // (serde_json's `preserve_order`, turned on by some dependency) would walk them.
+        let object = |keys: &[&str]| {
+            let mut map = serde_json::Map::new();
+            for key in keys {
+                map.insert((*key).to_string(), Value::Null);
+            }
+            Value::Object(map)
+        };
+        assert_eq!(
+            difference("state", &object(&["b", "a"]), &object(&["b"])).as_deref(),
+            Some("state.a: only the replay has it")
+        );
+        assert_eq!(
+            difference("state", &object(&["b"]), &object(&["z", "c"])).as_deref(),
+            Some("state.b: only the replay has it")
+        );
+        assert_eq!(
+            difference("state", &object(&["b"]), &object(&["b", "z", "c"])).as_deref(),
+            Some("state.c: only the snapshot has it")
+        );
     }
 
     #[test]
