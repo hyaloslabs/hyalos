@@ -1,6 +1,6 @@
 # ADR-0030: Hardening the engine's key: its owner, and core dumps
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

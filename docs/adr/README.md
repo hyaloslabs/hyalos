@@ -42,5 +42,5 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0026](0026-compacting-the-log-by-signed-snapshot.md) | Compacting the log by signed snapshot | Accepted |
 | [0027](0027-recording-the-pruning-of-an-archive.md) | Recording the pruning of an archive | Accepted |
 | [0028](0028-auditing-snapshots-against-their-archives.md) | Auditing snapshots against their archives | Accepted |
-| [0029](0029-cancelling-a-held-task-and-recording-a-refusal.md) | Cancelling a held task, and recording a refusal | Proposed |
-| [0030](0030-hardening-the-engines-key-owner-and-core-dumps.md) | Hardening the engine's key: its owner, and core dumps | Proposed |
+| [0029](0029-cancelling-a-held-task-and-recording-a-refusal.md) | Cancelling a held task, and recording a refusal | Accepted |
+| [0030](0030-hardening-the-engines-key-owner-and-core-dumps.md) | Hardening the engine's key: its owner, and core dumps | Accepted |
