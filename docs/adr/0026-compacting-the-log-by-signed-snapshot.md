@@ -1,6 +1,6 @@
 # ADR-0026: Compacting the log by signed snapshot
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
