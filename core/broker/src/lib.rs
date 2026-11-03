@@ -3,5 +3,7 @@
 //! Layout rule (ADR-0017): this crate depends on no workspace crate except hyalos-types.
 
 mod admission;
+mod serve;
 
 pub use admission::{Admission, Credential, LiveJobs, Refusal};
+pub use serve::{Broker, Exit, ServeError, serve};
