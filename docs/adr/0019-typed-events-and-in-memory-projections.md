@@ -1,6 +1,6 @@
 # ADR-0019: Typed events and in-memory projections
 
-**Status:** Proposed
+**Status:** Accepted on November 2, 2026, after the events, the projections and the engine loop were built and tested (#116). One running job per task is part of the decision, confirmed by the maintainer; replay cost is bounded later by S1.7 (#94).
 
 ## Context
 
