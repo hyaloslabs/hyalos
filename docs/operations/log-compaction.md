@@ -1,6 +1,6 @@
 # Compacting the log: archive, snapshot, prune
 
-How to keep the event log small without losing the audit trail. The reasons are in [ADR-0026](../adr/0026-compacting-the-log-by-signed-snapshot.md) and, for recording a prune, [ADR-0027](../adr/0027-recording-the-pruning-of-an-archive.md); backups are in [keys-and-recovery.md](keys-and-recovery.md) and [ADR-0021](../adr/0021-backup-and-restore-of-the-event-log.md).
+How to keep the event log small without losing the audit trail. The reasons are in [ADR-0026](../adr/0026-compacting-the-log-by-signed-snapshot.md) for recording a prune, [ADR-0027](../adr/0027-recording-the-pruning-of-an-archive.md), and for auditing snapshots, [ADR-0028](../adr/0028-auditing-snapshots-against-their-archives.md); backups are in [keys-and-recovery.md](keys-and-recovery.md) and [ADR-0021](../adr/0021-backup-and-restore-of-the-event-log.md).
 
 Compaction moves every event into an archive file and leaves, in the log, a snapshot of the state they led to, signed with the engine's key. **Nothing is deleted and no hash changes**: a head you recorded before still matches, and events added afterwards carry on from the snapshot.
 
@@ -30,9 +30,33 @@ hyalos log verify --archive archive/events-0000000001-0000004210.db
 
 Give one `--archive` per file. Each is checked on its own and must end exactly where a snapshot of this log stands, so another log's archive, or one that was altered, is refused. The output says `history from event 1 verified` when the archives given cover everything, and says what is not covered when they do not.
 
+## Audit
+
+`verify` shows a snapshot is the engine's. It does not show the state in it is right: the engine signed whatever it held. To check that, replay the history and compare:
+
+```
+hyalos log audit --archive archive/events-0000000001-0000004210.db --archive archive/events-0000004211-0000008000.db
+```
+
+It replays the events from event 1, through the archives and the log, and at each snapshot compares the replayed state with the one the snapshot carries. If they differ it stops, names the snapshot and the first field that differs, and exits 1:
+
+```
+FAILED: the snapshot at event 4210 is not what the events replay to: state.tasks[id 1].completed_at: the replay has 1005, the snapshot has null
+```
+
+It reads only and needs only the public key, so it can be run on another machine from copies of the archives. Give every archive, since it can only replay events it has:
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | every snapshot was compared with a replay and matched (or the log was never compacted and its events replay) |
+| 1 | a snapshot differs, the events do not replay, or a file does not check out |
+| 3 | the archives given leave a snapshot uncompared; the output says which events are missing. **This is not a pass.** |
+
+Run it after you move the archives off the engine host, and before you prune any. See [ADR-0028](../adr/0028-auditing-snapshots-against-their-archives.md).
+
 ## Keep the archives
 
-An archive is the only independent copy of that part of the history. Before you rely on a pruned log, copy the archives somewhere the engine host cannot write, such as another machine or offline media, and check them there with `hyalos log verify --archive` against your copy of the public key. `hyalos log backup` copies the log file only; the archives are separate files.
+An archive is the only independent copy of that part of the history. Before you rely on a pruned log, copy the archives somewhere the engine host cannot write, such as another machine or offline media, and check them there with `hyalos log verify --archive` and `hyalos log audit --archive` against your copy of the public key. `hyalos log backup` copies the log file only; the archives are separate files.
 
 ## Prune
 

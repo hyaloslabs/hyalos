@@ -3,9 +3,11 @@
 //!
 //! Layout rule (ADR-0017): this crate must not depend on `hyalos-broker`.
 
+mod audit;
 mod engine;
 mod state;
 
+pub use audit::{Audit, AuditError, Gap, audit};
 pub use engine::{
     Compaction, Decider, Engine, EngineError, Reevaluation, Ruling, pruned_archives, replay,
     replay_from, replay_with,
