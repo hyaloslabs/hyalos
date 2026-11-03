@@ -18,6 +18,7 @@ hyalos-engine = { path = "../engine" }
 hyalos-broker = { path = "../broker" }
 getrandom = "0.4"
 zeroize = "1"
+rustix = { version = "1.1.6", features = ["process"] }
 
 [dev-dependencies]
 rusqlite = { version = "0.41", features = ["bundled"] }
