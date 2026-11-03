@@ -6,5 +6,5 @@
 mod engine;
 mod state;
 
-pub use engine::{Engine, EngineError, replay};
+pub use engine::{Engine, EngineError, Ruling, replay};
 pub use state::{Hold, Job, RuleViolation, State, Task, TaskStatus};

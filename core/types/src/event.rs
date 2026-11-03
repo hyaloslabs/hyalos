@@ -9,7 +9,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Digest, HoldId, JobId, TaskId};
+use crate::{Answer, Digest, HoldId, JobId, ReasonCode, TaskId};
 
 /// The version these events are written with. Reading older versions (upcasting) is S1.4.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -70,6 +70,17 @@ pub enum Event {
     JobStarted { task: TaskId },
     #[serde(rename = "job.ended")]
     JobEnded { job: JobId, outcome: JobOutcome },
+    /// A gate answered a request made by a running job. `inputs` is the digest of what it was asked.
+    /// An `unknown` answer is always followed, in the same write, by the job ending held and the hold
+    /// opening (ADR-0020).
+    #[serde(rename = "gate.answered")]
+    GateAnswered {
+        job: JobId,
+        gate: Gate,
+        inputs: Digest,
+        answer: Answer,
+        reason: ReasonCode,
+    },
     /// A gate answered unknown or timed out. `inputs` is the digest of what the gate was asked.
     #[serde(rename = "hold.opened")]
     HoldOpened {
@@ -120,6 +131,7 @@ impl Event {
             Event::TaskCompleted { .. } => "task.completed",
             Event::JobStarted { .. } => "job.started",
             Event::JobEnded { .. } => "job.ended",
+            Event::GateAnswered { .. } => "gate.answered",
             Event::HoldOpened { .. } => "hold.opened",
             Event::HoldResolved { .. } => "hold.resolved",
         }
@@ -182,6 +194,19 @@ mod tests {
                 r#"{"kind":"job.ended","job":4,"outcome":"deadline_exceeded"}"#.to_string(),
             ),
             (
+                Event::GateAnswered {
+                    job: JobId::from_seq(4),
+                    gate: Gate::Content,
+                    inputs: d(6),
+                    answer: Answer::Deny,
+                    reason: ReasonCode::new("content.secret_pattern").unwrap(),
+                },
+                format!(
+                    r#"{{"kind":"gate.answered","job":4,"gate":"content","inputs":"{}","answer":"deny","reason":"content.secret_pattern"}}"#,
+                    h(6)
+                ),
+            ),
+            (
                 Event::HoldOpened {
                     task: TaskId::from_seq(3),
                     gate: Gate::Egress,
@@ -227,6 +252,29 @@ mod tests {
         let json = r#"{"kind":"job.started","task":3}"#;
         let err = Event::decode("task.completed", SCHEMA_VERSION, json.as_bytes()).unwrap_err();
         assert!(matches!(err, EventError::KindMismatch { .. }), "{err}");
+    }
+
+    #[test]
+    fn a_malformed_gate_answer_is_a_decode_error_not_just_a_kind_mismatch() {
+        let zeros = "00".repeat(32);
+        let good = format!(
+            r#"{{"kind":"gate.answered","job":4,"gate":"egress","inputs":"{zeros}","answer":"allow","reason":"ok"}}"#
+        );
+        assert!(Event::decode("gate.answered", SCHEMA_VERSION, good.as_bytes()).is_ok());
+        let bad = [
+            good.replace(&zeros, "00"),
+            good.replace("\"ok\"", "\"Free Text Here\""),
+            good.replace("\"ok\"", "\"\""),
+            good.replace("\"allow\"", "\"perhaps\""),
+            good.replace("\"allow\"", "null"),
+            good.replace(",\"reason\":\"ok\"", ""),
+            good.replace("}", ",\"note\":\"x\"}"),
+            good.replace("\"job\":4", "\"job\":\"4\""),
+        ];
+        for json in bad {
+            let err = Event::decode("gate.answered", SCHEMA_VERSION, json.as_bytes()).unwrap_err();
+            assert!(matches!(err, EventError::Decode(_)), "{json}: {err}");
+        }
     }
 
     #[test]
