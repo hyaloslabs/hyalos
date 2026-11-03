@@ -5,8 +5,11 @@
 
 use std::time::Duration;
 
-/// Milliseconds since the Unix epoch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+use serde::{Deserialize, Serialize};
+
+/// Milliseconds since the Unix epoch. In JSON it is the plain number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Timestamp(u64);
 
 impl Timestamp {

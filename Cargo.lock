@@ -629,7 +629,9 @@ dependencies = [
 name = "hyalos-broker"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek",
  "hyalos-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -681,6 +683,7 @@ dependencies = [
 name = "hyalos-types"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek",
  "serde",
  "serde_json",
 ]
