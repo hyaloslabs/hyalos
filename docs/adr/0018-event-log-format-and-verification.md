@@ -1,6 +1,6 @@
 # ADR-0018: Event log format and verification
 
-**Status:** Proposed
+**Status:** Accepted on November 2, 2026, after the log, the verifier and the default file locations were built and tested (#112, #114). The limits in Consequences are part of the decision: tail removal is caught only by a recorded head, and `engine.pub` is only as trustworthy as who can write it.
 
 ## Context
 
