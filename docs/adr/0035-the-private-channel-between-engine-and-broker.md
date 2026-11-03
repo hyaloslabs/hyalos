@@ -1,6 +1,6 @@
 # ADR-0035: The private channel between the engine and the broker
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

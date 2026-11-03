@@ -1,6 +1,6 @@
 # ADR-0033: The shipped policy schema, baseline and proofs
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

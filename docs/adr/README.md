@@ -46,6 +46,6 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0030](0030-hardening-the-engines-key-owner-and-core-dumps.md) | Hardening the engine's key: its owner, and core dumps | Accepted |
 | [0031](0031-the-signed-manifest-and-its-admission.md) | The signed manifest and its admission | Accepted |
 | [0032](0032-the-substrate-interface-and-its-contract.md) | The substrate interface and its contract | Accepted |
-| [0033](0033-the-shipped-policy-schema-baseline-and-proofs.md) | The shipped policy schema, baseline and proofs | Proposed |
-| [0034](0034-the-operator-policy-store-and-minting-within-policy.md) | The operator policy store and minting within policy | Proposed |
-| [0035](0035-the-private-channel-between-engine-and-broker.md) | The private channel between the engine and the broker | Proposed |
+| [0033](0033-the-shipped-policy-schema-baseline-and-proofs.md) | The shipped policy schema, baseline and proofs | Accepted |
+| [0034](0034-the-operator-policy-store-and-minting-within-policy.md) | The operator policy store and minting within policy | Accepted |
+| [0035](0035-the-private-channel-between-engine-and-broker.md) | The private channel between the engine and the broker | Accepted |
