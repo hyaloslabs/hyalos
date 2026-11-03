@@ -78,6 +78,17 @@ const EXTERNAL_ALLOWED: &[(&str, &[&str])] = &[
             "sha2",
         ],
     ),
+    (
+        "hyalos-policy",
+        &[
+            // The Cedar evaluator (ADR-0008). Evaluation is a pure function of the policies, the
+            // entities and the request; with default features off the language has no extension
+            // that reads the clock (the `datetime` feature parses values it is given and has no
+            // `now`), and no code path of ours takes time or randomness from it. Its own
+            // dependencies are checked by `cargo deny` and review, as for every crate here.
+            "cedar-policy",
+        ],
+    ),
 ];
 
 #[derive(Debug, Clone)]
