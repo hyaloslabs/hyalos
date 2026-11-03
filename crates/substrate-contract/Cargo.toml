@@ -1,0 +1,14 @@
+[package]
+name = "hyalos-substrate-contract"
+description = "The contract every substrate driver must pass, and a fake driver that passes its behavioural half (ADR-0011, ADR-0032). Not part of the trusted core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hyalos-types = { path = "../../core/types" }
+hyalos-substrate = { path = "../../core/substrate" }

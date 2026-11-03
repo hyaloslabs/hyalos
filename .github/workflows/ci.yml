@@ -32,8 +32,13 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy, warnings denied
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The container driver's contract runs against Docker here (ADR-0032), and a missing runtime fails.
+      - name: Pull the substrate contract's image
+        run: docker pull ubuntu:24.04
       - name: Test
         run: cargo test --workspace --locked
+        env:
+          HYALOS_REQUIRE_CONTAINER: "1"
       - name: Crate layout (ADR-0017)
         run: cargo xtask layout
       - name: Trusted-core size (ADR-0017)
