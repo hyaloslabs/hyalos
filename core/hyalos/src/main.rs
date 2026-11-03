@@ -1,6 +1,7 @@
 //! The `hyalos` binary. The engine and broker run from this one executable (ADR-0002).
 
 mod log_cmd;
+mod paths;
 
 use std::process::ExitCode;
 
