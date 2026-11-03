@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use hyalos_types::snapshot::{
-    HoldImage, JobEndImage, JobImage, ResolvedImage, StateImage, TaskImage,
+    HoldImage, JobEndImage, JobImage, PrunedImage, ResolvedImage, StateImage, TaskImage,
 };
 use hyalos_types::{
     Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode,
@@ -133,6 +133,20 @@ pub enum RuleViolation {
     },
     /// The log ends after an unknown answer, before its hold. Nothing may proceed on unknown.
     UnfinishedHold(JobId),
+    /// An archive that ends at an event the log has not reached cannot have been made from it.
+    ArchiveBeyondLog {
+        last_seq: u64,
+        log_end: u64,
+    },
+    /// That archive was already recorded as pruned (ADR-0026).
+    AlreadyPruned {
+        last_seq: u64,
+    },
+    /// No snapshot of this log stands at that event with that hash, so an archive ending there is not
+    /// one this log made.
+    NotASnapshotOfThisLog {
+        last_seq: u64,
+    },
 }
 
 impl fmt::Display for RuleViolation {
@@ -164,6 +178,18 @@ impl fmt::Display for RuleViolation {
             RuleViolation::UnfinishedHold(job) => write!(
                 f,
                 "the log ends after job {job}'s gate answered unknown, before its hold opened"
+            ),
+            RuleViolation::ArchiveBeyondLog { last_seq, log_end } => write!(
+                f,
+                "an archive ending at event {last_seq} cannot come from a log that ends at event {log_end}"
+            ),
+            RuleViolation::NotASnapshotOfThisLog { last_seq } => write!(
+                f,
+                "no snapshot of this log stands at event {last_seq} with that hash, so an archive ending there is not one it made"
+            ),
+            RuleViolation::AlreadyPruned { last_seq } => write!(
+                f,
+                "the archive ending at event {last_seq} is already recorded as pruned"
             ),
             RuleViolation::OutOfOrder { seq, last } => {
                 write!(f, "event {seq} arrived after event {last}")
@@ -214,9 +240,21 @@ pub struct State {
     tasks: BTreeMap<TaskId, Task>,
     jobs: BTreeMap<JobId, Job>,
     holds: BTreeMap<HoldId, Hold>,
+    pruned: Vec<Pruned>,
     pending: Option<Pending>,
     last_seq: u64,
     last_at: Option<Timestamp>,
+}
+
+/// An archive that was deleted from the machine, as the log recorded it (ADR-0026).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pruned {
+    /// The event that recorded it.
+    pub seq: u64,
+    pub at: Timestamp,
+    /// The last event the archive held, and its hash.
+    pub last_seq: u64,
+    pub last_hash: Digest,
 }
 
 impl State {
@@ -230,6 +268,18 @@ impl State {
 
     pub fn holds(&self) -> &BTreeMap<HoldId, Hold> {
         &self.holds
+    }
+
+    /// Every archive recorded as pruned, in the order it was recorded.
+    pub fn pruned(&self) -> &[Pruned] {
+        &self.pruned
+    }
+
+    /// Whether the archive that ends at `last_seq` with `last_hash` is recorded as pruned.
+    pub fn is_pruned(&self, last_seq: u64, last_hash: &Digest) -> bool {
+        self.pruned
+            .iter()
+            .any(|p| p.last_seq == last_seq && p.last_hash == *last_hash)
     }
 
     /// The sequence number of the last event applied, or 0 for none.
@@ -360,6 +410,23 @@ impl State {
                 }
                 Some(_) => Ok(()),
             },
+            Event::ArchivePruned {
+                last_seq,
+                last_hash,
+            } => {
+                if *last_seq == 0 || *last_seq > self.last_seq {
+                    return Err(RuleViolation::ArchiveBeyondLog {
+                        last_seq: *last_seq,
+                        log_end: self.last_seq,
+                    });
+                }
+                if self.is_pruned(*last_seq, last_hash) {
+                    return Err(RuleViolation::AlreadyPruned {
+                        last_seq: *last_seq,
+                    });
+                }
+                Ok(())
+            }
         }
     }
 
@@ -477,6 +544,15 @@ impl State {
                     }
                 }
             }
+            Event::ArchivePruned {
+                last_seq,
+                last_hash,
+            } => self.pruned.push(Pruned {
+                seq,
+                at,
+                last_seq: *last_seq,
+                last_hash: *last_hash,
+            }),
         }
         self.last_seq = seq;
         self.last_at = Some(at);
@@ -493,6 +569,7 @@ impl State {
             tasks,
             jobs,
             holds,
+            pruned,
             pending,
             last_seq,
             last_at,
@@ -571,6 +648,23 @@ impl State {
                     }
                 })
                 .collect(),
+            pruned: pruned
+                .iter()
+                .map(|p| {
+                    let Pruned {
+                        seq,
+                        at,
+                        last_seq,
+                        last_hash,
+                    } = p;
+                    PrunedImage {
+                        seq: *seq,
+                        at: at.as_millis(),
+                        last_seq: *last_seq,
+                        last_hash: *last_hash,
+                    }
+                })
+                .collect(),
         })
     }
 
@@ -584,6 +678,7 @@ impl State {
             tasks,
             jobs,
             holds,
+            pruned,
         } = image;
         let mut state = State {
             last_seq,
@@ -628,6 +723,14 @@ impl State {
             if state.holds.insert(h.id, hold).is_some() {
                 return Err(format!("hold {} appears twice", h.id));
             }
+        }
+        for p in pruned {
+            state.pruned.push(Pruned {
+                seq: p.seq,
+                at: Timestamp::from_millis(p.at),
+                last_seq: p.last_seq,
+                last_hash: p.last_hash,
+            });
         }
         let broken = state.invariant_violations();
         if !broken.is_empty() {
@@ -683,6 +786,23 @@ impl State {
         for (id, job) in &self.jobs {
             if !self.tasks.contains_key(&job.task) {
                 out.push(format!("job {id} belongs to missing task {}", job.task));
+            }
+        }
+        for (i, p) in self.pruned.iter().enumerate() {
+            if p.last_seq == 0 || p.last_seq > p.seq || p.seq > self.last_seq {
+                out.push(format!(
+                    "the prune recorded at event {} names an archive ending at event {}",
+                    p.seq, p.last_seq
+                ));
+            }
+            if self.pruned[..i]
+                .iter()
+                .any(|q| q.last_seq == p.last_seq && q.last_hash == p.last_hash)
+            {
+                out.push(format!(
+                    "the archive ending at event {} is recorded as pruned twice",
+                    p.last_seq
+                ));
             }
         }
         for (id, hold) in &self.holds {

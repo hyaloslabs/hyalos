@@ -40,3 +40,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0024](0024-event-origins-and-time-order.md) | Event origins and time order | Accepted |
 | [0025](0025-releasing-a-hold-stakes-authority-and-evidence.md) | Releasing a hold: stakes, authority and evidence | Accepted |
 | [0026](0026-compacting-the-log-by-signed-snapshot.md) | Compacting the log by signed snapshot | Accepted |
+| [0027](0027-recording-the-pruning-of-an-archive.md) | Recording the pruning of an archive | Proposed |

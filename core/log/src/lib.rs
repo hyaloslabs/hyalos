@@ -18,4 +18,6 @@ pub use copy::{CopyError, copy_verified};
 pub use hyalos_types::Origin;
 pub use key::{LogKey, PublicKey};
 pub use store::{Anchor, Head, Log, LogError, NewEvent, StoredEvent};
-pub use verify::{History, Reason, Verified, VerifyError, verify, verify_history};
+pub use verify::{
+    Contents, History, Reason, Verified, VerifyError, read_verified, verify, verify_history,
+};

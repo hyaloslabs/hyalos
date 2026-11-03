@@ -1,12 +1,12 @@
 //! The state a snapshot carries, as each released version wrote it (ADR-0026).
 //!
 //! A snapshot sits in the log for good, signed, so a build must read every version it has ever written.
-//! These bytes are what version 1 stores. Never edit a row: when `STATE_VERSION` is bumped, add the new
+//! These bytes are what versions 1 and 2 store. Never edit a row: when `STATE_VERSION` is bumped, add the new
 //! version's row and the step that brings the old one up to it.
 
 use hyalos_types::snapshot::STATE_VERSION;
 use hyalos_types::snapshot::{
-    HoldImage, JobEndImage, JobImage, ResolvedImage, StateImage, TaskImage,
+    HoldImage, JobEndImage, JobImage, PrunedImage, ResolvedImage, StateImage, TaskImage,
 };
 use hyalos_types::{
     Digest, Gate, HoldId, HoldReason, JobId, JobOutcome, ReasonCode, Resolution, Sensitive, Stakes,
@@ -18,7 +18,7 @@ fn d(byte: u8) -> Digest {
 }
 
 /// A state with every field set, so a field that is dropped or renamed changes the bytes.
-fn everything() -> StateImage {
+fn everything(pruned: Vec<PrunedImage>) -> StateImage {
     StateImage {
         last_seq: 17,
         last_at: Some(4_000),
@@ -81,12 +81,31 @@ fn everything() -> StateImage {
                 }),
             },
         ],
+        pruned,
     }
 }
 
 /// `(version, the bytes that version stored, the state they mean)`.
 fn golden() -> Vec<(u32, String, StateImage)> {
-    vec![(1, PINNED_V1.to_string(), everything())]
+    let pruned = vec![
+        PrunedImage {
+            seq: 10,
+            at: 4_100,
+            last_seq: 3,
+            last_hash: d(5),
+        },
+        PrunedImage {
+            seq: 18,
+            at: 4_800,
+            last_seq: 9,
+            last_hash: d(6),
+        },
+    ];
+    vec![
+        // Version 1 had no list of pruned archives; it reads as an empty one.
+        (1, PINNED_V1.to_string(), everything(vec![])),
+        (2, PINNED_V2.to_string(), everything(pruned)),
+    ]
 }
 
 const PINNED_V1: &str = r#"{"last_seq":17,"last_at":4000,"tasks":[{"id":1,"created_at":1000,"request":"0101010101010101010101010101010101010101010101010101010101010101","completed_at":null,"open_holds":[5]},{"id":8,"created_at":2000,"request":"0303030303030303030303030303030303030303030303030303030303030303","completed_at":3000,"open_holds":[]}],"jobs":[{"id":2,"task":1,"started_at":1500,"ended":{"at":1800,"outcome":"held"}},{"id":7,"task":6,"started_at":2500,"ended":null}],"holds":[{"id":5,"task":1,"gate":"egress","inputs":"0202020202020202020202020202020202020202020202020202020202020202","reason":"unknown","stakes":{"tier":"irreversible","touches":["credentials"]},"opened_at":1800,"resolved":null},{"id":16,"task":12,"gate":"content","inputs":"0404040404040404040404040404040404040404040404040404040404040404","reason":"timed_out","stakes":{"tier":"routine","touches":[]},"opened_at":3500,"resolved":{"at":3900,"by":"policy","reason":"gate.unavailable"}}]}"#;
@@ -118,4 +137,16 @@ fn the_current_version_writes_exactly_the_pinned_bytes() {
 fn every_version_up_to_the_current_has_a_pinned_row() {
     let versions: Vec<u32> = golden().iter().map(|(v, _, _)| *v).collect();
     assert_eq!(versions, (1..=STATE_VERSION).collect::<Vec<_>>());
+}
+
+const PINNED_V2: &str = r#"{"last_seq":17,"last_at":4000,"tasks":[{"id":1,"created_at":1000,"request":"0101010101010101010101010101010101010101010101010101010101010101","completed_at":null,"open_holds":[5]},{"id":8,"created_at":2000,"request":"0303030303030303030303030303030303030303030303030303030303030303","completed_at":3000,"open_holds":[]}],"jobs":[{"id":2,"task":1,"started_at":1500,"ended":{"at":1800,"outcome":"held"}},{"id":7,"task":6,"started_at":2500,"ended":null}],"holds":[{"id":5,"task":1,"gate":"egress","inputs":"0202020202020202020202020202020202020202020202020202020202020202","reason":"unknown","stakes":{"tier":"irreversible","touches":["credentials"]},"opened_at":1800,"resolved":null},{"id":16,"task":12,"gate":"content","inputs":"0404040404040404040404040404040404040404040404040404040404040404","reason":"timed_out","stakes":{"tier":"routine","touches":[]},"opened_at":3500,"resolved":{"at":3900,"by":"policy","reason":"gate.unavailable"}}],"pruned":[{"seq":10,"at":4100,"last_seq":3,"last_hash":"0505050505050505050505050505050505050505050505050505050505050505"},{"seq":18,"at":4800,"last_seq":9,"last_hash":"0606060606060606060606060606060606060606060606060606060606060606"}]}"#;
+
+#[test]
+fn an_old_image_is_refused_if_it_is_damaged_not_just_old() {
+    // The step that supplies the empty list does not hide a field it does not know.
+    let bad = PINNED_V1.replacen("{\"last_seq\"", "{\"surprise\":1,\"last_seq\"", 1);
+    assert!(StateImage::decode(1, bad.as_bytes()).is_err());
+    assert!(StateImage::decode(1, b"[]").is_err());
+    // A version 2 image must carry the list: it is not optional once the step has run.
+    assert!(StateImage::decode(2, PINNED_V1.as_bytes()).is_err());
 }

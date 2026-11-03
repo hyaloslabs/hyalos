@@ -328,6 +328,20 @@ impl Log {
     pub fn latest_anchor(&self) -> Result<Option<Anchor>, LogError> {
         read_latest_anchor(&self.conn)
     }
+
+    /// Whether a snapshot of this log stands at exactly `head`: the last event it covers, and that
+    /// event's hash. An archive made from this log ends at one.
+    pub fn has_anchor(&self, head: Head) -> Result<bool, LogError> {
+        let n: i64 = self
+            .conn
+            .query_row(
+                "SELECT count(*) FROM anchors WHERE seq = ?1 AND head_hash = ?2",
+                rusqlite::params![head.seq as i64, head.hash.as_slice()],
+                |r| r.get(0),
+            )
+            .map_err(LogError::from)?;
+        Ok(n > 0)
+    }
 }
 
 /// A snapshot as stored: what the log guarantees about it, and the state bytes it carries. The log
