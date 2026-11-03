@@ -1,6 +1,6 @@
 # ADR-0028: Auditing snapshots against their archives
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

@@ -41,4 +41,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0025](0025-releasing-a-hold-stakes-authority-and-evidence.md) | Releasing a hold: stakes, authority and evidence | Accepted |
 | [0026](0026-compacting-the-log-by-signed-snapshot.md) | Compacting the log by signed snapshot | Accepted |
 | [0027](0027-recording-the-pruning-of-an-archive.md) | Recording the pruning of an archive | Accepted |
-| [0028](0028-auditing-snapshots-against-their-archives.md) | Auditing snapshots against their archives | Proposed |
+| [0028](0028-auditing-snapshots-against-their-archives.md) | Auditing snapshots against their archives | Accepted |
