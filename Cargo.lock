@@ -741,6 +741,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyalos-world"
+version = "0.0.0"
+dependencies = [
+ "hyalos-broker",
+ "hyalos-engine",
+ "hyalos-log",
+ "hyalos-policy",
+ "hyalos-sim",
+ "hyalos-substrate",
+ "hyalos-types",
+ "sha2",
+]
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
