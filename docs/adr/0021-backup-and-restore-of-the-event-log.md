@@ -1,6 +1,6 @@
 # ADR-0021: Backup and restore of the event log
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
