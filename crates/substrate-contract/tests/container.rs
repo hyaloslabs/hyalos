@@ -21,7 +21,12 @@ fn has_image(driver: &ContainerSubstrate) -> bool {
 #[test]
 fn the_container_driver_passes_the_whole_contract() -> Res {
     let required = std::env::var_os("HYALOS_REQUIRE_CONTAINER").is_some();
-    let Some(driver) = ContainerSubstrate::detect().filter(has_image) else {
+    // The first runtime that works *and* has the image: a machine may have both, with the image in one.
+    let Some(driver) = ["podman", "docker"]
+        .into_iter()
+        .map(ContainerSubstrate::new)
+        .find(|d| d.available().is_ok() && has_image(d))
+    else {
         assert!(
             !required,
             "no container runtime with {IMAGE} on this machine"
