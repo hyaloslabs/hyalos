@@ -1,33 +1,49 @@
-//! `hyalos log verify`, `backup` and `restore`: check, copy and recover an event log from the outside
-//! (ADR-0018, ADR-0021).
+//! `hyalos log verify`, `backup`, `restore`, `compact` and `prune`: check, copy, recover and shrink an
+//! event log from the outside (ADR-0018, ADR-0021, ADR-0026).
 //!
 //! The public key comes from the operator, never from the log: from `--public-key`,
 //! `--public-key-file`, or by default the `engine.pub` file the engine wrote when it created its key.
-//! The database is opened read-only.
+//! Checking opens the database read-only. `compact` is the one command that writes to it, so it needs
+//! the engine's own key, and `prune` is the one that deletes anything, so it needs `--yes`.
 
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use hyalos_log::{Head, PublicKey, copy_verified, verify};
+use hyalos_engine::Engine;
+use hyalos_log::{Head, PublicKey, Verified, copy_verified, verify, verify_history};
+use hyalos_types::Timestamp;
 
+use crate::keys;
 use crate::paths::{self, Env};
 
-const USAGE: &str = "usage: hyalos log verify  [--db <path>] [KEY] [--expect-head <seq>:<hash>]
+const USAGE: &str = "usage: hyalos log verify  [--db <path>] [KEY] [--expect-head <seq>:<hash>] [--archive <file>]...
        hyalos log backup  <new-file> [--db <path>] [KEY] [--expect-head <seq>:<hash>]
        hyalos log restore <backup-file> [--db <path>] [KEY] [--expect-head <seq>:<hash>]
+       hyalos log compact [--db <path>] [--archive-dir <dir>] [--key-file <path>]
+       hyalos log prune   <archive> --yes [--db <path>] [KEY] [--expect-head <seq>:<hash>]
   KEY is --public-key <hex> or --public-key-file <path>
   --db is the live log: it defaults to events.db in the data directory; the key defaults to engine.pub in the
   config directory (HYALOS_DATA_DIR / HYALOS_CONFIG_DIR override both; see ADR-0018)
   backup copies the log (safe while the engine runs), checks the copy and only then creates <new-file>
   restore creates the live log from a backup; it never overwrites. On a fresh machine pass the original
-  public key, since engine.pub is not there yet. Both refuse a copy that does not verify (ADR-0021)";
+  public key, since engine.pub is not there yet. Both refuse a copy that does not verify (ADR-0021)
+  compact moves every event to a new archive file and leaves a signed snapshot of the state in the log
+  (ADR-0026). Nothing is deleted and no hash changes. It needs the engine's signing key (default
+  engine.key in the config directory) and the engine stopped (if the log changes while it runs it refuses
+  and changes nothing); archives go to the 'archive' directory beside the log unless --archive-dir says
+  otherwise
+  verify --archive checks an archive too, and that it ends where a snapshot of this log stands; without
+  it the history before the latest snapshot rests on the engine's signature on that snapshot
+  prune deletes one archive, after checking it belongs to this log. It is the only command that removes
+  history from this machine, so it asks for --yes; save the archive somewhere first";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
     Verify,
     Backup,
     Restore,
+    Prune,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -37,8 +53,20 @@ struct Options {
     /// Where the key came from, shown with the result so the operator sees what was trusted.
     key_source: String,
     expect_head: Option<Head>,
-    /// The file named on the command line: the new backup, or the backup to restore from.
+    /// The file named on the command line: the new backup, the backup to restore from, or the archive
+    /// to prune.
     file: Option<PathBuf>,
+    /// Archives to check along with the log (`verify --archive`).
+    archives: Vec<PathBuf>,
+}
+
+/// What a command did, for printing.
+struct Done {
+    verb: &'static str,
+    verified: Verified,
+    /// The file the command made or removed, shown after the result.
+    to: Option<PathBuf>,
+    notes: Vec<String>,
 }
 
 pub fn run(args: &[String]) -> ExitCode {
@@ -46,6 +74,8 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("verify") => Command::Verify,
         Some("backup") => Command::Backup,
         Some("restore") => Command::Restore,
+        Some("compact") => return compact(args.get(1..).unwrap_or_default()),
+        Some("prune") => Command::Prune,
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
@@ -62,24 +92,40 @@ pub fn run(args: &[String]) -> ExitCode {
     let outcome = match (command, &options.file) {
         (Command::Backup, Some(dest)) => {
             copy_verified(&options.db, dest, &options.key, options.expect_head)
-                .map(|v| ("backed up", v, Some(dest.clone())))
+                .map(|v| Done {
+                    verb: "backed up",
+                    verified: v,
+                    to: Some(dest.clone()),
+                    notes: Vec::new(),
+                })
                 .map_err(|e| e.to_string())
         }
-        (Command::Restore, Some(backup)) => {
-            restore(backup, &options).map(|v| ("restored", v, Some(options.db.clone())))
-        }
-        _ => verify(&options.db, &options.key, options.expect_head)
-            .map(|v| ("ok", v, None))
-            .map_err(|e| e.to_string()),
+        (Command::Restore, Some(backup)) => restore(backup, &options).map(|v| Done {
+            verb: "restored",
+            verified: v,
+            to: Some(options.db.clone()),
+            notes: Vec::new(),
+        }),
+        (Command::Prune, Some(archive)) => prune(archive, &options),
+        _ => check(&options),
     };
     match outcome {
-        Ok((verb, v, to)) => {
-            match v.head {
-                Some(head) => println!("{verb}: {} events, head {head}", v.events),
-                None => println!("{verb}: 0 events"),
+        Ok(done) => {
+            let v = done.verified;
+            let verb = done.verb;
+            match (v.head, v.anchored) {
+                (Some(head), Some(snapshot)) => println!(
+                    "{verb}: {} events after the snapshot at {snapshot}, head {head}",
+                    v.events
+                ),
+                (Some(head), None) => println!("{verb}: {} events, head {head}", v.events),
+                (None, _) => println!("{verb}: 0 events"),
             }
-            if let Some(to) = to {
+            if let Some(to) = done.to {
                 println!("log at {}", to.display());
+            }
+            for note in done.notes {
+                println!("{note}");
             }
             println!(
                 "public key {} ({})",
@@ -96,6 +142,179 @@ pub fn run(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `verify`, together with any archives named.
+fn check(options: &Options) -> Result<Done, String> {
+    let history = verify_history(
+        &options.db,
+        &options.archives,
+        &options.key,
+        options.expect_head,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut notes = Vec::new();
+    if let Some(snapshot) = history.live.anchored {
+        notes.push(if history.from_genesis {
+            format!(
+                "history from event 1 verified, through {} archive(s)",
+                history.archives
+            )
+        } else if history.archives == 0 {
+            format!(
+                "events up to {} were compacted; they rest on the engine's signature on the snapshot. Give --archive <file> for each archive to check them too",
+                snapshot.seq
+            )
+        } else {
+            format!(
+                "events up to {} were compacted and the archives given do not cover all of them; the rest rest on the engine's signature on the snapshot",
+                snapshot.seq
+            )
+        });
+    }
+    Ok(Done {
+        verb: "ok",
+        verified: history.live,
+        to: None,
+        notes,
+    })
+}
+
+/// Deletes one archive, once it is shown to be part of this log's history. It never deletes anything
+/// that does not check out, and never the log itself.
+fn prune(archive: &std::path::Path, options: &Options) -> Result<Done, String> {
+    let what =
+        verify(archive, &options.key, None).map_err(|e| format!("{}: {e}", archive.display()))?;
+    verify_history(
+        &options.db,
+        std::slice::from_ref(&archive.to_path_buf()),
+        &options.key,
+        options.expect_head,
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::remove_file(archive)
+        .map_err(|e| format!("cannot remove {}: {e}", archive.display()))?;
+    Ok(Done {
+        verb: "pruned",
+        verified: what,
+        to: Some(archive.to_path_buf()),
+        notes: vec![
+            "that history is no longer on this machine; the snapshot that stands for it stays in the log".into(),
+        ],
+    })
+}
+
+/// `hyalos log compact`: archive every event and leave a snapshot. It needs the engine's own key, since
+/// it signs the snapshot, and the engine stopped, since it is the log's only writer.
+fn compact(args: &[String]) -> ExitCode {
+    let env = |name: &str| std::env::var(name).ok();
+    let options = match parse_compact(args, &env) {
+        Ok(o) => o,
+        Err(message) => {
+            eprintln!("hyalos: {message}\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    match run_compact(&options) {
+        Ok(lines) => {
+            for line in lines {
+                println!("{line}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("FAILED: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CompactOptions {
+    db: PathBuf,
+    key_file: PathBuf,
+    archive_dir: PathBuf,
+}
+
+fn parse_compact(args: &[String], env: Env<'_>) -> Result<CompactOptions, String> {
+    let (mut db, mut key_file, mut archive_dir) = (None, None, None);
+    let mut it = args.iter();
+    while let Some(flag) = it.next() {
+        let mut value = || {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{flag} needs a value"))
+        };
+        match flag.as_str() {
+            "--db" => db = Some(PathBuf::from(value()?)),
+            "--key-file" => key_file = Some(PathBuf::from(value()?)),
+            "--archive-dir" => archive_dir = Some(PathBuf::from(value()?)),
+            other if other.starts_with('-') => return Err(format!("unknown argument {other}")),
+            other => return Err(format!("unexpected argument {other}")),
+        }
+    }
+    let db = match db {
+        Some(db) => db,
+        None => paths::log_file(env)?,
+    };
+    let key_file = match key_file {
+        Some(path) => path,
+        None => paths::config_dir(env)?.join(paths::ENGINE_KEY_FILE),
+    };
+    // Beside the log it came from, so a backup of the data directory carries its archives.
+    let archive_dir = archive_dir.unwrap_or_else(|| {
+        db.parent()
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("archive")
+    });
+    Ok(CompactOptions {
+        db,
+        key_file,
+        archive_dir,
+    })
+}
+
+fn run_compact(options: &CompactOptions) -> Result<Vec<String>, String> {
+    let key = keys::load(&options.key_file).map_err(|e| e.to_string())?;
+    let public = key.public();
+    let mut engine = Engine::open(&options.db, key).map_err(|e| e.to_string())?;
+    let first = engine
+        .snapshot_head()
+        .map_err(|e| e.to_string())?
+        .map_or(1, |h| h.seq + 1);
+    let last = engine
+        .head()
+        .map_err(|e| e.to_string())?
+        .map_or(0, |h| h.seq);
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&options.archive_dir)
+        .map_err(|e| format!("cannot create {}: {e}", options.archive_dir.display()))?;
+    // Zero-padded so a directory listing is in history order.
+    let archive = options
+        .archive_dir
+        .join(format!("events-{first:010}-{last:010}.db"));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("the system clock is before 1970: {e}"))?;
+    let at = Timestamp::from_millis(u64::try_from(now.as_millis()).unwrap_or(u64::MAX));
+    let done = engine.compact(at, &archive).map_err(|e| e.to_string())?;
+    Ok(vec![
+        format!(
+            "compacted: {} events moved to {}",
+            done.events,
+            archive.display()
+        ),
+        format!("snapshot at {}", done.head),
+        format!("log at {}", options.db.display()),
+        format!("public key {}", public.to_hex()),
+        format!(
+            "Keep that archive: `hyalos log verify --archive {}` checks it, and `hyalos log prune` removes it when you choose to.",
+            archive.display()
+        ),
+    ])
 }
 
 /// Creates the live log from a backup. The directory is made owner-only if it does not exist.
@@ -130,6 +349,8 @@ fn parse(command: Command, args: &[String], env: Env<'_>) -> Result<Options, Str
     let mut key_hex = None;
     let mut key_file = None;
     let mut expect = None;
+    let mut archives: Vec<PathBuf> = Vec::new();
+    let mut yes = false;
     let mut files: Vec<&String> = Vec::new();
     let mut it = args.iter();
     while let Some(flag) = it.next() {
@@ -143,6 +364,8 @@ fn parse(command: Command, args: &[String], env: Env<'_>) -> Result<Options, Str
             "--public-key" => key_hex = Some(value()?),
             "--public-key-file" => key_file = Some(value()?),
             "--expect-head" => expect = Some(value()?),
+            "--archive" if command == Command::Verify => archives.push(PathBuf::from(value()?)),
+            "--yes" if command == Command::Prune => yes = true,
             other if other.starts_with('-') => return Err(format!("unknown argument {other}")),
             _ => files.push(flag),
         }
@@ -150,11 +373,19 @@ fn parse(command: Command, args: &[String], env: Env<'_>) -> Result<Options, Str
     if key_hex.is_some() && key_file.is_some() {
         return Err("give --public-key or --public-key-file, not both".into());
     }
+    if command == Command::Prune && !yes {
+        return Err(
+            "prune removes history from this machine for good; save the archive somewhere first, then pass --yes"
+                .into(),
+        );
+    }
     let file = match (command, files.as_slice()) {
         (Command::Verify, []) => None,
         (Command::Verify, [extra, ..]) => return Err(format!("unexpected argument {extra}")),
         (Command::Backup, [one]) => Some(PathBuf::from(one)),
         (Command::Restore, [one]) => Some(PathBuf::from(one)),
+        (Command::Prune, [one]) => Some(PathBuf::from(one)),
+        (Command::Prune, []) => return Err("prune needs the archive to remove".into()),
         (Command::Backup, []) => return Err("backup needs the name of the new file".into()),
         (Command::Restore, []) => return Err("restore needs the backup file to restore".into()),
         (_, [_, extra, ..]) => return Err(format!("unexpected argument {extra}")),
@@ -204,6 +435,7 @@ fn parse(command: Command, args: &[String], env: Env<'_>) -> Result<Options, Str
         key_source,
         expect_head,
         file,
+        archives,
     })
 }
 
@@ -234,6 +466,119 @@ mod tests {
             "HYALOS_CONFIG_DIR" => Some(format!("{dir}/config")),
             _ => None,
         }
+    }
+
+    #[test]
+    fn verify_takes_any_number_of_archives_and_nothing_else_does() {
+        let o = parse(
+            Command::Verify,
+            &args(&[
+                "--db",
+                "a.db",
+                "--public-key",
+                KEY,
+                "--archive",
+                "x.db",
+                "--archive",
+                "y.db",
+            ]),
+            &nowhere,
+        )
+        .unwrap();
+        assert_eq!(
+            o.archives,
+            vec![PathBuf::from("x.db"), PathBuf::from("y.db")]
+        );
+        for command in [Command::Backup, Command::Restore, Command::Prune] {
+            let err = parse(
+                command,
+                &args(&[
+                    "f.db",
+                    "--db",
+                    "a.db",
+                    "--public-key",
+                    KEY,
+                    "--archive",
+                    "x.db",
+                    "--yes",
+                ]),
+                &nowhere,
+            )
+            .unwrap_err();
+            assert!(err.contains("unknown argument --archive"), "{err}");
+        }
+    }
+
+    #[test]
+    fn prune_needs_one_archive_and_an_explicit_yes() {
+        let base = ["--db", "a.db", "--public-key", KEY];
+        let with = |extra: &[&str]| {
+            let mut v = extra.to_vec();
+            v.extend_from_slice(&base);
+            parse(Command::Prune, &args(&v), &nowhere)
+        };
+        let o = with(&["old.db", "--yes"]).unwrap();
+        assert_eq!(o.file, Some(PathBuf::from("old.db")));
+        let err = with(&["old.db"]).unwrap_err();
+        assert!(err.contains("--yes") && err.contains("for good"), "{err}");
+        assert!(with(&["--yes"]).unwrap_err().contains("needs the archive"));
+        assert!(with(&["a.db", "b.db", "--yes"]).is_err());
+        // --yes belongs to prune alone.
+        assert!(
+            parse(
+                Command::Verify,
+                &args(&["--yes", "--db", "a.db", "--public-key", KEY]),
+                &nowhere
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn compact_defaults_to_the_data_and_config_directories() {
+        let o = parse_compact(&args(&[]), &at("/h")).unwrap();
+        assert_eq!(o.db, PathBuf::from("/h/data/events.db"));
+        assert_eq!(o.key_file, PathBuf::from("/h/config/engine.key"));
+        assert_eq!(o.archive_dir, PathBuf::from("/h/data/archive"));
+    }
+
+    #[test]
+    fn compact_flags_override_and_archives_follow_the_log() {
+        let o = parse_compact(
+            &args(&[
+                "--db",
+                "/x/log.db",
+                "--key-file",
+                "/k/key",
+                "--archive-dir",
+                "/arch",
+            ]),
+            &nowhere,
+        )
+        .unwrap();
+        assert_eq!(
+            (o.db, o.key_file, o.archive_dir),
+            (
+                PathBuf::from("/x/log.db"),
+                PathBuf::from("/k/key"),
+                PathBuf::from("/arch")
+            )
+        );
+        let beside = parse_compact(
+            &args(&["--db", "/x/log.db", "--key-file", "/k/key"]),
+            &nowhere,
+        )
+        .unwrap();
+        assert_eq!(beside.archive_dir, PathBuf::from("/x/archive"));
+        assert!(
+            parse_compact(
+                &args(&["--db", "l.db", "--key-file", "k", "extra"]),
+                &nowhere
+            )
+            .is_err()
+        );
+        assert!(parse_compact(&args(&["--bogus"]), &nowhere).is_err());
+        assert!(parse_compact(&args(&["--db"]), &nowhere).is_err());
     }
 
     #[test]

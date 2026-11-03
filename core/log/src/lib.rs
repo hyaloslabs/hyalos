@@ -6,14 +6,16 @@
 //!
 //! Layout rule (ADR-0017): this crate depends only on `hyalos-types`.
 
+mod compact;
 mod copy;
 pub mod format;
 mod key;
 mod store;
 mod verify;
 
+pub use compact::CompactError;
 pub use copy::{CopyError, copy_verified};
 pub use hyalos_types::Origin;
 pub use key::{LogKey, PublicKey};
-pub use store::{Head, Log, LogError, NewEvent, StoredEvent};
-pub use verify::{Reason, Verified, VerifyError, verify};
+pub use store::{Anchor, Head, Log, LogError, NewEvent, StoredEvent};
+pub use verify::{History, Reason, Verified, VerifyError, verify, verify_history};

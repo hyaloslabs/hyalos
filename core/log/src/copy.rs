@@ -85,6 +85,22 @@ pub fn copy_verified(
     if !exists(src) {
         return Err(CopyError::SourceMissing(src.to_path_buf()));
     }
+    let source = Connection::open_with_flags(
+        src,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    source.busy_timeout(std::time::Duration::from_secs(5))?;
+    copy_connection(&source, dst, key, expect_head)
+}
+
+/// [`copy_verified`] from a connection that is already open, which is how a [`crate::Log`] archives
+/// itself without opening its own file a second time.
+pub(crate) fn copy_connection(
+    source: &Connection,
+    dst: &Path,
+    key: &PublicKey,
+    expect_head: Option<Head>,
+) -> Result<Verified, CopyError> {
     let partial = partial_name(dst);
     for path in [dst, partial.as_path()] {
         if exists(path) {
@@ -100,7 +116,7 @@ pub fn copy_verified(
         .mode(0o600)
         .open(&partial)?;
 
-    match write_and_verify(src, &partial, key, expect_head) {
+    match write_and_verify(source, &partial, key, expect_head) {
         Ok(verified) => {
             let published = File::open(&partial)
                 .and_then(|f| f.sync_all())
@@ -125,7 +141,7 @@ pub fn copy_verified(
 }
 
 fn write_and_verify(
-    src: &Path,
+    source: &Connection,
     partial: &Path,
     key: &PublicKey,
     expect_head: Option<Head>,
@@ -133,14 +149,7 @@ fn write_and_verify(
     let target = partial
         .to_str()
         .ok_or_else(|| CopyError::Storage("the destination path is not valid UTF-8".into()))?;
-    {
-        let source = Connection::open_with_flags(
-            src,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        source.busy_timeout(std::time::Duration::from_secs(5))?;
-        source.execute("VACUUM INTO ?1", [target])?;
-    }
+    source.execute("VACUUM INTO ?1", [target])?;
     {
         // A single self-contained file: leave write-ahead mode so no -wal or -shm sits beside it.
         let copy = Connection::open(partial)?;

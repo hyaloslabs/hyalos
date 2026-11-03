@@ -39,3 +39,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0023](0023-event-schema-versions-and-upcasting.md) | Event schema versions and upcasting | Accepted |
 | [0024](0024-event-origins-and-time-order.md) | Event origins and time order | Accepted |
 | [0025](0025-releasing-a-hold-stakes-authority-and-evidence.md) | Releasing a hold: stakes, authority and evidence | Accepted |
+| [0026](0026-compacting-the-log-by-signed-snapshot.md) | Compacting the log by signed snapshot | Proposed |
