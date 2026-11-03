@@ -338,6 +338,8 @@ pub struct Contents {
     pub verified: Verified,
     /// The latest snapshot, if events were compacted.
     pub anchor: Option<crate::Anchor>,
+    /// Every snapshot this file holds, oldest first.
+    pub anchors: Vec<crate::Anchor>,
     /// The events since that snapshot.
     pub events: Vec<crate::StoredEvent>,
 }
@@ -355,15 +357,17 @@ pub fn read_verified(path: &Path, key: &PublicKey) -> Result<Contents, VerifyErr
     let tx = conn.unchecked_transaction()?;
     let verified = verify_connection(&tx, key, None)?;
     let storage = |e: crate::LogError| VerifyError::Storage(e.to_string());
-    let anchor = if has_table(&tx, "anchors")? {
-        crate::store::read_latest_anchor(&tx).map_err(storage)?
+    let anchors = if has_table(&tx, "anchors")? {
+        crate::store::read_anchors(&tx).map_err(storage)?
     } else {
-        None
+        Vec::new()
     };
+    let anchor = anchors.last().cloned();
     let events = crate::store::read_events(&tx).map_err(storage)?;
     Ok(Contents {
         verified,
         anchor,
+        anchors,
         events,
     })
 }

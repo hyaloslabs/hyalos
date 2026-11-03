@@ -1,4 +1,4 @@
-//! `hyalos log verify`, `backup`, `restore`, `compact` and `prune`: check, copy, recover and shrink an
+//! `hyalos log verify`, `audit`, `backup`, `restore`, `compact` and `prune`: check, copy, recover and shrink an
 //! event log from the outside (ADR-0018, ADR-0021, ADR-0026).
 //!
 //! The public key comes from the operator, never from the log: from `--public-key`,
@@ -11,7 +11,7 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use hyalos_engine::Engine;
+use hyalos_engine::{Engine, audit};
 use hyalos_log::{Head, PublicKey, Verified, copy_verified, verify, verify_history};
 use hyalos_types::Timestamp;
 
@@ -19,6 +19,7 @@ use crate::keys;
 use crate::paths::{self, Env};
 
 const USAGE: &str = "usage: hyalos log verify  [--db <path>] [KEY] [--expect-head <seq>:<hash>] [--archive <file>]...
+       hyalos log audit   [--db <path>] [KEY] [--expect-head <seq>:<hash>] [--archive <file>]...
        hyalos log backup  <new-file> [--db <path>] [KEY] [--expect-head <seq>:<hash>]
        hyalos log restore <backup-file> [--db <path>] [KEY] [--expect-head <seq>:<hash>]
        hyalos log compact [--db <path>] [--archive-dir <dir>] [--key-file <path>]
@@ -36,6 +37,11 @@ const USAGE: &str = "usage: hyalos log verify  [--db <path>] [KEY] [--expect-hea
   otherwise
   verify --archive checks an archive too, and that it ends where a snapshot of this log stands; without
   it the history before the latest snapshot rests on the engine's signature on that snapshot
+  audit replays the archives and the log from event 1 and compares the state at each snapshot with the
+  state the snapshot carries, naming the first field that differs (ADR-0026). verify shows a snapshot is
+  the engine's; audit shows it is right. It reads only and needs only the public key. It exits 0 when every
+  snapshot was compared and matched, 1 when one differs or anything does not check out, and 3 when the
+  archives given do not reach every snapshot: that is not a pass, and it says which are unaudited
   prune deletes one archive, after checking it belongs to this log, and first records that in the log
   (an archive.pruned event), so it needs the engine's signing key like compact and the engine stopped. It
   is the only command that removes history from this machine, so it asks for --yes; save the archive
@@ -44,6 +50,7 @@ const USAGE: &str = "usage: hyalos log verify  [--db <path>] [KEY] [--expect-hea
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
     Verify,
+    Audit,
     Backup,
     Restore,
 }
@@ -73,6 +80,7 @@ struct Done {
 pub fn run(args: &[String]) -> ExitCode {
     let command = match args.first().map(String::as_str) {
         Some("verify") => Command::Verify,
+        Some("audit") => Command::Audit,
         Some("backup") => Command::Backup,
         Some("restore") => Command::Restore,
         Some("compact") => return compact(args.get(1..).unwrap_or_default()),
@@ -90,6 +98,9 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if command == Command::Audit {
+        return run_audit(&options);
+    }
     let outcome = match (command, &options.file) {
         (Command::Backup, Some(dest)) => {
             copy_verified(&options.db, dest, &options.key, options.expect_head)
@@ -313,6 +324,59 @@ fn now() -> Result<Timestamp, String> {
     ))
 }
 
+/// `hyalos log audit`: replay the archives and the log and compare each snapshot's state with the
+/// replay. A pass is only reported when every snapshot was compared (exit 0); a difference or anything
+/// that does not check out is exit 1; archives that do not reach every snapshot are exit 3.
+fn run_audit(options: &Options) -> ExitCode {
+    let key = format!(
+        "public key {} ({})",
+        options.key.to_hex(),
+        options.key_source
+    );
+    match audit(
+        &options.db,
+        &options.archives,
+        &options.key,
+        options.expect_head,
+    ) {
+        Err(e) => {
+            eprintln!("FAILED: {e}");
+            ExitCode::FAILURE
+        }
+        Ok(done) if done.complete() => {
+            if done.snapshots == 0 {
+                println!(
+                    "audit ok: the log was never compacted, so there is no snapshot to compare; its {} events replay",
+                    done.replayed
+                );
+            } else {
+                println!(
+                    "audit ok: {} snapshot(s) match a replay of events 1 to {} from the archives given ({}) and the log",
+                    done.audited,
+                    done.replayed,
+                    options.archives.len()
+                );
+            }
+            println!("{key}");
+            ExitCode::SUCCESS
+        }
+        Ok(done) => {
+            println!(
+                "audit INCOMPLETE: {} of {} snapshot(s) compared with a replay (events 1 to {} replayed)",
+                done.audited, done.snapshots, done.replayed
+            );
+            if let Some(gap) = done.gap {
+                println!(
+                    "no archive given holds events {} to {}, so the snapshot at event {} and any after it were NOT checked: they rest on the engine's signature alone. Give --archive <file> for each archive",
+                    gap.from, gap.through, gap.through
+                );
+            }
+            println!("{key}");
+            ExitCode::from(3)
+        }
+    }
+}
+
 /// `hyalos log compact`: archive every event and leave a snapshot. It needs the engine's own key, since
 /// it signs the snapshot, and the engine stopped, since it is the log's only writer.
 fn compact(args: &[String]) -> ExitCode {
@@ -470,7 +534,9 @@ fn parse(command: Command, args: &[String], env: Env<'_>) -> Result<Options, Str
             "--public-key" => key_hex = Some(value()?),
             "--public-key-file" => key_file = Some(value()?),
             "--expect-head" => expect = Some(value()?),
-            "--archive" if command == Command::Verify => archives.push(PathBuf::from(value()?)),
+            "--archive" if matches!(command, Command::Verify | Command::Audit) => {
+                archives.push(PathBuf::from(value()?))
+            }
             other if other.starts_with('-') => return Err(format!("unknown argument {other}")),
             _ => files.push(flag),
         }
@@ -479,8 +545,10 @@ fn parse(command: Command, args: &[String], env: Env<'_>) -> Result<Options, Str
         return Err("give --public-key or --public-key-file, not both".into());
     }
     let file = match (command, files.as_slice()) {
-        (Command::Verify, []) => None,
-        (Command::Verify, [extra, ..]) => return Err(format!("unexpected argument {extra}")),
+        (Command::Verify | Command::Audit, []) => None,
+        (Command::Verify | Command::Audit, [extra, ..]) => {
+            return Err(format!("unexpected argument {extra}"));
+        }
         (Command::Backup, [one]) => Some(PathBuf::from(one)),
         (Command::Restore, [one]) => Some(PathBuf::from(one)),
         (Command::Backup, []) => return Err("backup needs the name of the new file".into()),
@@ -630,6 +698,56 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn audit_takes_archives_and_a_key_like_verify_and_nothing_to_write() {
+        let o = parse(
+            Command::Audit,
+            &args(&[
+                "--db",
+                "a.db",
+                "--public-key",
+                KEY,
+                "--archive",
+                "x.db",
+                "--archive",
+                "y.db",
+            ]),
+            &nowhere,
+        )
+        .unwrap();
+        assert_eq!(
+            o.archives,
+            vec![PathBuf::from("x.db"), PathBuf::from("y.db")]
+        );
+        assert_eq!(o.file, None);
+        let err = parse(
+            Command::Audit,
+            &args(&["extra.db", "--db", "a.db", "--public-key", KEY]),
+            &nowhere,
+        )
+        .unwrap_err();
+        assert!(err.contains("unexpected argument extra.db"), "{err}");
+        // --archive belongs to verify and audit alone.
+        for command in [Command::Backup, Command::Restore] {
+            assert!(
+                parse(
+                    command,
+                    &args(&[
+                        "f.db",
+                        "--db",
+                        "a.db",
+                        "--public-key",
+                        KEY,
+                        "--archive",
+                        "x.db"
+                    ]),
+                    &nowhere
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

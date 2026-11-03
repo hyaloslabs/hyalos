@@ -130,6 +130,18 @@ impl StateImage {
         serde_json::to_vec(self).map_err(|e| ImageError::Encode(e.to_string()))
     }
 
+    /// The first field where `self` and `other` differ, as a path and the two values, or `None` if they
+    /// are equal. Fields are compared in alphabetical order and lists by position, naming an entry by
+    /// its id, so the answer is the same every time. `self` is called the replay and `other`
+    /// the snapshot in the text, which is how an audit uses it.
+    pub fn first_difference(&self, other: &StateImage) -> Option<String> {
+        let (a, b) = (
+            serde_json::to_value(self).ok()?,
+            serde_json::to_value(other).ok()?,
+        );
+        difference("state", &a, &b)
+    }
+
     /// Reads bytes written at `version`, bringing an older one up to date.
     pub fn decode(version: u32, bytes: &[u8]) -> Result<Self, ImageError> {
         if version == 0 || version > STATE_VERSION {
@@ -151,6 +163,69 @@ impl StateImage {
                 .insert("pruned".into(), Value::Array(Vec::new()));
         }
         serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()))
+    }
+}
+
+fn difference(path: &str, replay: &Value, snapshot: &Value) -> Option<String> {
+    if replay == snapshot {
+        return None;
+    }
+    match (replay, snapshot) {
+        (Value::Object(a), Value::Object(b)) => {
+            // Alphabetical: serde_json keeps keys sorted, so the first difference is the same every time.
+            for (key, x) in a {
+                match b.get(key) {
+                    Some(y) => {
+                        if let Some(found) = difference(&format!("{path}.{key}"), x, y) {
+                            return Some(found);
+                        }
+                    }
+                    None => return Some(format!("{path}.{key}: only the replay has it")),
+                }
+            }
+            b.keys()
+                .find(|k| !a.contains_key(*k))
+                .map(|k| format!("{path}.{k}: only the snapshot has it"))
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            for (i, (x, y)) in a.iter().zip(b).enumerate() {
+                // Entries with an id are named by it, since a position says little.
+                let at = match x.get("id").or_else(|| y.get("id")) {
+                    Some(id) => format!("{path}[id {id}]"),
+                    None => format!("{path}[{i}]"),
+                };
+                if x.get("id") != y.get("id") {
+                    return Some(format!(
+                        "{path}[{i}]: the replay has {}, the snapshot has {}",
+                        brief(x),
+                        brief(y)
+                    ));
+                }
+                if let Some(found) = difference(&at, x, y) {
+                    return Some(found);
+                }
+            }
+            Some(format!(
+                "{path}: the replay has {} entries and the snapshot has {}",
+                a.len(),
+                b.len()
+            ))
+        }
+        _ => Some(format!(
+            "{path}: the replay has {}, the snapshot has {}",
+            brief(replay),
+            brief(snapshot)
+        )),
+    }
+}
+
+fn brief(v: &Value) -> String {
+    let text = v.to_string();
+    if text.chars().count() > 80 {
+        let cut: String = text.chars().take(77).collect();
+        format!("{cut}...")
+    } else {
+        text
     }
 }
 
@@ -227,6 +302,53 @@ mod tests {
         }
         .to_string();
         assert!(text.contains("Upgrade"), "{text}");
+    }
+
+    #[test]
+    fn the_first_difference_names_the_field_and_both_values() {
+        let a = sample();
+        assert_eq!(a.first_difference(&a.clone()), None);
+
+        let mut b = a.clone();
+        b.last_at = Some(5_000);
+        assert_eq!(
+            a.first_difference(&b).as_deref(),
+            Some("state.last_at: the replay has 4000, the snapshot has 5000")
+        );
+
+        // A nested field is named by the entry's id, not its position.
+        let mut b = a.clone();
+        b.tasks[0].completed_at = Some(9);
+        assert_eq!(
+            a.first_difference(&b).as_deref(),
+            Some("state.tasks[id 1].completed_at: the replay has null, the snapshot has 9")
+        );
+
+        // The alphabetically earlier field wins when two differ, whichever way round they are given.
+        let mut b = a.clone();
+        b.holds[0].opened_at = 1;
+        b.last_seq = 10;
+        for found in [a.first_difference(&b), b.first_difference(&a)] {
+            let found = found.unwrap();
+            assert!(found.starts_with("state.holds[id 5].opened_at:"), "{found}");
+        }
+
+        // A missing or extra entry is said so.
+        let mut b = a.clone();
+        b.jobs.clear();
+        assert_eq!(
+            a.first_difference(&b).as_deref(),
+            Some("state.jobs: the replay has 1 entries and the snapshot has 0")
+        );
+        let mut b = a.clone();
+        b.tasks[0].id = TaskId::from_seq(2);
+        let found = a.first_difference(&b).unwrap();
+        assert!(
+            found.starts_with("state.tasks[0]: the replay has"),
+            "{found}"
+        );
+        // And it is symmetric about whether there is a difference.
+        assert!(b.first_difference(&a).is_some());
     }
 
     #[test]

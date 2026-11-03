@@ -415,6 +415,15 @@ pub(crate) fn read_latest_anchor(conn: &Connection) -> Result<Option<Anchor>, Lo
     .transpose()
 }
 
+/// Every snapshot, oldest first.
+pub(crate) fn read_anchors(conn: &Connection) -> Result<Vec<Anchor>, LogError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ANCHOR_COLUMNS} FROM anchors ORDER BY seq"
+    ))?;
+    let rows = stmt.query_map([], anchor_from_row)?;
+    rows.map(|row| row?).collect()
+}
+
 pub(crate) fn read_events(conn: &Connection) -> Result<Vec<StoredEvent>, LogError> {
     let mut stmt = conn.prepare(
         "SELECT seq, at, origin, kind, schema_version, payload FROM events ORDER BY seq",

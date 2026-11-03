@@ -444,3 +444,102 @@ fn backup_and_restore_carry_a_compacted_log() -> Res {
     assert!(text.contains("1 events after the snapshot at 4:"), "{text}");
     Ok(())
 }
+
+// ---- S1.15: hyalos log audit -------------------------------------------------------------------
+
+#[test]
+fn audit_compares_every_snapshot_with_a_replay_and_passes_only_when_it_could() -> Res {
+    let m = machine("audit", 3)?;
+    ok(&m.run(&["log", "compact"])?)?;
+    m.add_tasks(4, 2)?;
+    ok(&m.run(&["log", "compact"])?)?;
+    m.add_tasks(6, 1)?;
+    let a1 = m.data().join("archive/events-0000000001-0000000003.db");
+    let a2 = m.data().join("archive/events-0000000004-0000000005.db");
+    let (p1, p2) = (path_str(&a1)?, path_str(&a2)?);
+
+    let text = ok(&m.run(&["log", "audit", "--archive", p1, "--archive", p2])?)?;
+    assert!(
+        text.contains("audit ok: 2 snapshot(s) match a replay of events 1 to 6"),
+        "{text}"
+    );
+
+    // No archives: nothing could be compared, so it is not a pass and the exit code says so.
+    let none = m.run(&["log", "audit"])?;
+    assert_eq!(none.status.code(), Some(3), "{}", out(&none));
+    let text = out(&none);
+    assert!(text.contains("audit INCOMPLETE: 0 of 2"), "{text}");
+    assert!(
+        text.contains("events 1 to 3") && text.contains("NOT checked"),
+        "{text}"
+    );
+
+    // Only the first archive: the first snapshot is compared, the second is named as unchecked.
+    let some = m.run(&["log", "audit", "--archive", p1])?;
+    assert_eq!(some.status.code(), Some(3));
+    let text = out(&some);
+    assert!(
+        text.contains("1 of 2") && text.contains("events 4 to 5"),
+        "{text}"
+    );
+
+    // Only the second: it does not start at event 1.
+    assert_eq!(
+        m.run(&["log", "audit", "--archive", p2])?.status.code(),
+        Some(3)
+    );
+
+    // A log that was never compacted has nothing to compare, and says so.
+    let fresh = machine("audit-fresh", 2)?;
+    let text = ok(&fresh.run(&["log", "audit"])?)?;
+    assert!(
+        text.contains("never compacted") && text.contains("2 events replay"),
+        "{text}"
+    );
+
+    // Usage: it takes no file and no --yes.
+    assert_eq!(m.run(&["log", "audit", "stray"])?.status.code(), Some(2));
+    assert_eq!(m.run(&["log", "audit", "--yes"])?.status.code(), Some(2));
+    Ok(())
+}
+
+#[test]
+fn audit_fails_on_a_snapshot_the_engine_signed_over_a_wrong_state() -> Res {
+    use hyalos_log::Log;
+    use hyalos_types::snapshot::STATE_VERSION;
+
+    let m = machine("audit-forged", 3)?;
+    // The engine's own key signs a snapshot whose state has a task that never existed.
+    let mut log = Log::open(&m.db(), LogKey::from_seed(SEED))?;
+    let mut image = hyalos_engine::replay(&log.events()?)?
+        .to_image()
+        .map_err(|j| format!("pending {j}"))?;
+    let mut extra = image.tasks[0].clone();
+    extra.id = hyalos_types::TaskId::from_seq(77);
+    image.tasks.push(extra);
+    let bytes = image.encode()?;
+    let archive = m.data().join("archive");
+    std::fs::create_dir_all(&archive)?;
+    let a1 = archive.join("forged.db");
+    let head = log.archive(&a1)?;
+    log.compact::<String>(head, Timestamp::from_millis(9_000), |_, _| {
+        Ok((STATE_VERSION, bytes.clone()))
+    })?;
+    drop(log);
+
+    // verify cannot tell: the signature and the chain are the engine's.
+    let verify = m.run(&["log", "verify", "--archive", path_str(&a1)?])?;
+    assert!(verify.status.success(), "{}", err(&verify));
+
+    let audit = m.run(&["log", "audit", "--archive", path_str(&a1)?])?;
+    assert_eq!(audit.status.code(), Some(1), "{}", out(&audit));
+    let text = err(&audit);
+    assert!(
+        text.contains("the snapshot at event 3 is not what the events replay to")
+            && text.contains("state.tasks: the replay has 3 entries and the snapshot has 4"),
+        "{text}"
+    );
+    // Without the archive it cannot look, and does not pretend to.
+    assert_eq!(m.run(&["log", "audit"])?.status.code(), Some(3));
+    Ok(())
+}
