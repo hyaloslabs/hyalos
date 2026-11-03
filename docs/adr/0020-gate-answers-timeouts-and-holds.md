@@ -1,6 +1,6 @@
 # ADR-0020: Gate answers, timeouts and holds in the engine
 
-**Status:** Proposed
+**Status:** Accepted on November 2, 2026, after the gate interface, the atomic hold and the replay checks were built and tested (#119). The limits in Consequences are part of the decision, including that `ask` cannot preempt a blocked gate and that reasons are codes, not text.
 
 ## Context
 
