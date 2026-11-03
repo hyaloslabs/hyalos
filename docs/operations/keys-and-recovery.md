@@ -67,14 +67,9 @@ The engine only uses `engine.key` and the config directory when they belong to t
 
 ## Core dumps
 
-A crash dump could contain the key. The engine cannot switch dumps off from inside itself, so disable them for the service, for example in a systemd unit:
+A crash dump could contain the key. The engine turns dumps off for itself when it starts (ADR-0030): it sets the core file size limit to zero and, on Linux, marks the process not dumpable, so neither a core file nor a crash handler such as systemd-coredump receives its memory. **You no longer need `LimitCORE=0` or `ulimit -c 0`**; they do no harm. If the engine cannot do this it stops with an error and does not run.
 
-```
-[Service]
-LimitCORE=0
-```
-
-or `ulimit -c 0` before starting it by hand.
+One thing follows from it: while running, the process's `/proc/<pid>` files belong to root, so a debugger or monitoring tool running as your user cannot read its memory or environment. Diagnose with the log (`hyalos log verify`) and the engine's own output.
 
 ## What this does not cover
 
