@@ -43,6 +43,21 @@ const CORE: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// The crates whose code must be a pure function of its inputs: they get the determinism lint
+/// (ADR-0013, ADR-0017) and may not add external dependencies freely.
+const DETERMINISTIC: &[&str] = &[
+    "hyalos-types",
+    "hyalos-log",
+    "hyalos-policy",
+    "hyalos-engine",
+];
+
+/// External crates the deterministic crates may depend on. Empty for now. A crate that reads the clock
+/// or a thread-local generator would get past the lint through a dependency, so each entry here is a
+/// reviewed decision and is listed with the reason it is deterministic. A transitive dependency is not
+/// checked here; `cargo deny` and review cover it.
+const EXTERNAL_ALLOWED: &[&str] = &[];
+
 #[derive(Debug, Clone)]
 struct Package {
     name: String,
@@ -50,6 +65,8 @@ struct Package {
     dir: String,
     /// Workspace crates this one depends on.
     deps: Vec<Dep>,
+    /// Everything else it depends on: registry, git and path dependencies outside the workspace.
+    external: Vec<Dep>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,7 +118,16 @@ fn layout(root: &Path) -> Result<(), String> {
         ));
     }
     let packages = parse_metadata(&output.stdout, root)?;
-    let problems = violations(&packages);
+    let mut problems = violations(&packages);
+    let configs: Vec<(String, Option<String>)> = packages
+        .iter()
+        .filter(|p| DETERMINISTIC.contains(&p.name.as_str()))
+        .map(|p| {
+            let text = fs::read_to_string(root.join(&p.dir).join("clippy.toml")).ok();
+            (p.name.clone(), text)
+        })
+        .collect();
+    problems.extend(config_violations(&configs));
     if problems.is_empty() {
         println!("layout ok: {} workspace crates", packages.len());
         Ok(())
@@ -132,20 +158,25 @@ fn parse_metadata(json: &[u8], root: &Path) -> Result<Vec<Package>, String> {
             .map(|d| d.to_string_lossy().replace('\\', "/"))
             .ok_or_else(|| format!("{name} is outside the repository"))?;
         let mut deps = Vec::new();
+        let mut external = Vec::new();
         for d in p["dependencies"].as_array().into_iter().flatten() {
             let dep_name = d["name"].as_str().unwrap_or_default();
+            let dep = Dep {
+                name: dep_name.to_string(),
+                dev: d["kind"].as_str() == Some("dev"),
+            };
             // A workspace dependency is a path dependency on another workspace member.
             if d["path"].is_string() && names.contains(dep_name) {
-                deps.push(Dep {
-                    name: dep_name.to_string(),
-                    dev: d["kind"].as_str() == Some("dev"),
-                });
+                deps.push(dep);
+            } else {
+                external.push(dep);
             }
         }
         packages.push(Package {
             name: name.to_string(),
             dir,
             deps,
+            external,
         });
     }
     Ok(packages)
@@ -193,11 +224,42 @@ fn violations(packages: &[Package]) -> Vec<String> {
             }
         }
     }
+    for p in packages
+        .iter()
+        .filter(|p| DETERMINISTIC.contains(&p.name.as_str()))
+    {
+        for d in p.external.iter().filter(|d| !d.dev) {
+            if !EXTERNAL_ALLOWED.contains(&d.name.as_str()) {
+                out.push(format!(
+                    "{} adds the external dependency {}; deterministic crates take none without a reviewed entry in EXTERNAL_ALLOWED (ADR-0013)",
+                    p.name, d.name
+                ));
+            }
+        }
+    }
     for (name, _) in CORE {
         if !dir_of.contains_key(name) {
             out.push(format!(
                 "{name} is in the layout table but missing from the workspace"
             ));
+        }
+    }
+    out
+}
+
+/// Each deterministic crate must carry the same `clippy.toml`, so the lint cannot be weakened in one
+/// place. `files` pairs a crate name with its file's content, or `None` when the file is missing.
+fn config_violations(files: &[(String, Option<String>)]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut first: Option<(&str, &str)> = None;
+    for (name, content) in files {
+        match (content, first) {
+            (None, _) => out.push(format!("{name} has no clippy.toml; deterministic crates need the determinism lint")),
+            (Some(c), None) => first = Some((name, c)),
+            (Some(c), Some((owner, expected))) if c != expected => out.push(format!(
+                "{name}/clippy.toml differs from {owner}/clippy.toml; the determinism lint must be identical in every deterministic crate"
+            )),
+            _ => {}
         }
     }
     out
@@ -302,7 +364,24 @@ mod tests {
                     dev: *dev,
                 })
                 .collect(),
+            external: Vec::new(),
         }
+    }
+
+    fn with_external(mut v: Vec<Package>, name: &str, external: &[(&str, bool)]) -> Vec<Package> {
+        let p = v.iter_mut().find(|p| p.name == name).unwrap();
+        p.external = external
+            .iter()
+            .map(|(n, dev)| Dep {
+                name: (*n).into(),
+                dev: *dev,
+            })
+            .collect();
+        v
+    }
+
+    fn cfg(name: &str, text: Option<&str>) -> (String, Option<String>) {
+        (name.into(), text.map(Into::into))
     }
 
     /// The layout the ADR describes, with each crate's real dependencies.
@@ -430,6 +509,42 @@ mod tests {
                 .iter()
                 .any(|m| m.contains("hyalos-log is in the layout table"))
         );
+    }
+
+    #[test]
+    fn a_deterministic_crate_may_not_add_an_external_dependency() {
+        let v = with_external(good(), "hyalos-engine", &[("rand", false)]);
+        let problems = violations(&v);
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].starts_with("hyalos-engine adds the external dependency rand"));
+    }
+
+    #[test]
+    fn a_dev_dependency_or_a_non_deterministic_crate_is_not_restricted() {
+        let v = with_external(good(), "hyalos-types", &[("proptest", true)]);
+        let v = with_external(v, "hyalos-broker", &[("rand", false)]);
+        assert!(violations(&v).is_empty());
+    }
+
+    #[test]
+    fn identical_determinism_configs_pass() {
+        let files = [cfg("hyalos-types", Some("a")), cfg("hyalos-log", Some("a"))];
+        assert!(config_violations(&files).is_empty());
+    }
+
+    #[test]
+    fn a_differing_or_missing_determinism_config_is_reported() {
+        let files = [
+            cfg("hyalos-types", Some("a")),
+            cfg("hyalos-log", Some("weaker")),
+            cfg("hyalos-policy", None),
+        ];
+        let problems = config_violations(&files);
+        assert_eq!(problems.len(), 2);
+        assert!(
+            problems[0].contains("hyalos-log/clippy.toml differs from hyalos-types/clippy.toml")
+        );
+        assert!(problems[1].contains("hyalos-policy has no clippy.toml"));
     }
 
     #[test]
