@@ -1,6 +1,6 @@
 # ADR-0027: Recording the pruning of an archive
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
