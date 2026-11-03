@@ -1,6 +1,6 @@
 # ADR-0025: Releasing a hold: stakes, authority and evidence
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
