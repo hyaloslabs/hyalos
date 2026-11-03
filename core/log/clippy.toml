@@ -1,14 +1,18 @@
-# Determinism (ADR-0013, ADR-0017). A crate-level clippy.toml replaces the root one, so the test allowances repeat here.
+# Determinism (ADR-0013, ADR-0017). Identical in every deterministic crate; `cargo xtask layout` checks
+# they match, and crates/xtask/tests/determinism_lint.rs proves each entry fires.
+# A crate-level clippy.toml replaces the root one, so the test allowances repeat here.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
 
-disallowed-methods = [
-    { path = "std::time::SystemTime::now", reason = "time comes from the injected clock (ADR-0013)" },
-    { path = "std::time::Instant::now", reason = "time comes from the injected clock (ADR-0013)" },
-]
-
 disallowed-types = [
+    { path = "std::time::SystemTime", reason = "time comes from the injected Clock (ADR-0013)" },
+    { path = "std::time::Instant", reason = "time comes from the injected Clock (ADR-0013)" },
     { path = "std::collections::HashMap", reason = "iteration order is not deterministic; use BTreeMap (ADR-0013)" },
     { path = "std::collections::HashSet", reason = "iteration order is not deterministic; use BTreeSet (ADR-0013)" },
+    { path = "std::hash::RandomState", reason = "randomly seeded hashing is a hidden source of randomness (ADR-0013)" },
+]
+
+disallowed-methods = [
+    { path = "std::fs::read_dir", reason = "directory order is decided by the operating system; sort the entries (ADR-0013)" },
 ]

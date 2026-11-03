@@ -46,6 +46,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyalos-sim"
+version = "0.0.0"
+dependencies = [
+ "hyalos-types",
+]
+
+[[package]]
 name = "hyalos-substrate"
 version = "0.0.0"
 dependencies = [
