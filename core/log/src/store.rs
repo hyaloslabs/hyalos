@@ -147,6 +147,12 @@ pub struct Log {
 }
 
 impl Log {
+    /// Verifies every event in this log, through the connection it was opened with. Unlike
+    /// [`crate::verify`], which opens a path, this checks the very file this `Log` will read and write.
+    pub fn verify(&self, key: &crate::PublicKey) -> Result<crate::Verified, crate::VerifyError> {
+        crate::verify::verify_connection(&self.conn, key, None)
+    }
+
     /// Opens the log at `path`, creating it (readable by the owner only) if it does not exist.
     /// Fails with [`LogError::WrongKey`] if the log was made with a different key.
     pub fn open(path: &Path, key: LogKey) -> Result<Self, LogError> {

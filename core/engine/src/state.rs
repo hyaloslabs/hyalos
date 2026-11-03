@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use hyalos_types::{
-    Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Resolution, TaskId,
+    Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, Resolution, TaskId,
     Timestamp,
 };
 
@@ -97,6 +97,16 @@ pub enum RuleViolation {
     },
     /// An unknown answer must be written together with its hold, never alone (ADR-0020).
     UnknownNeedsHold,
+    /// This origin may not submit this kind of event (ADR-0024).
+    OriginNotAllowed {
+        kind: &'static str,
+        origin: Origin,
+    },
+    /// An event is stamped earlier than the one before it (ADR-0024).
+    TimeWentBackwards {
+        previous: Timestamp,
+        at: Timestamp,
+    },
     /// The log ends after an unknown answer, before its hold. Nothing may proceed on unknown.
     UnfinishedHold(JobId),
 }
@@ -134,6 +144,17 @@ impl fmt::Display for RuleViolation {
             RuleViolation::OutOfOrder { seq, last } => {
                 write!(f, "event {seq} arrived after event {last}")
             }
+            RuleViolation::OriginNotAllowed { kind, origin } => write!(
+                f,
+                "a `{kind}` event may not come from the {} (ADR-0024)",
+                origin.as_str()
+            ),
+            RuleViolation::TimeWentBackwards { previous, at } => write!(
+                f,
+                "an event stamped {} ms comes after one stamped {} ms; log time does not go backwards",
+                at.as_millis(),
+                previous.as_millis()
+            ),
         }
     }
 }
@@ -158,6 +179,7 @@ pub struct State {
     holds: BTreeMap<HoldId, Hold>,
     pending: Option<Pending>,
     last_seq: u64,
+    last_at: Option<Timestamp>,
 }
 
 impl State {
@@ -178,6 +200,11 @@ impl State {
         self.last_seq
     }
 
+    /// The stamp of the most recent event, if there is one.
+    pub fn last_at(&self) -> Option<Timestamp> {
+        self.last_at
+    }
+
     fn task(&self, id: TaskId) -> Result<&Task, RuleViolation> {
         self.tasks.get(&id).ok_or(RuleViolation::UnknownTask(id))
     }
@@ -195,7 +222,29 @@ impl State {
         self.pending.is_some()
     }
 
-    /// Whether `event` is legal now. It changes nothing.
+    /// Whether `event`, stamped `at` and submitted by `origin`, is legal now. It changes nothing.
+    /// Time may repeat, since events written together share a stamp, but never go back (ADR-0024).
+    pub fn check_stamped(
+        &self,
+        at: Timestamp,
+        origin: Origin,
+        event: &Event,
+    ) -> Result<(), RuleViolation> {
+        if !event.may_come_from(origin) {
+            return Err(RuleViolation::OriginNotAllowed {
+                kind: event.kind(),
+                origin,
+            });
+        }
+        if let Some(previous) = self.last_at
+            && at < previous
+        {
+            return Err(RuleViolation::TimeWentBackwards { previous, at });
+        }
+        self.check(event)
+    }
+
+    /// Whether `event` is legal now, whoever sent it and whenever. It changes nothing.
     pub fn check(&self, event: &Event) -> Result<(), RuleViolation> {
         if let Some(p) = &self.pending {
             let expected = match (p.job_ended, event) {
@@ -278,14 +327,20 @@ impl State {
     }
 
     /// Applies `event`, which was appended at `seq` at time `at`. A refused event changes nothing.
-    pub fn apply(&mut self, seq: u64, at: Timestamp, event: &Event) -> Result<(), RuleViolation> {
+    pub fn apply(
+        &mut self,
+        seq: u64,
+        at: Timestamp,
+        origin: Origin,
+        event: &Event,
+    ) -> Result<(), RuleViolation> {
         if seq <= self.last_seq {
             return Err(RuleViolation::OutOfOrder {
                 seq,
                 last: self.last_seq,
             });
         }
-        self.check(event)?;
+        self.check_stamped(at, origin, event)?;
         match event {
             Event::TaskCreated { request } => {
                 self.tasks.insert(
@@ -374,6 +429,7 @@ impl State {
             }
         }
         self.last_seq = seq;
+        self.last_at = Some(at);
         Ok(())
     }
 

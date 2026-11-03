@@ -3,7 +3,7 @@
 use std::fmt;
 use std::path::Path;
 
-use hyalos_log::{Head, Log, LogError, LogKey, NewEvent, StoredEvent, VerifyError, verify};
+use hyalos_log::{Head, Log, LogError, LogKey, NewEvent, StoredEvent, VerifyError};
 use hyalos_policy::{GateRequest, Outcome};
 use hyalos_types::event::SCHEMA;
 use hyalos_types::{Answer, Event, EventError, HoldId, JobId, Origin, Schema, Timestamp};
@@ -80,7 +80,7 @@ pub fn replay_with(schema: &Schema, events: &[StoredEvent]) -> Result<State, Eng
         let event = Event::decode_with(schema, &e.kind, e.schema_version, &e.payload)
             .map_err(|error| EngineError::Event { seq: e.seq, error })?;
         state
-            .apply(e.seq, e.at, &event)
+            .apply(e.seq, e.at, e.origin, &event)
             .map_err(|violation| EngineError::Replay {
                 seq: e.seq,
                 violation,
@@ -117,7 +117,7 @@ pub struct Engine {
 
 impl Engine {
     /// Opens the log at `path` (creating it if it is new) and rebuilds the state from it. An existing
-    /// log is verified against `key` first, which costs a pass over every event.
+    /// log is verified against `key` before it is read, which costs a pass over every event.
     pub fn open(path: &Path, key: LogKey) -> Result<Self, EngineError> {
         Self::open_with(path, key, &SCHEMA)
     }
@@ -131,10 +131,12 @@ impl Engine {
         schema: &'static Schema,
     ) -> Result<Self, EngineError> {
         schema.validate().map_err(EngineError::Schema)?;
-        if path.exists() {
-            verify(path, &key.public(), None).map_err(EngineError::Verify)?;
-        }
+        // No "does it exist?" test before opening: that would leave a gap in which the file could
+        // appear and be opened unverified. Open (creating it if it is new), then verify that same
+        // open file, not the path again. A log that is new and empty verifies trivially.
+        let public = key.public();
         let log = Log::open(path, key)?;
+        log.verify(&public).map_err(EngineError::Verify)?;
         let state = replay_with(schema, &log.events()?)?;
         Ok(Self {
             log,
@@ -172,14 +174,16 @@ impl Engine {
         ) {
             return Err(EngineError::Rule(RuleViolation::UnknownNeedsHold));
         }
-        self.state.check(&event).map_err(EngineError::Rule)?;
+        self.state
+            .check_stamped(at, origin, &event)
+            .map_err(EngineError::Rule)?;
         let payload = event
             .encode()
             .map_err(|error| EngineError::Event { seq: 0, error })?;
         let head = self
             .log
             .append(at, origin, event.kind(), self.schema.current, &payload)?;
-        if self.state.apply(head.seq, at, &event).is_err() {
+        if self.state.apply(head.seq, at, origin, &event).is_err() {
             self.poisoned = true;
             return Err(EngineError::Poisoned);
         }
@@ -191,32 +195,32 @@ impl Engine {
     pub fn submit_all(
         &mut self,
         at: Timestamp,
-        origin: Origin,
-        events: &[Event],
+        events: &[(Origin, Event)],
     ) -> Result<Head, EngineError> {
         if self.poisoned {
             return Err(EngineError::Poisoned);
         }
         // Checked on a copy, so a sequence that fails half way leaves the real state untouched.
         let mut next = self.state.clone();
-        for event in events {
+        for (origin, event) in events {
             let seq = next.last_seq() + 1;
-            next.apply(seq, at, event).map_err(EngineError::Rule)?;
+            next.apply(seq, at, *origin, event)
+                .map_err(EngineError::Rule)?;
         }
         if next.awaiting_hold() {
             return Err(EngineError::Rule(RuleViolation::UnknownNeedsHold));
         }
         let payloads = events
             .iter()
-            .map(|e| e.encode())
+            .map(|(_, e)| e.encode())
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| EngineError::Event { seq: 0, error })?;
         let batch: Vec<NewEvent<'_>> = events
             .iter()
             .zip(&payloads)
-            .map(|(e, payload)| NewEvent {
+            .map(|((origin, e), payload)| NewEvent {
                 at,
-                origin,
+                origin: *origin,
                 kind: e.kind(),
                 schema_version: self.schema.current,
                 payload,
@@ -266,21 +270,28 @@ impl Engine {
                 Ok(Ruling::Refused)
             }
             Outcome::Hold { reason, why } => {
+                // The gate's answer is recorded as the origin that gave it. Ending the job and opening
+                // the hold are the engine's own decisions, so they are recorded as the engine's.
                 let head = self.submit_all(
                     at,
-                    origin,
                     &[
-                        answered(Answer::Unknown, reason),
-                        Event::JobEnded {
-                            job,
-                            outcome: hyalos_types::JobOutcome::Held,
-                        },
-                        Event::HoldOpened {
-                            task,
-                            gate: request.gate,
-                            inputs: request.inputs,
-                            reason: why,
-                        },
+                        (origin, answered(Answer::Unknown, reason)),
+                        (
+                            Origin::Engine,
+                            Event::JobEnded {
+                                job,
+                                outcome: hyalos_types::JobOutcome::Held,
+                            },
+                        ),
+                        (
+                            Origin::Engine,
+                            Event::HoldOpened {
+                                task,
+                                gate: request.gate,
+                                inputs: request.inputs,
+                                reason: why,
+                            },
+                        ),
                     ],
                 )?;
                 Ok(Ruling::Held(HoldId::from_seq(head.seq)))

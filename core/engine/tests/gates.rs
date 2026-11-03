@@ -304,8 +304,7 @@ fn an_unknown_answer_cannot_be_written_on_its_own() -> Res {
     ));
     // Nor as a batch that stops short of the hold.
     assert!(matches!(
-        r.engine
-            .submit_all(at, Origin::Broker, std::slice::from_ref(&alone)),
+        r.engine.submit_all(at, &[(Origin::Broker, alone.clone())]),
         Err(EngineError::Rule(RuleViolation::UnknownNeedsHold))
     ));
     let ended = Event::JobEnded {
@@ -313,7 +312,8 @@ fn an_unknown_answer_cannot_be_written_on_its_own() -> Res {
         outcome: JobOutcome::Held,
     };
     assert!(matches!(
-        r.engine.submit_all(at, Origin::Broker, &[alone, ended]),
+        r.engine
+            .submit_all(at, &[(Origin::Broker, alone), (Origin::Engine, ended)]),
         Err(EngineError::Rule(RuleViolation::UnknownNeedsHold))
     ));
     assert_eq!((r.engine.head()?, r.engine.state().clone()), before);
@@ -326,26 +326,35 @@ fn a_batch_that_breaks_a_rule_part_way_writes_nothing() -> Res {
     let before = (r.engine.head()?, r.engine.state().clone());
     let at = r.clock.now();
     let batch = [
-        Event::GateAnswered {
-            job: r.job,
-            gate: Gate::Content,
-            inputs: d(2),
-            answer: Answer::Unknown,
-            reason: ReasonCode::unavailable(),
-        },
-        Event::JobEnded {
-            job: r.job,
-            outcome: JobOutcome::Held,
-        },
+        (
+            Origin::Broker,
+            Event::GateAnswered {
+                job: r.job,
+                gate: Gate::Content,
+                inputs: d(2),
+                answer: Answer::Unknown,
+                reason: ReasonCode::unavailable(),
+            },
+        ),
+        (
+            Origin::Engine,
+            Event::JobEnded {
+                job: r.job,
+                outcome: JobOutcome::Held,
+            },
+        ),
         // The hold names different inputs from the answer, so it is not the hold that was owed.
-        Event::HoldOpened {
-            task: r.task,
-            gate: Gate::Content,
-            inputs: d(3),
-            reason: HoldReason::Unknown,
-        },
+        (
+            Origin::Engine,
+            Event::HoldOpened {
+                task: r.task,
+                gate: Gate::Content,
+                inputs: d(3),
+                reason: HoldReason::Unknown,
+            },
+        ),
     ];
-    let result = r.engine.submit_all(at, Origin::Broker, &batch);
+    let result = r.engine.submit_all(at, &batch);
     assert!(
         matches!(
             result,
@@ -355,7 +364,7 @@ fn a_batch_that_breaks_a_rule_part_way_writes_nothing() -> Res {
     );
     assert_eq!((r.engine.head()?, r.engine.state().clone()), before);
     assert!(matches!(
-        r.engine.submit_all(at, Origin::Broker, &[]),
+        r.engine.submit_all(at, &[]),
         Err(EngineError::Log(_))
     ));
     Ok(())
