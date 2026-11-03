@@ -102,14 +102,17 @@ impl Prover {
     /// Starts a solver. Fails with a message if there is no `cvc5`.
     pub fn new() -> Result<Self, String> {
         let (schema, _) = Schema::from_cedarschema_str(SCHEMA).map_err(err("the schema"))?;
-        let solver = LocalSolver::cvc5().map_err(err(
-            "no cvc5: set CVC5 to its path, or put it on the PATH (cvc5 1.3.1)",
-        ))?;
-        let compiler = CedarSymCompiler::new(solver).map_err(err("starting the solver"))?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(err("the async runtime"))?;
+        // Starting the solver spawns a process, which needs the runtime to be the current one.
+        let compiler = runtime.block_on(async {
+            let solver = LocalSolver::cvc5().map_err(err(
+                "no cvc5: set CVC5 to its path, or put it on the PATH (cvc5 1.3.1)",
+            ))?;
+            CedarSymCompiler::new(solver).map_err(err("starting the solver"))
+        })?;
         Ok(Self {
             schema,
             compiler,
