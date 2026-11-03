@@ -6,7 +6,7 @@ Two files matter, both in the config directory (`$HYALOS_CONFIG_DIR`, else `$XDG
 
 | File | What | Mode | Keep a copy? |
 | --- | --- | --- | --- |
-| `engine.key` | The secret that signs every event. One line, `hyalos-engine-key-v1:` and 64 hex characters. | 0600 | **Yes, somewhere safe.** |
+| `engine.key` | The secret that signs every event. One line, `hyalos-engine-key-v1:` and 64 hex characters. | 0600, owned by the user running the engine | **Yes, somewhere safe.** |
 | `engine.pub` | The public half. `hyalos log verify` reads it. | 0444 | Yes. It is not secret. |
 
 ## First start
@@ -60,6 +60,10 @@ You get a new key and a new, empty log. **Tasks, jobs and holds do not carry acr
 ## If the key may have leaked
 
 Whoever holds the key can forge history from any point in time, and the log cannot show which events are forged. Treat events from the earliest time the key could have been exposed as untrusted, archive the log as above, and start a new one. If another user could read the file, `hyalos init` says so and refuses to continue until you fix its mode.
+
+## If the engine says the key or directory is owned by another user
+
+The engine only uses `engine.key` and the config directory when they belong to the user it runs as, whatever their mode (ADR-0030). The message gives both user ids. If the files are yours (for example, you made them as root and now run as yourself), run `chown` as the message says. If you did not put them there, treat the key as compromised: see above.
 
 ## Core dumps
 

@@ -47,6 +47,18 @@ pub enum KeyError {
         path: PathBuf,
         mode: u32,
     },
+    /// The config directory is owned by a user other than the one running the engine.
+    DirNotOwned {
+        path: PathBuf,
+        owner: u32,
+        user: u32,
+    },
+    /// The key file is owned by a user other than the one running the engine.
+    KeyNotOwned {
+        path: PathBuf,
+        owner: u32,
+        user: u32,
+    },
     /// The key file can be read or written by group or others.
     KeyAccessible {
         path: PathBuf,
@@ -92,6 +104,21 @@ impl fmt::Display for KeyError {
                 "{} can be used by other users (mode {:04o}), so a key kept there cannot be trusted; run chmod 700 on it",
                 path.display(),
                 mode & 0o7777
+            ),
+            KeyError::DirNotOwned { path, owner, user } => write!(
+                f,
+                "{} is owned by user id {owner}, but hyalos is running as user id {user}, so a key kept there cannot be trusted. \
+                 If the directory is yours, run `chown {user} {}`; if you did not put it there, treat its contents as compromised (ADR-0022)",
+                path.display(),
+                path.display()
+            ),
+            KeyError::KeyNotOwned { path, owner, user } => write!(
+                f,
+                "{} is owned by user id {owner}, but hyalos is running as user id {user}, so it is not used as the engine's key. \
+                 If the key is yours, run `chown {user} {}`; if you did not put it there, treat it as compromised, and if another user \
+                 may have read it, treat it as leaked (ADR-0022)",
+                path.display(),
+                path.display()
             ),
             KeyError::KeyAccessible { path, mode } => write!(
                 f,
@@ -201,6 +228,11 @@ fn make_dir(path: &Path) -> Result<(), KeyError> {
         .map_err(|e| io(format!("create {}", path.display()), e))
 }
 
+/// The user id the engine runs as. Files it trusts with its key must belong to this user (ADR-0022).
+fn current_user() -> u32 {
+    rustix::process::geteuid().as_raw()
+}
+
 /// Makes sure the engine's key exists and is safe to use, creating it only when neither a key nor a log
 /// exists (ADR-0022). `log` is the path of `events.db`.
 pub fn prepare(
@@ -208,13 +240,30 @@ pub fn prepare(
     log: &Path,
     seeds: &mut dyn SeedSource,
 ) -> Result<Ready, KeyError> {
+    prepare_as(config_dir, log, seeds, current_user())
+}
+
+/// [`prepare`] for the user with this id. Tests use it to stand in for a user who is not the file's owner.
+fn prepare_as(
+    config_dir: &Path,
+    log: &Path,
+    seeds: &mut dyn SeedSource,
+    user: u32,
+) -> Result<Ready, KeyError> {
     make_dir(config_dir)?;
     if let Some(data_dir) = log.parent().filter(|d| !d.as_os_str().is_empty()) {
         make_dir(data_dir)?;
     }
-    let dir_mode = fs::metadata(config_dir)
-        .map_err(|e| io(format!("read {}", config_dir.display()), e))?
-        .mode();
+    let dir_meta =
+        fs::metadata(config_dir).map_err(|e| io(format!("read {}", config_dir.display()), e))?;
+    if dir_meta.uid() != user {
+        return Err(KeyError::DirNotOwned {
+            path: config_dir.to_path_buf(),
+            owner: dir_meta.uid(),
+            user,
+        });
+    }
+    let dir_mode = dir_meta.mode();
     if dir_mode & 0o077 != 0 {
         return Err(KeyError::DirAccessible {
             path: config_dir.to_path_buf(),
@@ -239,7 +288,7 @@ pub fn prepare(
         return create(config_dir, seeds);
     }
 
-    let key = load(&key_path)?;
+    let key = load_as(&key_path, user)?;
     let public = key.public();
     let public_rewritten = if exists(&public_path) {
         let on_disk = fs::read_to_string(&public_path)
@@ -263,7 +312,7 @@ pub fn prepare(
     if exists(log) {
         // Opening checks that the chain starts with this key's genesis; it writes nothing to a log that
         // already has events.
-        match Log::open(log, load(&key_path)?) {
+        match Log::open(log, load_as(&key_path, user)?) {
             Ok(_) => {}
             Err(LogError::WrongKey) => {
                 return Err(KeyError::WrongKey {
@@ -342,11 +391,22 @@ fn publish_new(dir: &Path, name: &str, contents: &[u8], mode: u32) -> Result<(),
     }
 }
 
-/// Reads the engine key, refusing a file that is not private to its owner.
+/// Reads the engine key, refusing a file that belongs to another user or is not private to its owner.
 pub fn load(path: &Path) -> Result<LogKey, KeyError> {
+    load_as(path, current_user())
+}
+
+fn load_as(path: &Path, user: u32) -> Result<LogKey, KeyError> {
     let meta = fs::symlink_metadata(path).map_err(|e| io(format!("read {}", path.display()), e))?;
     if !meta.file_type().is_file() {
         return Err(KeyError::NotRegular(path.to_path_buf()));
+    }
+    if meta.uid() != user {
+        return Err(KeyError::KeyNotOwned {
+            path: path.to_path_buf(),
+            owner: meta.uid(),
+            user,
+        });
     }
     if meta.mode() & 0o077 != 0 {
         return Err(KeyError::KeyAccessible {
@@ -610,6 +670,76 @@ mod tests {
         m.first_start();
         set_mode(&m.config, 0o755);
         assert!(matches!(m.err(), KeyError::DirAccessible { .. }));
+    }
+
+    /// A user who is not the owner of anything the test made.
+    fn someone_else() -> u32 {
+        current_user().wrapping_add(1)
+    }
+
+    #[test]
+    fn a_key_another_user_owns_is_refused_however_private_its_mode() {
+        let m = machine("key-owner");
+        m.first_start();
+        assert_eq!(mode(&m.key_path()), 0o600);
+        let me = current_user();
+        let other = someone_else();
+        // The same file, the same mode: only who is running differs.
+        assert!(load_as(&m.key_path(), me).is_ok());
+        let err = load_as(&m.key_path(), other).expect_err("refuse");
+        assert!(
+            matches!(&err, KeyError::KeyNotOwned { owner, user, .. } if (*owner, *user) == (me, other)),
+            "{err}"
+        );
+        let said = err.to_string();
+        assert!(said.contains(&format!("owned by user id {me}")), "{said}");
+        assert!(
+            said.contains(&format!("running as user id {other}")),
+            "{said}"
+        );
+        assert!(said.contains("chown"), "it says what to do: {said}");
+        assert!(!said.contains(&"5a".repeat(8)), "and does not echo the key");
+        // Starting the engine reads the key through the same check; with the directory owned too, which
+        // tests cannot arrange without root, that is the case in the real-chown test below.
+        assert!(prepare_as(&m.config, &m.log, &mut Failing, me).is_ok());
+    }
+
+    #[test]
+    fn a_config_directory_another_user_owns_is_refused_before_anything_is_read_or_made() {
+        let m = machine("dir-owner");
+        m.first_start();
+        let other = someone_else();
+        let err = prepare_as(&m.config, &m.log, &mut Failing, other).expect_err("refuse");
+        assert!(
+            matches!(&err, KeyError::DirNotOwned { owner, user, .. } if (*owner, *user) == (current_user(), other)),
+            "{err}"
+        );
+        assert!(err.to_string().contains("chown"), "{err}");
+
+        // On a first start too: no key is made in a directory the user does not own.
+        let fresh = machine("dir-owner-fresh");
+        let err = prepare_as(&fresh.config, &fresh.log, &mut Fixed(Some(SEED)), other)
+            .expect_err("refuse");
+        assert!(matches!(err, KeyError::DirNotOwned { .. }), "{err}");
+        assert!(!exists(&fresh.key_path()) && !exists(&fresh.public_path()));
+    }
+
+    /// With the real thing: needs a user who may give a file away, so it runs where the tests run as root
+    /// (a container) and says so where they do not. The two tests above cover the same checks anywhere.
+    #[test]
+    fn a_key_really_given_to_another_user_is_refused() {
+        if !rustix::process::geteuid().is_root() {
+            eprintln!("skipped: chown to another user needs root");
+            return;
+        }
+        let m = machine("real-chown");
+        m.first_start();
+        let nobody = 65_534;
+        std::os::unix::fs::chown(m.key_path(), Some(nobody), None).expect("chown the key");
+        assert!(matches!(m.err(), KeyError::KeyNotOwned { owner, .. } if owner == nobody));
+        std::os::unix::fs::chown(m.key_path(), Some(0), None).expect("give it back");
+        std::os::unix::fs::chown(&m.config, Some(nobody), None).expect("chown the directory");
+        assert!(matches!(m.err(), KeyError::DirNotOwned { owner, .. } if owner == nobody));
     }
 
     #[test]
