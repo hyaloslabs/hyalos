@@ -7,6 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use hyalos_types::snapshot::{
+    HoldImage, JobEndImage, JobImage, ResolvedImage, StateImage, TaskImage,
+};
 use hyalos_types::{
     Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode,
     Resolution, Stakes, TaskId, Timestamp,
@@ -478,6 +481,162 @@ impl State {
         self.last_seq = seq;
         self.last_at = Some(at);
         Ok(())
+    }
+
+    /// The state as a snapshot stores it (ADR-0026). It refuses while an unknown answer is waiting for
+    /// its hold, since a snapshot in the middle of that transaction could not be resumed.
+    ///
+    /// Every field is named on purpose: adding one to [`State`], [`Task`], [`Job`], [`Hold`] or
+    /// [`Resolved`] stops compiling here until the image carries it.
+    pub fn to_image(&self) -> Result<StateImage, JobId> {
+        let State {
+            tasks,
+            jobs,
+            holds,
+            pending,
+            last_seq,
+            last_at,
+        } = self;
+        if let Some(pending) = pending {
+            return Err(pending.job);
+        }
+        Ok(StateImage {
+            last_seq: *last_seq,
+            last_at: last_at.map(Timestamp::as_millis),
+            tasks: tasks
+                .iter()
+                .map(|(id, t)| {
+                    let Task {
+                        created_at,
+                        request,
+                        completed_at,
+                        open_holds,
+                    } = t;
+                    TaskImage {
+                        id: *id,
+                        created_at: created_at.as_millis(),
+                        request: *request,
+                        completed_at: completed_at.map(Timestamp::as_millis),
+                        open_holds: open_holds.iter().copied().collect(),
+                    }
+                })
+                .collect(),
+            jobs: jobs
+                .iter()
+                .map(|(id, j)| {
+                    let Job {
+                        task,
+                        started_at,
+                        ended,
+                    } = j;
+                    JobImage {
+                        id: *id,
+                        task: *task,
+                        started_at: started_at.as_millis(),
+                        ended: ended.map(|(at, outcome)| JobEndImage {
+                            at: at.as_millis(),
+                            outcome,
+                        }),
+                    }
+                })
+                .collect(),
+            holds: holds
+                .iter()
+                .map(|(id, h)| {
+                    let Hold {
+                        task,
+                        gate,
+                        inputs,
+                        reason,
+                        stakes,
+                        opened_at,
+                        resolved,
+                    } = h;
+                    HoldImage {
+                        id: *id,
+                        task: *task,
+                        gate: *gate,
+                        inputs: *inputs,
+                        reason: *reason,
+                        stakes: *stakes,
+                        opened_at: opened_at.as_millis(),
+                        resolved: resolved.as_ref().map(|r| {
+                            let Resolved { at, by, reason } = r;
+                            ResolvedImage {
+                                at: at.as_millis(),
+                                by: *by,
+                                reason: reason.clone(),
+                            }
+                        }),
+                    }
+                })
+                .collect(),
+        })
+    }
+
+    /// Rebuilds the state a snapshot carried. The snapshot is signed, so this guards against a build
+    /// that wrote a bad one, not against an attacker: it refuses duplicate ids and a state that breaks
+    /// the invariants, rather than start from something that could never have been replayed.
+    pub fn from_image(image: StateImage) -> Result<Self, String> {
+        let StateImage {
+            last_seq,
+            last_at,
+            tasks,
+            jobs,
+            holds,
+        } = image;
+        let mut state = State {
+            last_seq,
+            last_at: last_at.map(Timestamp::from_millis),
+            ..State::default()
+        };
+        for t in tasks {
+            let task = Task {
+                created_at: Timestamp::from_millis(t.created_at),
+                request: t.request,
+                completed_at: t.completed_at.map(Timestamp::from_millis),
+                open_holds: t.open_holds.into_iter().collect(),
+            };
+            if state.tasks.insert(t.id, task).is_some() {
+                return Err(format!("task {} appears twice", t.id));
+            }
+        }
+        for j in jobs {
+            let job = Job {
+                task: j.task,
+                started_at: Timestamp::from_millis(j.started_at),
+                ended: j.ended.map(|e| (Timestamp::from_millis(e.at), e.outcome)),
+            };
+            if state.jobs.insert(j.id, job).is_some() {
+                return Err(format!("job {} appears twice", j.id));
+            }
+        }
+        for h in holds {
+            let hold = Hold {
+                task: h.task,
+                gate: h.gate,
+                inputs: h.inputs,
+                reason: h.reason,
+                stakes: h.stakes,
+                opened_at: Timestamp::from_millis(h.opened_at),
+                resolved: h.resolved.map(|r| Resolved {
+                    at: Timestamp::from_millis(r.at),
+                    by: r.by,
+                    reason: r.reason,
+                }),
+            };
+            if state.holds.insert(h.id, hold).is_some() {
+                return Err(format!("hold {} appears twice", h.id));
+            }
+        }
+        let broken = state.invariant_violations();
+        if !broken.is_empty() {
+            return Err(format!(
+                "the state breaks its own rules: {}",
+                broken.join("; ")
+            ));
+        }
+        Ok(state)
     }
 
     /// The job whose unknown answer has no hold yet, if the log ended too soon. Replay refuses to

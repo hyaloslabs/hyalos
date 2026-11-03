@@ -18,7 +18,7 @@ fn main() -> ExitCode {
         Some("log") => log_cmd::run(args.get(1..).unwrap_or_default()),
         Some(other) => {
             eprintln!(
-                "hyalos: unknown command {other}\nusage: hyalos [--version | init | log verify|backup|restore ...]"
+                "hyalos: unknown command {other}\nusage: hyalos [--version | init | log verify|backup|restore|compact|prune ...]"
             );
             ExitCode::from(2)
         }

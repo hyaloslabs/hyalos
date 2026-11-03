@@ -23,6 +23,12 @@ impl LogKey {
     pub(crate) fn sign(&self, hash: &Hash) -> [u8; SIGNATURE_LEN] {
         self.0.sign(&format::signing_message(hash)).to_bytes()
     }
+
+    pub(crate) fn sign_anchor(&self, hash: &Hash) -> [u8; SIGNATURE_LEN] {
+        self.0
+            .sign(&format::anchor_signing_message(hash))
+            .to_bytes()
+    }
 }
 
 // A derived Debug would be safe today and one field away from printing the secret.
@@ -55,17 +61,22 @@ impl PublicKey {
 
     /// Strict verification: it also refuses malleable signatures and weak keys.
     pub(crate) fn verify(&self, hash: &Hash, signature: &[u8]) -> bool {
+        self.verify_message(&format::signing_message(hash), signature)
+    }
+
+    pub(crate) fn verify_anchor(&self, hash: &Hash, signature: &[u8]) -> bool {
+        self.verify_message(&format::anchor_signing_message(hash), signature)
+    }
+
+    fn verify_message(&self, message: &[u8], signature: &[u8]) -> bool {
         let Ok(key) = VerifyingKey::from_bytes(&self.0) else {
             return false;
         };
         let Ok(bytes) = <[u8; SIGNATURE_LEN]>::try_from(signature) else {
             return false;
         };
-        key.verify_strict(
-            &format::signing_message(hash),
-            &Signature::from_bytes(&bytes),
-        )
-        .is_ok()
+        key.verify_strict(message, &Signature::from_bytes(&bytes))
+            .is_ok()
     }
 }
 
@@ -83,6 +94,15 @@ mod tests {
         assert!(!other.public().verify(&hash, &sig));
         assert!(!key.public().verify(&[8u8; 32], &sig));
         assert!(!key.public().verify(&hash, &sig[..63]));
+    }
+
+    #[test]
+    fn an_event_signature_is_not_an_anchor_signature() {
+        let key = LogKey::from_seed([1; 32]);
+        let hash = [9u8; 32];
+        assert!(key.public().verify_anchor(&hash, &key.sign_anchor(&hash)));
+        assert!(!key.public().verify_anchor(&hash, &key.sign(&hash)));
+        assert!(!key.public().verify(&hash, &key.sign_anchor(&hash)));
     }
 
     #[test]

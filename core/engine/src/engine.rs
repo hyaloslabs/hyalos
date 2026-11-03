@@ -3,9 +3,12 @@
 use std::fmt;
 use std::path::Path;
 
-use hyalos_log::{Head, Log, LogError, LogKey, NewEvent, StoredEvent, VerifyError};
+use hyalos_log::{
+    Anchor, CompactError, Head, Log, LogError, LogKey, NewEvent, StoredEvent, VerifyError,
+};
 use hyalos_policy::{GateRequest, Outcome};
 use hyalos_types::event::SCHEMA;
+use hyalos_types::snapshot::{STATE_VERSION, StateImage};
 use hyalos_types::{
     Answer, Event, EventError, HoldId, JobId, Origin, ReasonCode, Resolution, Schema, Timestamp,
 };
@@ -32,6 +35,10 @@ pub enum EngineError {
         seq: u64,
         violation: RuleViolation,
     },
+    /// The log's latest snapshot could not be used as the state to start from (ADR-0026).
+    Snapshot(String),
+    /// The log was not compacted. It is as it was.
+    Compact(CompactError<String>),
     /// An event was appended but could not be projected. This cannot happen, since it was checked
     /// first. The engine stops accepting events rather than continue with state it cannot trust.
     Poisoned,
@@ -51,6 +58,8 @@ impl fmt::Display for EngineError {
                     "event {seq} is not legal where it sits in the log: {violation}"
                 )
             }
+            EngineError::Snapshot(e) => write!(f, "the log's snapshot cannot be used: {e}"),
+            EngineError::Compact(e) => write!(f, "{e}"),
             EngineError::Poisoned => {
                 write!(
                     f,
@@ -77,7 +86,16 @@ pub fn replay(events: &[StoredEvent]) -> Result<State, EngineError> {
 /// [`replay`] under another schema: events written at an older version are upcast as they are read
 /// (ADR-0023).
 pub fn replay_with(schema: &Schema, events: &[StoredEvent]) -> Result<State, EngineError> {
-    let mut state = State::default();
+    replay_from(schema, State::default(), events)
+}
+
+/// Carries on from `state`, which is the state a snapshot stood for, through the events that follow
+/// it (ADR-0026). With the empty state it is a replay from the beginning.
+pub fn replay_from(
+    schema: &Schema,
+    mut state: State,
+    events: &[StoredEvent],
+) -> Result<State, EngineError> {
     for e in events {
         let event = Event::decode_with(schema, &e.kind, e.schema_version, &e.payload)
             .map_err(|error| EngineError::Event { seq: e.seq, error })?;
@@ -95,6 +113,37 @@ pub fn replay_with(schema: &Schema, events: &[StoredEvent]) -> Result<State, Eng
         });
     }
     Ok(state)
+}
+
+/// The state a snapshot stood for.
+fn state_of(anchor: &Anchor) -> Result<State, String> {
+    let image =
+        StateImage::decode(anchor.state_version, &anchor.state).map_err(|e| e.to_string())?;
+    if image.last_seq != anchor.seq {
+        return Err(format!(
+            "it stands for event {} but its state ends at event {}",
+            anchor.seq, image.last_seq
+        ));
+    }
+    State::from_image(image)
+}
+
+/// The log's state: its latest snapshot, if it has one, then the events that follow.
+fn restored_state(schema: &Schema, log: &Log) -> Result<State, EngineError> {
+    let base = match log.latest_anchor()? {
+        Some(anchor) => state_of(&anchor).map_err(EngineError::Snapshot)?,
+        None => State::default(),
+    };
+    replay_from(schema, base, &log.events()?)
+}
+
+/// What a compaction did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Compaction {
+    /// The last event moved to the archive, which the new snapshot stands for.
+    pub head: Head,
+    /// How many events were moved.
+    pub events: u64,
 }
 
 /// What the engine decided about a gate's outcome.
@@ -167,7 +216,7 @@ impl Engine {
         let public = key.public();
         let log = Log::open(path, key)?;
         log.verify(&public).map_err(EngineError::Verify)?;
-        let state = replay_with(schema, &log.events()?)?;
+        let state = restored_state(schema, &log)?;
         Ok(Self {
             log,
             state,
@@ -178,6 +227,79 @@ impl Engine {
 
     pub fn state(&self) -> &State {
         &self.state
+    }
+
+    /// Where the latest snapshot stands, if the log was ever compacted: the events up to and including
+    /// this one are in archives, and the log holds the ones after it.
+    pub fn snapshot_head(&self) -> Result<Option<Head>, EngineError> {
+        Ok(self.log.latest_anchor()?.map(|a| a.head()))
+    }
+
+    /// Moves every event to a new archive file and replaces them in the log with a signed snapshot of
+    /// the state (ADR-0026). The archive is a verified copy of the whole log; `archive` must not exist.
+    /// Nothing is deleted: the events are in the archive, and the chain carries on from the snapshot
+    /// with every hash unchanged.
+    ///
+    /// The snapshot is only taken if the log, replayed, gives exactly this engine's state, and once it
+    /// is written the log is verified and the state rebuilt from the snapshot is compared with the live
+    /// one. Either failing is an error, not a log that quietly differs. `at` is when this is done and
+    /// may not be before the last event.
+    pub fn compact(&mut self, at: Timestamp, archive: &Path) -> Result<Compaction, EngineError> {
+        if self.poisoned {
+            return Err(EngineError::Poisoned);
+        }
+        if let Some(previous) = self.state.last_at()
+            && at < previous
+        {
+            return Err(EngineError::Rule(RuleViolation::TimeWentBackwards {
+                previous,
+                at,
+            }));
+        }
+        let archived = self
+            .log
+            .archive(archive)
+            .map_err(|e| EngineError::Compact(e.map_snapshot(|never| match never {})))?;
+        let (schema, live) = (self.schema, &self.state);
+        let mut moved = 0u64;
+        self.log
+            .compact(archived, at, |prior, events| {
+                moved = events.len() as u64;
+                let base = match prior {
+                    Some(anchor) => state_of(anchor)?,
+                    None => State::default(),
+                };
+                let replayed = replay_from(schema, base, events)
+                    .map_err(|e| format!("the log does not replay: {e}"))?;
+                if &replayed != live {
+                    return Err(
+                        "the engine's state is not what its log replays to, so it will not be snapshotted"
+                            .to_string(),
+                    );
+                }
+                let image = replayed
+                    .to_image()
+                    .map_err(|job| format!("job {job}'s unknown answer has no hold yet"))?;
+                let bytes = image.encode().map_err(|e| e.to_string())?;
+                Ok((STATE_VERSION, bytes))
+            })
+            .map_err(EngineError::Compact)?;
+
+        // The compaction has happened. Prove the log still verifies and still means the same thing,
+        // and stop if it does not: the archive holds every event, so nothing is lost.
+        self.log
+            .verify(&self.log.public_key())
+            .map_err(EngineError::Verify)?;
+        if restored_state(self.schema, &self.log)? != self.state {
+            self.poisoned = true;
+            return Err(EngineError::Snapshot(
+                "the state rebuilt from the new snapshot differs from the live state; restart the engine and restore from the archive".into(),
+            ));
+        }
+        Ok(Compaction {
+            head: archived,
+            events: moved,
+        })
     }
 
     pub fn head(&self) -> Result<Option<Head>, EngineError> {
