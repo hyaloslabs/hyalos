@@ -1,6 +1,6 @@
 # ADR-0034: The operator policy store and minting within policy
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
