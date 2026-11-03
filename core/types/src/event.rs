@@ -9,16 +9,53 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Answer, Digest, HoldId, JobId, Origin, ReasonCode, Schema, TaskId};
+use crate::{
+    Answer, Digest, HoldId, JobId, Origin, ReasonCode, Schema, Stakes, TaskId, Upcast, Value,
+};
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
-/// What this build reads: version 1, and no older version to upcast from.
+/// What this build reads: version 2, and version 1 upcast to it (ADR-0023, ADR-0025).
+///
+/// Version 2 added the stakes of a hold and the reason for resolving one. A version 1 hold is given the
+/// most cautious stakes, so only a human can release it; a version 1 resolution is given an explicit
+/// "unrecorded" reason. Every other kind is the same in both versions.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
-    steps: &[],
+    steps: &[
+        Upcast {
+            kind: "hold.opened",
+            from: 1,
+            step: hold_opened_v1,
+        },
+        Upcast {
+            kind: "hold.resolved",
+            from: 1,
+            step: hold_resolved_v1,
+        },
+    ],
 };
+
+fn insert(mut payload: Value, field: &str, value: Value) -> Result<Value, String> {
+    payload
+        .as_object_mut()
+        .ok_or("the payload is not an object")?
+        .insert(field.to_string(), value);
+    Ok(payload)
+}
+
+fn hold_opened_v1(payload: Value) -> Result<Value, String> {
+    insert(
+        payload,
+        "stakes",
+        serde_json::json!({ "tier": "irreversible", "touches": [] }),
+    )
+}
+
+fn hold_resolved_v1(payload: Value) -> Result<Value, String> {
+    insert(payload, "reason", Value::String("legacy.unrecorded".into()))
+}
 
 /// How a job ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,16 +124,24 @@ pub enum Event {
         answer: Answer,
         reason: ReasonCode,
     },
-    /// A gate answered unknown or timed out. `inputs` is the digest of what the gate was asked.
+    /// A gate answered unknown or timed out. `inputs` is the digest of what the gate was asked, and
+    /// `stakes` says how much the held action matters, which decides who may release it (ADR-0025).
     #[serde(rename = "hold.opened")]
     HoldOpened {
         task: TaskId,
         gate: Gate,
         inputs: Digest,
         reason: HoldReason,
+        stakes: Stakes,
     },
+    /// A hold was released, by whom, and the short code for why. The state refuses a release by anyone
+    /// not allowed at the hold's stakes (ADR-0025).
     #[serde(rename = "hold.resolved")]
-    HoldResolved { hold: HoldId, by: Resolution },
+    HoldResolved {
+        hold: HoldId,
+        by: Resolution,
+        reason: ReasonCode,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -232,6 +277,7 @@ impl Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Sensitive;
 
     fn d(byte: u8) -> Digest {
         Digest::from_bytes([byte; 32])
@@ -282,9 +328,12 @@ mod tests {
                     gate: Gate::Egress,
                     inputs: d(2),
                     reason: HoldReason::TimedOut,
+                    stakes: Stakes::escalated()
+                        .touching(Sensitive::CapabilityGrant)
+                        .touching(Sensitive::Credentials),
                 },
                 format!(
-                    r#"{{"kind":"hold.opened","task":3,"gate":"egress","inputs":"{}","reason":"timed_out"}}"#,
+                    r#"{{"kind":"hold.opened","task":3,"gate":"egress","inputs":"{}","reason":"timed_out","stakes":{{"tier":"escalated","touches":["credentials","capability_grant"]}}}}"#,
                     h(2)
                 ),
             ),
@@ -292,8 +341,10 @@ mod tests {
                 Event::HoldResolved {
                     hold: HoldId::from_seq(5),
                     by: Resolution::Human,
+                    reason: ReasonCode::new("approved.operator").unwrap(),
                 },
-                r#"{"kind":"hold.resolved","hold":5,"by":"human"}"#.to_string(),
+                r#"{"kind":"hold.resolved","hold":5,"by":"human","reason":"approved.operator"}"#
+                    .to_string(),
             ),
         ]
     }
@@ -383,10 +434,10 @@ mod tests {
         }
         let ok = r#"{"kind":"job.started","task":3}"#;
         assert_eq!(
-            Event::decode("job.started", 2, ok.as_bytes()),
+            Event::decode("job.started", SCHEMA_VERSION + 1, ok.as_bytes()),
             Err(EventError::UnsupportedVersion {
-                found: 2,
-                current: 1
+                found: SCHEMA_VERSION + 1,
+                current: SCHEMA_VERSION
             })
         );
     }

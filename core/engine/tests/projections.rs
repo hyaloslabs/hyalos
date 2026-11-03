@@ -2,15 +2,23 @@
 
 use std::path::PathBuf;
 
-use hyalos_engine::{Engine, EngineError, RuleViolation, State, TaskStatus, replay};
-use hyalos_log::{Log, LogError, LogKey};
+use hyalos_engine::{
+    Decider, Engine, EngineError, Reevaluation, Resolved, RuleViolation, State, TaskStatus, replay,
+};
+use hyalos_log::{Head, Log, LogError, LogKey};
+use hyalos_policy::{GateRequest, Outcome};
 use hyalos_sim::Sim;
 use hyalos_types::{
     Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode,
-    Resolution, SeededRng, TaskId, Timestamp,
+    Resolution, SeededRng, Sensitive, Stakes, TaskId, Timestamp,
 };
 
 type Res = Result<(), Box<dyn std::error::Error>>;
+
+/// A short reason code for a decision; these tests are about structure, not the code.
+fn why() -> ReasonCode {
+    ReasonCode::unavailable()
+}
 
 fn key() -> LogKey {
     LogKey::from_seed([9; 32])
@@ -32,7 +40,37 @@ fn at(n: u64) -> Timestamp {
 }
 
 fn submit(e: &mut Engine, n: u64, event: Event) -> Result<u64, EngineError> {
-    Ok(e.submit(at(n), Origin::Engine, event)?.seq)
+    Ok(route(e, at(n), event)?.seq)
+}
+
+/// Submits an event, sending a hold's release through the API that records what justifies it. A
+/// re-evaluation is given the allow that the hold's own gate would have to answer.
+fn route(e: &mut Engine, at: Timestamp, event: Event) -> Result<Head, EngineError> {
+    let Event::HoldResolved { hold, by, reason } = event else {
+        return e.submit(at, Origin::Engine, event);
+    };
+    let decider = match by {
+        Resolution::Policy => Decider::Policy,
+        Resolution::Verifier => Decider::Verifier,
+        Resolution::Human => Decider::Human,
+        Resolution::Reevaluated => {
+            let held = e
+                .state()
+                .holds()
+                .get(&hold)
+                .ok_or(EngineError::Rule(RuleViolation::UnknownHold(hold)))?;
+            let request = GateRequest {
+                gate: held.gate,
+                inputs: held.inputs,
+                stakes: held.stakes,
+            };
+            return match e.reevaluate_hold(at, hold, &request, Outcome::Proceed { reason })? {
+                Reevaluation::Released(head) => Ok(head),
+                Reevaluation::StillHeld => Err(EngineError::Poisoned),
+            };
+        }
+    };
+    e.decide_hold(at, hold, decider, reason)
 }
 
 #[test]
@@ -61,6 +99,7 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
             gate: Gate::Egress,
             inputs: d(2),
             reason: HoldReason::Unknown,
+            stakes: Stakes::irreversible(),
         },
     )?);
     assert_eq!(e.state().tasks()[&task].status(), TaskStatus::Held);
@@ -77,6 +116,7 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
         Event::HoldResolved {
             hold,
             by: Resolution::Human,
+            reason: why(),
         },
     )?;
     assert_eq!(e.state().tasks()[&task].status(), TaskStatus::Open);
@@ -96,7 +136,11 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
     assert_eq!(t.completed_at, Some(at(9)));
     assert_eq!(
         e.state().holds()[&hold].resolved,
-        Some((at(6), Resolution::Human))
+        Some(Resolved {
+            at: at(6),
+            by: Resolution::Human,
+            reason: why()
+        })
     );
     assert_eq!(
         e.state().jobs()[&job].ended,
@@ -124,6 +168,7 @@ fn two_holds_keep_a_task_held_until_both_resolve() -> Res {
                 gate,
                 inputs: d(3),
                 reason: HoldReason::TimedOut,
+                stakes: Stakes::routine(),
             },
         )
         .map(HoldId::from_seq)
@@ -136,6 +181,7 @@ fn two_holds_keep_a_task_held_until_both_resolve() -> Res {
         Event::HoldResolved {
             hold: a,
             by: Resolution::Policy,
+            reason: why(),
         },
     )?;
     assert_eq!(e.state().tasks()[&task].status(), TaskStatus::Held);
@@ -145,6 +191,7 @@ fn two_holds_keep_a_task_held_until_both_resolve() -> Res {
         Event::HoldResolved {
             hold: b,
             by: Resolution::Reevaluated,
+            reason: why(),
         },
     )?;
     assert_eq!(e.state().tasks()[&task].status(), TaskStatus::Open);
@@ -174,6 +221,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
             Event::HoldResolved {
                 hold: HoldId::from_seq(99),
                 by: Resolution::Human,
+                reason: why(),
             },
             "unknown hold",
         ),
@@ -187,6 +235,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
                 gate: Gate::Role,
                 inputs: d(1),
                 reason: HoldReason::Unknown,
+                stakes: Stakes::irreversible(),
             },
             "holding with a job running",
         ),
@@ -237,6 +286,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
             gate: Gate::Manifest,
             inputs: d(1),
             reason: HoldReason::Unknown,
+            stakes: Stakes::routine(),
         },
     )?);
     submit(
@@ -245,16 +295,18 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
         Event::HoldResolved {
             hold,
             by: Resolution::Policy,
+            reason: why(),
         },
     )?;
     assert!(matches!(
-        e.submit(
+        route(
+            &mut e,
             at(15),
-            Origin::Engine,
             Event::HoldResolved {
                 hold,
-                by: Resolution::Human
-            }
+                by: Resolution::Human,
+                reason: why(),
+            },
         ),
         Err(EngineError::Rule(RuleViolation::HoldNotOpen(_)))
     ));
@@ -268,6 +320,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
             gate: Gate::Egress,
             inputs: d(1),
             reason: HoldReason::Unknown,
+            stakes: Stakes::irreversible(),
         },
     ] {
         assert!(matches!(
@@ -313,6 +366,7 @@ fn deleting_the_projection_and_replaying_gives_identical_state() -> Res {
                 gate: Gate::Content,
                 inputs: d(7),
                 reason: HoldReason::TimedOut,
+                stakes: Stakes::irreversible(),
             },
         )?;
         submit(&mut e, 6, Event::TaskCompleted { task: t2 })?;
@@ -399,6 +453,22 @@ fn a_validly_signed_log_with_an_illegal_event_is_refused_on_replay() -> Res {
     Ok(())
 }
 
+/// Any tier, with or without a sensitive category, so the random runs meet the whole authority matrix.
+fn random_stakes(rng: &mut SeededRng) -> Stakes {
+    let stakes = match rng.below(3) {
+        0 => Stakes::routine(),
+        1 => Stakes::escalated(),
+        _ => Stakes::irreversible(),
+    };
+    match rng.below(6) {
+        0 => stakes.touching(Sensitive::Credentials),
+        1 => stakes.touching(Sensitive::Policy),
+        2 => stakes.touching(Sensitive::Publishing),
+        3 => stakes.touching(Sensitive::CapabilityGrant),
+        _ => stakes,
+    }
+}
+
 /// Picks a random event, legal or not, from what exists so far.
 fn random_event(rng: &mut SeededRng, state: &State, seq_next: u64) -> Event {
     let pick = |rng: &mut SeededRng, n: usize| -> usize {
@@ -453,6 +523,7 @@ fn random_event(rng: &mut SeededRng, state: &State, seq_next: u64) -> Event {
             } else {
                 HoldReason::TimedOut
             },
+            stakes: random_stakes(rng),
         },
         5 => {
             // Allow and deny only: an unknown answer is not a single event (ADR-0020).
@@ -484,6 +555,7 @@ fn random_event(rng: &mut SeededRng, state: &State, seq_next: u64) -> Event {
             Event::HoldResolved {
                 hold,
                 by: by[pick(rng, by.len())],
+                reason: why(),
             }
         }
     }
@@ -500,7 +572,7 @@ fn random_runs_keep_every_invariant_and_replay_to_the_same_state() -> Res {
         for step in 0..200u64 {
             let next = e.state().last_seq() + 1;
             let event = random_event(&mut rng, e.state(), next);
-            match e.submit(at(step), Origin::Engine, event) {
+            match route(&mut e, at(step), event) {
                 Ok(_) => accepted += 1,
                 Err(EngineError::Rule(_)) => refused += 1,
                 Err(other) => return Err(format!("seed {seed} step {step}: {other}").into()),

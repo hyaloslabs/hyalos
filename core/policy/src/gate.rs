@@ -5,7 +5,7 @@
 //! an error, a timeout or a late answer has no path to `Proceed`, so failing closed does not depend on
 //! each caller remembering to handle it.
 
-use hyalos_types::{Answer, Clock, Digest, Gate, HoldReason, ReasonCode, Timestamp};
+use hyalos_types::{Answer, Clock, Digest, Gate, HoldReason, ReasonCode, Stakes, Timestamp};
 
 /// What is being asked. `inputs` is the digest of the request's content; the content stays with the
 /// caller, so the log never holds it.
@@ -13,6 +13,10 @@ use hyalos_types::{Answer, Clock, Digest, Gate, HoldReason, ReasonCode, Timestam
 pub struct GateRequest {
     pub gate: Gate,
     pub inputs: Digest,
+    /// How much the action matters, decided by the engine from the action and never taken from what a
+    /// sandbox or the broker reports. It is recorded if the request holds, and decides who can release
+    /// the hold (ADR-0025).
+    pub stakes: Stakes,
 }
 
 /// A gate's answer and the short code that says why.

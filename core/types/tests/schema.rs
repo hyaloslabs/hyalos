@@ -3,7 +3,7 @@
 use hyalos_types::event::{SCHEMA, SCHEMA_VERSION};
 use hyalos_types::{
     Answer, Digest, Event, EventError, Gate, HoldId, HoldReason, JobId, JobOutcome, ReasonCode,
-    Resolution, Schema, TaskId, Upcast,
+    Resolution, Schema, Sensitive, Stakes, TaskId, Upcast,
 };
 use serde_json::{Value, json};
 
@@ -22,7 +22,7 @@ fn d(byte: u8) -> Digest {
 /// `(version, kind, payload as that version wrote it, the event it means)`. Add the new version's
 /// rows when `SCHEMA_VERSION` is bumped; never edit an existing row, since logs hold these bytes.
 fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
-    Ok(vec![
+    let version_1 = vec![
         (
             1,
             "task.created",
@@ -76,23 +76,63 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
                 r#"{{"kind":"hold.opened","task":3,"gate":"egress","inputs":"{}","reason":"timed_out"}}"#,
                 hex(2)
             ),
+            // A version 1 hold had no stakes; it reads as the most cautious (a human must release it).
             Event::HoldOpened {
                 task: TaskId::from_seq(3),
                 gate: Gate::Egress,
                 inputs: d(2),
                 reason: HoldReason::TimedOut,
+                stakes: Stakes::irreversible(),
             },
         ),
         (
             1,
             "hold.resolved",
             r#"{"kind":"hold.resolved","hold":5,"by":"human"}"#.into(),
+            // A version 1 resolution had no reason; it reads as explicitly unrecorded.
             Event::HoldResolved {
                 hold: HoldId::from_seq(5),
                 by: Resolution::Human,
+                reason: ReasonCode::new("legacy.unrecorded").ok_or("reason")?,
             },
         ),
-    ])
+    ];
+
+    // Version 2 wrote five kinds exactly as version 1 did, and the two below differently.
+    let mut all = version_1.clone();
+    for (_, kind, json, event) in &version_1 {
+        if !kind.starts_with("hold.") {
+            all.push((2, kind, json.clone(), event.clone()));
+        }
+    }
+    all.push((
+        2,
+        "hold.opened",
+        format!(
+            r#"{{"kind":"hold.opened","task":3,"gate":"egress","inputs":"{}","reason":"timed_out","stakes":{{"tier":"escalated","touches":["credentials","capability_grant"]}}}}"#,
+            hex(2)
+        ),
+        Event::HoldOpened {
+            task: TaskId::from_seq(3),
+            gate: Gate::Egress,
+            inputs: d(2),
+            reason: HoldReason::TimedOut,
+            stakes: Stakes::escalated()
+                .touching(Sensitive::Credentials)
+                .touching(Sensitive::CapabilityGrant),
+        },
+    ));
+    all.push((
+        2,
+        "hold.resolved",
+        r#"{"kind":"hold.resolved","hold":5,"by":"human","reason":"approved.operator"}"#.into(),
+        Event::HoldResolved {
+            hold: HoldId::from_seq(5),
+            by: Resolution::Human,
+            reason: ReasonCode::new("approved.operator").ok_or("reason")?,
+        },
+    ));
+    Ok(all)
 }
 
 /// Which `(version, kind)` pairs in `1..=current` have no pinned payload.
@@ -115,8 +155,11 @@ fn missing(
 fn every_released_version_has_a_pinned_payload_for_every_kind() -> Res {
     assert_eq!(missing(&golden()?, SCHEMA.current), vec![]);
     assert_eq!(SCHEMA.current, SCHEMA_VERSION);
-    // The check bites: pretend a version 2 was released and nobody pinned it.
-    assert_eq!(missing(&golden()?, 2).len(), Event::KINDS.len());
+    // The check bites: pretend the next version was released and nobody pinned it.
+    assert_eq!(
+        missing(&golden()?, SCHEMA.current + 1).len(),
+        Event::KINDS.len()
+    );
     Ok(())
 }
 
@@ -132,7 +175,11 @@ fn every_pinned_payload_loads_under_the_current_schema() -> Res {
 
 #[test]
 fn the_pinned_payloads_cover_exactly_the_event_kinds() -> Res {
-    let kinds: Vec<&str> = golden()?.iter().map(|g| g.3.kind()).collect();
+    let kinds: Vec<&str> = golden()?
+        .iter()
+        .filter(|g| g.0 == SCHEMA.current)
+        .map(|g| g.3.kind())
+        .collect();
     for kind in Event::KINDS {
         assert!(kinds.contains(&kind), "{kind} has no sample");
     }
@@ -276,7 +323,7 @@ fn a_step_can_supply_a_constant_default_but_only_for_older_events() -> Res {
 
 #[test]
 fn a_payload_at_the_current_version_is_read_as_stored() -> Res {
-    for (_, kind, json, event) in golden()? {
+    for (_, kind, json, event) in golden()?.into_iter().filter(|g| g.0 == SCHEMA.current) {
         assert_eq!(decode(3, kind, &json)?, event);
     }
     Ok(())
@@ -354,7 +401,7 @@ fn a_step_cannot_change_which_kind_an_event_is() {
 #[test]
 fn a_newer_version_than_the_build_knows_is_refused_with_advice() {
     let json = br#"{"kind":"task.completed","task":3}"#;
-    for (schema, current) in [(&SCHEMA, 1), (&HISTORY, 3)] {
+    for (schema, current) in [(&SCHEMA, SCHEMA.current), (&HISTORY, 3)] {
         let err = Event::decode_with(schema, "task.completed", current + 1, json).unwrap_err();
         assert_eq!(
             err,

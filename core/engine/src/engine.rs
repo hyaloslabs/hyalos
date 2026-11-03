@@ -6,7 +6,9 @@ use std::path::Path;
 use hyalos_log::{Head, Log, LogError, LogKey, NewEvent, StoredEvent, VerifyError};
 use hyalos_policy::{GateRequest, Outcome};
 use hyalos_types::event::SCHEMA;
-use hyalos_types::{Answer, Event, EventError, HoldId, JobId, Origin, Schema, Timestamp};
+use hyalos_types::{
+    Answer, Event, EventError, HoldId, JobId, Origin, ReasonCode, Resolution, Schema, Timestamp,
+};
 
 use crate::state::{RuleViolation, State};
 
@@ -106,6 +108,34 @@ pub enum Ruling {
     Held(HoldId),
 }
 
+/// What happened when a held gate was asked again (ADR-0025).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reevaluation {
+    /// The gate answered allow in time, and the hold is released.
+    Released(Head),
+    /// The gate did not allow in time, or refused. Nothing was written and the task is still held.
+    StillHeld,
+}
+
+/// Who decided a hold at the tier of its action (ADR-0012). A fresh allow from the gate is not a
+/// decision; it goes through [`Engine::reevaluate_hold`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decider {
+    Policy,
+    Verifier,
+    Human,
+}
+
+impl Decider {
+    fn resolution(self) -> Resolution {
+        match self {
+            Decider::Policy => Resolution::Policy,
+            Decider::Verifier => Resolution::Verifier,
+            Decider::Human => Resolution::Human,
+        }
+    }
+}
+
 /// The log together with the state projected from it.
 #[derive(Debug)]
 pub struct Engine {
@@ -162,6 +192,20 @@ impl Engine {
         origin: Origin,
         event: Event,
     ) -> Result<Head, EngineError> {
+        // A broker is told it may not send this at all (ADR-0024) before anyone is told about the API.
+        if matches!(event, Event::HoldResolved { .. }) && event.may_come_from(origin) {
+            return Err(EngineError::Rule(RuleViolation::ResolveThroughTheEngineApi));
+        }
+        self.submit_checked(at, origin, event)
+    }
+
+    /// [`Engine::submit`] without the refusal of `hold.resolved`, for the two methods that justify one.
+    fn submit_checked(
+        &mut self,
+        at: Timestamp,
+        origin: Origin,
+        event: Event,
+    ) -> Result<Head, EngineError> {
         if self.poisoned {
             return Err(EngineError::Poisoned);
         }
@@ -199,6 +243,12 @@ impl Engine {
     ) -> Result<Head, EngineError> {
         if self.poisoned {
             return Err(EngineError::Poisoned);
+        }
+        if events
+            .iter()
+            .any(|(o, e)| matches!(e, Event::HoldResolved { .. }) && e.may_come_from(*o))
+        {
+            return Err(EngineError::Rule(RuleViolation::ResolveThroughTheEngineApi));
         }
         // Checked on a copy, so a sequence that fails half way leaves the real state untouched.
         let mut next = self.state.clone();
@@ -290,12 +340,79 @@ impl Engine {
                                 gate: request.gate,
                                 inputs: request.inputs,
                                 reason: why,
+                                stakes: request.stakes,
                             },
                         ),
                     ],
                 )?;
                 Ok(Ruling::Held(HoldId::from_seq(head.seq)))
             }
+        }
+    }
+    /// Asks a held gate again. `outcome` is what [`hyalos_policy::ask`] returned for `request`, which
+    /// must be the gate and inputs the hold holds. Only an on-time allow releases the hold, recorded
+    /// as resolved by re-evaluation with the gate's reason. Unknown, a timeout and a refusal leave it
+    /// open and write nothing (ADR-0009, ADR-0025). A hold whose stakes need a decision cannot be
+    /// released this way and is refused.
+    pub fn reevaluate_hold(
+        &mut self,
+        at: Timestamp,
+        hold: HoldId,
+        request: &GateRequest,
+        outcome: Outcome,
+    ) -> Result<Reevaluation, EngineError> {
+        let held = self.open_hold(hold)?;
+        if held.gate != request.gate || held.inputs != request.inputs {
+            return Err(EngineError::Rule(RuleViolation::ReevaluatedAnotherRequest(
+                hold,
+            )));
+        }
+        match outcome {
+            Outcome::Proceed { reason } => {
+                let head = self.submit_checked(
+                    at,
+                    Origin::Engine,
+                    Event::HoldResolved {
+                        hold,
+                        by: Resolution::Reevaluated,
+                        reason,
+                    },
+                )?;
+                Ok(Reevaluation::Released(head))
+            }
+            Outcome::Refuse { .. } | Outcome::Hold { .. } => Ok(Reevaluation::StillHeld),
+        }
+    }
+
+    /// Records a decision by the tier of the held action: policy for a routine hold, the verifier
+    /// agent for an escalated one, a human for an irreversible one or one touching credentials,
+    /// policy, publishing or a capability grant (ADR-0012, ADR-0025). A decider not allowed at the
+    /// hold's stakes is refused and nothing is written. `reason` is a short code, never free text.
+    pub fn decide_hold(
+        &mut self,
+        at: Timestamp,
+        hold: HoldId,
+        decider: Decider,
+        reason: ReasonCode,
+    ) -> Result<Head, EngineError> {
+        self.submit_checked(
+            at,
+            Origin::Engine,
+            Event::HoldResolved {
+                hold,
+                by: decider.resolution(),
+                reason,
+            },
+        )
+    }
+
+    fn open_hold(&self, hold: HoldId) -> Result<&crate::Hold, EngineError> {
+        match self.state.holds().get(&hold) {
+            None => Err(EngineError::Rule(RuleViolation::UnknownHold(hold))),
+            Some(h) if h.resolved.is_some() => {
+                Err(EngineError::Rule(RuleViolation::HoldNotOpen(hold)))
+            }
+            Some(h) => Ok(h),
         }
     }
 }
