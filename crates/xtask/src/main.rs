@@ -64,6 +64,10 @@ const EXTERNAL_ALLOWED: &[(&str, &[&str])] = &[
             // the value; neither crate reads the clock or an entropy source.
             "serde",
             "serde_json",
+            // Ed25519 for the job manifest (ADR-0031), the same crate and settings as the log's
+            // signatures. Signing is deterministic (RFC 8032); keys come in as bytes, and the
+            // `rand_core` feature that could generate one is off.
+            "ed25519-dalek",
         ],
     ),
     (

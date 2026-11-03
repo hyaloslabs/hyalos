@@ -11,3 +11,8 @@ workspace = true
 
 [dependencies]
 hyalos-types = { path = "../types" }
+
+[dev-dependencies]
+# Hand-built signatures in tests, to show what the broker refuses.
+ed25519-dalek = "3"
+serde_json = "1"

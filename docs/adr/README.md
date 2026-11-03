@@ -44,3 +44,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0028](0028-auditing-snapshots-against-their-archives.md) | Auditing snapshots against their archives | Accepted |
 | [0029](0029-cancelling-a-held-task-and-recording-a-refusal.md) | Cancelling a held task, and recording a refusal | Accepted |
 | [0030](0030-hardening-the-engines-key-owner-and-core-dumps.md) | Hardening the engine's key: its owner, and core dumps | Accepted |
+| [0031](0031-the-signed-manifest-and-its-admission.md) | The signed manifest and its admission | Proposed |
