@@ -680,6 +680,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyalos-substrate-contract"
+version = "0.0.0"
+dependencies = [
+ "hyalos-substrate",
+ "hyalos-types",
+]
+
+[[package]]
 name = "hyalos-types"
 version = "0.0.0"
 dependencies = [
