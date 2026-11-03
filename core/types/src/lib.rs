@@ -14,10 +14,11 @@ pub mod schema;
 pub mod snapshot;
 pub mod stakes;
 pub mod time;
+pub mod wire;
 
 pub use digest::Digest;
 pub use entropy::{Entropy, SeededRng};
-pub use event::{Event, EventError, Gate, HoldReason, JobOutcome, Resolution};
+pub use event::{Event, EventError, Gate, HoldReason, JobOutcome, MAX_POLICY_DOCUMENT, Resolution};
 pub use ids::{HoldId, JobId, TaskId};
 pub use manifest::{
     Approval, Budget, MANIFEST_VERSION, Manifest, ManifestError, ManifestKey, ManifestPublicKey,
@@ -26,6 +27,6 @@ pub use manifest::{
 pub use origin::Origin;
 pub use reason::{Answer, ReasonCode};
 pub use schema::{Schema, Upcast, UpcastFn, Value};
-pub use snapshot::{ImageError, STATE_VERSION, StateImage};
+pub use snapshot::{ImageError, PolicyImage, STATE_VERSION, StateImage};
 pub use stakes::{Sensitive, Stakes, Tier, Touches};
 pub use time::{Clock, Timestamp};

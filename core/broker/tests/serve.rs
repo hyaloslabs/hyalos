@@ -1,0 +1,337 @@
+//! The broker serves the engine over the channel and admits only the engine's manifests (S3.11,
+//! ADR-0002, ADR-0004, ADR-0035).
+
+use std::cell::Cell;
+use std::collections::BTreeSet;
+
+use hyalos_broker::{Broker, Exit, ServeError, serve};
+use hyalos_types::wire::{ToBroker, ToEngine, WIRE_VERSION, WireError, read_frame, write_frame};
+use hyalos_types::{
+    Budget, Clock, JobId, MANIFEST_VERSION, Manifest, ManifestKey, ReasonCode, Role, Timestamp,
+};
+
+type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+struct Now(Cell<u64>);
+
+impl Clock for Now {
+    fn now(&self) -> Timestamp {
+        Timestamp::from_millis(self.0.get())
+    }
+}
+
+fn engine_key() -> ManifestKey {
+    ManifestKey::from_seed([3; 32])
+}
+
+fn manifest(job: u64, role: Role, deadline: u64) -> Manifest {
+    Manifest {
+        version: MANIFEST_VERSION,
+        job: JobId::from_seq(job),
+        role,
+        tainted: false,
+        repo: "hyaloslabs/hyalos".into(),
+        branch_prefix: "hyalos/".into(),
+        actions: BTreeSet::new(),
+        egress_hosts: BTreeSet::new(),
+        tools: BTreeSet::new(),
+        data_flows: BTreeSet::new(),
+        budget: Budget { tokens: 1 },
+        deadline: Timestamp::from_millis(deadline),
+        approval: None,
+    }
+}
+
+fn start(key: &ManifestKey, m: &Manifest, role: Role) -> Res<ToBroker> {
+    Ok(ToBroker::StartJob {
+        job: m.job,
+        role,
+        manifest: key.sign(m)?.to_bytes()?,
+    })
+}
+
+fn hello() -> ToBroker {
+    ToBroker::Hello {
+        version: WIRE_VERSION,
+        manifest_key: engine_key().public(),
+    }
+}
+
+fn code(text: &str) -> Res<ReasonCode> {
+    ReasonCode::new(text).ok_or_else(|| "bad code".into())
+}
+
+/// The frames of a conversation, as the engine would send them.
+fn frames(messages: &[ToBroker]) -> Res<Vec<u8>> {
+    let mut out = Vec::new();
+    for m in messages {
+        write_frame(&mut out, m)?;
+    }
+    Ok(out)
+}
+
+/// What the broker answers to a conversation, and how serving ended.
+fn run(messages: &[ToBroker], now: u64) -> Res<(Result<Exit, ServeError>, Vec<ToEngine>)> {
+    let input = frames(messages)?;
+    let mut output = Vec::new();
+    let result = serve(&mut &input[..], &mut output, &Now(Cell::new(now)));
+    let mut answers = Vec::new();
+    let mut rest = &output[..];
+    while let Some(a) = read_frame::<_, ToEngine>(&mut rest)? {
+        answers.push(a);
+    }
+    Ok((result, answers))
+}
+
+fn ready() -> ToEngine {
+    ToEngine::Ready {
+        version: WIRE_VERSION,
+    }
+}
+
+#[test]
+fn it_admits_the_engines_manifest_and_enforces_what_it_says() -> Res {
+    let m = manifest(5, Role::Actor, 10_000);
+    let (result, answers) = run(
+        &[
+            hello(),
+            start(&engine_key(), &m, Role::Actor)?,
+            ToBroker::Shutdown,
+        ],
+        100,
+    )?;
+    assert_eq!(result, Ok(Exit::Shutdown));
+    assert_eq!(
+        answers,
+        vec![
+            ready(),
+            ToEngine::Admitted {
+                job: JobId::from_seq(5)
+            }
+        ]
+    );
+    // The manifest the broker holds is the one the engine signed, read back.
+    let mut broker = Broker::new(engine_key().public());
+    broker.handle(start(&engine_key(), &m, Role::Actor)?, &Now(Cell::new(100)))?;
+    assert_eq!(broker.manifest(JobId::from_seq(5)), Some(&m));
+    Ok(())
+}
+
+#[test]
+fn it_refuses_a_manifest_the_engine_did_not_sign_and_goes_on_serving() -> Res {
+    let other = ManifestKey::from_seed([4; 32]);
+    let forged = manifest(5, Role::Actor, 10_000);
+    let good = manifest(6, Role::Actor, 10_000);
+    let (result, answers) = run(
+        &[
+            hello(),
+            start(&other, &forged, Role::Actor)?,
+            start(&engine_key(), &good, Role::Actor)?,
+        ],
+        100,
+    )?;
+    // The refusal fails that job; the next one is served, and ending the channel ends serving.
+    assert_eq!(result, Ok(Exit::EngineClosed));
+    assert_eq!(
+        answers,
+        vec![
+            ready(),
+            ToEngine::Refused {
+                job: JobId::from_seq(5),
+                reason: code("manifest.bad_signature")?
+            },
+            ToEngine::Admitted {
+                job: JobId::from_seq(6)
+            },
+        ]
+    );
+    // And a refused job is not live afterwards.
+    let mut broker = Broker::new(engine_key().public());
+    broker.handle(start(&other, &forged, Role::Actor)?, &Now(Cell::new(100)))?;
+    assert_eq!(broker.manifest(JobId::from_seq(5)), None);
+    Ok(())
+}
+
+#[test]
+fn every_check_of_admission_gives_its_own_code() -> Res {
+    let key = engine_key();
+    let live = manifest(5, Role::Actor, 10_000);
+    // A manifest for another job under the credential of this one is not possible to send, so the
+    // wrong-job case is a relabelled envelope: the engine signed job 9 and says it started job 5.
+    let for_nine = manifest(9, Role::Actor, 10_000);
+    let relabelled = ToBroker::StartJob {
+        job: JobId::from_seq(5),
+        role: Role::Actor,
+        manifest: key.sign(&for_nine)?.to_bytes()?,
+    };
+    let mut wrong_version = key.sign(&live)?;
+    wrong_version = hyalos_types::SignedManifest::from_parts(
+        7,
+        wrong_version.payload().to_vec(),
+        *wrong_version.signature(),
+    );
+    let cases: Vec<(&str, ToBroker, u64, &str)> = vec![
+        ("wrong job", relabelled, 100, "admission.wrong_job"),
+        (
+            "wrong role",
+            start(&key, &live, Role::Reader)?,
+            100,
+            "admission.role_mismatch",
+        ),
+        (
+            "expired",
+            start(&key, &live, Role::Actor)?,
+            10_001,
+            "admission.expired",
+        ),
+        (
+            "unknown version",
+            ToBroker::StartJob {
+                job: JobId::from_seq(5),
+                role: Role::Actor,
+                manifest: wrong_version.to_bytes()?,
+            },
+            100,
+            "manifest.unknown_version",
+        ),
+        (
+            "not an envelope",
+            ToBroker::StartJob {
+                job: JobId::from_seq(5),
+                role: Role::Actor,
+                manifest: b"not json".to_vec(),
+            },
+            100,
+            "manifest.malformed",
+        ),
+    ];
+    for (what, message, now, expected) in cases {
+        let (result, answers) = run(&[hello(), message], now)?;
+        assert_eq!(result, Ok(Exit::EngineClosed), "{what}");
+        assert_eq!(
+            answers,
+            vec![
+                ready(),
+                ToEngine::Refused {
+                    job: JobId::from_seq(5),
+                    reason: code(expected)?
+                }
+            ],
+            "{what}"
+        );
+    }
+    // Exactly at the deadline is still valid.
+    let (_, answers) = run(&[hello(), start(&key, &live, Role::Actor)?], 10_000)?;
+    assert!(matches!(answers.get(1), Some(ToEngine::Admitted { .. })));
+    Ok(())
+}
+
+#[test]
+fn a_job_is_started_once_and_ended_jobs_are_not_admitted_again_without_a_new_start() -> Res {
+    let key = engine_key();
+    let m = manifest(5, Role::Actor, 10_000);
+    let (_, answers) = run(
+        &[
+            hello(),
+            start(&key, &m, Role::Actor)?,
+            // The same job again while live: the first admission stands.
+            start(&key, &m, Role::Actor)?,
+            ToBroker::EndJob {
+                job: JobId::from_seq(5),
+            },
+            // After it ended, the engine starting it again is a new start.
+            start(&key, &m, Role::Actor)?,
+        ],
+        100,
+    )?;
+    let job = JobId::from_seq(5);
+    assert_eq!(
+        answers,
+        vec![
+            ready(),
+            ToEngine::Admitted { job },
+            ToEngine::Refused {
+                job,
+                reason: code("admission.already_live")?
+            },
+            ToEngine::Admitted { job },
+        ]
+    );
+    // Ending a job drops its manifest.
+    let mut broker = Broker::new(key.public());
+    broker.handle(start(&key, &m, Role::Actor)?, &Now(Cell::new(100)))?;
+    broker.handle(ToBroker::EndJob { job }, &Now(Cell::new(100)))?;
+    assert_eq!(broker.manifest(job), None);
+    Ok(())
+}
+
+#[test]
+fn the_engine_must_say_hello_first_once_and_in_a_version_the_broker_speaks() -> Res {
+    let m = manifest(5, Role::Actor, 10_000);
+    let before = run(&[start(&engine_key(), &m, Role::Actor)?], 100)?;
+    assert_eq!(before, (Err(ServeError::Order), vec![]));
+    let twice = run(&[hello(), hello()], 100)?;
+    assert_eq!(twice, (Err(ServeError::Order), vec![ready()]));
+    let nothing = run(&[], 100)?;
+    assert_eq!(nothing, (Err(ServeError::Order), vec![]));
+    let newer = ToBroker::Hello {
+        version: WIRE_VERSION + 1,
+        manifest_key: engine_key().public(),
+    };
+    assert_eq!(
+        run(&[newer], 100)?,
+        (
+            Err(ServeError::Version {
+                engine: WIRE_VERSION + 1
+            }),
+            vec![]
+        )
+    );
+    Ok(())
+}
+
+#[test]
+fn a_frame_that_is_not_a_message_ends_the_channel_and_is_not_served() -> Res {
+    let mut input = frames(&[hello()])?;
+    // A well-framed body that is not a message from the engine: here, one meant for the engine.
+    let body = br#"{"kind":"admitted","job":5}"#;
+    input.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    input.extend_from_slice(body);
+    let mut output = Vec::new();
+    let result = serve(&mut &input[..], &mut output, &Now(Cell::new(0)));
+    assert_eq!(result, Err(ServeError::Wire(WireError::Malformed)));
+    // A channel cut off inside a frame is a fault, not a clean close.
+    let mut cut = frames(&[hello(), ToBroker::Shutdown])?;
+    cut.truncate(cut.len() - 1);
+    let result = serve(&mut &cut[..], &mut Vec::new(), &Now(Cell::new(0)));
+    assert_eq!(result, Err(ServeError::Wire(WireError::Truncated)));
+    Ok(())
+}
+
+#[test]
+fn a_refused_job_can_be_started_again_with_a_manifest_that_is_good() -> Res {
+    let other = ManifestKey::from_seed([4; 32]);
+    let m = manifest(5, Role::Actor, 10_000);
+    let job = JobId::from_seq(5);
+    let (_, answers) = run(
+        &[
+            hello(),
+            start(&other, &m, Role::Actor)?,
+            start(&engine_key(), &m, Role::Actor)?,
+        ],
+        100,
+    )?;
+    // The refusal did not leave the job marked live, so the retry is a first start, not a repeat.
+    assert_eq!(
+        answers,
+        vec![
+            ready(),
+            ToEngine::Refused {
+                job,
+                reason: code("manifest.bad_signature")?
+            },
+            ToEngine::Admitted { job },
+        ]
+    );
+    Ok(())
+}

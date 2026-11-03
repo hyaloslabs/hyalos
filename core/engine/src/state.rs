@@ -8,12 +8,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use hyalos_types::snapshot::{
-    CancelledImage, HoldImage, JobEndImage, JobImage, PrunedImage, ResolvedImage, StateImage,
-    TaskImage,
+    CancelledImage, HoldImage, JobEndImage, JobImage, PolicyImage, PrunedImage, ResolvedImage,
+    StateImage, TaskImage,
 };
 use hyalos_types::{
-    Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode,
-    Resolution, Stakes, TaskId, Timestamp,
+    Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, MAX_POLICY_DOCUMENT,
+    Origin, ReasonCode, Resolution, Sensitive, Stakes, TaskId, Timestamp,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,6 +178,14 @@ pub enum RuleViolation {
     NotASnapshotOfThisLog {
         last_seq: u64,
     },
+    /// A policy change is irreversible and touches policy, so only a human approves it (ADR-0034).
+    PolicyNeedsAHuman {
+        by: Resolution,
+    },
+    /// A policy document is bounded (ADR-0034).
+    PolicyTooLarge {
+        len: usize,
+    },
 }
 
 impl fmt::Display for RuleViolation {
@@ -228,6 +236,14 @@ impl fmt::Display for RuleViolation {
             RuleViolation::ThroughTheEngineApi { kind } => write!(
                 f,
                 "{kind} is recorded by an engine call (cancel_task or reevaluate_hold), not by submitting it"
+            ),
+            RuleViolation::PolicyNeedsAHuman { by } => write!(
+                f,
+                "a policy change needs a human's approval; {by:?} may not approve one (ADR-0012, ADR-0034)"
+            ),
+            RuleViolation::PolicyTooLarge { len } => write!(
+                f,
+                "a policy document of {len} bytes is larger than the {MAX_POLICY_DOCUMENT} bytes allowed"
             ),
             RuleViolation::NotASnapshotOfThisLog { last_seq } => write!(
                 f,
@@ -287,9 +303,22 @@ pub struct State {
     jobs: BTreeMap<JobId, Job>,
     holds: BTreeMap<HoldId, Hold>,
     pruned: Vec<Pruned>,
+    policy: Option<PolicyApproval>,
     pending: Option<Pending>,
     last_seq: u64,
     last_at: Option<Timestamp>,
+}
+
+/// The operator policy in force: the document from the latest `policy.approved` event (ADR-0034).
+/// Before any, there is none, and only the shipped baseline applies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyApproval {
+    /// The event that approved it.
+    pub seq: u64,
+    pub at: Timestamp,
+    pub by: Resolution,
+    pub reason: ReasonCode,
+    pub document: String,
 }
 
 /// An archive that was deleted from the machine, as the log recorded it (ADR-0026).
@@ -317,6 +346,11 @@ impl State {
     }
 
     /// Every archive recorded as pruned, in the order it was recorded.
+    /// The operator policy in force, if one was ever approved.
+    pub fn policy(&self) -> Option<&PolicyApproval> {
+        self.policy.as_ref()
+    }
+
     pub fn pruned(&self) -> &[Pruned] {
         &self.pruned
     }
@@ -501,6 +535,22 @@ impl State {
                 }
                 Some(_) => Ok(()),
             },
+            Event::PolicyApproved { document, by, .. } => {
+                // The same authority table as releasing a hold (ADR-0025): a change of policy is
+                // irreversible and touches policy, so it is a human's.
+                if !Stakes::irreversible()
+                    .touching(Sensitive::Policy)
+                    .may_be_resolved_by(*by)
+                {
+                    return Err(RuleViolation::PolicyNeedsAHuman { by: *by });
+                }
+                if document.len() > MAX_POLICY_DOCUMENT {
+                    return Err(RuleViolation::PolicyTooLarge {
+                        len: document.len(),
+                    });
+                }
+                Ok(())
+            }
             Event::ArchivePruned {
                 last_seq,
                 last_hash,
@@ -649,6 +699,19 @@ impl State {
             }
             // Evidence only: it changes no state.
             Event::HoldRefused { .. } => {}
+            Event::PolicyApproved {
+                document,
+                by,
+                reason,
+            } => {
+                self.policy = Some(PolicyApproval {
+                    seq,
+                    at,
+                    by: *by,
+                    reason: reason.clone(),
+                    document: document.clone(),
+                })
+            }
             Event::ArchivePruned {
                 last_seq,
                 last_hash,
@@ -675,6 +738,7 @@ impl State {
             jobs,
             holds,
             pruned,
+            policy,
             pending,
             last_seq,
             last_at,
@@ -779,6 +843,22 @@ impl State {
                     }
                 })
                 .collect(),
+            policy: policy.as_ref().map(|p| {
+                let PolicyApproval {
+                    seq,
+                    at,
+                    by,
+                    reason,
+                    document,
+                } = p;
+                PolicyImage {
+                    seq: *seq,
+                    at: at.as_millis(),
+                    by: *by,
+                    reason: reason.clone(),
+                    document: document.clone(),
+                }
+            }),
         })
     }
 
@@ -793,6 +873,7 @@ impl State {
             jobs,
             holds,
             pruned,
+            policy,
         } = image;
         let mut state = State {
             last_seq,
@@ -851,6 +932,13 @@ impl State {
                 last_hash: p.last_hash,
             });
         }
+        state.policy = policy.map(|p| PolicyApproval {
+            seq: p.seq,
+            at: Timestamp::from_millis(p.at),
+            by: p.by,
+            reason: p.reason,
+            document: p.document,
+        });
         let broken = state.invariant_violations();
         if !broken.is_empty() {
             return Err(format!(

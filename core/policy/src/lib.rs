@@ -5,6 +5,10 @@
 
 mod cedar;
 mod gate;
+mod shipped;
 
-pub use cedar::{ParseError, Policies, Query, codes};
+pub use cedar::{LoadError, ParseError, Policies, Query, codes};
 pub use gate::{Evaluate, Fault, GateRequest, Outcome, Verdict, ask};
+pub use shipped::{
+    Action, BASELINE, JobFacts, PolicyRequest, SCHEMA, TargetFacts, Tier, tier_group,
+};

@@ -55,6 +55,11 @@ fn accept(e: &mut Engine, n: u64, event: Event) -> Res {
             };
             e.reevaluate_hold(at(n), hold, &request, Outcome::Refuse { reason })?;
         }
+        Event::PolicyApproved {
+            document, reason, ..
+        } => {
+            e.approve_policy(at(n), &document, Decider::Human, reason)?;
+        }
         other => {
             e.submit(at(n), Origin::Engine, other)?;
         }
@@ -135,6 +140,11 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
                 },
             }
         }
+        "policy.approved" => Event::PolicyApproved {
+            document: "permit (principal, action == Action::\"read\", resource);".into(),
+            by: Resolution::Human,
+            reason: why(),
+        },
         "archive.pruned" => {
             // Only an archive the log made can be named, so compact first and name where it ended.
             go(&mut e, 1, Event::TaskCreated { request: d(1) })?;

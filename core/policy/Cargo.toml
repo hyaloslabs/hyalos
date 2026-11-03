@@ -10,7 +10,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-cedar-policy = { version = "4.14.1", default-features = false }
+# Pinned exactly: cedar-policy-symcc, which proves things about the baseline in CI, needs this release (ADR-0008).
+cedar-policy = { version = "=4.14.1", default-features = false }
 hyalos-types = { path = "../types" }
 
 [dev-dependencies]
