@@ -47,3 +47,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0031](0031-the-signed-manifest-and-its-admission.md) | The signed manifest and its admission | Proposed |
 | [0032](0032-the-substrate-interface-and-its-contract.md) | The substrate interface and its contract | Proposed |
 | [0033](0033-the-shipped-policy-schema-baseline-and-proofs.md) | The shipped policy schema, baseline and proofs | Proposed |
+| [0034](0034-the-operator-policy-store-and-minting-within-policy.md) | The operator policy store and minting within policy | Proposed |

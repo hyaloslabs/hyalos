@@ -10,25 +10,15 @@ pub const SCHEMA: &str = include_str!("../policies/schema.cedarschema");
 /// The shipped baseline policies.
 pub const BASELINE: &str = include_str!("../policies/baseline.cedar");
 
-/// How much an action matters (ADR-0012). The schema puts each action in exactly one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Tier {
-    /// Decided by policy.
-    Routine,
-    /// Deterministic checks plus a verifier, optionally a human.
-    Escalated,
-    /// Always a human.
-    Irreversible,
-}
+pub use hyalos_types::Tier;
 
-impl Tier {
-    /// The action group in the schema that stands for this tier.
-    pub fn group(self) -> &'static str {
-        match self {
-            Tier::Routine => "routine",
-            Tier::Escalated => "escalated",
-            Tier::Irreversible => "irreversible",
-        }
+/// The action group in the schema that stands for a tier (ADR-0012). The schema puts each action in
+/// exactly one.
+pub fn tier_group(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Routine => "routine",
+        Tier::Escalated => "escalated",
+        Tier::Irreversible => "irreversible",
     }
 }
 
@@ -39,6 +29,8 @@ pub enum Action {
     Push,
     OpenPr,
     Comment,
+    UseTool,
+    DataFlow,
     RequestHost,
     Merge,
     ChangePolicy,
@@ -48,11 +40,13 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 10] = [
+    pub const ALL: [Action; 12] = [
         Action::Read,
         Action::Push,
         Action::OpenPr,
         Action::Comment,
+        Action::UseTool,
+        Action::DataFlow,
         Action::RequestHost,
         Action::Merge,
         Action::ChangePolicy,
@@ -68,6 +62,8 @@ impl Action {
             Action::Push => "push",
             Action::OpenPr => "open_pr",
             Action::Comment => "comment",
+            Action::UseTool => "use_tool",
+            Action::DataFlow => "data_flow",
             Action::RequestHost => "request_host",
             Action::Merge => "merge",
             Action::ChangePolicy => "change_policy",
@@ -77,10 +73,20 @@ impl Action {
         }
     }
 
+    /// The action with this name in the schema, if there is one.
+    pub fn from_id(id: &str) -> Option<Action> {
+        Action::ALL.into_iter().find(|a| a.id() == id)
+    }
+
     /// The tier the schema puts it in. A test compares this with the schema itself.
     pub fn tier(self) -> Tier {
         match self {
-            Action::Read | Action::Push | Action::OpenPr | Action::Comment => Tier::Routine,
+            Action::Read
+            | Action::Push
+            | Action::OpenPr
+            | Action::Comment
+            | Action::UseTool
+            | Action::DataFlow => Tier::Routine,
             Action::RequestHost => Tier::Escalated,
             Action::Merge
             | Action::ChangePolicy
@@ -97,12 +103,16 @@ pub struct JobFacts {
     pub tainted: bool,
     /// `owner/name`.
     pub repo: String,
+    /// The token budget its manifest asks for.
+    pub budget_tokens: u64,
 }
 
 /// What the job is acting on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetFacts {
     pub repo: String,
+    /// The host, tool or data flow asked for; empty for a repo action.
+    pub name: String,
     /// The branch is under the job's branch prefix; the engine compares them.
     pub in_branch_prefix: bool,
     pub protected: bool,
@@ -136,10 +146,13 @@ impl PolicyRequest {
 
     pub(crate) fn entities_json(&self) -> String {
         format!(
-            r#"[{{"uid":{{"type":"Job","id":"job"}},"attrs":{{"tainted":{},"repo":{}}},"parents":[]}},{{"uid":{{"type":"Target","id":"target"}},"attrs":{{"repo":{},"in_branch_prefix":{},"protected":{}}},"parents":[]}}]"#,
+            r#"[{{"uid":{{"type":"Job","id":"job"}},"attrs":{{"tainted":{},"repo":{},"budget_tokens":{}}},"parents":[]}},{{"uid":{{"type":"Target","id":"target"}},"attrs":{{"repo":{},"name":{},"in_branch_prefix":{},"protected":{}}},"parents":[]}}]"#,
             self.job.tainted,
             json_string(&self.job.repo),
+            // Cedar's Long is signed; a budget past it is as large as it can say.
+            i64::try_from(self.job.budget_tokens).unwrap_or(i64::MAX),
             json_string(&self.target.repo),
+            json_string(&self.target.name),
             self.target.in_branch_prefix,
             self.target.protected,
         )

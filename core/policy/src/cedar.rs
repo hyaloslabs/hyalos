@@ -253,6 +253,12 @@ pub mod codes {
     pub fn denied() -> ReasonCode {
         code("policy.denied")
     }
+
+    /// The stored operator policy no longer validates against the schema, so what depends on it is
+    /// held until the operator replaces it (unknown).
+    pub fn invalid() -> ReasonCode {
+        code("policy.invalid")
+    }
 }
 
 #[cfg(test)]

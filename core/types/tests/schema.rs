@@ -177,6 +177,23 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             reason: ReasonCode::new("egress.denied").ok_or("reason")?,
         },
     ));
+
+    // Version 5 added `policy.approved` and changed no payload, so the ten older kinds read as they did
+    // at version 4.
+    let at_4: Vec<_> = all.iter().filter(|g| g.0 == 4).cloned().collect();
+    for (_, kind, json, event) in at_4 {
+        all.push((5, kind, json, event));
+    }
+    all.push((
+        5,
+        "policy.approved",
+        r#"{"kind":"policy.approved","document":"permit (principal, action, resource);","by":"human","reason":"policy.approved"}"#.into(),
+        Event::PolicyApproved {
+            document: "permit (principal, action, resource);".into(),
+            by: Resolution::Human,
+            reason: ReasonCode::new("policy.approved").ok_or("reason")?,
+        },
+    ));
     Ok(all)
 }
 
@@ -185,6 +202,7 @@ fn introduced(kind: &str) -> u32 {
     match kind {
         "archive.pruned" => 3,
         "task.cancelled" | "hold.refused" => 4,
+        "policy.approved" => 5,
         _ => 1,
     }
 }
