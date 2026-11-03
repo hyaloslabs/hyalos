@@ -1,6 +1,6 @@
 # ADR-0032: The substrate interface and its contract
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

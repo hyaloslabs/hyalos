@@ -1,6 +1,6 @@
 # ADR-0031: The signed manifest and its admission
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
