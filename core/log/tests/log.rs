@@ -266,6 +266,23 @@ fn the_engines_own_bugs_cannot_rewrite_history() -> Res {
 }
 
 #[test]
+fn a_log_can_be_verified_while_the_engine_still_has_it_open() -> Res {
+    let path = fresh_path("live")?;
+    let mut log = Log::open(&path, key())?;
+    let mut last = None;
+    for i in 1..=5u64 {
+        last = Some(log.append(Timestamp::from_millis(i), Origin::Engine, "live", 1, b"{}")?);
+    }
+    // The log is still open, so recent events may be only in the -wal file.
+    let v = verify(&path, &public(), last)?;
+    assert_eq!(v.events, 5);
+    // And the engine can keep appending afterwards.
+    log.append(Timestamp::from_millis(6), Origin::Engine, "live", 1, b"{}")?;
+    assert_eq!(verify(&path, &public(), None)?.events, 6);
+    Ok(())
+}
+
+#[test]
 fn reopening_continues_the_same_chain() -> Res {
     let path = fresh_path("reopen")?;
     {
