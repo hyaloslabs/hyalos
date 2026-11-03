@@ -1,6 +1,6 @@
 # ADR-0023: Event schema versions and upcasting
 
-**Status:** Proposed
+**Status:** Accepted on November 2, 2026, after upcasting was built and tested against an invented version 1 log, mixed-version logs, backup and restore, and the refusals (#128). Downgrade is unsupported by design.
 
 ## Context
 
