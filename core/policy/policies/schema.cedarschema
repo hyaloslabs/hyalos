@@ -8,11 +8,15 @@ entity Job = {
   tainted: Bool,
   // owner/name of the one repo the manifest names.
   repo: String,
+  // The token budget its manifest asks for, so policy can cap it.
+  budget_tokens: Long,
 };
 
 // What the job is acting on.
 entity Target = {
   repo: String,
+  // The host, tool or data flow being asked for, and empty for a repo action.
+  name: String,
   // The branch is under the job's branch prefix. The engine compares it; Cedar has no prefix test.
   in_branch_prefix: Bool,
   protected: Bool,
@@ -44,6 +48,12 @@ action push in [routine, repo_write, branch_write]
 action open_pr in [routine, repo_write]
   appliesTo { principal: [Job], resource: [Target], context: Facts };
 action comment in [routine, repo_write]
+  appliesTo { principal: [Job], resource: [Target], context: Facts };
+// A tool the job may use, named by the target.
+action use_tool in [routine]
+  appliesTo { principal: [Job], resource: [Target], context: Facts };
+// A data flow the job may carry out, named by the target (for example `repo->model`).
+action data_flow in [routine]
   appliesTo { principal: [Job], resource: [Target], context: Facts };
 // A host outside the egress allowlist.
 action request_host in [escalated]

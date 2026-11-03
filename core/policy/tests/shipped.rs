@@ -20,9 +20,11 @@ fn fine(action: Action) -> PolicyRequest {
         job: JobFacts {
             tainted: false,
             repo: "hyaloslabs/hyalos".into(),
+            budget_tokens: 1_000,
         },
         target: TargetFacts {
             repo: "hyaloslabs/hyalos".into(),
+            name: String::new(),
             in_branch_prefix: true,
             protected: false,
         },
@@ -73,7 +75,10 @@ fn the_rust_actions_are_exactly_the_schemas_and_each_is_in_exactly_one_tier() ->
         );
     }
     let tiers = [Tier::Routine, Tier::Escalated, Tier::Irreversible];
-    let groups: Vec<&str> = tiers.iter().map(|t| t.group()).collect();
+    let groups: Vec<&str> = tiers
+        .iter()
+        .map(|t| hyalos_policy::tier_group(*t))
+        .collect();
     // Every Rust action is in the schema, and its schema tier is the Rust one.
     for action in Action::ALL {
         let ps = parents
@@ -89,7 +94,12 @@ fn the_rust_actions_are_exactly_the_schemas_and_each_is_in_exactly_one_tier() ->
             "{} is in tiers {in_tiers:?}",
             action.id()
         );
-        assert_eq!(*in_tiers[0], action.tier().group(), "{}", action.id());
+        assert_eq!(
+            *in_tiers[0],
+            hyalos_policy::tier_group(action.tier()),
+            "{}",
+            action.id()
+        );
     }
     // And every schema action that can be asked is a Rust action: none is left out.
     let askable: Vec<&String> = parents

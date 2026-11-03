@@ -23,8 +23,8 @@ fn every_property_holds_for_every_action() -> Res {
         return Ok(());
     };
     let findings = prover.prove_properties()?;
-    // Ten actions, each against every property: none was skipped.
-    assert_eq!(findings.len(), 10 * PROPERTIES.len());
+    // Twelve actions, each against every property: none was skipped.
+    assert_eq!(findings.len(), 12 * PROPERTIES.len());
     let broken: Vec<String> = findings
         .iter()
         .filter_map(|f| {

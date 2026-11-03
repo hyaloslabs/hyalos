@@ -9,4 +9,6 @@ mod shipped;
 
 pub use cedar::{LoadError, ParseError, Policies, Query, codes};
 pub use gate::{Evaluate, Fault, GateRequest, Outcome, Verdict, ask};
-pub use shipped::{Action, BASELINE, JobFacts, PolicyRequest, SCHEMA, TargetFacts, Tier};
+pub use shipped::{
+    Action, BASELINE, JobFacts, PolicyRequest, SCHEMA, TargetFacts, Tier, tier_group,
+};

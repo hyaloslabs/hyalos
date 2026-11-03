@@ -5,11 +5,15 @@
 
 mod audit;
 mod engine;
+mod mint;
 mod state;
 
 pub use audit::{Audit, AuditError, Gap, audit};
 pub use engine::{
-    Compaction, Decider, Engine, EngineError, Reevaluation, Ruling, pruned_archives, replay,
-    replay_from, replay_with,
+    Compaction, Decider, Engine, EngineError, PolicyUnavailable, Reevaluation, Ruling,
+    pruned_archives, replay, replay_from, replay_with,
 };
-pub use state::{Cancelled, Hold, Job, Pruned, Resolved, RuleViolation, State, Task, TaskStatus};
+pub use mint::{MintRefusal, mint_codes};
+pub use state::{
+    Cancelled, Hold, Job, PolicyApproval, Pruned, Resolved, RuleViolation, State, Task, TaskStatus,
+};

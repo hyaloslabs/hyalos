@@ -7,7 +7,7 @@ use hyalos_log::{
     Anchor, CompactError, Head, Log, LogError, LogKey, NewEvent, PublicKey, StoredEvent,
     VerifyError, read_verified,
 };
-use hyalos_policy::{GateRequest, Outcome};
+use hyalos_policy::{GateRequest, LoadError, Outcome, Policies};
 use hyalos_types::event::SCHEMA;
 use hyalos_types::snapshot::{STATE_VERSION, StateImage};
 use hyalos_types::{
@@ -39,6 +39,9 @@ pub enum EngineError {
     },
     /// The log's latest snapshot could not be used as the state to start from (ADR-0026).
     Snapshot(String),
+    /// A policy document was refused before anything was written: it is not valid Cedar, or it does
+    /// not match the shipped schema (ADR-0008, ADR-0034).
+    Policy(LoadError),
     /// The log was not compacted. It is as it was.
     Compact(CompactError<String>),
     /// An event was appended but could not be projected. This cannot happen, since it was checked
@@ -61,6 +64,7 @@ impl fmt::Display for EngineError {
                 )
             }
             EngineError::Snapshot(e) => write!(f, "the log's snapshot cannot be used: {e}"),
+            EngineError::Policy(e) => write!(f, "{e}"),
             EngineError::Compact(e) => write!(f, "{e}"),
             EngineError::Poisoned => {
                 write!(
@@ -226,6 +230,29 @@ pub enum Reevaluation {
     StillHeld,
 }
 
+/// The approved operator policy cannot be loaded now. Nothing is allowed on its account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyUnavailable {
+    /// The event that approved the document, if there is one.
+    pub since: Option<u64>,
+    pub error: LoadError,
+}
+
+impl fmt::Display for PolicyUnavailable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.since {
+            Some(seq) => write!(
+                f,
+                "the operator policy approved at event {seq} cannot be used, so requests that depend on it are held until a replacement is approved: {}",
+                self.error
+            ),
+            None => write!(f, "the shipped policy cannot be used: {}", self.error),
+        }
+    }
+}
+
+impl std::error::Error for PolicyUnavailable {}
+
 /// Who decided a hold at the tier of its action (ADR-0012). A fresh allow from the gate is not a
 /// decision; it goes through [`Engine::reevaluate_hold`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,7 +280,7 @@ fn through_the_api(origin: Origin, event: &Event) -> Option<RuleViolation> {
     }
     match event {
         Event::HoldResolved { .. } => Some(RuleViolation::ResolveThroughTheEngineApi),
-        Event::TaskCancelled { .. } | Event::HoldRefused { .. } => {
+        Event::TaskCancelled { .. } | Event::HoldRefused { .. } | Event::PolicyApproved { .. } => {
             Some(RuleViolation::ThroughTheEngineApi { kind: event.kind() })
         }
         _ => None,
@@ -654,6 +681,49 @@ impl Engine {
                 reason,
             },
         )
+    }
+
+    /// Whether `document` could be approved as the operator's policy: valid Cedar that matches the
+    /// shipped schema. Ask this before asking a human to approve, so a policy that fails is rejected
+    /// first (ADR-0008). It writes nothing.
+    pub fn check_policy(document: &str) -> Result<(), LoadError> {
+        Policies::load(document).map(|_| ())
+    }
+
+    /// Records a human's approval of `document` as the operator's policy, which from this event on is
+    /// the policy in force (ADR-0003, ADR-0034). The document is checked again here, whatever was
+    /// checked before, and one that fails is refused with nothing written. A policy change is
+    /// irreversible and touches policy, so any decider but a human is refused (ADR-0012). `reason` is
+    /// a short code, never free text.
+    pub fn approve_policy(
+        &mut self,
+        at: Timestamp,
+        document: &str,
+        decider: Decider,
+        reason: ReasonCode,
+    ) -> Result<Head, EngineError> {
+        Self::check_policy(document).map_err(EngineError::Policy)?;
+        self.submit_checked(
+            at,
+            Origin::Engine,
+            Event::PolicyApproved {
+                document: document.to_string(),
+                by: decider.resolution(),
+                reason,
+            },
+        )
+    }
+
+    /// The policy in force: the shipped baseline with the approved operator policy on top, or the
+    /// baseline alone if none was approved. If the approved document no longer validates, which can
+    /// happen after an upgrade changes the schema, there is no policy to answer from and what depends
+    /// on it is held until the operator approves a replacement (ADR-0008, ADR-0034).
+    pub fn policies(&self) -> Result<Policies, PolicyUnavailable> {
+        let (since, document) = match self.state.policy() {
+            Some(p) => (Some(p.seq), p.document.as_str()),
+            None => (None, ""),
+        };
+        Policies::load(document).map_err(|error| PolicyUnavailable { since, error })
     }
 
     fn open_hold(&self, hold: HoldId) -> Result<&crate::Hold, EngineError> {

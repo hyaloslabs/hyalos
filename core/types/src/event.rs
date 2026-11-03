@@ -14,15 +14,16 @@ use crate::{
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
-/// What this build reads: version 4, and versions 1 to 3 upcast to it (ADR-0023, ADR-0025, ADR-0027,
-/// ADR-0029).
+/// What this build reads: version 5, and versions 1 to 4 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// ADR-0029, ADR-0034).
 ///
 /// Version 2 added the stakes of a hold and the reason for resolving one. A version 1 hold is given the
 /// most cautious stakes, so only a human can release it; a version 1 resolution is given an explicit
 /// "unrecorded" reason. Version 3 added `archive.pruned` and changed no payload. Every other kind is the
 /// same in all versions. Version 4 added `task.cancelled` and `hold.refused` and changed no payload.
+/// Version 5 added `policy.approved` and changed no payload.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -163,7 +164,22 @@ pub enum Event {
     /// is refused now. It releases nothing and ends nothing (ADR-0029).
     #[serde(rename = "hold.refused")]
     HoldRefused { hold: HoldId, reason: ReasonCode },
+    /// A human approved this Cedar document as the operator's policy, and from this event on it is the
+    /// policy in force (ADR-0003, ADR-0034). It is the document itself, not a digest: the policy in
+    /// force is the projection of the log, so the log must hold it. It is operator-written policy
+    /// text, which carries no secret. `by` must be a human, since a policy change is irreversible and
+    /// touches policy (ADR-0012, ADR-0025), and the state refuses anyone else.
+    #[serde(rename = "policy.approved")]
+    PolicyApproved {
+        document: String,
+        by: Resolution,
+        reason: ReasonCode,
+    },
 }
+
+/// The largest policy document an event may hold, in bytes. Events are read whole into memory by
+/// replay, so a document is bounded.
+pub const MAX_POLICY_DOCUMENT: usize = 256 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum EventError {
@@ -232,7 +248,8 @@ impl Event {
             | Event::HoldResolved { .. }
             | Event::ArchivePruned { .. }
             | Event::TaskCancelled { .. }
-            | Event::HoldRefused { .. } => origin == Origin::Engine,
+            | Event::HoldRefused { .. }
+            | Event::PolicyApproved { .. } => origin == Origin::Engine,
         }
     }
 
@@ -249,6 +266,7 @@ impl Event {
             Event::ArchivePruned { .. } => "archive.pruned",
             Event::TaskCancelled { .. } => "task.cancelled",
             Event::HoldRefused { .. } => "hold.refused",
+            Event::PolicyApproved { .. } => "policy.approved",
         }
     }
 
@@ -258,7 +276,7 @@ impl Event {
     }
 
     /// Every `kind` value, for checking tables and test coverage.
-    pub const KINDS: [&'static str; 10] = [
+    pub const KINDS: [&'static str; 11] = [
         "task.created",
         "task.completed",
         "job.started",
@@ -269,6 +287,7 @@ impl Event {
         "archive.pruned",
         "task.cancelled",
         "hold.refused",
+        "policy.approved",
     ];
 
     /// Reads an event back from a log row's `kind`, `schema_version` and `payload`, as this build's
@@ -401,6 +420,15 @@ mod tests {
                     reason: ReasonCode::new("egress.denied").unwrap(),
                 },
                 r#"{"kind":"hold.refused","hold":5,"reason":"egress.denied"}"#.to_string(),
+            ),
+            (
+                Event::PolicyApproved {
+                    document: "permit (principal, action, resource);".into(),
+                    by: Resolution::Human,
+                    reason: ReasonCode::new("policy.approved").unwrap(),
+                },
+                r#"{"kind":"policy.approved","document":"permit (principal, action, resource);","by":"human","reason":"policy.approved"}"#
+                    .to_string(),
             ),
         ]
     }
