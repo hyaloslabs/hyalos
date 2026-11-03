@@ -98,6 +98,16 @@ pub fn verify(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
+    verify_connection(&conn, key, expect_head)
+}
+
+/// [`verify`] over a connection that is already open, so the file checked is the one in hand and not
+/// whatever is at a path a moment later.
+pub(crate) fn verify_connection(
+    conn: &Connection,
+    key: &PublicKey,
+    expect_head: Option<Head>,
+) -> Result<Verified, VerifyError> {
     let mut stmt = conn.prepare(
         "SELECT seq, at, origin, kind, schema_version, payload, prev_hash, hash, signature
          FROM events ORDER BY seq",

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use hyalos_engine::{Engine, EngineError, RuleViolation, State, TaskStatus, replay};
-use hyalos_log::{Log, LogKey};
+use hyalos_log::{Log, LogError, LogKey};
 use hyalos_sim::Sim;
 use hyalos_types::{
     Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode,
@@ -336,7 +336,7 @@ fn a_log_that_fails_verification_is_not_loaded() -> Res {
     }
     // Same file, wrong key: the chain fails at event 1.
     let err = Engine::open(&path, LogKey::from_seed([1; 32])).unwrap_err();
-    assert!(matches!(err, EngineError::Verify(_)), "{err}");
+    assert!(matches!(err, EngineError::Log(LogError::WrongKey)), "{err}");
     // Edited payload: the trigger blocks UPDATE, so drop it the way an attacker with the file would.
     let conn = rusqlite::Connection::open(&path)?;
     conn.execute_batch("DROP TRIGGER IF EXISTS events_no_update;")?;

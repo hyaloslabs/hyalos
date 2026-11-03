@@ -9,7 +9,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Answer, Digest, HoldId, JobId, ReasonCode, Schema, TaskId};
+use crate::{Answer, Digest, HoldId, JobId, Origin, ReasonCode, Schema, TaskId};
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
 pub const SCHEMA_VERSION: u32 = 1;
@@ -151,6 +151,22 @@ impl fmt::Display for EventError {
 impl std::error::Error for EventError {}
 
 impl Event {
+    /// Whether `origin` may submit this event (ADR-0024). The broker may report only what a gate
+    /// answered, since it evaluates gates per request (ADR-0009). Everything else is the engine's: it
+    /// creates and completes tasks, starts and ends jobs, and opens and resolves holds, so a broker
+    /// that is compromised cannot release a hold it caused or finish work it did not run.
+    pub fn may_come_from(&self, origin: Origin) -> bool {
+        match self {
+            Event::GateAnswered { .. } => true,
+            Event::TaskCreated { .. }
+            | Event::TaskCompleted { .. }
+            | Event::JobStarted { .. }
+            | Event::JobEnded { .. }
+            | Event::HoldOpened { .. }
+            | Event::HoldResolved { .. } => origin == Origin::Engine,
+        }
+    }
+
     /// The value for the log's `kind` column.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -290,6 +306,22 @@ mod tests {
             assert_eq!(
                 Event::decode(event.kind(), SCHEMA_VERSION, json.as_bytes()).unwrap(),
                 event
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_gate_answer_may_come_from_the_broker() {
+        // The matrix of ADR-0024, one row per kind.
+        let samples = samples();
+        assert_eq!(samples.len(), Event::KINDS.len());
+        for (event, _) in samples {
+            assert!(event.may_come_from(Origin::Engine), "{}", event.kind());
+            assert_eq!(
+                event.may_come_from(Origin::Broker),
+                event.kind() == "gate.answered",
+                "{}",
+                event.kind()
             );
         }
     }

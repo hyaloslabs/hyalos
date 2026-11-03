@@ -37,7 +37,7 @@ fn busy(path: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
     let mut n = 0;
     let mut step = |e: &mut Engine, event: Event| -> Result<u64, Box<dyn std::error::Error>> {
         n += 1;
-        Ok(e.submit(at(n), Origin::Engine, event)?.seq)
+        Ok(e.submit(at(10 * n), Origin::Engine, event)?.seq)
     };
     let done = TaskId::from_seq(step(&mut e, Event::TaskCreated { request: d(1) })?);
     let job = JobId::from_seq(step(&mut e, Event::JobStarted { task: done })?);
@@ -57,7 +57,7 @@ fn busy(path: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
         inputs: d(9),
     };
     let ruling = e.rule_gate(
-        at(50),
+        at(65),
         Origin::Broker,
         job,
         &request,
@@ -78,7 +78,7 @@ fn busy(path: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
     )?;
     let job = JobId::from_seq(step(&mut e, Event::JobStarted { task: held })?);
     e.rule_gate(
-        at(60),
+        at(85),
         Origin::Broker,
         job,
         &request,
@@ -121,8 +121,8 @@ fn restore_onto_a_fresh_machine_reproduces_state_byte_for_byte() -> Res {
     // The same next event on both gives the same event hash and signature, which can only happen if
     // the stored history is identical, byte for byte.
     let next = Event::TaskCreated { request: d(4) };
-    let a = live.submit(at(70), Origin::Engine, next.clone())?;
-    let b = restored.submit(at(70), Origin::Engine, next)?;
+    let a = live.submit(at(100), Origin::Engine, next.clone())?;
+    let b = restored.submit(at(100), Origin::Engine, next)?;
     assert_eq!(a, b);
     assert_eq!(restored.state(), live.state());
     Ok(())

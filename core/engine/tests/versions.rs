@@ -207,25 +207,33 @@ fn reference_state(path: &Path) -> Res<hyalos_engine::State> {
     )?;
     e.submit_all(
         at(8),
-        Origin::Engine,
         &[
-            Event::GateAnswered {
-                job: JobId::from_seq(7),
-                gate: Gate::Content,
-                inputs: d(8),
-                answer: Answer::Unknown,
-                reason: legacy,
-            },
-            Event::JobEnded {
-                job: JobId::from_seq(7),
-                outcome: JobOutcome::Held,
-            },
-            Event::HoldOpened {
-                task: TaskId::from_seq(6),
-                gate: Gate::Content,
-                inputs: d(8),
-                reason: HoldReason::Unknown,
-            },
+            (
+                Origin::Engine,
+                Event::GateAnswered {
+                    job: JobId::from_seq(7),
+                    gate: Gate::Content,
+                    inputs: d(8),
+                    answer: Answer::Unknown,
+                    reason: legacy,
+                },
+            ),
+            (
+                Origin::Engine,
+                Event::JobEnded {
+                    job: JobId::from_seq(7),
+                    outcome: JobOutcome::Held,
+                },
+            ),
+            (
+                Origin::Engine,
+                Event::HoldOpened {
+                    task: TaskId::from_seq(6),
+                    gate: Gate::Content,
+                    inputs: d(8),
+                    reason: HoldReason::Unknown,
+                },
+            ),
         ],
     )?;
     Ok(e.state().clone())
@@ -281,10 +289,12 @@ fn new_events_are_written_at_the_new_version_and_the_mixed_log_keeps_working() -
     // The atomic write path stamps the version too.
     let head3 = e.submit_all(
         at(13),
-        Origin::Engine,
-        &[Event::JobStarted {
-            task: TaskId::from_seq(12),
-        }],
+        &[(
+            Origin::Engine,
+            Event::JobStarted {
+                task: TaskId::from_seq(12),
+            },
+        )],
     )?;
     let live = e.state().clone();
     drop(e);
