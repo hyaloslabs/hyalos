@@ -9,6 +9,7 @@ Each kind of information has exactly one home ([ADR-0014](adr/0014-tracker-holds
 | Status (what is done, in progress) | GitHub issues (epics as parent issues, milestones M1 to M4) | The only source of status |
 | Planning-session working material | [`planning/`](planning/) | Temporary; not authoritative once filed or settled |
 | Throwaway rigs behind a spike's evidence | [`../spikes/`](../spikes/) | Not product code; delete when the real component makes it redundant |
+| Operator procedures (setup, backup, recovery) | [`operations/`](operations/) | Steps an operator follows; the reasons live in the ADRs they link |
 | Reference docs (CLI, manifest schema, WIT) | `reference/` (later) | Generated from types, manifests and ADRs, not hand-written |
 | Threat model, SECURITY.md, data flows | `security/` (later, E10) | Each control names its code and its test |
 
