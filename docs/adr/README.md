@@ -30,4 +30,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0014](0014-tracker-holds-status.md) | The tracker holds status; PRDs hold intent; ADRs hold decisions | Accepted |
 | [0015](0015-project-named-hyalos.md) | The project is named Hyalos | Accepted |
 | [0016](0016-agent-runtime-and-broker-protocols.md) | Agent runtime, broker protocols and model credentials | Accepted |
-| [0017](0017-workspace-layout-and-trusted-core-boundary.md) | Workspace layout and the trusted-core boundary | Proposed |
+| [0017](0017-workspace-layout-and-trusted-core-boundary.md) | Workspace layout and the trusted-core boundary | Accepted |
