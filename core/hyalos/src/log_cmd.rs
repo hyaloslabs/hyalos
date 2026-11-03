@@ -119,7 +119,8 @@ fn restore_note() {
     if !have_public_key {
         println!(
             "note: there is no engine.pub on this machine yet. Checking this log used the key you gave; \
-             the engine needs the original signing key to add to it (story S1.8)."
+             to add to this log the engine needs the original engine.key: put it in the config directory with \
+             mode 0600, then run `hyalos init` (docs/operations/keys-and-recovery.md)."
         );
     }
 }

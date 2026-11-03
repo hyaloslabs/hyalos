@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 pub const LOG_FILE: &str = "events.db";
 pub const ENGINE_PUBLIC_KEY_FILE: &str = "engine.pub";
+pub const ENGINE_KEY_FILE: &str = "engine.key";
 
 pub type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
 
@@ -25,11 +26,11 @@ pub fn engine_public_key(env: Env<'_>) -> Result<PathBuf, String> {
     Ok(config_dir(env)?.join(ENGINE_PUBLIC_KEY_FILE))
 }
 
-fn data_dir(env: Env<'_>) -> Result<PathBuf, String> {
+pub fn data_dir(env: Env<'_>) -> Result<PathBuf, String> {
     dir(env, "HYALOS_DATA_DIR", "XDG_DATA_HOME", ".local/share")
 }
 
-fn config_dir(env: Env<'_>) -> Result<PathBuf, String> {
+pub fn config_dir(env: Env<'_>) -> Result<PathBuf, String> {
     dir(env, "HYALOS_CONFIG_DIR", "XDG_CONFIG_HOME", ".config")
 }
 
