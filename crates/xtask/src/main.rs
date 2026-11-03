@@ -52,11 +52,22 @@ const DETERMINISTIC: &[&str] = &[
     "hyalos-engine",
 ];
 
-/// External crates the deterministic crates may depend on. Empty for now. A crate that reads the clock
-/// or a thread-local generator would get past the lint through a dependency, so each entry here is a
-/// reviewed decision and is listed with the reason it is deterministic. A transitive dependency is not
-/// checked here; `cargo deny` and review cover it.
-const EXTERNAL_ALLOWED: &[&str] = &[];
+/// External crates each deterministic crate may depend on. A crate that reads the clock or a
+/// thread-local generator would get past the lint through a dependency, so each entry is a reviewed
+/// decision with the reason it is deterministic. A transitive dependency is not checked here;
+/// `cargo deny` and review cover it.
+const EXTERNAL_ALLOWED: &[(&str, &[&str])] = &[(
+    "hyalos-log",
+    &[
+        // SQLite, bundled so the engine runs the version we tested. Storage, not time or randomness.
+        "rusqlite",
+        // Ed25519 signatures. Signing is deterministic (RFC 8032); keys come in as bytes, and the
+        // `rand_core` feature that could generate one is off.
+        "ed25519-dalek",
+        // SHA-256 for the hash chain.
+        "sha2",
+    ],
+)];
 
 #[derive(Debug, Clone)]
 struct Package {
@@ -229,9 +240,12 @@ fn violations(packages: &[Package]) -> Vec<String> {
         .filter(|p| DETERMINISTIC.contains(&p.name.as_str()))
     {
         for d in p.external.iter().filter(|d| !d.dev) {
-            if !EXTERNAL_ALLOWED.contains(&d.name.as_str()) {
+            let allowed = EXTERNAL_ALLOWED
+                .iter()
+                .any(|(krate, deps)| *krate == p.name && deps.contains(&d.name.as_str()));
+            if !allowed {
                 out.push(format!(
-                    "{} adds the external dependency {}; deterministic crates take none without a reviewed entry in EXTERNAL_ALLOWED (ADR-0013)",
+                    "{} adds the external dependency {}; deterministic crates take none without a reviewed entry for that crate in EXTERNAL_ALLOWED (ADR-0013)",
                     p.name, d.name
                 ));
             }
@@ -517,6 +531,20 @@ mod tests {
         let problems = violations(&v);
         assert_eq!(problems.len(), 1);
         assert!(problems[0].starts_with("hyalos-engine adds the external dependency rand"));
+    }
+
+    #[test]
+    fn a_reviewed_dependency_is_allowed_only_in_the_crate_it_was_reviewed_for() {
+        let v = with_external(
+            good(),
+            "hyalos-log",
+            &[("rusqlite", false), ("sha2", false)],
+        );
+        assert!(violations(&v).is_empty());
+        let v = with_external(good(), "hyalos-engine", &[("rusqlite", false)]);
+        assert_eq!(violations(&v).len(), 1);
+        let v = with_external(good(), "hyalos-log", &[("rand", false)]);
+        assert_eq!(violations(&v).len(), 1);
     }
 
     #[test]
