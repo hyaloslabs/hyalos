@@ -6,8 +6,8 @@ use hyalos_engine::{Engine, EngineError, RuleViolation, State, TaskStatus, repla
 use hyalos_log::{Log, LogKey};
 use hyalos_sim::Sim;
 use hyalos_types::{
-    Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, Resolution, SeededRng,
-    TaskId, Timestamp,
+    Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode,
+    Resolution, SeededRng, TaskId, Timestamp,
 };
 
 type Res = Result<(), Box<dyn std::error::Error>>;
@@ -426,7 +426,7 @@ fn random_event(rng: &mut SeededRng, state: &State, seq_next: u64) -> Event {
         Resolution::Verifier,
         Resolution::Human,
     ];
-    match rng.below(6) {
+    match rng.below(7) {
         0 => Event::TaskCreated {
             request: Digest::from_bytes([rng.below(256) as u8; 32]),
         },
@@ -454,6 +454,26 @@ fn random_event(rng: &mut SeededRng, state: &State, seq_next: u64) -> Event {
                 HoldReason::TimedOut
             },
         },
+        5 => {
+            // Allow and deny only: an unknown answer is not a single event (ADR-0020).
+            let ids: Vec<JobId> = state.jobs().keys().copied().collect();
+            let job = if ids.is_empty() || rng.below(10) == 0 {
+                JobId::from_seq(seq_next + 1_000)
+            } else {
+                ids[pick(rng, ids.len())]
+            };
+            Event::GateAnswered {
+                job,
+                gate: gate[pick(rng, gate.len())],
+                inputs: d(6),
+                answer: if rng.below(2) == 0 {
+                    Answer::Allow
+                } else {
+                    Answer::Deny
+                },
+                reason: ReasonCode::timed_out(),
+            }
+        }
         _ => {
             let ids: Vec<HoldId> = state.holds().keys().copied().collect();
             let hold = if ids.is_empty() || rng.below(10) == 0 {

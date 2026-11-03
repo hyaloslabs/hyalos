@@ -211,6 +211,7 @@ dependencies = [
 name = "hyalos-policy"
 version = "0.0.0"
 dependencies = [
+ "hyalos-sim",
  "hyalos-types",
 ]
 

@@ -54,6 +54,16 @@ impl fmt::Display for Head {
     }
 }
 
+/// An event to append: everything the log stores except the hash chain fields.
+#[derive(Debug, Clone, Copy)]
+pub struct NewEvent<'a> {
+    pub at: Timestamp,
+    pub origin: Origin,
+    pub kind: &'a str,
+    pub schema_version: u32,
+    pub payload: &'a [u8],
+}
+
 /// One event as stored: everything but the hash and signature, which belong to verification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredEvent {
@@ -88,6 +98,8 @@ pub enum LogError {
     OutOfRange(&'static str),
     /// A stored value is not what the engine wrote. Run `hyalos log verify`.
     Corrupt(&'static str),
+    /// `append_all` was given no events.
+    EmptyBatch,
 }
 
 impl fmt::Display for LogError {
@@ -102,6 +114,7 @@ impl fmt::Display for LogError {
                 )
             }
             LogError::OutOfRange(what) => write!(f, "{what} is out of range for the event log"),
+            LogError::EmptyBatch => write!(f, "there are no events to append"),
             LogError::Corrupt(what) => {
                 write!(
                     f,
@@ -183,42 +196,65 @@ impl Log {
         schema_version: u32,
         payload: &[u8],
     ) -> Result<Head, LogError> {
-        let at_millis = at.as_millis();
-        let at_stored = i64::try_from(at_millis).map_err(|_| LogError::OutOfRange("timestamp"))?;
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let (seq, prev_hash) = match read_head(&tx)? {
-            None => (1, format::genesis_hash(self.key.public().as_bytes())),
-            Some(head) => (head.seq + 1, head.hash),
-        };
-        let hash = format::event_hash(&Fields {
-            seq,
-            at_millis,
+        self.append_all(&[NewEvent {
+            at,
             origin,
             kind,
             schema_version,
             payload,
-            prev_hash: &prev_hash,
-        });
-        let signature = self.key.sign(&hash);
-        tx.execute(
-            "INSERT INTO events (seq, at, origin, kind, schema_version, payload, prev_hash, hash, signature)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                i64::try_from(seq).map_err(|_| LogError::OutOfRange("sequence number"))?,
-                at_stored,
-                origin.as_str(),
-                kind,
-                schema_version,
-                payload,
-                prev_hash.as_slice(),
-                hash.as_slice(),
-                signature.as_slice(),
-            ],
-        )?;
+        }])
+    }
+
+    /// Appends several events in one transaction: all of them are written, in order, or none is. It
+    /// returns the head after the last one. An empty batch is an error.
+    pub fn append_all(&mut self, events: &[NewEvent<'_>]) -> Result<Head, LogError> {
+        if events.is_empty() {
+            return Err(LogError::EmptyBatch);
+        }
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (mut seq, mut prev_hash) = match read_head(&tx)? {
+            None => (0, format::genesis_hash(self.key.public().as_bytes())),
+            Some(head) => (head.seq, head.hash),
+        };
+        for event in events {
+            seq += 1;
+            let at_millis = event.at.as_millis();
+            let at_stored =
+                i64::try_from(at_millis).map_err(|_| LogError::OutOfRange("timestamp"))?;
+            let hash = format::event_hash(&Fields {
+                seq,
+                at_millis,
+                origin: event.origin,
+                kind: event.kind,
+                schema_version: event.schema_version,
+                payload: event.payload,
+                prev_hash: &prev_hash,
+            });
+            let signature = self.key.sign(&hash);
+            tx.execute(
+                "INSERT INTO events (seq, at, origin, kind, schema_version, payload, prev_hash, hash, signature)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    i64::try_from(seq).map_err(|_| LogError::OutOfRange("sequence number"))?,
+                    at_stored,
+                    event.origin.as_str(),
+                    event.kind,
+                    event.schema_version,
+                    event.payload,
+                    prev_hash.as_slice(),
+                    hash.as_slice(),
+                    signature.as_slice(),
+                ],
+            )?;
+            prev_hash = hash;
+        }
         tx.commit()?;
-        Ok(Head { seq, hash })
+        Ok(Head {
+            seq,
+            hash: prev_hash,
+        })
     }
 
     /// The last event, or `None` for an empty log.

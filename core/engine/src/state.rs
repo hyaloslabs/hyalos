@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use hyalos_types::{
-    Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Resolution, TaskId, Timestamp,
+    Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Resolution, TaskId,
+    Timestamp,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +89,16 @@ pub enum RuleViolation {
         seq: u64,
         last: u64,
     },
+    /// A gate answered unknown, so the next events must end its job as held and open the hold for
+    /// that gate and those inputs, and nothing else may come between (ADR-0020).
+    HoldRequired {
+        job: JobId,
+        next: &'static str,
+    },
+    /// An unknown answer must be written together with its hold, never alone (ADR-0020).
+    UnknownNeedsHold,
+    /// The log ends after an unknown answer, before its hold. Nothing may proceed on unknown.
+    UnfinishedHold(JobId),
 }
 
 impl fmt::Display for RuleViolation {
@@ -108,6 +119,18 @@ impl fmt::Display for RuleViolation {
             }
             RuleViolation::JobNotRunning(j) => write!(f, "job {j} is not running"),
             RuleViolation::HoldNotOpen(h) => write!(f, "hold {h} is not open"),
+            RuleViolation::HoldRequired { job, next } => write!(
+                f,
+                "job {job}'s gate answered unknown, so the next event must be {next}"
+            ),
+            RuleViolation::UnknownNeedsHold => write!(
+                f,
+                "an unknown answer is written together with its hold, not on its own"
+            ),
+            RuleViolation::UnfinishedHold(job) => write!(
+                f,
+                "the log ends after job {job}'s gate answered unknown, before its hold opened"
+            ),
             RuleViolation::OutOfOrder { seq, last } => {
                 write!(f, "event {seq} arrived after event {last}")
             }
@@ -117,12 +140,23 @@ impl fmt::Display for RuleViolation {
 
 impl std::error::Error for RuleViolation {}
 
+/// What an unknown answer still owes: the job ending held, then the hold opening.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Pending {
+    job: JobId,
+    task: TaskId,
+    gate: Gate,
+    inputs: Digest,
+    job_ended: bool,
+}
+
 /// Every task, job and hold, as of `last_seq`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct State {
     tasks: BTreeMap<TaskId, Task>,
     jobs: BTreeMap<JobId, Job>,
     holds: BTreeMap<HoldId, Hold>,
+    pending: Option<Pending>,
     last_seq: u64,
 }
 
@@ -155,8 +189,40 @@ impl State {
             .map(|(id, _)| *id)
     }
 
+    /// Whether an unknown answer is still waiting for its hold. Between operations this is false; the
+    /// engine writes the answer, the job's end and the hold in one transaction (ADR-0020).
+    pub fn awaiting_hold(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// Whether `event` is legal now. It changes nothing.
     pub fn check(&self, event: &Event) -> Result<(), RuleViolation> {
+        if let Some(p) = &self.pending {
+            let expected = match (p.job_ended, event) {
+                (
+                    false,
+                    Event::JobEnded {
+                        job,
+                        outcome: JobOutcome::Held,
+                    },
+                ) if *job == p.job => None,
+                (
+                    true,
+                    Event::HoldOpened {
+                        task, gate, inputs, ..
+                    },
+                ) if *task == p.task && *gate == p.gate && *inputs == p.inputs => None,
+                (false, _) => Some("job.ended with outcome held for that job"),
+                (true, _) => Some("hold.opened for that task, gate and inputs"),
+            };
+            if let Some(next) = expected {
+                return Err(RuleViolation::HoldRequired { job: p.job, next });
+            }
+        }
+        self.check_rules(event)
+    }
+
+    fn check_rules(&self, event: &Event) -> Result<(), RuleViolation> {
         match event {
             Event::TaskCreated { .. } => Ok(()),
             Event::TaskCompleted { task } => {
@@ -180,6 +246,11 @@ impl State {
                 // One running job per task. Concurrent jobs would need their own decision (ADR-0019).
                 self.no_running_job(*task)
             }
+            Event::GateAnswered { job, .. } => match self.jobs.get(job) {
+                None => Err(RuleViolation::UnknownJob(*job)),
+                Some(j) if !j.is_running() => Err(RuleViolation::JobNotRunning(*job)),
+                Some(_) => Ok(()),
+            },
             Event::JobEnded { job, .. } => match self.jobs.get(job) {
                 None => Err(RuleViolation::UnknownJob(*job)),
                 Some(j) if !j.is_running() => Err(RuleViolation::JobNotRunning(*job)),
@@ -242,9 +313,31 @@ impl State {
                     },
                 );
             }
+            Event::GateAnswered {
+                job,
+                gate,
+                inputs,
+                answer,
+                ..
+            } => {
+                if *answer == Answer::Unknown
+                    && let Some(task) = self.jobs.get(job).map(|j| j.task)
+                {
+                    self.pending = Some(Pending {
+                        job: *job,
+                        task,
+                        gate: *gate,
+                        inputs: *inputs,
+                        job_ended: false,
+                    });
+                }
+            }
             Event::JobEnded { job, outcome } => {
                 if let Some(j) = self.jobs.get_mut(job) {
                     j.ended = Some((at, *outcome));
+                }
+                if let Some(p) = self.pending.as_mut() {
+                    p.job_ended = true;
                 }
             }
             Event::HoldOpened {
@@ -268,6 +361,8 @@ impl State {
                 if let Some(t) = self.tasks.get_mut(task) {
                     t.open_holds.insert(id);
                 }
+                // This is the hold an unknown answer was waiting for, if there was one.
+                self.pending = None;
             }
             Event::HoldResolved { hold, by } => {
                 if let Some(h) = self.holds.get_mut(hold) {
@@ -280,6 +375,12 @@ impl State {
         }
         self.last_seq = seq;
         Ok(())
+    }
+
+    /// The job whose unknown answer has no hold yet, if the log ended too soon. Replay refuses to
+    /// finish while this is set (ADR-0020).
+    pub fn unfinished_hold(&self) -> Option<JobId> {
+        self.pending.as_ref().map(|p| p.job)
     }
 
     /// The properties that must hold after every event, from ADR-0009 and ADR-0013. Empty means none
@@ -313,6 +414,9 @@ impl State {
             if actual != task.open_holds {
                 out.push(format!("task {id} lists the wrong open holds"));
             }
+        }
+        if let Some(job) = self.unfinished_hold() {
+            out.push(format!("job {job}'s unknown answer has no hold"));
         }
         for (id, job) in &self.jobs {
             if !self.tasks.contains_key(&job.task) {

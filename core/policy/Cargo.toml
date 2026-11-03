@@ -11,3 +11,6 @@ workspace = true
 
 [dependencies]
 hyalos-types = { path = "../types" }
+
+[dev-dependencies]
+hyalos-sim = { path = "../../crates/sim" }

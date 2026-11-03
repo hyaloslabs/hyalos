@@ -9,8 +9,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use hyalos_log::{
-    Head, Log, LogError, LogKey, Origin, PublicKey, Reason, StoredEvent, VerifyError, format,
-    verify,
+    Head, Log, LogError, LogKey, NewEvent, Origin, PublicKey, Reason, StoredEvent, VerifyError,
+    format, verify,
 };
 use hyalos_types::Timestamp;
 use rusqlite::Connection;
@@ -417,5 +417,75 @@ fn a_missing_or_foreign_file_is_a_storage_error_not_a_pass() -> Res {
         verify(&junk, &public(), None),
         Err(VerifyError::Storage(_))
     ));
+    Ok(())
+}
+
+fn batch(payloads: &[&[u8]]) -> Vec<(String, Vec<u8>)> {
+    payloads
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (format!("batch.event.{i}"), p.to_vec()))
+        .collect()
+}
+
+fn as_new<'a>(owned: &'a [(String, Vec<u8>)], at: u64) -> Vec<NewEvent<'a>> {
+    owned
+        .iter()
+        .map(|(kind, payload)| NewEvent {
+            at: Timestamp::from_millis(at),
+            origin: Origin::Engine,
+            kind,
+            schema_version: 1,
+            payload,
+        })
+        .collect()
+}
+
+#[test]
+fn a_batch_is_written_in_order_and_verifies() -> Res {
+    let path = fresh_path("batch")?;
+    let mut log = Log::open(&path, key())?;
+    log.append(Timestamp::from_millis(1), Origin::Engine, "first", 1, b"{}")?;
+    let owned = batch(&[b"a", b"b", b"c"]);
+    let head = log.append_all(&as_new(&owned, 2))?;
+    assert_eq!(head.seq, 4);
+    assert_eq!(log.head()?, Some(head));
+    let kinds: Vec<String> = log.events()?.into_iter().map(|e| e.kind).collect();
+    assert_eq!(
+        kinds,
+        ["first", "batch.event.0", "batch.event.1", "batch.event.2"]
+    );
+    let verified = verify(&path, &key().public(), None)?;
+    assert_eq!((verified.events, verified.head), (4, Some(head)));
+    Ok(())
+}
+
+#[test]
+fn a_batch_that_fails_part_way_writes_nothing() -> Res {
+    let path = fresh_path("batch-rollback")?;
+    let mut log = Log::open(&path, key())?;
+    let before = log.append(Timestamp::from_millis(1), Origin::Engine, "first", 1, b"{}")?;
+    let owned = batch(&[b"a", b"b", b"c"]);
+    let mut events = as_new(&owned, 2);
+    // The third event cannot be stored, after two were inserted in the same transaction.
+    events[2].at = Timestamp::from_millis(u64::MAX);
+    assert!(matches!(
+        log.append_all(&events),
+        Err(LogError::OutOfRange(_))
+    ));
+    assert_eq!(log.head()?, Some(before));
+    assert_eq!(log.events()?.len(), 1);
+    // The log carries on from where it was, and still verifies.
+    let after = log.append(Timestamp::from_millis(3), Origin::Engine, "next", 1, b"{}")?;
+    assert_eq!(after.seq, 2);
+    verify(&path, &key().public(), None)?;
+    Ok(())
+}
+
+#[test]
+fn an_empty_batch_is_refused() -> Res {
+    let mut log = Log::open(&fresh_path("batch-empty")?, key())?;
+    assert!(matches!(log.append_all(&[]), Err(LogError::EmptyBatch)));
+    assert_eq!(log.head()?, None);
     Ok(())
 }
