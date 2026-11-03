@@ -32,3 +32,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0016](0016-agent-runtime-and-broker-protocols.md) | Agent runtime, broker protocols and model credentials | Accepted |
 | [0017](0017-workspace-layout-and-trusted-core-boundary.md) | Workspace layout and the trusted-core boundary | Accepted |
 | [0018](0018-event-log-format-and-verification.md) | Event log format and verification | Accepted |
+| [0019](0019-typed-events-and-in-memory-projections.md) | Typed events and in-memory projections | Proposed |

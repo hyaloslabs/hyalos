@@ -54,6 +54,17 @@ impl fmt::Display for Head {
     }
 }
 
+/// One event as stored: everything but the hash and signature, which belong to verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredEvent {
+    pub seq: u64,
+    pub at: Timestamp,
+    pub origin: Origin,
+    pub kind: String,
+    pub schema_version: u32,
+    pub payload: Vec<u8>,
+}
+
 impl Head {
     /// Parses the `seq:hash` form that [`Head`] prints, as an operator would record it.
     pub fn parse(text: &str) -> Option<Self> {
@@ -213,6 +224,39 @@ impl Log {
     /// The last event, or `None` for an empty log.
     pub fn head(&self) -> Result<Option<Head>, LogError> {
         read_head(&self.conn)
+    }
+
+    /// Every event in order, for rebuilding projections. It does not check hashes or signatures, so
+    /// run [`crate::verify`] first if the file might have been touched.
+    pub fn events(&self) -> Result<Vec<StoredEvent>, LogError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT seq, at, origin, kind, schema_version, payload FROM events ORDER BY seq",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, u32>(4)?,
+                r.get::<_, Vec<u8>>(5)?,
+            ))
+        })?;
+        let mut events = Vec::new();
+        for row in rows {
+            let (seq, at, origin, kind, schema_version, payload) = row?;
+            events.push(StoredEvent {
+                seq: u64::try_from(seq).map_err(|_| LogError::Corrupt("sequence number"))?,
+                at: Timestamp::from_millis(
+                    u64::try_from(at).map_err(|_| LogError::Corrupt("timestamp"))?,
+                ),
+                origin: Origin::parse(&origin).ok_or(LogError::Corrupt("origin"))?,
+                kind,
+                schema_version,
+                payload,
+            });
+        }
+        Ok(events)
     }
 }
 

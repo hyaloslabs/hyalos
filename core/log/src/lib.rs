@@ -13,5 +13,5 @@ mod verify;
 
 pub use hyalos_types::Origin;
 pub use key::{LogKey, PublicKey};
-pub use store::{Head, Log, LogError};
+pub use store::{Head, Log, LogError, StoredEvent};
 pub use verify::{Reason, Verified, VerifyError, verify};
