@@ -151,6 +151,32 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             last_hash: d(7),
         },
     ));
+
+    // Version 4 added `task.cancelled` and `hold.refused` and changed no payload, so the eight older
+    // kinds read as they did at version 3.
+    let at_3: Vec<_> = all.iter().filter(|g| g.0 == 3).cloned().collect();
+    for (_, kind, json, event) in at_3 {
+        all.push((4, kind, json, event));
+    }
+    all.push((
+        4,
+        "task.cancelled",
+        r#"{"kind":"task.cancelled","task":3,"by":"human","reason":"cancelled.operator"}"#.into(),
+        Event::TaskCancelled {
+            task: TaskId::from_seq(3),
+            by: Resolution::Human,
+            reason: ReasonCode::new("cancelled.operator").ok_or("reason")?,
+        },
+    ));
+    all.push((
+        4,
+        "hold.refused",
+        r#"{"kind":"hold.refused","hold":5,"reason":"egress.denied"}"#.into(),
+        Event::HoldRefused {
+            hold: HoldId::from_seq(5),
+            reason: ReasonCode::new("egress.denied").ok_or("reason")?,
+        },
+    ));
     Ok(all)
 }
 
@@ -158,6 +184,7 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
 fn introduced(kind: &str) -> u32 {
     match kind {
         "archive.pruned" => 3,
+        "task.cancelled" | "hold.refused" => 4,
         _ => 1,
     }
 }

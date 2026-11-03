@@ -9,8 +9,8 @@ use hyalos_policy::{GateRequest, Outcome};
 use hyalos_sim::Sim;
 use hyalos_types::snapshot::{STATE_VERSION, StateImage};
 use hyalos_types::{
-    Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode, Sensitive,
-    Stakes, TaskId, Timestamp,
+    Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode, Resolution,
+    Sensitive, Stakes, TaskId, Timestamp,
 };
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -48,6 +48,10 @@ enum Op {
     Gate(JobId, u8, Stakes),
     Decide(HoldId),
     Complete(TaskId),
+    /// End a held task with this decider.
+    Cancel(TaskId, Decider),
+    /// The gate refuses a held request again.
+    Refuse(HoldId),
 }
 
 fn apply(e: &mut Engine, n: u64, op: &Op) -> Res {
@@ -91,6 +95,18 @@ fn apply(e: &mut Engine, n: u64, op: &Op) -> Res {
         Op::Complete(task) => {
             e.submit(t, Origin::Engine, Event::TaskCompleted { task: *task })?;
         }
+        Op::Cancel(task, decider) => {
+            e.cancel_task(t, *task, *decider, why())?;
+        }
+        Op::Refuse(hold) => {
+            let held = e.state().holds()[hold].clone();
+            let request = GateRequest {
+                gate: held.gate,
+                inputs: held.inputs,
+                stakes: held.stakes,
+            };
+            e.reevaluate_hold(t, *hold, &request, Outcome::Refuse { reason: why() })?;
+        }
     }
     Ok(())
 }
@@ -123,8 +139,30 @@ fn choose(e: &Engine, pick: &mut dyn FnMut(u64) -> u64) -> Op {
     let open_holds: Vec<HoldId> = state
         .holds()
         .iter()
-        .filter(|(_, h)| h.resolved.is_none())
+        .filter(|(id, _)| state.hold_is_open(id))
         .map(|(id, _)| *id)
+        .collect();
+    // Held tasks, each with a decider every one of its open holds allows (a human always qualifies).
+    let cancellable: Vec<(TaskId, Vec<Decider>)> = state
+        .tasks()
+        .iter()
+        .filter(|(_, t)| t.status() == TaskStatus::Held)
+        .map(|(id, t)| {
+            let ok = [Decider::Policy, Decider::Verifier, Decider::Human]
+                .into_iter()
+                .filter(|d| {
+                    let by = match d {
+                        Decider::Policy => Resolution::Policy,
+                        Decider::Verifier => Resolution::Verifier,
+                        Decider::Human => Resolution::Human,
+                    };
+                    t.open_holds
+                        .iter()
+                        .all(|h| state.holds()[h].stakes.may_be_cancelled_by(by))
+                })
+                .collect();
+            (*id, ok)
+        })
         .collect();
 
     let stakes = |pick: &mut dyn FnMut(u64) -> u64| {
@@ -139,7 +177,12 @@ fn choose(e: &Engine, pick: &mut dyn FnMut(u64) -> u64) -> Op {
             s
         }
     };
-    match pick(6) {
+    match pick(12) {
+        6..=7 if !cancellable.is_empty() => {
+            let (task, deciders) = &cancellable[pick(cancellable.len() as u64) as usize];
+            Op::Cancel(*task, deciders[pick(deciders.len() as u64) as usize])
+        }
+        8..=9 if !open_holds.is_empty() => Op::Refuse(of(&open_holds, pick)),
         1 if !startable.is_empty() => Op::Start(of(&startable, pick)),
         2 if !running.is_empty() => {
             let outcome = [
@@ -160,7 +203,7 @@ fn choose(e: &Engine, pick: &mut dyn FnMut(u64) -> u64) -> Op {
 
 #[test]
 fn a_compacted_engine_and_one_that_never_compacted_agree_through_reopens_and_restarts() -> Res {
-    let (mut compactions, mut reopens) = (0, 0);
+    let (mut compactions, mut reopens, mut cancelled, mut refusals) = (0, 0, 0, 0);
     for seed in 0..4u64 {
         let sim = Sim::new(seed);
         let mut rng = sim.stream("workload");
@@ -210,6 +253,20 @@ fn a_compacted_engine_and_one_that_never_compacted_agree_through_reopens_and_res
         // The full history: every archive, then the live log, from the first event.
         let history = verify_history(&live, &archives, &key().public(), a.head()?)?;
         assert!(history.from_genesis, "seed {seed}");
+        // An independent replay of the archives agrees with every snapshot, cancellations included.
+        let audited = hyalos_engine::audit(&live, &archives, &key().public(), None)?;
+        assert!(audited.complete(), "seed {seed}: {audited:?}");
+        cancelled += b
+            .state()
+            .tasks()
+            .values()
+            .filter(|t| t.cancelled.is_some())
+            .count();
+        refusals += Log::open(&twin, key())?
+            .events()?
+            .iter()
+            .filter(|e| e.kind == "hold.refused")
+            .count();
         // And the file alone, restarted, still means the same thing.
         drop(a);
         assert_eq!(
@@ -221,6 +278,10 @@ fn a_compacted_engine_and_one_that_never_compacted_agree_through_reopens_and_res
     assert!(
         compactions >= 12 && reopens >= 12,
         "{compactions} compactions, {reopens} reopens"
+    );
+    assert!(
+        cancelled >= 2 && refusals >= 2,
+        "the workload must reach the new events: {cancelled} cancelled, {refusals} refusals"
     );
     Ok(())
 }

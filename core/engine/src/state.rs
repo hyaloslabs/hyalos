@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use hyalos_types::snapshot::{
-    HoldImage, JobEndImage, JobImage, PrunedImage, ResolvedImage, StateImage, TaskImage,
+    CancelledImage, HoldImage, JobEndImage, JobImage, PrunedImage, ResolvedImage, StateImage,
+    TaskImage,
 };
 use hyalos_types::{
     Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode,
@@ -21,6 +22,16 @@ pub enum TaskStatus {
     /// At least one hold is open (ADR-0009).
     Held,
     Completed,
+    /// Ended by a decision while held (ADR-0029). Nothing more happens to it.
+    Cancelled,
+}
+
+/// A held task that was ended by a decision (ADR-0029).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cancelled {
+    pub at: Timestamp,
+    pub by: Resolution,
+    pub reason: ReasonCode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,11 +40,14 @@ pub struct Task {
     pub request: Digest,
     pub completed_at: Option<Timestamp>,
     pub open_holds: BTreeSet<HoldId>,
+    pub cancelled: Option<Cancelled>,
 }
 
 impl Task {
     pub fn status(&self) -> TaskStatus {
-        if self.completed_at.is_some() {
+        if self.cancelled.is_some() {
+            TaskStatus::Cancelled
+        } else if self.completed_at.is_some() {
             TaskStatus::Completed
         } else if !self.open_holds.is_empty() {
             TaskStatus::Held
@@ -133,6 +147,23 @@ pub enum RuleViolation {
     },
     /// The log ends after an unknown answer, before its hold. Nothing may proceed on unknown.
     UnfinishedHold(JobId),
+    /// Only a held task can be cancelled (ADR-0029).
+    TaskNotHeld {
+        task: TaskId,
+        status: TaskStatus,
+    },
+    /// This decider may not cancel a task with an open hold at these stakes (ADR-0029).
+    CancelNotAuthorized {
+        task: TaskId,
+        by: Resolution,
+        stakes: Stakes,
+    },
+    /// A cancelled task takes no more holds.
+    TaskCancelled(TaskId),
+    /// This kind of event is written by an engine call that justifies it, never submitted raw.
+    ThroughTheEngineApi {
+        kind: &'static str,
+    },
     /// An archive that ends at an event the log has not reached cannot have been made from it.
     ArchiveBeyondLog {
         last_seq: u64,
@@ -182,6 +213,21 @@ impl fmt::Display for RuleViolation {
             RuleViolation::ArchiveBeyondLog { last_seq, log_end } => write!(
                 f,
                 "an archive ending at event {last_seq} cannot come from a log that ends at event {log_end}"
+            ),
+            RuleViolation::TaskNotHeld { task, status } => {
+                write!(
+                    f,
+                    "task {task} is {status:?}, and only a held task can be cancelled"
+                )
+            }
+            RuleViolation::CancelNotAuthorized { task, by, stakes } => write!(
+                f,
+                "{by:?} may not cancel task {task}, which has a hold at {stakes:?}"
+            ),
+            RuleViolation::TaskCancelled(t) => write!(f, "task {t} is cancelled"),
+            RuleViolation::ThroughTheEngineApi { kind } => write!(
+                f,
+                "{kind} is recorded by an engine call (cancel_task or reevaluate_hold), not by submitting it"
             ),
             RuleViolation::NotASnapshotOfThisLog { last_seq } => write!(
                 f,
@@ -273,6 +319,17 @@ impl State {
     /// Every archive recorded as pruned, in the order it was recorded.
     pub fn pruned(&self) -> &[Pruned] {
         &self.pruned
+    }
+
+    /// Whether `hold` exists and is still undecided: not released, and its task not cancelled.
+    pub fn hold_is_open(&self, hold: &HoldId) -> bool {
+        self.holds.get(hold).is_some_and(|h| {
+            h.resolved.is_none()
+                && self
+                    .tasks
+                    .get(&h.task)
+                    .is_some_and(|t| t.cancelled.is_none())
+        })
     }
 
     /// Whether the archive that ends at `last_seq` with `last_hash` is recorded as pruned.
@@ -393,14 +450,48 @@ impl State {
                 Some(_) => Ok(()),
             },
             Event::HoldOpened { task, .. } => {
-                if self.task(*task)?.status() == TaskStatus::Completed {
-                    return Err(RuleViolation::TaskCompleted(*task));
+                match self.task(*task)?.status() {
+                    TaskStatus::Completed => return Err(RuleViolation::TaskCompleted(*task)),
+                    TaskStatus::Cancelled => return Err(RuleViolation::TaskCancelled(*task)),
+                    TaskStatus::Open | TaskStatus::Held => {}
                 }
                 self.no_running_job(*task)
             }
+            Event::HoldRefused { hold, .. } => {
+                if !self.holds.contains_key(hold) {
+                    return Err(RuleViolation::UnknownHold(*hold));
+                }
+                if !self.hold_is_open(hold) {
+                    return Err(RuleViolation::HoldNotOpen(*hold));
+                }
+                Ok(())
+            }
+            Event::TaskCancelled { task, by, .. } => {
+                let t = self.task(*task)?;
+                if t.status() != TaskStatus::Held {
+                    return Err(RuleViolation::TaskNotHeld {
+                        task: *task,
+                        status: t.status(),
+                    });
+                }
+                // Every open hold must allow this decider, so a lower one cannot end work that a
+                // higher one is to decide.
+                for hold in &t.open_holds {
+                    if let Some(h) = self.holds.get(hold)
+                        && !h.stakes.may_be_cancelled_by(*by)
+                    {
+                        return Err(RuleViolation::CancelNotAuthorized {
+                            task: *task,
+                            by: *by,
+                            stakes: h.stakes,
+                        });
+                    }
+                }
+                Ok(())
+            }
             Event::HoldResolved { hold, by, .. } => match self.holds.get(hold) {
                 None => Err(RuleViolation::UnknownHold(*hold)),
-                Some(h) if h.resolved.is_some() => Err(RuleViolation::HoldNotOpen(*hold)),
+                Some(_) if !self.hold_is_open(hold) => Err(RuleViolation::HoldNotOpen(*hold)),
                 Some(h) if !h.stakes.may_be_resolved_by(*by) => {
                     Err(RuleViolation::ResolutionNotAuthorized {
                         hold: *hold,
@@ -461,6 +552,7 @@ impl State {
                         request: *request,
                         completed_at: None,
                         open_holds: BTreeSet::new(),
+                        cancelled: None,
                     },
                 );
             }
@@ -544,6 +636,19 @@ impl State {
                     }
                 }
             }
+            Event::TaskCancelled { task, by, reason } => {
+                if let Some(t) = self.tasks.get_mut(task) {
+                    // The holds that were open stay unresolved: they were ended, not released.
+                    t.open_holds.clear();
+                    t.cancelled = Some(Cancelled {
+                        at,
+                        by: *by,
+                        reason: reason.clone(),
+                    });
+                }
+            }
+            // Evidence only: it changes no state.
+            Event::HoldRefused { .. } => {}
             Event::ArchivePruned {
                 last_seq,
                 last_hash,
@@ -588,6 +693,7 @@ impl State {
                         request,
                         completed_at,
                         open_holds,
+                        cancelled,
                     } = t;
                     TaskImage {
                         id: *id,
@@ -595,6 +701,14 @@ impl State {
                         request: *request,
                         completed_at: completed_at.map(Timestamp::as_millis),
                         open_holds: open_holds.iter().copied().collect(),
+                        cancelled: cancelled.as_ref().map(|c| {
+                            let Cancelled { at, by, reason } = c;
+                            CancelledImage {
+                                at: at.as_millis(),
+                                by: *by,
+                                reason: reason.clone(),
+                            }
+                        }),
                     }
                 })
                 .collect(),
@@ -691,6 +805,11 @@ impl State {
                 request: t.request,
                 completed_at: t.completed_at.map(Timestamp::from_millis),
                 open_holds: t.open_holds.into_iter().collect(),
+                cancelled: t.cancelled.map(|c| Cancelled {
+                    at: Timestamp::from_millis(c.at),
+                    by: c.by,
+                    reason: c.reason,
+                }),
             };
             if state.tasks.insert(t.id, task).is_some() {
                 return Err(format!("task {} appears twice", t.id));
@@ -773,11 +892,30 @@ impl State {
             let actual: BTreeSet<HoldId> = self
                 .holds
                 .iter()
-                .filter(|(_, h)| h.task == *id && h.resolved.is_none())
+                .filter(|(_, h)| h.task == *id && h.resolved.is_none() && task.cancelled.is_none())
                 .map(|(hid, _)| *hid)
                 .collect();
             if actual != task.open_holds {
                 out.push(format!("task {id} lists the wrong open holds"));
+            }
+            if let Some(c) = &task.cancelled {
+                if task.completed_at.is_some() {
+                    out.push(format!("task {id} is both completed and cancelled"));
+                }
+                if let Some(job) = running {
+                    out.push(format!("cancelled task {id} has job {job} running"));
+                }
+                // Every hold it still has was open when it was cancelled, so the decider had to be
+                // allowed at each.
+                for (hid, h) in &self.holds {
+                    if h.task == *id && h.resolved.is_none() && !h.stakes.may_be_cancelled_by(c.by)
+                    {
+                        out.push(format!(
+                            "task {id} was cancelled by {:?}, which may not cancel it with hold {hid} open",
+                            c.by
+                        ));
+                    }
+                }
             }
         }
         if let Some(job) = self.unfinished_hold() {

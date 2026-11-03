@@ -12,7 +12,7 @@ use hyalos_types::event::SCHEMA;
 use hyalos_types::snapshot::{STATE_VERSION, StateImage};
 use hyalos_types::{
     Answer, Digest, Event, EventError, HoldId, JobId, Origin, ReasonCode, Resolution, Schema,
-    Timestamp,
+    TaskId, Timestamp,
 };
 
 use crate::state::{Pruned, RuleViolation, State};
@@ -218,7 +218,11 @@ pub enum Ruling {
 pub enum Reevaluation {
     /// The gate answered allow in time, and the hold is released.
     Released(Head),
-    /// The gate did not allow in time, or refused. Nothing was written and the task is still held.
+    /// The gate refused. That is recorded as a fact (`hold.refused`); the hold is still open and the
+    /// task is still held, and only a decision or a later allow changes that (ADR-0029).
+    Refused(Head),
+    /// The gate did not answer allow in time (unknown, a timeout or a late allow). Nothing was written
+    /// and the task is still held.
     StillHeld,
 }
 
@@ -238,6 +242,21 @@ impl Decider {
             Decider::Verifier => Resolution::Verifier,
             Decider::Human => Resolution::Human,
         }
+    }
+}
+
+/// The refusal for an event that only a dedicated engine call may write, if `origin` could otherwise
+/// have submitted it. An origin that may not send the kind at all is told that instead, by the state.
+fn through_the_api(origin: Origin, event: &Event) -> Option<RuleViolation> {
+    if !event.may_come_from(origin) {
+        return None;
+    }
+    match event {
+        Event::HoldResolved { .. } => Some(RuleViolation::ResolveThroughTheEngineApi),
+        Event::TaskCancelled { .. } | Event::HoldRefused { .. } => {
+            Some(RuleViolation::ThroughTheEngineApi { kind: event.kind() })
+        }
+        _ => None,
     }
 }
 
@@ -398,8 +417,8 @@ impl Engine {
         event: Event,
     ) -> Result<Head, EngineError> {
         // A broker is told it may not send this at all (ADR-0024) before anyone is told about the API.
-        if matches!(event, Event::HoldResolved { .. }) && event.may_come_from(origin) {
-            return Err(EngineError::Rule(RuleViolation::ResolveThroughTheEngineApi));
+        if let Some(violation) = through_the_api(origin, &event) {
+            return Err(EngineError::Rule(violation));
         }
         self.submit_checked(at, origin, event)
     }
@@ -449,11 +468,8 @@ impl Engine {
         if self.poisoned {
             return Err(EngineError::Poisoned);
         }
-        if events
-            .iter()
-            .any(|(o, e)| matches!(e, Event::HoldResolved { .. }) && e.may_come_from(*o))
-        {
-            return Err(EngineError::Rule(RuleViolation::ResolveThroughTheEngineApi));
+        if let Some(violation) = events.iter().find_map(|(o, e)| through_the_api(*o, e)) {
+            return Err(EngineError::Rule(violation));
         }
         // Checked on a copy, so a sequence that fails half way leaves the real state untouched.
         let mut next = self.state.clone();
@@ -585,8 +601,37 @@ impl Engine {
                 )?;
                 Ok(Reevaluation::Released(head))
             }
-            Outcome::Refuse { .. } | Outcome::Hold { .. } => Ok(Reevaluation::StillHeld),
+            // A refusal is evidence that the action is refused now. It is recorded, and it releases
+            // nothing and ends nothing: only a decision does the second, and only an allow the first.
+            Outcome::Refuse { reason } => {
+                let head =
+                    self.submit_checked(at, Origin::Engine, Event::HoldRefused { hold, reason })?;
+                Ok(Reevaluation::Refused(head))
+            }
+            Outcome::Hold { .. } => Ok(Reevaluation::StillHeld),
         }
+    }
+
+    /// Ends a held task by a recorded decision (ADR-0029): afterwards it has no open holds, nothing can
+    /// start on it, and a later allow from the gate releases nothing. The decider must be allowed at
+    /// the stakes of every hold the task has open, and the task must be held; otherwise it is refused
+    /// and nothing is written. `reason` is a short code, never free text.
+    pub fn cancel_task(
+        &mut self,
+        at: Timestamp,
+        task: TaskId,
+        decider: Decider,
+        reason: ReasonCode,
+    ) -> Result<Head, EngineError> {
+        self.submit_checked(
+            at,
+            Origin::Engine,
+            Event::TaskCancelled {
+                task,
+                by: decider.resolution(),
+                reason,
+            },
+        )
     }
 
     /// Records a decision by the tier of the held action: policy for a routine hold, the verifier
@@ -614,7 +659,7 @@ impl Engine {
     fn open_hold(&self, hold: HoldId) -> Result<&crate::Hold, EngineError> {
         match self.state.holds().get(&hold) {
             None => Err(EngineError::Rule(RuleViolation::UnknownHold(hold))),
-            Some(h) if h.resolved.is_some() => {
+            Some(_) if !self.state.hold_is_open(&hold) => {
                 Err(EngineError::Rule(RuleViolation::HoldNotOpen(hold)))
             }
             Some(h) => Ok(h),

@@ -179,6 +179,13 @@ impl Stakes {
             Resolution::Reevaluated => !matches!(self.tier, Tier::Irreversible),
         }
     }
+
+    /// Whether `by` may cancel a task held at these stakes (ADR-0029). The same deciders as for
+    /// releasing it, so a lower decider cannot end work that a higher one is to decide, except that a
+    /// gate answering again is never a decision to end a task.
+    pub const fn may_be_cancelled_by(self, by: Resolution) -> bool {
+        !matches!(by, Resolution::Reevaluated) && self.may_be_resolved_by(by)
+    }
 }
 
 #[cfg(test)]
@@ -236,6 +243,52 @@ mod tests {
                     category.as_str()
                 );
             }
+        }
+    }
+
+    fn may_cancel(stakes: Stakes) -> Vec<Resolution> {
+        ALL_BY
+            .into_iter()
+            .filter(|by| stakes.may_be_cancelled_by(*by))
+            .collect()
+    }
+
+    #[test]
+    fn who_may_cancel_a_held_task_is_who_may_decide_it_and_never_a_gate_answering_again() {
+        // Release and cancel differ in one column only: a fresh answer from the gate.
+        assert_eq!(
+            may_cancel(Stakes::routine()),
+            vec![Resolution::Policy, Resolution::Human]
+        );
+        assert_eq!(
+            may_cancel(Stakes::escalated()),
+            vec![Resolution::Verifier, Resolution::Human]
+        );
+        assert_eq!(may_cancel(Stakes::irreversible()), vec![Resolution::Human]);
+        for tier in [Tier::Routine, Tier::Escalated, Tier::Irreversible] {
+            for category in Sensitive::ALL {
+                let stakes = Stakes {
+                    tier,
+                    touches: Touches::NONE.with(category),
+                };
+                assert_eq!(
+                    may_cancel(stakes),
+                    vec![Resolution::Human],
+                    "{tier:?} touching {}",
+                    category.as_str()
+                );
+            }
+        }
+        for stakes in [
+            Stakes::routine(),
+            Stakes::escalated(),
+            Stakes::irreversible(),
+        ] {
+            let release: Vec<_> = allowed(stakes)
+                .into_iter()
+                .filter(|by| *by != Resolution::Reevaluated)
+                .collect();
+            assert_eq!(may_cancel(stakes), release);
         }
     }
 

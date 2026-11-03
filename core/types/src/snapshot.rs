@@ -19,8 +19,9 @@ use crate::{
 
 /// The layout [`StateImage`] is written in today.
 ///
-/// Version 2 added the archives that were pruned (ADR-0026, S1.14). A version 1 image has none.
-pub const STATE_VERSION: u32 = 2;
+/// Version 2 added the archives that were pruned (ADR-0027). A version 1 image has none. Version 3 added
+/// the cancelling of a task (ADR-0029). Earlier images have no task cancelled.
+pub const STATE_VERSION: u32 = 3;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +60,17 @@ pub struct TaskImage {
     pub completed_at: Option<u64>,
     /// In id order.
     pub open_holds: Vec<HoldId>,
+    /// Set when the task was cancelled while held. A cancelled task has no open holds, and the holds
+    /// that were open stay unresolved: they were ended, not released.
+    pub cancelled: Option<CancelledImage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelledImage {
+    pub at: u64,
+    pub by: Resolution,
+    pub reason: ReasonCode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,6 +174,16 @@ impl StateImage {
                 .ok_or_else(|| ImageError::Decode("the state is not an object".into()))?
                 .insert("pruned".into(), Value::Array(Vec::new()));
         }
+        // 2 -> 3: no task had been cancelled.
+        let tasks = value
+            .get_mut("tasks")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| ImageError::Decode("the state has no list of tasks".into()))?;
+        for task in tasks {
+            task.as_object_mut()
+                .ok_or_else(|| ImageError::Decode("a task is not an object".into()))?
+                .insert("cancelled".into(), Value::Null);
+        }
         serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()))
     }
 }
@@ -247,6 +269,7 @@ mod tests {
                 request: d(1),
                 completed_at: None,
                 open_holds: vec![HoldId::from_seq(5)],
+                cancelled: None,
             }],
             jobs: vec![JobImage {
                 id: JobId::from_seq(2),

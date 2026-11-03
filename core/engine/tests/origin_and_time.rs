@@ -39,10 +39,25 @@ fn d(byte: u8) -> Digest {
 
 /// Submits `event` as the engine would: a hold is released through the call that records who decided.
 fn accept(e: &mut Engine, n: u64, event: Event) -> Res {
-    if let Event::HoldResolved { hold, reason, .. } = event {
-        e.decide_hold(at(n), hold, Decider::Human, reason)?;
-    } else {
-        e.submit(at(n), Origin::Engine, event)?;
+    match event {
+        Event::HoldResolved { hold, reason, .. } => {
+            e.decide_hold(at(n), hold, Decider::Human, reason)?;
+        }
+        Event::TaskCancelled { task, reason, .. } => {
+            e.cancel_task(at(n), task, Decider::Human, reason)?;
+        }
+        Event::HoldRefused { hold, reason } => {
+            let held = e.state().holds()[&hold].clone();
+            let request = GateRequest {
+                gate: held.gate,
+                inputs: held.inputs,
+                stakes: held.stakes,
+            };
+            e.reevaluate_hold(at(n), hold, &request, Outcome::Refuse { reason })?;
+        }
+        other => {
+            e.submit(at(n), Origin::Engine, other)?;
+        }
     }
     Ok(())
 }
@@ -83,7 +98,7 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
                 reason: ReasonCode::unavailable(),
             }
         }
-        "hold.resolved" => {
+        "hold.resolved" | "task.cancelled" | "hold.refused" => {
             let task = TaskId::from_seq(go(&mut e, 1, Event::TaskCreated { request: d(1) })?);
             let job = JobId::from_seq(go(&mut e, 2, Event::JobStarted { task })?);
             let Ruling::Held(hold) = e.rule_gate(
@@ -103,10 +118,21 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
             else {
                 return Err("expected a hold".into());
             };
-            Event::HoldResolved {
-                hold,
-                by: Resolution::Human,
-                reason: why(),
+            match kind {
+                "hold.resolved" => Event::HoldResolved {
+                    hold,
+                    by: Resolution::Human,
+                    reason: why(),
+                },
+                "task.cancelled" => Event::TaskCancelled {
+                    task,
+                    by: Resolution::Human,
+                    reason: why(),
+                },
+                _ => Event::HoldRefused {
+                    hold,
+                    reason: why(),
+                },
             }
         }
         "archive.pruned" => {
