@@ -37,4 +37,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0021](0021-backup-and-restore-of-the-event-log.md) | Backup and restore of the event log | Proposed |
 | [0022](0022-engine-keys-generation-storage-backup-and-loss.md) | The engine's keys: generation, storage, backup and loss | Accepted |
 | [0023](0023-event-schema-versions-and-upcasting.md) | Event schema versions and upcasting | Accepted |
-| [0024](0024-event-origins-and-time-order.md) | Event origins and time order | Proposed |
+| [0024](0024-event-origins-and-time-order.md) | Event origins and time order | Accepted |
