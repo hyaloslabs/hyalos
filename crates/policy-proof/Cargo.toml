@@ -1,0 +1,17 @@
+[package]
+name = "hyalos-policy-proof"
+description = "CI proofs about the shipped baseline, with cedar-policy-symcc and the cvc5 solver (ADR-0008, ADR-0033). Not part of the trusted core, and never linked into the binary."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hyalos-policy = { path = "../../core/policy" }
+# Pinned together (ADR-0008): symcc 0.8.1 requires exactly cedar-policy 4.14.1, and so does hyalos-policy.
+cedar-policy = { version = "=4.14.1", default-features = false }
+cedar-policy-symcc = "=0.8.1"
+tokio = { version = "1", features = ["rt"] }

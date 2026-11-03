@@ -1,0 +1,61 @@
+// The schema Hyalos ships (ADR-0008, ADR-0033). Operator policy is validated against it and cannot
+// change it. Tiers (ADR-0012) are the three groups at the top: every action is a member of exactly one,
+// and the baseline reads them, so no operator policy can move an action to a lower tier.
+
+// What the engine knows about the job, from its signed manifest (ADR-0004).
+entity Job = {
+  // The job read forge-authored content (ADR-0005).
+  tainted: Bool,
+  // owner/name of the one repo the manifest names.
+  repo: String,
+};
+
+// What the job is acting on.
+entity Target = {
+  repo: String,
+  // The branch is under the job's branch prefix. The engine compares it; Cedar has no prefix test.
+  in_branch_prefix: Bool,
+  protected: Bool,
+};
+
+type Facts = {
+  // The operator's signature on an approval event for this exact action was verified (ADR-0012).
+  approved: Bool,
+  // The request would use a subscription token (ADR-0005).
+  subscription_token: Bool,
+};
+
+// ---- tiers (ADR-0012) -------------------------------------------------------------------
+action routine;
+action escalated;
+action irreversible;
+
+// ---- groups the baseline reads ----------------------------------------------------------
+// Actions that change something in a repo.
+action repo_write;
+// Actions that put commits on a branch.
+action branch_write;
+
+// ---- actions ----------------------------------------------------------------------------
+action read in [routine]
+  appliesTo { principal: [Job], resource: [Target], context: Facts };
+action push in [routine, repo_write, branch_write]
+  appliesTo { principal: [Job], resource: [Target], context: Facts };
+action open_pr in [routine, repo_write]
+  appliesTo { principal: [Job], resource: [Target], context: Facts };
+action comment in [routine, repo_write]
+  appliesTo { principal: [Job], resource: [Target], context: Facts };
+// A host outside the egress allowlist.
+action request_host in [escalated]
+  appliesTo { principal: [Job], resource: [Target], context: Facts };
+// A merge is irreversible whatever the branch: the conservative reading of ADR-0012.
+action merge in [irreversible, repo_write]
+  appliesTo { principal: [Job], resource: [Target], context: Facts };
+action change_policy in [irreversible]
+  appliesTo { principal: [Job], resource: [Target], context: Facts };
+action publish in [irreversible]
+  appliesTo { principal: [Job], resource: [Target], context: Facts };
+action spend_over_cap in [irreversible]
+  appliesTo { principal: [Job], resource: [Target], context: Facts };
+action export_credentials in [irreversible]
+  appliesTo { principal: [Job], resource: [Target], context: Facts };
