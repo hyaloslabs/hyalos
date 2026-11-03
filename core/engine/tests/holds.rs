@@ -203,12 +203,11 @@ fn a_fresh_on_time_allow_releases_the_hold_as_reevaluated() -> Res {
 }
 
 #[test]
-fn unknown_a_timeout_a_late_allow_and_a_refusal_leave_the_hold_open_and_write_nothing() -> Res {
+fn unknown_a_timeout_and_a_late_allow_leave_the_hold_open_and_write_nothing() -> Res {
     let mut w = world("reeval-not-allow")?;
     let h = w.held(Stakes::routine())?;
     let cases: Vec<(&str, Result<Verdict, Fault>, Duration)> = vec![
         ("unknown", says(Answer::Unknown), QUICK),
-        ("deny", says(Answer::Deny), QUICK),
         ("gate timed out", Err(Fault::TimedOut), QUICK),
         ("gate unavailable", Err(Fault::Unavailable), QUICK),
         // Says allow, but after the deadline: the caller has already been told it did not answer.
@@ -895,6 +894,7 @@ fn no_random_sequence_releases_a_hold_without_an_allow_or_an_authorized_decision
                         3 => (Ok(Answer::Deny), 0),
                         _ => (Err(Fault::Unavailable), 0),
                     };
+                    let result_kind = answer;
                     let result = answer.map_or_else(Err, says);
                     let on_time_allow =
                         matches!(&result, Ok(v) if v.answer == Answer::Allow) && takes_secs == 0;
@@ -909,7 +909,19 @@ fn no_random_sequence_releases_a_hold_without_an_allow_or_an_authorized_decision
                             "seed {seed} step {step}"
                         );
                     } else if !on_time_allow {
-                        assert_eq!(outcome?, Reevaluation::StillHeld, "seed {seed} step {step}");
+                        // A refusal is written down as a fact; everything else writes nothing.
+                        if matches!(&result_kind, Ok(Answer::Deny)) {
+                            assert!(
+                                matches!(outcome?, Reevaluation::Refused(_)),
+                                "seed {seed} step {step}"
+                            );
+                        } else {
+                            assert_eq!(
+                                outcome?,
+                                Reevaluation::StillHeld,
+                                "seed {seed} step {step}"
+                            );
+                        }
                     } else if stakes.may_be_resolved_by(Resolution::Reevaluated) {
                         assert!(
                             matches!(outcome?, Reevaluation::Released(_)),

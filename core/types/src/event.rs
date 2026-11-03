@@ -14,14 +14,15 @@ use crate::{
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
-/// What this build reads: version 3, and versions 1 and 2 upcast to it (ADR-0023, ADR-0025, ADR-0026).
+/// What this build reads: version 4, and versions 1 to 3 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// ADR-0029).
 ///
 /// Version 2 added the stakes of a hold and the reason for resolving one. A version 1 hold is given the
 /// most cautious stakes, so only a human can release it; a version 1 resolution is given an explicit
 /// "unrecorded" reason. Version 3 added `archive.pruned` and changed no payload. Every other kind is the
-/// same in all versions.
+/// same in all versions. Version 4 added `task.cancelled` and `hold.refused` and changed no payload.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -149,6 +150,19 @@ pub enum Event {
     /// before the file is removed.
     #[serde(rename = "archive.pruned")]
     ArchivePruned { last_seq: u64, last_hash: Digest },
+    /// A held task was ended by a decision, so it has no open holds and nothing can start on it. `by`
+    /// is the tier of decider (never a gate re-evaluation) and the state refuses a decider the stakes
+    /// of every open hold do not allow (ADR-0029).
+    #[serde(rename = "task.cancelled")]
+    TaskCancelled {
+        task: TaskId,
+        by: Resolution,
+        reason: ReasonCode,
+    },
+    /// A held request was put to its gate again and the gate refused. This is evidence that the action
+    /// is refused now. It releases nothing and ends nothing (ADR-0029).
+    #[serde(rename = "hold.refused")]
+    HoldRefused { hold: HoldId, reason: ReasonCode },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -216,7 +230,9 @@ impl Event {
             | Event::JobEnded { .. }
             | Event::HoldOpened { .. }
             | Event::HoldResolved { .. }
-            | Event::ArchivePruned { .. } => origin == Origin::Engine,
+            | Event::ArchivePruned { .. }
+            | Event::TaskCancelled { .. }
+            | Event::HoldRefused { .. } => origin == Origin::Engine,
         }
     }
 
@@ -231,6 +247,8 @@ impl Event {
             Event::HoldOpened { .. } => "hold.opened",
             Event::HoldResolved { .. } => "hold.resolved",
             Event::ArchivePruned { .. } => "archive.pruned",
+            Event::TaskCancelled { .. } => "task.cancelled",
+            Event::HoldRefused { .. } => "hold.refused",
         }
     }
 
@@ -240,7 +258,7 @@ impl Event {
     }
 
     /// Every `kind` value, for checking tables and test coverage.
-    pub const KINDS: [&'static str; 8] = [
+    pub const KINDS: [&'static str; 10] = [
         "task.created",
         "task.completed",
         "job.started",
@@ -249,6 +267,8 @@ impl Event {
         "hold.opened",
         "hold.resolved",
         "archive.pruned",
+        "task.cancelled",
+        "hold.refused",
     ];
 
     /// Reads an event back from a log row's `kind`, `schema_version` and `payload`, as this build's
@@ -365,6 +385,22 @@ mod tests {
                     r#"{{"kind":"archive.pruned","last_seq":42,"last_hash":"{}"}}"#,
                     h(7)
                 ),
+            ),
+            (
+                Event::TaskCancelled {
+                    task: TaskId::from_seq(3),
+                    by: Resolution::Human,
+                    reason: ReasonCode::new("cancelled.operator").unwrap(),
+                },
+                r#"{"kind":"task.cancelled","task":3,"by":"human","reason":"cancelled.operator"}"#
+                    .to_string(),
+            ),
+            (
+                Event::HoldRefused {
+                    hold: HoldId::from_seq(5),
+                    reason: ReasonCode::new("egress.denied").unwrap(),
+                },
+                r#"{"kind":"hold.refused","hold":5,"reason":"egress.denied"}"#.to_string(),
             ),
         ]
     }

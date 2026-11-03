@@ -66,7 +66,7 @@ fn route(e: &mut Engine, at: Timestamp, event: Event) -> Result<Head, EngineErro
             };
             return match e.reevaluate_hold(at, hold, &request, Outcome::Proceed { reason })? {
                 Reevaluation::Released(head) => Ok(head),
-                Reevaluation::StillHeld => Err(EngineError::Poisoned),
+                Reevaluation::StillHeld | Reevaluation::Refused(_) => Err(EngineError::Poisoned),
             };
         }
     };
