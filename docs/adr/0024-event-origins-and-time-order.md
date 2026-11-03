@@ -1,6 +1,6 @@
 # ADR-0024: Event origins and time order
 
-**Status:** Proposed
+**Status:** Accepted on November 2, 2026, after the origin rule, the time rule, replay of both and the open path were built and tested (#130). The limits in Consequences are part of the decision: the rule is narrow by design, origins record who said it and not proof, and a clock that steps back stalls the engine.
 
 ## Context
 
