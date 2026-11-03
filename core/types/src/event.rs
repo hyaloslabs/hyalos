@@ -14,13 +14,14 @@ use crate::{
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
-/// What this build reads: version 2, and version 1 upcast to it (ADR-0023, ADR-0025).
+/// What this build reads: version 3, and versions 1 and 2 upcast to it (ADR-0023, ADR-0025, ADR-0026).
 ///
 /// Version 2 added the stakes of a hold and the reason for resolving one. A version 1 hold is given the
 /// most cautious stakes, so only a human can release it; a version 1 resolution is given an explicit
-/// "unrecorded" reason. Every other kind is the same in both versions.
+/// "unrecorded" reason. Version 3 added `archive.pruned` and changed no payload. Every other kind is the
+/// same in all versions.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -142,6 +143,12 @@ pub enum Event {
         by: Resolution,
         reason: ReasonCode,
     },
+    /// An archive of compacted events was deleted from the machine (ADR-0026). It names the last event
+    /// the archive held and that event's hash, which is also where the snapshot that stands for the
+    /// archive stands, so the record cannot be about some other log's archive. The engine writes it
+    /// before the file is removed.
+    #[serde(rename = "archive.pruned")]
+    ArchivePruned { last_seq: u64, last_hash: Digest },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -208,7 +215,8 @@ impl Event {
             | Event::JobStarted { .. }
             | Event::JobEnded { .. }
             | Event::HoldOpened { .. }
-            | Event::HoldResolved { .. } => origin == Origin::Engine,
+            | Event::HoldResolved { .. }
+            | Event::ArchivePruned { .. } => origin == Origin::Engine,
         }
     }
 
@@ -222,6 +230,7 @@ impl Event {
             Event::GateAnswered { .. } => "gate.answered",
             Event::HoldOpened { .. } => "hold.opened",
             Event::HoldResolved { .. } => "hold.resolved",
+            Event::ArchivePruned { .. } => "archive.pruned",
         }
     }
 
@@ -231,7 +240,7 @@ impl Event {
     }
 
     /// Every `kind` value, for checking tables and test coverage.
-    pub const KINDS: [&'static str; 7] = [
+    pub const KINDS: [&'static str; 8] = [
         "task.created",
         "task.completed",
         "job.started",
@@ -239,6 +248,7 @@ impl Event {
         "gate.answered",
         "hold.opened",
         "hold.resolved",
+        "archive.pruned",
     ];
 
     /// Reads an event back from a log row's `kind`, `schema_version` and `payload`, as this build's
@@ -345,6 +355,16 @@ mod tests {
                 },
                 r#"{"kind":"hold.resolved","hold":5,"by":"human","reason":"approved.operator"}"#
                     .to_string(),
+            ),
+            (
+                Event::ArchivePruned {
+                    last_seq: 42,
+                    last_hash: d(7),
+                },
+                format!(
+                    r#"{{"kind":"archive.pruned","last_seq":42,"last_hash":"{}"}}"#,
+                    h(7)
+                ),
             ),
         ]
     }

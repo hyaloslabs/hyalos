@@ -109,6 +109,16 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
                 reason: why(),
             }
         }
+        "archive.pruned" => {
+            // Only an archive the log made can be named, so compact first and name where it ended.
+            go(&mut e, 1, Event::TaskCreated { request: d(1) })?;
+            let archive = path(&format!("{name}-{kind}-archive"))?.with_file_name("a.db");
+            let done = e.compact(at(2), &archive)?;
+            Event::ArchivePruned {
+                last_seq: done.head.seq,
+                last_hash: Digest::from_bytes(done.head.hash),
+            }
+        }
         other => return Err(format!("no scenario for {other}").into()),
     };
     Ok((e, event))

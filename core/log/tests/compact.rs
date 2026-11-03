@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use hyalos_log::format::{self, AnchorFields};
 use hyalos_log::{
     CompactError, CopyError, Head, Log, LogError, LogKey, Origin, Reason, StoredEvent, VerifyError,
-    copy_verified, verify, verify_history,
+    copy_verified, read_verified, verify, verify_history,
 };
 use hyalos_types::Timestamp;
 use rusqlite::Connection;
@@ -702,5 +702,49 @@ fn a_compacted_log_backs_up_and_restores_and_carries_on() -> Res {
     let mut restored = Log::open(&backup, key())?;
     assert_eq!(restored.head()?, Some(head));
     assert_eq!(add(&mut restored, 8)?.seq, 8);
+    Ok(())
+}
+
+#[test]
+fn a_log_knows_which_snapshots_it_holds() -> Res {
+    let d = dir("has-anchor")?;
+    let (mut log, heads) = filled(&d.join("l.db"), 3)?;
+    let end = heads[2];
+    assert!(!log.has_anchor(end)?, "nothing is compacted yet");
+    compact(&mut log, &d.join("a.db"), 9_000)?;
+    assert!(log.has_anchor(end)?);
+    // Both halves must match: the event and its hash.
+    assert!(!log.has_anchor(heads[1])?);
+    assert!(!log.has_anchor(Head {
+        hash: [1; 32],
+        ..end
+    })?);
+    assert!(!log.has_anchor(Head { seq: 4, ..end })?);
+    Ok(())
+}
+
+#[test]
+fn read_verified_returns_what_it_checked_and_needs_only_the_public_key() -> Res {
+    let d = dir("read-verified")?;
+    let (mut log, _) = filled(&d.join("l.db"), 3)?;
+    let public = key().public();
+
+    let whole = read_verified(&d.join("l.db"), &public)?;
+    assert_eq!((whole.verified.events, whole.events.len()), (3, 3));
+    assert!(whole.anchor.is_none());
+
+    compact(&mut log, &d.join("a.db"), 9_000)?;
+    add(&mut log, 4)?;
+    let after = read_verified(&d.join("l.db"), &public)?;
+    let anchor = after.anchor.ok_or("no snapshot")?;
+    assert_eq!((anchor.seq, anchor.state.as_slice()), (3, STATE));
+    assert_eq!(
+        after.events.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        vec![4]
+    );
+    assert_eq!(after.verified.events, 1);
+
+    // It refuses a key that does not check out, so nothing unverified is ever returned.
+    assert!(read_verified(&d.join("l.db"), &other_key().public()).is_err());
     Ok(())
 }

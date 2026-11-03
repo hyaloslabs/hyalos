@@ -285,7 +285,8 @@ fn prune_removes_one_archive_only_when_asked_and_only_if_it_belongs_to_the_log()
     // A real archive goes, and the rest of the history still verifies as far as it can.
     let result = m.run(&["log", "prune", p1, "--yes"])?;
     let text = ok(&result)?;
-    assert!(text.contains("pruned: 3 events, head 3:"), "{text}");
+    assert!(text.contains("(3 events, ending at 3:"), "{text}");
+    assert!(text.contains("recorded in the log at event 6"), "{text}");
     assert!(!a1.exists());
     assert!(a2.exists(), "only the one named");
     let after = ok(&m.run(&["log", "verify", "--archive", p2])?)?;
@@ -301,6 +302,95 @@ fn prune_removes_one_archive_only_when_asked_and_only_if_it_belongs_to_the_log()
     let result = m.run(&["log", "prune", path_str(&rotten)?, "--yes"])?;
     assert_eq!(result.status.code(), Some(1));
     assert!(rotten.exists());
+    Ok(())
+}
+
+#[test]
+fn a_prune_is_recorded_in_the_log_and_verify_lists_it_even_after_the_next_compaction() -> Res {
+    let m = machine("recorded", 3)?;
+    ok(&m.run(&["log", "compact"])?)?;
+    let a1 = m.data().join("archive/events-0000000001-0000000003.db");
+
+    let before = ok(&m.run(&["log", "verify"])?)?;
+    assert!(!before.contains("pruned:"), "{before}");
+
+    ok(&m.run(&["log", "prune", path_str(&a1)?, "--yes"])?)?;
+    let after = ok(&m.run(&["log", "verify"])?)?;
+    assert!(
+        after.contains("pruned: the archive ending at event 3 (")
+            && after.contains("recorded at event 4"),
+        "{after}"
+    );
+
+    // Compacting moves that record into the snapshot, and into the new archive. It is still listed.
+    ok(&m.run(&["log", "compact"])?)?;
+    let later = ok(&m.run(&["log", "verify"])?)?;
+    assert!(
+        later.contains("pruned: the archive ending at event 3 (")
+            && later.contains("0 events after the snapshot"),
+        "{later}"
+    );
+    // The record is the engine's, signed with the rest: the log still verifies with the public key.
+    let a2 = m.data().join("archive/events-0000000004-0000000004.db");
+    let both = ok(&m.run(&["log", "verify", "--archive", path_str(&a2)?])?)?;
+    assert!(
+        both.contains("pruned: the archive ending at event 3 ("),
+        "{both}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_crash_between_the_record_and_the_delete_leaves_a_file_that_can_be_pruned_again() -> Res {
+    let m = machine("crash", 3)?;
+    let done = ok(&m.run(&["log", "compact"])?)?;
+    let a1 = m.data().join("archive/events-0000000001-0000000003.db");
+    // The engine records the prune and then "crashes": the file is still there.
+    let head = {
+        let mut engine = Engine::open(&m.db(), LogKey::from_seed(SEED))?;
+        let snapshot = engine.snapshot_head()?.ok_or("no snapshot")?;
+        engine.record_prune(Timestamp::from_millis(9_000), snapshot)?;
+        snapshot
+    };
+    assert!(a1.exists(), "{done}");
+
+    let text = ok(&m.run(&["log", "prune", path_str(&a1)?, "--yes"])?)?;
+    assert!(text.contains("already recorded in the log"), "{text}");
+    assert!(!a1.exists());
+    // Recorded once, not twice.
+    let engine = Engine::open(&m.db(), LogKey::from_seed(SEED))?;
+    assert_eq!(engine.state().pruned().len(), 1);
+    assert_eq!(engine.state().pruned()[0].last_seq, head.seq);
+    Ok(())
+}
+
+#[test]
+fn nothing_is_deleted_when_the_prune_cannot_be_recorded() -> Res {
+    let m = machine("unrecorded", 3)?;
+    ok(&m.run(&["log", "compact"])?)?;
+    let a1 = m.data().join("archive/events-0000000001-0000000003.db");
+
+    // Another key cannot sign into this log, so nothing may be removed.
+    let wrong = m.root.join("other.key");
+    let seed_hex: String = [7u8; 32].iter().map(|b| format!("{b:02x}")).collect();
+    std::fs::write(&wrong, format!("hyalos-engine-key-v1:{seed_hex}\n"))?;
+    std::fs::set_permissions(&wrong, std::fs::Permissions::from_mode(0o600))?;
+    let result = m.run(&[
+        "log",
+        "prune",
+        path_str(&a1)?,
+        "--yes",
+        "--key-file",
+        path_str(&wrong)?,
+    ])?;
+    assert_eq!(result.status.code(), Some(1), "{}", err(&result));
+    assert!(a1.exists());
+
+    // Without the engine's key at all, the same.
+    std::fs::remove_file(m.config().join("engine.key"))?;
+    let result = m.run(&["log", "prune", path_str(&a1)?, "--yes"])?;
+    assert_eq!(result.status.code(), Some(1));
+    assert!(a1.exists());
     Ok(())
 }
 
@@ -322,7 +412,16 @@ fn a_foreign_archive_is_refused_by_verify_and_prune() -> Res {
     );
     let prune = m.run(&["log", "prune", theirs, "--yes"])?;
     assert_eq!(prune.status.code(), Some(1));
+    assert!(
+        err(&prune).contains("no snapshot of this log stands"),
+        "{}",
+        err(&prune)
+    );
     assert!(Path::new(theirs).exists());
+    assert!(
+        !ok(&m.run(&["log", "verify"])?)?.contains("pruned:"),
+        "nothing was recorded"
+    );
     Ok(())
 }
 

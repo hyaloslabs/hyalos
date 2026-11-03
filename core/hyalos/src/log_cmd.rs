@@ -4,7 +4,8 @@
 //! The public key comes from the operator, never from the log: from `--public-key`,
 //! `--public-key-file`, or by default the `engine.pub` file the engine wrote when it created its key.
 //! Checking opens the database read-only. `compact` is the one command that writes to it, so it needs
-//! the engine's own key, and `prune` is the one that deletes anything, so it needs `--yes`.
+//! the engine's own key. `prune` is the one that deletes anything: it needs `--yes`, and it records the
+//! prune in the log before it deletes, so it needs the engine's key as well.
 
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::PathBuf;
@@ -21,7 +22,7 @@ const USAGE: &str = "usage: hyalos log verify  [--db <path>] [KEY] [--expect-hea
        hyalos log backup  <new-file> [--db <path>] [KEY] [--expect-head <seq>:<hash>]
        hyalos log restore <backup-file> [--db <path>] [KEY] [--expect-head <seq>:<hash>]
        hyalos log compact [--db <path>] [--archive-dir <dir>] [--key-file <path>]
-       hyalos log prune   <archive> --yes [--db <path>] [KEY] [--expect-head <seq>:<hash>]
+       hyalos log prune   <archive> --yes [--db <path>] [--key-file <path>]
   KEY is --public-key <hex> or --public-key-file <path>
   --db is the live log: it defaults to events.db in the data directory; the key defaults to engine.pub in the
   config directory (HYALOS_DATA_DIR / HYALOS_CONFIG_DIR override both; see ADR-0018)
@@ -35,15 +36,16 @@ const USAGE: &str = "usage: hyalos log verify  [--db <path>] [KEY] [--expect-hea
   otherwise
   verify --archive checks an archive too, and that it ends where a snapshot of this log stands; without
   it the history before the latest snapshot rests on the engine's signature on that snapshot
-  prune deletes one archive, after checking it belongs to this log. It is the only command that removes
-  history from this machine, so it asks for --yes; save the archive somewhere first";
+  prune deletes one archive, after checking it belongs to this log, and first records that in the log
+  (an archive.pruned event), so it needs the engine's signing key like compact and the engine stopped. It
+  is the only command that removes history from this machine, so it asks for --yes; save the archive
+  somewhere first. verify lists the archives that were pruned";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Command {
     Verify,
     Backup,
     Restore,
-    Prune,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -53,8 +55,7 @@ struct Options {
     /// Where the key came from, shown with the result so the operator sees what was trusted.
     key_source: String,
     expect_head: Option<Head>,
-    /// The file named on the command line: the new backup, the backup to restore from, or the archive
-    /// to prune.
+    /// The file named on the command line: the new backup or the backup to restore from.
     file: Option<PathBuf>,
     /// Archives to check along with the log (`verify --archive`).
     archives: Vec<PathBuf>,
@@ -75,7 +76,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("backup") => Command::Backup,
         Some("restore") => Command::Restore,
         Some("compact") => return compact(args.get(1..).unwrap_or_default()),
-        Some("prune") => Command::Prune,
+        Some("prune") => return prune(args.get(1..).unwrap_or_default()),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
@@ -106,7 +107,6 @@ pub fn run(args: &[String]) -> ExitCode {
             to: Some(options.db.clone()),
             notes: Vec::new(),
         }),
-        (Command::Prune, Some(archive)) => prune(archive, &options),
         _ => check(&options),
     };
     match outcome {
@@ -172,6 +172,15 @@ fn check(options: &Options) -> Result<Done, String> {
             )
         });
     }
+    for p in hyalos_engine::pruned_archives(&options.db, &options.key).map_err(|e| e.to_string())? {
+        notes.push(format!(
+            "pruned: the archive ending at event {} ({}) was removed, recorded at event {}, unix time {}",
+            p.last_seq,
+            p.last_hash,
+            p.seq,
+            p.at.as_millis() / 1000
+        ));
+    }
     Ok(Done {
         verb: "ok",
         verified: history.live,
@@ -180,28 +189,128 @@ fn check(options: &Options) -> Result<Done, String> {
     })
 }
 
-/// Deletes one archive, once it is shown to be part of this log's history. It never deletes anything
-/// that does not check out, and never the log itself.
-fn prune(archive: &std::path::Path, options: &Options) -> Result<Done, String> {
-    let what =
-        verify(archive, &options.key, None).map_err(|e| format!("{}: {e}", archive.display()))?;
-    verify_history(
-        &options.db,
-        std::slice::from_ref(&archive.to_path_buf()),
-        &options.key,
-        options.expect_head,
-    )
-    .map_err(|e| e.to_string())?;
+/// `hyalos log prune`: delete one archive, once it is shown to be part of this log's history, and
+/// only after the log says so. It never deletes anything that does not check out, and never the log
+/// itself. Like `compact` it signs, so it needs the engine's key and the engine stopped.
+fn prune(args: &[String]) -> ExitCode {
+    let env = |name: &str| std::env::var(name).ok();
+    let options = match parse_prune(args, &env) {
+        Ok(o) => o,
+        Err(message) => {
+            eprintln!("hyalos: {message}\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    match run_prune(&options) {
+        Ok(lines) => {
+            for line in lines {
+                println!("{line}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("FAILED: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PruneOptions {
+    db: PathBuf,
+    key_file: PathBuf,
+    archive: PathBuf,
+}
+
+fn parse_prune(args: &[String], env: Env<'_>) -> Result<PruneOptions, String> {
+    let (mut db, mut key_file, mut yes) = (None, None, false);
+    let mut files: Vec<&String> = Vec::new();
+    let mut it = args.iter();
+    while let Some(flag) = it.next() {
+        let mut value = || {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{flag} needs a value"))
+        };
+        match flag.as_str() {
+            "--db" => db = Some(PathBuf::from(value()?)),
+            "--key-file" => key_file = Some(PathBuf::from(value()?)),
+            "--yes" => yes = true,
+            other if other.starts_with('-') => return Err(format!("unknown argument {other}")),
+            _ => files.push(flag),
+        }
+    }
+    let archive = match files.as_slice() {
+        [one] => PathBuf::from(one),
+        [] => return Err("prune needs the archive to remove".into()),
+        [_, extra, ..] => return Err(format!("unexpected argument {extra}")),
+    };
+    if !yes {
+        return Err(
+            "prune removes history from this machine for good; save the archive somewhere first, then pass --yes"
+                .into(),
+        );
+    }
+    let db = match db {
+        Some(db) => db,
+        None => paths::log_file(env)?,
+    };
+    let key_file = match key_file {
+        Some(path) => path,
+        None => paths::config_dir(env)?.join(paths::ENGINE_KEY_FILE),
+    };
+    Ok(PruneOptions {
+        db,
+        key_file,
+        archive,
+    })
+}
+
+fn run_prune(options: &PruneOptions) -> Result<Vec<String>, String> {
+    let archive = &options.archive;
+    let key = keys::load(&options.key_file).map_err(|e| e.to_string())?;
+    let public = key.public();
+    // The archive must verify on its own and hold events. That it ends where a snapshot of this log
+    // stands is checked by the engine when it records the prune, before anything is deleted.
+    let what = verify(archive, &public, None).map_err(|e| format!("{}: {e}", archive.display()))?;
+    let head = what
+        .head
+        .filter(|_| what.events > 0)
+        .ok_or_else(|| format!("{} holds no events", archive.display()))?;
+
+    // Recorded first. A crash after this leaves a record and a file that can be pruned again; the
+    // other order could leave a deleted archive and nothing to say so.
+    let mut engine = Engine::open(&options.db, key).map_err(|e| e.to_string())?;
+    let note = if engine.is_pruned(head) {
+        "already recorded in the log; removing the file".to_string()
+    } else {
+        let recorded = engine
+            .record_prune(now()?, head)
+            .map_err(|e| e.to_string())?;
+        format!("recorded in the log at event {}", recorded.seq)
+    };
     std::fs::remove_file(archive)
         .map_err(|e| format!("cannot remove {}: {e}", archive.display()))?;
-    Ok(Done {
-        verb: "pruned",
-        verified: what,
-        to: Some(archive.to_path_buf()),
-        notes: vec![
-            "that history is no longer on this machine; the snapshot that stands for it stays in the log".into(),
-        ],
-    })
+    Ok(vec![
+        format!(
+            "pruned: {} ({} events, ending at {head})",
+            archive.display(),
+            what.events
+        ),
+        note,
+        "that history is no longer on this machine; the snapshot that stands for it stays in the log"
+            .into(),
+        format!("public key {}", public.to_hex()),
+    ])
+}
+
+fn now() -> Result<Timestamp, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("the system clock is before 1970: {e}"))?;
+    Ok(Timestamp::from_millis(
+        u64::try_from(now.as_millis()).unwrap_or(u64::MAX),
+    ))
 }
 
 /// `hyalos log compact`: archive every event and leave a snapshot. It needs the engine's own key, since
@@ -296,11 +405,9 @@ fn run_compact(options: &CompactOptions) -> Result<Vec<String>, String> {
     let archive = options
         .archive_dir
         .join(format!("events-{first:010}-{last:010}.db"));
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| format!("the system clock is before 1970: {e}"))?;
-    let at = Timestamp::from_millis(u64::try_from(now.as_millis()).unwrap_or(u64::MAX));
-    let done = engine.compact(at, &archive).map_err(|e| e.to_string())?;
+    let done = engine
+        .compact(now()?, &archive)
+        .map_err(|e| e.to_string())?;
     Ok(vec![
         format!(
             "compacted: {} events moved to {}",
@@ -350,7 +457,6 @@ fn parse(command: Command, args: &[String], env: Env<'_>) -> Result<Options, Str
     let mut key_file = None;
     let mut expect = None;
     let mut archives: Vec<PathBuf> = Vec::new();
-    let mut yes = false;
     let mut files: Vec<&String> = Vec::new();
     let mut it = args.iter();
     while let Some(flag) = it.next() {
@@ -365,7 +471,6 @@ fn parse(command: Command, args: &[String], env: Env<'_>) -> Result<Options, Str
             "--public-key-file" => key_file = Some(value()?),
             "--expect-head" => expect = Some(value()?),
             "--archive" if command == Command::Verify => archives.push(PathBuf::from(value()?)),
-            "--yes" if command == Command::Prune => yes = true,
             other if other.starts_with('-') => return Err(format!("unknown argument {other}")),
             _ => files.push(flag),
         }
@@ -373,19 +478,11 @@ fn parse(command: Command, args: &[String], env: Env<'_>) -> Result<Options, Str
     if key_hex.is_some() && key_file.is_some() {
         return Err("give --public-key or --public-key-file, not both".into());
     }
-    if command == Command::Prune && !yes {
-        return Err(
-            "prune removes history from this machine for good; save the archive somewhere first, then pass --yes"
-                .into(),
-        );
-    }
     let file = match (command, files.as_slice()) {
         (Command::Verify, []) => None,
         (Command::Verify, [extra, ..]) => return Err(format!("unexpected argument {extra}")),
         (Command::Backup, [one]) => Some(PathBuf::from(one)),
         (Command::Restore, [one]) => Some(PathBuf::from(one)),
-        (Command::Prune, [one]) => Some(PathBuf::from(one)),
-        (Command::Prune, []) => return Err("prune needs the archive to remove".into()),
         (Command::Backup, []) => return Err("backup needs the name of the new file".into()),
         (Command::Restore, []) => return Err("restore needs the backup file to restore".into()),
         (_, [_, extra, ..]) => return Err(format!("unexpected argument {extra}")),
@@ -489,7 +586,7 @@ mod tests {
             o.archives,
             vec![PathBuf::from("x.db"), PathBuf::from("y.db")]
         );
-        for command in [Command::Backup, Command::Restore, Command::Prune] {
+        for command in [Command::Backup, Command::Restore] {
             let err = parse(
                 command,
                 &args(&[
@@ -510,20 +607,21 @@ mod tests {
     }
 
     #[test]
-    fn prune_needs_one_archive_and_an_explicit_yes() {
-        let base = ["--db", "a.db", "--public-key", KEY];
-        let with = |extra: &[&str]| {
-            let mut v = extra.to_vec();
-            v.extend_from_slice(&base);
-            parse(Command::Prune, &args(&v), &nowhere)
-        };
+    fn prune_needs_one_archive_an_explicit_yes_and_the_engines_key() {
+        let with = |extra: &[&str]| parse_prune(&args(extra), &at("/h"));
         let o = with(&["old.db", "--yes"]).unwrap();
-        assert_eq!(o.file, Some(PathBuf::from("old.db")));
+        assert_eq!(o.archive, PathBuf::from("old.db"));
+        assert_eq!(o.db, PathBuf::from("/h/data/events.db"));
+        assert_eq!(o.key_file, PathBuf::from("/h/config/engine.key"));
+        let o = with(&["old.db", "--yes", "--db", "x.db", "--key-file", "k"]).unwrap();
+        assert_eq!(o.db, PathBuf::from("x.db"));
+        assert_eq!(o.key_file, PathBuf::from("k"));
         let err = with(&["old.db"]).unwrap_err();
         assert!(err.contains("--yes") && err.contains("for good"), "{err}");
         assert!(with(&["--yes"]).unwrap_err().contains("needs the archive"));
         assert!(with(&["a.db", "b.db", "--yes"]).is_err());
-        // --yes belongs to prune alone.
+        // It signs, so it takes no public key; and --yes belongs to prune alone.
+        assert!(with(&["a.db", "--yes", "--public-key", KEY]).is_err());
         assert!(
             parse(
                 Command::Verify,

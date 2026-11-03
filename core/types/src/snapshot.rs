@@ -14,10 +14,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Digest, Gate, HoldId, HoldReason, JobId, JobOutcome, ReasonCode, Resolution, Stakes, TaskId,
+    Value,
 };
 
 /// The layout [`StateImage`] is written in today.
-pub const STATE_VERSION: u32 = 1;
+///
+/// Version 2 added the archives that were pruned (ADR-0026, S1.14). A version 1 image has none.
+pub const STATE_VERSION: u32 = 2;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +33,21 @@ pub struct StateImage {
     pub tasks: Vec<TaskImage>,
     pub jobs: Vec<JobImage>,
     pub holds: Vec<HoldImage>,
+    /// Every archive pruned so far, in the order it was recorded. It lives in the snapshot so that
+    /// compacting again does not take the record out of the live log.
+    pub pruned: Vec<PrunedImage>,
+}
+
+/// An `archive.pruned` event, kept (ADR-0026).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrunedImage {
+    /// The sequence number of the event that recorded it.
+    pub seq: u64,
+    pub at: u64,
+    /// The last event the archive held, and its hash.
+    pub last_seq: u64,
+    pub last_hash: Digest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,8 +130,7 @@ impl StateImage {
         serde_json::to_vec(self).map_err(|e| ImageError::Encode(e.to_string()))
     }
 
-    /// Reads bytes written at `version`. An older version would be upcast here; there is none yet, so
-    /// only the current one is read.
+    /// Reads bytes written at `version`, bringing an older one up to date.
     pub fn decode(version: u32, bytes: &[u8]) -> Result<Self, ImageError> {
         if version == 0 || version > STATE_VERSION {
             return Err(ImageError::UnsupportedVersion {
@@ -121,7 +138,19 @@ impl StateImage {
                 current: STATE_VERSION,
             });
         }
-        serde_json::from_slice(bytes).map_err(|e| ImageError::Decode(e.to_string()))
+        if version == STATE_VERSION {
+            return serde_json::from_slice(bytes).map_err(|e| ImageError::Decode(e.to_string()));
+        }
+        let mut value: Value =
+            serde_json::from_slice(bytes).map_err(|e| ImageError::Decode(e.to_string()))?;
+        // 1 -> 2: nothing had been pruned.
+        if version == 1 {
+            value
+                .as_object_mut()
+                .ok_or_else(|| ImageError::Decode("the state is not an object".into()))?
+                .insert("pruned".into(), Value::Array(Vec::new()));
+        }
+        serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()))
     }
 }
 
@@ -162,6 +191,12 @@ mod tests {
                 stakes: Stakes::irreversible(),
                 opened_at: 3_000,
                 resolved: None,
+            }],
+            pruned: vec![PrunedImage {
+                seq: 11,
+                at: 4_500,
+                last_seq: 8,
+                last_hash: d(9),
             }],
         }
     }

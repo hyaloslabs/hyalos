@@ -4,16 +4,18 @@ use std::fmt;
 use std::path::Path;
 
 use hyalos_log::{
-    Anchor, CompactError, Head, Log, LogError, LogKey, NewEvent, StoredEvent, VerifyError,
+    Anchor, CompactError, Head, Log, LogError, LogKey, NewEvent, PublicKey, StoredEvent,
+    VerifyError, read_verified,
 };
 use hyalos_policy::{GateRequest, Outcome};
 use hyalos_types::event::SCHEMA;
 use hyalos_types::snapshot::{STATE_VERSION, StateImage};
 use hyalos_types::{
-    Answer, Event, EventError, HoldId, JobId, Origin, ReasonCode, Resolution, Schema, Timestamp,
+    Answer, Digest, Event, EventError, HoldId, JobId, Origin, ReasonCode, Resolution, Schema,
+    Timestamp,
 };
 
-use crate::state::{RuleViolation, State};
+use crate::state::{Pruned, RuleViolation, State};
 
 #[derive(Debug)]
 pub enum EngineError {
@@ -130,11 +132,65 @@ fn state_of(anchor: &Anchor) -> Result<State, String> {
 
 /// The log's state: its latest snapshot, if it has one, then the events that follow.
 fn restored_state(schema: &Schema, log: &Log) -> Result<State, EngineError> {
-    let base = match log.latest_anchor()? {
-        Some(anchor) => state_of(&anchor).map_err(EngineError::Snapshot)?,
+    state_from(schema, log.latest_anchor()?.as_ref(), &log.events()?)
+}
+
+/// The state a snapshot stood for, if there is one, carried on through `events`.
+fn state_from(
+    schema: &Schema,
+    anchor: Option<&Anchor>,
+    events: &[StoredEvent],
+) -> Result<State, EngineError> {
+    let base = match anchor {
+        Some(anchor) => state_of(anchor).map_err(EngineError::Snapshot)?,
         None => State::default(),
     };
-    replay_from(schema, base, &log.events()?)
+    replay_from(schema, base, events)
+}
+
+/// Every archive the log at `path` records as pruned (ADR-0026), after checking the log against the
+/// engine's public key. It needs no secret, so an operator or auditor can ask. Records from before
+/// the latest snapshot are in the snapshot, so compacting does not lose them.
+///
+/// It reads only those records. It does not replay the log, so it works on a log whose other events
+/// this build could not rebuild a state from, which is the case `hyalos log verify` exists for.
+pub fn pruned_archives(
+    path: &std::path::Path,
+    key: &PublicKey,
+) -> Result<Vec<Pruned>, EngineError> {
+    let contents = read_verified(path, key).map_err(EngineError::Verify)?;
+    let mut out = Vec::new();
+    if let Some(anchor) = &contents.anchor {
+        let image = StateImage::decode(anchor.state_version, &anchor.state)
+            .map_err(|e| EngineError::Snapshot(e.to_string()))?;
+        out.extend(image.pruned.into_iter().map(|p| Pruned {
+            seq: p.seq,
+            at: Timestamp::from_millis(p.at),
+            last_seq: p.last_seq,
+            last_hash: p.last_hash,
+        }));
+    }
+    for e in contents
+        .events
+        .iter()
+        .filter(|e| e.kind == "archive.pruned")
+    {
+        let event = Event::decode(&e.kind, e.schema_version, &e.payload)
+            .map_err(|error| EngineError::Event { seq: e.seq, error })?;
+        if let Event::ArchivePruned {
+            last_seq,
+            last_hash,
+        } = event
+        {
+            out.push(Pruned {
+                seq: e.seq,
+                at: e.at,
+                last_seq,
+                last_hash,
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// What a compaction did.
@@ -304,6 +360,33 @@ impl Engine {
 
     pub fn head(&self) -> Result<Option<Head>, EngineError> {
         Ok(self.log.head()?)
+    }
+
+    /// Records that the archive ending at `archive` is being deleted from the machine (ADR-0026). It
+    /// is written before the file is removed, so a crash leaves a record and a file that can be
+    /// removed again, never a missing archive with no record. `archive` must be where a snapshot of
+    /// this log stands, so the record cannot be about some other log's file. Recording the same
+    /// archive twice is refused; [`Engine::is_pruned`] says whether it was.
+    pub fn record_prune(&mut self, at: Timestamp, archive: Head) -> Result<Head, EngineError> {
+        if !self.log.has_anchor(archive)? {
+            return Err(EngineError::Rule(RuleViolation::NotASnapshotOfThisLog {
+                last_seq: archive.seq,
+            }));
+        }
+        self.submit(
+            at,
+            Origin::Engine,
+            Event::ArchivePruned {
+                last_seq: archive.seq,
+                last_hash: Digest::from_bytes(archive.hash),
+            },
+        )
+    }
+
+    /// Whether the archive ending at `archive` is already recorded as pruned.
+    pub fn is_pruned(&self, archive: Head) -> bool {
+        self.state
+            .is_pruned(archive.seq, &Digest::from_bytes(archive.hash))
     }
 
     /// Checks `event` against the state, appends it, then projects it. An illegal event is refused

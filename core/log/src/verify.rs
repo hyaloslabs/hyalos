@@ -331,6 +331,43 @@ pub(crate) fn verify_detailed(
     })
 }
 
+/// A log that verified, and what it holds, read in one consistent view (ADR-0026). The engine builds
+/// its state from this; the log never reads the payloads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Contents {
+    pub verified: Verified,
+    /// The latest snapshot, if events were compacted.
+    pub anchor: Option<crate::Anchor>,
+    /// The events since that snapshot.
+    pub events: Vec<crate::StoredEvent>,
+}
+
+/// Verifies the log at `path` against `key` and reads what it holds from the same view, so what is
+/// returned is what was checked and not what is at the path a moment later. It needs only the public
+/// key, so an auditor can use it.
+pub fn read_verified(path: &Path, key: &PublicKey) -> Result<Contents, VerifyError> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    // One read transaction covers the check and the reads, so a writer in between cannot show the
+    // reads something the check did not see.
+    let tx = conn.unchecked_transaction()?;
+    let verified = verify_connection(&tx, key, None)?;
+    let storage = |e: crate::LogError| VerifyError::Storage(e.to_string());
+    let anchor = if has_table(&tx, "anchors")? {
+        crate::store::read_latest_anchor(&tx).map_err(storage)?
+    } else {
+        None
+    };
+    let events = crate::store::read_events(&tx).map_err(storage)?;
+    Ok(Contents {
+        verified,
+        anchor,
+        events,
+    })
+}
+
 /// A log checked together with its archives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct History {

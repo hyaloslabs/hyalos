@@ -132,7 +132,34 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             reason: ReasonCode::new("approved.operator").ok_or("reason")?,
         },
     ));
+
+    // Version 3 added `archive.pruned` and changed no payload, so the seven older kinds read as they
+    // did at version 2.
+    let at_2: Vec<_> = all.iter().filter(|g| g.0 == 2).cloned().collect();
+    for (_, kind, json, event) in at_2 {
+        all.push((3, kind, json, event));
+    }
+    all.push((
+        3,
+        "archive.pruned",
+        format!(
+            r#"{{"kind":"archive.pruned","last_seq":42,"last_hash":"{}"}}"#,
+            hex(7)
+        ),
+        Event::ArchivePruned {
+            last_seq: 42,
+            last_hash: d(7),
+        },
+    ));
     Ok(all)
+}
+
+/// The version a kind first appeared at. Before it, the kind cannot have been written.
+fn introduced(kind: &str) -> u32 {
+    match kind {
+        "archive.pruned" => 3,
+        _ => 1,
+    }
 }
 
 /// Which `(version, kind)` pairs in `1..=current` have no pinned payload.
@@ -143,7 +170,8 @@ fn missing(
     let mut out = Vec::new();
     for version in 1..=current {
         for kind in Event::KINDS {
-            if !golden.iter().any(|g| g.0 == version && g.1 == kind) {
+            if version >= introduced(kind) && !golden.iter().any(|g| g.0 == version && g.1 == kind)
+            {
                 out.push((version, kind));
             }
         }
