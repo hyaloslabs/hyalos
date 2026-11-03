@@ -11,3 +11,6 @@ workspace = true
 
 [dependencies]
 hyalos-types = { path = "../types" }
+rusqlite = { version = "0.41", features = ["bundled"] }
+ed25519-dalek = "3"
+sha2 = "0.11"

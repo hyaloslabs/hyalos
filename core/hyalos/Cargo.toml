@@ -16,3 +16,6 @@ hyalos-policy = { path = "../policy" }
 hyalos-substrate = { path = "../substrate" }
 hyalos-engine = { path = "../engine" }
 hyalos-broker = { path = "../broker" }
+
+[dev-dependencies]
+rusqlite = { version = "0.41", features = ["bundled"] }
