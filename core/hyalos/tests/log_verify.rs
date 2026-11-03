@@ -1,7 +1,7 @@
 //! `hyalos log verify` against the real binary (S1.1: tampering fails verification naming the event).
 
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use hyalos_log::{Log, LogKey, Origin};
@@ -44,10 +44,23 @@ fn fixture(name: &str) -> Res<Fixture> {
     })
 }
 
+/// Runs the binary with none of the host's Hyalos or XDG settings, so a test sees only what it sets.
+fn hyalos_with(args: &[&str], env: &[(&str, &Path)]) -> Res<Output> {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_hyalos"));
+    cmd.args(args)
+        .env_remove("HYALOS_DATA_DIR")
+        .env_remove("HYALOS_CONFIG_DIR")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("HOME");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    Ok(cmd.output()?)
+}
+
 fn hyalos(args: &[&str]) -> Res<Output> {
-    Ok(Command::new(env!("CARGO_BIN_EXE_hyalos"))
-        .args(args)
-        .output()?)
+    hyalos_with(args, &[])
 }
 
 fn verify(f: &Fixture, extra: &[&str]) -> Res<Output> {
@@ -70,7 +83,17 @@ fn a_good_log_verifies_and_prints_its_head() -> Res {
     let f = fixture("good")?;
     let o = verify(&f, &["--public-key", &f.key_hex])?;
     assert!(o.status.success(), "{}", err(&o));
-    assert_eq!(out(&o).trim(), format!("ok: 4 events, head {}", f.head));
+    let text = out(&o);
+    let mut lines = text.lines();
+    assert_eq!(
+        lines.next(),
+        Some(format!("ok: 4 events, head {}", f.head).as_str())
+    );
+    // The result names the key it trusted and where that came from.
+    assert_eq!(
+        lines.next(),
+        Some(format!("public key {} (from --public-key)", f.key_hex).as_str())
+    );
     Ok(())
 }
 
@@ -167,5 +190,178 @@ fn a_missing_log_is_a_failure_not_a_pass() -> Res {
 fn the_version_still_prints() -> Res {
     let o = hyalos(&["--version"])?;
     assert!(out(&o).starts_with("hyalos "));
+    Ok(())
+}
+
+/// Lays out a data and a config directory the way the engine will, with the log and `engine.pub`.
+fn installed(name: &str, pub_hex: &str) -> Res<(PathBuf, PathBuf, Fixture)> {
+    let f = fixture(name)?;
+    let data = f.dir.join("data");
+    let config = f.dir.join("config");
+    std::fs::create_dir_all(&data)?;
+    std::fs::create_dir_all(&config)?;
+    std::fs::rename(&f.db, data.join("events.db"))?;
+    std::fs::write(config.join("engine.pub"), format!("{pub_hex}\n"))?;
+    Ok((data, config, f))
+}
+
+fn good_key() -> String {
+    LogKey::from_seed([9; 32]).public().to_hex()
+}
+
+#[test]
+fn with_the_engine_files_in_place_verify_needs_no_arguments() -> Res {
+    let (data, config, _f) = installed("defaults", &good_key())?;
+    let env = [
+        ("HYALOS_DATA_DIR", data.as_path()),
+        ("HYALOS_CONFIG_DIR", config.as_path()),
+    ];
+    let o = hyalos_with(&["log", "verify"], &env)?;
+    assert!(o.status.success(), "{}", err(&o));
+    assert!(out(&o).starts_with("ok: 4 events"), "{}", out(&o));
+    let key_file = config.join("engine.pub");
+    assert!(
+        out(&o).contains(&format!("(from {})", key_file.display())),
+        "{}",
+        out(&o)
+    );
+    Ok(())
+}
+
+#[test]
+fn the_default_locations_follow_xdg_when_no_override_is_set() -> Res {
+    let (data, config, f) = installed("xdg", &good_key())?;
+    // XDG_*_HOME name the parents; Hyalos adds `hyalos`.
+    let root = f.dir.join("xdg-root");
+    std::fs::create_dir_all(root.join("data"))?;
+    std::fs::create_dir_all(root.join("config"))?;
+    std::fs::rename(&data, root.join("data/hyalos"))?;
+    std::fs::rename(&config, root.join("config/hyalos"))?;
+    let (xdg_data, xdg_config) = (root.join("data"), root.join("config"));
+    let env = [
+        ("XDG_DATA_HOME", xdg_data.as_path()),
+        ("XDG_CONFIG_HOME", xdg_config.as_path()),
+    ];
+    let o = hyalos_with(&["log", "verify"], &env)?;
+    assert!(o.status.success(), "{}", err(&o));
+    Ok(())
+}
+
+#[test]
+fn an_engine_pub_holding_a_different_key_fails_the_log() -> Res {
+    // The trusted key file decides the answer, which is why it must be protected (ADR-0018). This shows
+    // the check uses that file and nothing inside the log.
+    let other = LogKey::from_seed([1; 32]).public().to_hex();
+    let (data, config, _f) = installed("otherkey", &other)?;
+    let env = [
+        ("HYALOS_DATA_DIR", data.as_path()),
+        ("HYALOS_CONFIG_DIR", config.as_path()),
+    ];
+    let o = hyalos_with(&["log", "verify"], &env)?;
+    assert_eq!(o.status.code(), Some(1));
+    assert!(err(&o).contains("event 1:"), "{}", err(&o));
+    Ok(())
+}
+
+#[test]
+fn a_flag_overrides_the_default_key_file() -> Res {
+    let wrong = LogKey::from_seed([1; 32]).public().to_hex();
+    let (data, config, f) = installed("override", &wrong)?;
+    let env = [
+        ("HYALOS_DATA_DIR", data.as_path()),
+        ("HYALOS_CONFIG_DIR", config.as_path()),
+    ];
+    let o = hyalos_with(&["log", "verify", "--public-key", &f.key_hex], &env)?;
+    assert!(o.status.success(), "{}", err(&o));
+    assert!(out(&o).contains("(from --public-key)"), "{}", out(&o));
+    Ok(())
+}
+
+#[test]
+fn a_missing_engine_pub_is_a_usage_error_that_says_what_to_do() -> Res {
+    let (data, config, _f) = installed("nokey", &good_key())?;
+    std::fs::remove_file(config.join("engine.pub"))?;
+    let env = [
+        ("HYALOS_DATA_DIR", data.as_path()),
+        ("HYALOS_CONFIG_DIR", config.as_path()),
+    ];
+    let o = hyalos_with(&["log", "verify"], &env)?;
+    assert_eq!(o.status.code(), Some(2));
+    assert!(
+        err(&o).contains("--public-key or --public-key-file"),
+        "{}",
+        err(&o)
+    );
+    assert!(out(&o).is_empty());
+    Ok(())
+}
+
+#[test]
+fn without_any_home_the_error_names_the_variable_to_set() -> Res {
+    let o = hyalos(&["log", "verify"])?;
+    assert_eq!(o.status.code(), Some(2));
+    assert!(err(&o).contains("set HYALOS_DATA_DIR"), "{}", err(&o));
+    Ok(())
+}
+
+fn chmod(path: &Path, mode: u32) -> Res {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    Ok(())
+}
+
+#[test]
+fn a_default_key_file_that_others_can_write_is_refused() -> Res {
+    let (data, config, _f) = installed("writable", &good_key())?;
+    let env = [
+        ("HYALOS_DATA_DIR", data.as_path()),
+        ("HYALOS_CONFIG_DIR", config.as_path()),
+    ];
+    for mode in [0o666, 0o664, 0o646] {
+        chmod(&config.join("engine.pub"), mode)?;
+        let o = hyalos_with(&["log", "verify"], &env)?;
+        assert_eq!(o.status.code(), Some(2), "mode {mode:o}");
+        assert!(
+            err(&o).contains("can be written by other users"),
+            "{}",
+            err(&o)
+        );
+        assert!(err(&o).contains(&format!("mode {mode:04o}")), "{}", err(&o));
+        assert!(out(&o).is_empty(), "nothing may print as verified");
+    }
+    Ok(())
+}
+
+#[test]
+fn owner_only_modes_are_accepted_for_the_default_key_file() -> Res {
+    let (data, config, _f) = installed("modes", &good_key())?;
+    let env = [
+        ("HYALOS_DATA_DIR", data.as_path()),
+        ("HYALOS_CONFIG_DIR", config.as_path()),
+    ];
+    for mode in [0o444, 0o400, 0o600, 0o644] {
+        chmod(&config.join("engine.pub"), mode)?;
+        let o = hyalos_with(&["log", "verify"], &env)?;
+        assert!(o.status.success(), "mode {mode:o}: {}", err(&o));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_key_file_named_on_the_command_line_is_not_checked_for_permissions() -> Res {
+    let (data, config, _f) = installed("explicit", &good_key())?;
+    let key_file = config.join("engine.pub");
+    chmod(&key_file, 0o666)?;
+    let env = [("HYALOS_DATA_DIR", data.as_path())];
+    let o = hyalos_with(
+        &[
+            "log",
+            "verify",
+            "--public-key-file",
+            key_file.to_str().ok_or("path")?,
+        ],
+        &env,
+    )?;
+    assert!(o.status.success(), "{}", err(&o));
     Ok(())
 }
