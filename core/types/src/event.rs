@@ -9,10 +9,16 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Answer, Digest, HoldId, JobId, ReasonCode, TaskId};
+use crate::{Answer, Digest, HoldId, JobId, ReasonCode, Schema, TaskId};
 
-/// The version these events are written with. Reading older versions (upcasting) is S1.4.
+/// The version these events are written with. Older versions are read by upcasting (ADR-0023).
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// What this build reads: version 1, and no older version to upcast from.
+pub static SCHEMA: Schema = Schema {
+    current: SCHEMA_VERSION,
+    steps: &[],
+};
 
 /// How a job ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,7 +103,17 @@ pub enum Event {
 pub enum EventError {
     Encode(String),
     Decode(String),
-    UnsupportedVersion(u32),
+    /// The row's schema version is 0 or newer than this build reads (ADR-0023).
+    UnsupportedVersion {
+        found: u32,
+        current: u32,
+    },
+    /// An upcast step refused the payload it was given.
+    Upcast {
+        kind: String,
+        from: u32,
+        reason: String,
+    },
     /// The log's `kind` column and the payload's own `kind` disagree.
     KindMismatch {
         column: String,
@@ -110,9 +126,20 @@ impl fmt::Display for EventError {
         match self {
             EventError::Encode(e) => write!(f, "cannot encode the event: {e}"),
             EventError::Decode(e) => write!(f, "cannot decode the event: {e}"),
-            EventError::UnsupportedVersion(v) => {
-                write!(f, "event schema version {v} is not supported by this build")
+            EventError::UnsupportedVersion { found: 0, .. } => {
+                write!(
+                    f,
+                    "event schema version 0 is not valid; versions start at 1"
+                )
             }
+            EventError::UnsupportedVersion { found, current } => write!(
+                f,
+                "event schema version {found} was written by a newer Hyalos; this build reads up to version {current}. Upgrade Hyalos to continue this log (there is no downgrade)"
+            ),
+            EventError::Upcast { kind, from, reason } => write!(
+                f,
+                "cannot bring a `{kind}` event written at schema version {from} up to date: {reason}"
+            ),
             EventError::KindMismatch { column, payload } => write!(
                 f,
                 "the log says this is a `{column}` event but its payload is a `{payload}` event"
@@ -142,13 +169,40 @@ impl Event {
         serde_json::to_vec(self).map_err(|e| EventError::Encode(e.to_string()))
     }
 
-    /// Reads an event back from a log row's `kind`, `schema_version` and `payload`.
+    /// Every `kind` value, for checking tables and test coverage.
+    pub const KINDS: [&'static str; 7] = [
+        "task.created",
+        "task.completed",
+        "job.started",
+        "job.ended",
+        "gate.answered",
+        "hold.opened",
+        "hold.resolved",
+    ];
+
+    /// Reads an event back from a log row's `kind`, `schema_version` and `payload`, as this build's
+    /// [`SCHEMA`] understands it.
     pub fn decode(kind: &str, schema_version: u32, payload: &[u8]) -> Result<Self, EventError> {
-        if schema_version != SCHEMA_VERSION {
-            return Err(EventError::UnsupportedVersion(schema_version));
+        Self::decode_with(&SCHEMA, kind, schema_version, payload)
+    }
+
+    /// Like [`Event::decode`], under another schema. A row older than `schema.current` is upcast in
+    /// memory first (ADR-0023); a row at the current version is read as stored.
+    pub fn decode_with(
+        schema: &Schema,
+        kind: &str,
+        schema_version: u32,
+        payload: &[u8],
+    ) -> Result<Self, EventError> {
+        schema.check_version(schema_version)?;
+        let event: Event = if schema_version == schema.current {
+            serde_json::from_slice(payload)
+        } else {
+            let value =
+                serde_json::from_slice(payload).map_err(|e| EventError::Decode(e.to_string()))?;
+            serde_json::from_value(schema.upcast(kind, schema_version, value)?)
         }
-        let event: Event =
-            serde_json::from_slice(payload).map_err(|e| EventError::Decode(e.to_string()))?;
+        .map_err(|e| EventError::Decode(e.to_string()))?;
         if event.kind() != kind {
             return Err(EventError::KindMismatch {
                 column: kind.to_string(),
@@ -298,7 +352,10 @@ mod tests {
         let ok = r#"{"kind":"job.started","task":3}"#;
         assert_eq!(
             Event::decode("job.started", 2, ok.as_bytes()),
-            Err(EventError::UnsupportedVersion(2))
+            Err(EventError::UnsupportedVersion {
+                found: 2,
+                current: 1
+            })
         );
     }
 }

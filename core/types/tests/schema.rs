@@ -1,0 +1,484 @@
+//! Event schema versions and upcasting (ADR-0023, S1.4).
+
+use hyalos_types::event::{SCHEMA, SCHEMA_VERSION};
+use hyalos_types::{
+    Answer, Digest, Event, EventError, Gate, HoldId, HoldReason, JobId, JobOutcome, ReasonCode,
+    Resolution, Schema, TaskId, Upcast,
+};
+use serde_json::{Value, json};
+
+type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+fn hex(byte: u8) -> String {
+    format!("{byte:02x}").repeat(32)
+}
+
+fn d(byte: u8) -> Digest {
+    Digest::from_bytes([byte; 32])
+}
+
+// ---- the pinned payloads: every kind, as each released version wrote it -------------------------
+
+/// `(version, kind, payload as that version wrote it, the event it means)`. Add the new version's
+/// rows when `SCHEMA_VERSION` is bumped; never edit an existing row, since logs hold these bytes.
+fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
+    Ok(vec![
+        (
+            1,
+            "task.created",
+            format!(r#"{{"kind":"task.created","request":"{}"}}"#, hex(1)),
+            Event::TaskCreated { request: d(1) },
+        ),
+        (
+            1,
+            "task.completed",
+            r#"{"kind":"task.completed","task":3}"#.into(),
+            Event::TaskCompleted {
+                task: TaskId::from_seq(3),
+            },
+        ),
+        (
+            1,
+            "job.started",
+            r#"{"kind":"job.started","task":3}"#.into(),
+            Event::JobStarted {
+                task: TaskId::from_seq(3),
+            },
+        ),
+        (
+            1,
+            "job.ended",
+            r#"{"kind":"job.ended","job":4,"outcome":"deadline_exceeded"}"#.into(),
+            Event::JobEnded {
+                job: JobId::from_seq(4),
+                outcome: JobOutcome::DeadlineExceeded,
+            },
+        ),
+        (
+            1,
+            "gate.answered",
+            format!(
+                r#"{{"kind":"gate.answered","job":4,"gate":"content","inputs":"{}","answer":"deny","reason":"content.secret_pattern"}}"#,
+                hex(6)
+            ),
+            Event::GateAnswered {
+                job: JobId::from_seq(4),
+                gate: Gate::Content,
+                inputs: d(6),
+                answer: Answer::Deny,
+                reason: ReasonCode::new("content.secret_pattern").ok_or("reason")?,
+            },
+        ),
+        (
+            1,
+            "hold.opened",
+            format!(
+                r#"{{"kind":"hold.opened","task":3,"gate":"egress","inputs":"{}","reason":"timed_out"}}"#,
+                hex(2)
+            ),
+            Event::HoldOpened {
+                task: TaskId::from_seq(3),
+                gate: Gate::Egress,
+                inputs: d(2),
+                reason: HoldReason::TimedOut,
+            },
+        ),
+        (
+            1,
+            "hold.resolved",
+            r#"{"kind":"hold.resolved","hold":5,"by":"human"}"#.into(),
+            Event::HoldResolved {
+                hold: HoldId::from_seq(5),
+                by: Resolution::Human,
+            },
+        ),
+    ])
+}
+
+/// Which `(version, kind)` pairs in `1..=current` have no pinned payload.
+fn missing(
+    golden: &[(u32, &'static str, String, Event)],
+    current: u32,
+) -> Vec<(u32, &'static str)> {
+    let mut out = Vec::new();
+    for version in 1..=current {
+        for kind in Event::KINDS {
+            if !golden.iter().any(|g| g.0 == version && g.1 == kind) {
+                out.push((version, kind));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn every_released_version_has_a_pinned_payload_for_every_kind() -> Res {
+    assert_eq!(missing(&golden()?, SCHEMA.current), vec![]);
+    assert_eq!(SCHEMA.current, SCHEMA_VERSION);
+    // The check bites: pretend a version 2 was released and nobody pinned it.
+    assert_eq!(missing(&golden()?, 2).len(), Event::KINDS.len());
+    Ok(())
+}
+
+#[test]
+fn every_pinned_payload_loads_under_the_current_schema() -> Res {
+    for (version, kind, json, event) in golden()? {
+        let loaded = Event::decode(kind, version, json.as_bytes())?;
+        assert_eq!(loaded, event, "{kind} written at version {version}");
+        assert_eq!(loaded.kind(), kind);
+    }
+    Ok(())
+}
+
+#[test]
+fn the_pinned_payloads_cover_exactly_the_event_kinds() -> Res {
+    let kinds: Vec<&str> = golden()?.iter().map(|g| g.3.kind()).collect();
+    for kind in Event::KINDS {
+        assert!(kinds.contains(&kind), "{kind} has no sample");
+    }
+    assert_eq!(kinds.len(), Event::KINDS.len());
+    Ok(())
+}
+
+// ---- a made-up history: v1 and v2 looked different from today's events (version 3) -----------
+
+fn rename(mut v: Value, from: &str, to: &str) -> Result<Value, String> {
+    let object = v.as_object_mut().ok_or("not an object")?;
+    let value = object
+        .remove(from)
+        .ok_or_else(|| format!("no field `{from}`"))?;
+    object.insert(to.to_string(), value);
+    Ok(v)
+}
+
+fn created_v1(v: Value) -> Result<Value, String> {
+    rename(v, "digest", "request_digest")
+}
+fn created_v2(v: Value) -> Result<Value, String> {
+    rename(v, "request_digest", "request")
+}
+fn started_v2(v: Value) -> Result<Value, String> {
+    rename(v, "task_id", "task")
+}
+fn answered_v2(mut v: Value) -> Result<Value, String> {
+    // Version 2 did not record why. The default is a constant, as ADR-0023 requires.
+    v.as_object_mut()
+        .ok_or("not an object")?
+        .insert("reason".into(), json!("legacy.unrecorded"));
+    Ok(v)
+}
+
+static HISTORY: Schema = Schema {
+    current: 3,
+    steps: &[
+        Upcast {
+            kind: "task.created",
+            from: 1,
+            step: created_v1,
+        },
+        Upcast {
+            kind: "task.created",
+            from: 2,
+            step: created_v2,
+        },
+        Upcast {
+            kind: "job.started",
+            from: 2,
+            step: started_v2,
+        },
+        Upcast {
+            kind: "gate.answered",
+            from: 2,
+            step: answered_v2,
+        },
+    ],
+};
+
+fn decode(version: u32, kind: &str, json: &str) -> Result<Event, EventError> {
+    Event::decode_with(&HISTORY, kind, version, json.as_bytes())
+}
+
+#[test]
+fn the_made_up_history_is_a_valid_table() {
+    assert_eq!(HISTORY.validate(), Ok(()));
+    assert_eq!(SCHEMA.validate(), Ok(()));
+}
+
+#[test]
+fn a_version_1_event_goes_through_every_step() -> Res {
+    let json = format!(r#"{{"kind":"task.created","digest":"{}"}}"#, hex(1));
+    assert_eq!(
+        decode(1, "task.created", &json)?,
+        Event::TaskCreated { request: d(1) }
+    );
+    Ok(())
+}
+
+#[test]
+fn a_version_2_event_goes_through_only_the_later_steps() -> Res {
+    let json = format!(r#"{{"kind":"task.created","request_digest":"{}"}}"#, hex(1));
+    assert_eq!(
+        decode(2, "task.created", &json)?,
+        Event::TaskCreated { request: d(1) }
+    );
+    // The version 1 field name is not understood at version 2: steps do not run backwards or twice.
+    let v1_shape = format!(r#"{{"kind":"task.created","digest":"{}"}}"#, hex(1));
+    assert!(matches!(
+        decode(2, "task.created", &v1_shape),
+        Err(EventError::Upcast { from: 2, .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn a_kind_with_no_step_at_a_version_passes_through_unchanged() -> Res {
+    // job.started has no step from version 1, so its version 1 shape already is its version 2 shape,
+    // and the version 2 step then renames the field.
+    assert_eq!(
+        decode(1, "job.started", r#"{"kind":"job.started","task_id":3}"#)?,
+        Event::JobStarted {
+            task: TaskId::from_seq(3)
+        }
+    );
+    // A kind with no step anywhere is read as stored, at every older version.
+    for version in 1..=3 {
+        assert_eq!(
+            decode(
+                version,
+                "task.completed",
+                r#"{"kind":"task.completed","task":3}"#
+            )?,
+            Event::TaskCompleted {
+                task: TaskId::from_seq(3)
+            }
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_step_can_supply_a_constant_default_but_only_for_older_events() -> Res {
+    let without_reason = format!(
+        r#"{{"kind":"gate.answered","job":4,"gate":"egress","inputs":"{}","answer":"allow"}}"#,
+        hex(6)
+    );
+    let Event::GateAnswered { reason, .. } = decode(2, "gate.answered", &without_reason)? else {
+        return Err("wrong kind".into());
+    };
+    assert_eq!(reason.as_str(), "legacy.unrecorded");
+    // At the current version nothing is filled in: a missing field is an error, never a guess.
+    assert!(matches!(
+        decode(3, "gate.answered", &without_reason),
+        Err(EventError::Decode(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn a_payload_at_the_current_version_is_read_as_stored() -> Res {
+    for (_, kind, json, event) in golden()? {
+        assert_eq!(decode(3, kind, &json)?, event);
+    }
+    Ok(())
+}
+
+#[test]
+fn a_step_that_cannot_handle_its_input_names_the_event() {
+    let err = decode(1, "task.created", r#"{"kind":"task.created"}"#).unwrap_err();
+    assert_eq!(
+        err,
+        EventError::Upcast {
+            kind: "task.created".into(),
+            from: 1,
+            reason: "no field `digest`".into()
+        }
+    );
+    assert!(err.to_string().contains("`task.created`") && err.to_string().contains("version 1"));
+}
+
+#[test]
+fn what_an_upcast_leaves_wrong_is_still_refused() {
+    // An unknown field survives the steps and the current type refuses it.
+    let extra = r#"{"kind":"job.started","task_id":3,"surprise":true}"#;
+    assert!(matches!(
+        decode(1, "job.started", extra),
+        Err(EventError::Decode(_))
+    ));
+    // Not JSON at all.
+    assert!(matches!(
+        decode(1, "job.started", "not json"),
+        Err(EventError::Decode(_))
+    ));
+    // A kind column that disagrees with the payload.
+    assert!(matches!(
+        decode(1, "task.completed", r#"{"kind":"job.started","task":3}"#),
+        Err(EventError::KindMismatch { .. })
+    ));
+}
+
+fn retag(mut v: Value) -> Result<Value, String> {
+    v.as_object_mut()
+        .ok_or("not an object")?
+        .insert("kind".into(), json!("job.started"));
+    Ok(v)
+}
+
+static RETAGS: Schema = Schema {
+    current: 2,
+    steps: &[Upcast {
+        kind: "task.completed",
+        from: 1,
+        step: retag,
+    }],
+};
+
+#[test]
+fn a_step_cannot_change_which_kind_an_event_is() {
+    // The log's kind column is hashed, so the tag a step produces must still match it.
+    let err = Event::decode_with(
+        &RETAGS,
+        "task.completed",
+        1,
+        br#"{"kind":"task.completed","task":3}"#,
+    )
+    .unwrap_err();
+    assert_eq!(
+        err,
+        EventError::KindMismatch {
+            column: "task.completed".into(),
+            payload: "job.started"
+        }
+    );
+}
+
+#[test]
+fn a_newer_version_than_the_build_knows_is_refused_with_advice() {
+    let json = br#"{"kind":"task.completed","task":3}"#;
+    for (schema, current) in [(&SCHEMA, 1), (&HISTORY, 3)] {
+        let err = Event::decode_with(schema, "task.completed", current + 1, json).unwrap_err();
+        assert_eq!(
+            err,
+            EventError::UnsupportedVersion {
+                found: current + 1,
+                current
+            }
+        );
+        let text = err.to_string();
+        assert!(
+            text.contains("newer Hyalos") && text.contains("Upgrade"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn version_zero_is_never_valid() {
+    let json = br#"{"kind":"task.completed","task":3}"#;
+    for schema in [&SCHEMA, &HISTORY] {
+        let err = Event::decode_with(schema, "task.completed", 0, json).unwrap_err();
+        assert_eq!(
+            err,
+            EventError::UnsupportedVersion {
+                found: 0,
+                current: schema.current
+            }
+        );
+        assert!(err.to_string().contains("not valid"), "{err}");
+    }
+}
+
+// ---- a bad table is refused before any event is read -------------------------------------------
+
+fn noop(v: Value) -> Result<Value, String> {
+    Ok(v)
+}
+
+#[test]
+fn a_table_that_contradicts_itself_is_refused() {
+    static ZERO: Schema = Schema {
+        current: 0,
+        steps: &[],
+    };
+    static UNKNOWN_KIND: Schema = Schema {
+        current: 2,
+        steps: &[Upcast {
+            kind: "task.invented",
+            from: 1,
+            step: noop,
+        }],
+    };
+    static FROM_ZERO: Schema = Schema {
+        current: 2,
+        steps: &[Upcast {
+            kind: "task.created",
+            from: 0,
+            step: noop,
+        }],
+    };
+    static FROM_CURRENT: Schema = Schema {
+        current: 2,
+        steps: &[Upcast {
+            kind: "task.created",
+            from: 2,
+            step: noop,
+        }],
+    };
+    static PAST_CURRENT: Schema = Schema {
+        current: 2,
+        steps: &[Upcast {
+            kind: "task.created",
+            from: 5,
+            step: noop,
+        }],
+    };
+    static DUPLICATE: Schema = Schema {
+        current: 3,
+        steps: &[
+            Upcast {
+                kind: "task.created",
+                from: 1,
+                step: noop,
+            },
+            Upcast {
+                kind: "task.created",
+                from: 1,
+                step: noop,
+            },
+        ],
+    };
+    for (name, schema) in [
+        ("current 0", &ZERO),
+        ("unknown kind", &UNKNOWN_KIND),
+        ("from 0", &FROM_ZERO),
+        ("from current", &FROM_CURRENT),
+        ("past current", &PAST_CURRENT),
+        ("duplicate", &DUPLICATE),
+    ] {
+        assert!(schema.validate().is_err(), "{name} was accepted");
+    }
+}
+
+#[test]
+fn the_same_kind_at_different_versions_and_different_kinds_at_one_version_are_fine() {
+    static FINE: Schema = Schema {
+        current: 3,
+        steps: &[
+            Upcast {
+                kind: "task.created",
+                from: 1,
+                step: noop,
+            },
+            Upcast {
+                kind: "task.created",
+                from: 2,
+                step: noop,
+            },
+            Upcast {
+                kind: "job.started",
+                from: 1,
+                step: noop,
+            },
+        ],
+    };
+    assert_eq!(FINE.validate(), Ok(()));
+}

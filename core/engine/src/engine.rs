@@ -5,8 +5,8 @@ use std::path::Path;
 
 use hyalos_log::{Head, Log, LogError, LogKey, NewEvent, StoredEvent, VerifyError, verify};
 use hyalos_policy::{GateRequest, Outcome};
-use hyalos_types::event::SCHEMA_VERSION;
-use hyalos_types::{Answer, Event, EventError, HoldId, JobId, Origin, Timestamp};
+use hyalos_types::event::SCHEMA;
+use hyalos_types::{Answer, Event, EventError, HoldId, JobId, Origin, Schema, Timestamp};
 
 use crate::state::{RuleViolation, State};
 
@@ -20,6 +20,8 @@ pub enum EngineError {
         seq: u64,
         error: EventError,
     },
+    /// The schema table the engine was given is inconsistent (ADR-0023).
+    Schema(String),
     /// An event was refused because it is not legal for the current state.
     Rule(RuleViolation),
     /// A stored event is not legal for the state before it. The log is damaged or was written by a
@@ -39,6 +41,7 @@ impl fmt::Display for EngineError {
             EngineError::Log(e) => write!(f, "{e}"),
             EngineError::Verify(e) => write!(f, "the event log failed verification: {e}"),
             EngineError::Event { seq, error } => write!(f, "event {seq}: {error}"),
+            EngineError::Schema(e) => write!(f, "the event schema table is not valid: {e}"),
             EngineError::Rule(v) => write!(f, "refused: {v}"),
             EngineError::Replay { seq, violation } => {
                 write!(
@@ -66,9 +69,15 @@ impl From<LogError> for EngineError {
 
 /// Rebuilds the state from stored events. The same events always give an equal state.
 pub fn replay(events: &[StoredEvent]) -> Result<State, EngineError> {
+    replay_with(&SCHEMA, events)
+}
+
+/// [`replay`] under another schema: events written at an older version are upcast as they are read
+/// (ADR-0023).
+pub fn replay_with(schema: &Schema, events: &[StoredEvent]) -> Result<State, EngineError> {
     let mut state = State::default();
     for e in events {
-        let event = Event::decode(&e.kind, e.schema_version, &e.payload)
+        let event = Event::decode_with(schema, &e.kind, e.schema_version, &e.payload)
             .map_err(|error| EngineError::Event { seq: e.seq, error })?;
         state
             .apply(e.seq, e.at, &event)
@@ -102,6 +111,7 @@ pub enum Ruling {
 pub struct Engine {
     log: Log,
     state: State,
+    schema: &'static Schema,
     poisoned: bool,
 }
 
@@ -109,14 +119,27 @@ impl Engine {
     /// Opens the log at `path` (creating it if it is new) and rebuilds the state from it. An existing
     /// log is verified against `key` first, which costs a pass over every event.
     pub fn open(path: &Path, key: LogKey) -> Result<Self, EngineError> {
+        Self::open_with(path, key, &SCHEMA)
+    }
+
+    /// [`Engine::open`] under another event schema, so a future version can be run against a log a
+    /// past one wrote (ADR-0023). Old events are upcast in memory; the log is not rewritten, and new
+    /// events are written at `schema.current`. The table is checked first.
+    pub fn open_with(
+        path: &Path,
+        key: LogKey,
+        schema: &'static Schema,
+    ) -> Result<Self, EngineError> {
+        schema.validate().map_err(EngineError::Schema)?;
         if path.exists() {
             verify(path, &key.public(), None).map_err(EngineError::Verify)?;
         }
         let log = Log::open(path, key)?;
-        let state = replay(&log.events()?)?;
+        let state = replay_with(schema, &log.events()?)?;
         Ok(Self {
             log,
             state,
+            schema,
             poisoned: false,
         })
     }
@@ -155,7 +178,7 @@ impl Engine {
             .map_err(|error| EngineError::Event { seq: 0, error })?;
         let head = self
             .log
-            .append(at, origin, event.kind(), SCHEMA_VERSION, &payload)?;
+            .append(at, origin, event.kind(), self.schema.current, &payload)?;
         if self.state.apply(head.seq, at, &event).is_err() {
             self.poisoned = true;
             return Err(EngineError::Poisoned);
@@ -195,7 +218,7 @@ impl Engine {
                 at,
                 origin,
                 kind: e.kind(),
-                schema_version: SCHEMA_VERSION,
+                schema_version: self.schema.current,
                 payload,
             })
             .collect();
