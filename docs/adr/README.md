@@ -54,5 +54,5 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0038](0038-model-calls-from-the-sandbox-and-the-provider-key-file.md) | Model calls from the sandbox, and the provider key file | Accepted |
 | [0039](0039-tls-to-model-providers.md) | TLS to model providers | Accepted |
 | [0040](0040-the-sandbox-image.md) | The sandbox image | Accepted |
-| [0041](0041-an-init-in-the-sandbox-and-the-image-tests-further-checks.md) | An init in the sandbox, and the image test's further checks | Proposed |
+| [0041](0041-an-init-in-the-sandbox-and-the-image-tests-further-checks.md) | An init in the sandbox, and the image test's further checks | Accepted |
 | [0042](0042-the-egress-gate-and-the-allowlisting-proxy.md) | The egress gate and the allowlisting proxy | Proposed |
