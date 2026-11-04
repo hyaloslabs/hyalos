@@ -49,6 +49,8 @@ enum Mode {
     Exact,
     /// Grants one permission more than was asked.
     Wider,
+    /// Issues a token with an expiry this build cannot read.
+    BadExpiry,
 }
 
 struct GitHub {
@@ -163,7 +165,8 @@ fn github(mode: Mode) -> Res<GitHub> {
                 ("GET", "/repos/octo/repo/installation") => (200, json!({"id": 77})),
                 ("GET", _) => (404, json!({"message": "Not Found"})),
                 ("POST", "/app/installations/77/access_tokens") => {
-                    let token = format!("ghs_stand_in_{n}_{port}");
+                    // As long as GitHub's are now (about 400 characters, ADR-0045).
+                    let token = format!("ghs_stand_in_{n}_{port}_{}", "x".repeat(360));
                     issued.push(token.clone());
                     let mut granted = body["permissions"].clone();
                     granted["metadata"] = json!("read");
@@ -174,7 +177,7 @@ fn github(mode: Mode) -> Res<GitHub> {
                         201,
                         json!({
                             "token": token,
-                            "expires_at": "2999-01-01T00:00:00Z",
+                            "expires_at": if mode == Mode::BadExpiry { "soon" } else { "2999-01-01T00:00:00Z" },
                             "permissions": granted,
                             "repository_selection": "selected",
                             "repositories": [{ "full_name": "octo/repo" }],
@@ -471,5 +474,27 @@ fn github_check_mints_shows_and_revokes_without_printing_the_token() -> Res {
         let out = Command::new(EXE).args(bad).env_clear().output()?;
         assert_eq!(out.status.code(), Some(2), "{bad:?}");
     }
+    Ok(())
+}
+
+#[test]
+fn a_token_this_build_cannot_use_is_still_revoked() -> Res {
+    // GitHub issued it, so leaving it alive until it expires is not an option (ADR-0045).
+    let gh = github(Mode::BadExpiry)?;
+    let err = app(&gh)?
+        .mint(&manifest(1, &["read"]), SystemClock.now())
+        .err()
+        .ok_or("minted")?;
+    assert!(matches!(err, MintError::Response(_)), "{err}");
+    let seen = gh.seen();
+    let last = seen.last().ok_or("nothing seen")?;
+    assert_eq!(
+        (last.method.as_str(), last.path.as_str()),
+        ("DELETE", "/installation/token")
+    );
+    assert!(
+        last.authorization.contains(&"x".repeat(360)),
+        "the long token was revoked"
+    );
     Ok(())
 }

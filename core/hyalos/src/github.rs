@@ -355,16 +355,24 @@ impl GitHubApp {
                 status,
             });
         }
-        let expires_at = body
+        // From here on GitHub has issued a token, so every refusal revokes it: one this build cannot
+        // use must not stay alive until it expires.
+        let raw = body
+            .get("token")
+            .and_then(Value::as_str)
+            .ok_or(MintError::Response("no token"))?;
+        let Some(token) = body
             .get("expires_at")
             .and_then(Value::as_str)
             .and_then(parse_time)
-            .ok_or(MintError::Response("no expiry"))?;
-        let token = body
-            .get("token")
-            .and_then(Value::as_str)
-            .and_then(|t| ForgeToken::new(t, expires_at))
-            .ok_or(MintError::Response("no token"))?;
+            .and_then(|expires_at| ForgeToken::new(raw, expires_at))
+        else {
+            let _ = self.revoke_raw(raw);
+            return Err(MintError::Response(
+                "a token or expiry this build cannot use",
+            ));
+        };
+        let expires_at = token.expires_at;
         if !granted_within(&body, repo, permissions) {
             // Never used: it could do more than the manifest allows.
             let _ = self.revoke(&token);
@@ -385,7 +393,14 @@ impl GitHubApp {
     /// Revokes `token` at GitHub, so it stops working when its job ends and not only when it
     /// expires.
     pub fn revoke(&self, token: &ForgeToken) -> Result<(), MintError> {
-        match self.call("DELETE", "/installation/token", token.expose(), None)? {
+        self.revoke_raw(token.expose())
+    }
+
+    fn revoke_raw(&self, token: &str) -> Result<(), MintError> {
+        if token.bytes().any(|b| !b.is_ascii_graphic()) {
+            return Err(MintError::Response("a token that cannot go in a header"));
+        }
+        match self.call("DELETE", "/installation/token", token, None)? {
             (204, _) => Ok(()),
             (status, _) => Err(MintError::Refused {
                 step: "revoke the token",
