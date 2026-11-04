@@ -1,20 +1,23 @@
 //! The one path every model call takes, whichever protocol it speaks.
 
-use std::io::{Cursor, Read};
+use std::io::Read;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hyalos_types::{Manifest, ReasonCode, Role};
+use hyalos_types::{Manifest, Role};
 use serde_json::{Map, Value};
 
-use super::usage::{Metered, Scanner};
+use super::usage::{Hold, Metered, Scanner};
 use super::{
     Adapter, ApiKey, MAX_BODY, Meter, Request, Response, Route, Transport, TransportError,
-    Upstream, UpstreamResponse, header,
+    Upstream, UpstreamResponse, header, refusal,
 };
 
 /// Upstream statuses that mean "busy, try later": rate limits and overload.
 const TRANSIENT: &[u16] = &[429, 502, 503, 504, 529];
+
+/// The output a generation that asks for no limit may produce, and so holds.
+const DEFAULT_HOLD: u64 = 16_384;
 
 /// How much of a 429 body is read to tell a spent quota from a rate limit.
 const MAX_ERROR_BODY: u64 = 64 * 1024;
@@ -117,15 +120,8 @@ impl Relay {
     /// Answers one call from the job whose admitted manifest is `manifest`. A refusal is a 402,
     /// 403, 404, 413 or 400 in the protocol's error shape, never a 429 (ADR-0016).
     pub fn handle(&self, manifest: &Manifest, request: Request) -> Response {
-        self.serve(manifest, &request).unwrap_or_else(|r| {
-            let body = self.adapter.error_body(r.status, &r.message);
-            Response {
-                status: r.status,
-                content_type: "application/json".into(),
-                body: Box::new(Cursor::new(body)),
-                reason: ReasonCode::new(r.code),
-            }
-        })
+        self.serve(manifest, &request)
+            .unwrap_or_else(|r| refusal(self.adapter.as_ref(), r.status, r.code, &r.message))
     }
 
     fn serve(&self, manifest: &Manifest, request: &Request) -> Result<Response, Refused> {
@@ -184,16 +180,38 @@ impl Relay {
                 "refused by the job's manifest: a reader may not send tool definitions",
             ));
         }
-        if route == Route::Generate {
+        // A generation holds the output it may produce, and asks for no more than the budget has left,
+        // so calls side by side cannot all pass the budget together (ADR-0038).
+        let hold = if route == Route::Generate {
             let budget = manifest.budget.tokens;
-            if self.meter.spent(manifest.job) >= budget {
-                return Err(refused(
-                    402,
-                    "budget.spent",
-                    format!("this job's budget of {budget} tokens is spent"),
-                ));
+            let field = self.adapter.output_limit();
+            let asked = body.get(field).and_then(Value::as_u64);
+            let want = asked.unwrap_or(DEFAULT_HOLD);
+            let hold = Arc::clone(&self.meter)
+                .hold(manifest.job, budget, want)
+                .map_err(|spent| {
+                    if spent {
+                        refused(
+                            402,
+                            "budget.spent",
+                            format!("this job's budget of {budget} tokens is spent"),
+                        )
+                    } else {
+                        // Calls in flight hold the rest and will release what they do not use.
+                        refused(
+                            self.adapter.overloaded(),
+                            "budget.held",
+                            "the rest of this job's budget is held by calls in flight; try again",
+                        )
+                    }
+                })?;
+            if asked != Some(hold.amount()) {
+                body.insert(field.into(), hold.amount().into());
             }
-        }
+            Some(hold)
+        } else {
+            None
+        };
         strip_hosted(self.adapter.as_ref(), &mut body);
         let upstream = Upstream {
             target: request.target.clone(),
@@ -201,7 +219,7 @@ impl Relay {
             body: serde_json::to_vec(&body)
                 .map_err(|_| refused(400, "model.bad_request", "the request cannot be written"))?,
         };
-        self.deliver(manifest, route, &upstream)
+        self.deliver(manifest, hold, &upstream)
     }
 
     fn headers(&self, request: &Request) -> Result<Vec<(String, String)>, Refused> {
@@ -236,7 +254,7 @@ impl Relay {
     fn deliver(
         &self,
         manifest: &Manifest,
-        route: Route,
+        hold: Option<Hold>,
         upstream: &Upstream,
     ) -> Result<Response, Refused> {
         let mut attempt = 0;
@@ -244,7 +262,7 @@ impl Relay {
             attempt += 1;
             let retry_after = match self.transport.send(upstream) {
                 Ok(r) if !TRANSIENT.contains(&r.status) => {
-                    return Ok(self.finish(manifest, route, r));
+                    return Ok(self.finish(manifest, hold, r));
                 }
                 Ok(r) => {
                     let retry_after = header(&r.headers, "retry-after")
@@ -285,22 +303,20 @@ impl Relay {
         }
     }
 
-    fn finish(&self, manifest: &Manifest, route: Route, r: UpstreamResponse) -> Response {
+    /// The provider's answer. A successful generation is metered; anything else releases its hold.
+    fn finish(&self, manifest: &Manifest, hold: Option<Hold>, r: UpstreamResponse) -> Response {
         let content_type = header(&r.headers, "content-type")
             .unwrap_or("application/json")
             .to_string();
-        let body: Box<dyn Read + Send> =
-            if route == Route::Generate && (200..300).contains(&r.status) {
-                Box::new(Metered::new(
-                    r.body,
-                    Scanner::new(&content_type),
-                    Arc::clone(&self.meter),
-                    manifest.job,
-                    manifest.budget.tokens,
-                ))
-            } else {
-                r.body
-            };
+        let body: Box<dyn Read + Send> = match hold {
+            Some(hold) if (200..300).contains(&r.status) => Box::new(Metered::new(
+                r.body,
+                Scanner::new(&content_type),
+                hold,
+                manifest.budget.tokens,
+            )),
+            _ => r.body,
+        };
         Response {
             status: r.status,
             content_type,

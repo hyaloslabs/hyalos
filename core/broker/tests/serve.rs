@@ -47,6 +47,7 @@ fn start(key: &ManifestKey, m: &Manifest, role: Role) -> Res<ToBroker> {
         job: m.job,
         role,
         manifest: key.sign(m)?.to_bytes()?,
+        socket: "/unused".into(),
     })
 }
 
@@ -163,6 +164,7 @@ fn every_check_of_admission_gives_its_own_code() -> Res {
         job: JobId::from_seq(5),
         role: Role::Actor,
         manifest: key.sign(&for_nine)?.to_bytes()?,
+        socket: "/unused".into(),
     };
     let mut wrong_version = key.sign(&live)?;
     wrong_version = hyalos_types::SignedManifest::from_parts(
@@ -190,6 +192,7 @@ fn every_check_of_admission_gives_its_own_code() -> Res {
                 job: JobId::from_seq(5),
                 role: Role::Actor,
                 manifest: wrong_version.to_bytes()?,
+                socket: "/unused".into(),
             },
             100,
             "manifest.unknown_version",
@@ -200,6 +203,7 @@ fn every_check_of_admission_gives_its_own_code() -> Res {
                 job: JobId::from_seq(5),
                 role: Role::Actor,
                 manifest: b"not json".to_vec(),
+                socket: "/unused".into(),
             },
             100,
             "manifest.malformed",

@@ -1,6 +1,6 @@
 # ADR-0035: The private channel between the engine and the broker
 
-**Status:** Accepted
+**Status:** Accepted; `start_job` gains the job's socket path in wire version 2 ([ADR-0038](0038-model-calls-from-the-sandbox-and-the-provider-key-file.md))
 
 ## Context
 

@@ -60,7 +60,18 @@ fn start(key: &ManifestKey, m: &Manifest) -> Res<ToBroker> {
         job: m.job,
         role: m.role,
         manifest: key.sign(m)?.to_bytes()?,
+        socket: job_socket(m.job)?,
     })
+}
+
+/// A short socket path of the job's own, as the engine's `JobDir` gives one (ADR-0038).
+fn job_socket(job: JobId) -> Res<String> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("hybc-{}-{}-{n}", std::process::id(), job.seq()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.join("broker.sock").to_string_lossy().into_owned())
 }
 
 fn expect(broker: &mut BrokerProcess, want: ToEngine) -> Res {
@@ -343,13 +354,13 @@ fn a_broker_whose_parent_is_not_the_engine_it_reached_goes_no_further() -> Res {
 }
 
 #[test]
-fn the_broker_wants_a_socket_path_and_nothing_else() -> Res {
+fn the_broker_wants_a_socket_path_and_at_most_a_key_file() -> Res {
     assert!(matches!(
         connect_to_engine(Path::new("relative.sock")),
         Err(ChannelError::BadPath)
     ));
     assert!(connect_to_engine(Path::new("/nonexistent/hyalos.sock")).is_err());
-    for args in [&[][..], &["a", "b"][..]] {
+    for args in [&[][..], &["a", "b", "c"][..]] {
         let out = Command::new(EXE).arg("broker").args(args).output()?;
         assert_eq!(out.status.code(), Some(2), "{args:?}");
     }
