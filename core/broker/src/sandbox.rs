@@ -23,8 +23,7 @@ use crate::model::{
     Sleep, refusal,
 };
 
-/// The longest socket path accepted: a Unix socket path is limited to about 107 bytes.
-pub const MAX_SOCKET_PATH: usize = 100;
+pub use hyalos_types::wire::MAX_SOCKET_PATH;
 /// Calls one job may have open at once. Another connection is closed unanswered.
 const MAX_CONNECTIONS: usize = 16;
 const MAX_HEAD: u64 = 16 * 1024;

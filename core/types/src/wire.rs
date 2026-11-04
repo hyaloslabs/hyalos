@@ -23,6 +23,10 @@ use crate::{Answer, Digest, Gate, JobId, ManifestPublicKey, ReasonCode, Role, he
 /// The version of this protocol. Both sides say theirs first and stop on a mismatch.
 pub const WIRE_VERSION: u32 = 2;
 
+/// The longest job socket path the engine makes and the broker binds (ADR-0038). A Unix socket
+/// path is limited to about 107 bytes; this leaves room.
+pub const MAX_SOCKET_PATH: usize = 100;
+
 /// The most bytes in one frame. A signed manifest is a few kilobytes; nothing here is larger.
 pub const MAX_FRAME: usize = 64 * 1024;
 

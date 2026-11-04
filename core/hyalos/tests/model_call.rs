@@ -101,6 +101,26 @@ fn manifest(job: u64) -> Manifest {
     }
 }
 
+#[test]
+fn a_runtime_directory_too_long_for_a_socket_is_refused_at_job_start() -> Res {
+    let root = dir("long")?;
+    // The job directory adds 44 bytes and the socket 12, so this leaves the socket over 100.
+    let long = root.join("r".repeat(60));
+    std::fs::create_dir(&long)?;
+    let error = JobDir::create(&long)
+        .err()
+        .ok_or("a too-long runtime directory was taken")?;
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    let said = error.to_string();
+    assert!(
+        said.contains("too long for a job's socket") && said.contains("at most 100"),
+        "{said}"
+    );
+    assert_eq!(std::fs::read_dir(&long)?.count(), 0, "nothing was made");
+    let _ = std::fs::remove_dir_all(&root);
+    Ok(())
+}
+
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }

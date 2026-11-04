@@ -1,0 +1,6 @@
+# The sandbox image builds from the repository root (images/sandbox/Containerfile).
+target
+.git
+spikes
+**/node_modules
+.env
