@@ -1,6 +1,6 @@
 # ADR-0039: TLS to model providers
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
