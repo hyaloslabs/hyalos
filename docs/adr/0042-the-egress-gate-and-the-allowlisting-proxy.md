@@ -1,6 +1,6 @@
 # ADR-0042: The egress gate and the allowlisting proxy
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
