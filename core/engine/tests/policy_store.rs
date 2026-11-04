@@ -9,7 +9,7 @@ use hyalos_log::{Head, Log, LogKey};
 use hyalos_policy::{LoadError, codes};
 use hyalos_types::{
     Budget, Digest, Event, JobId, JobOutcome, MAX_POLICY_DOCUMENT, Manifest, ManifestKey, Origin,
-    ReasonCode, Resolution, Role, Timestamp,
+    ReasonCode, Resolution, Role, SubstrateName, Timestamp,
 };
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -69,6 +69,7 @@ fn running(name: &str) -> Res<(Engine, JobId, PathBuf)> {
             Origin::Engine,
             Event::JobStarted {
                 task: hyalos_types::TaskId::from_seq(task),
+                substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             },
         )?
         .seq;
@@ -512,6 +513,7 @@ fn a_stored_policy_that_no_longer_validates_holds_requests_until_it_is_replaced(
             },
             Event::JobStarted {
                 task: hyalos_types::TaskId::from_seq(1),
+                substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             },
             Event::PolicyApproved {
                 document: "permit (principal, action, resource) when { principal.admin };".into(),

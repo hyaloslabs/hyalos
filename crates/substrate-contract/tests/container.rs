@@ -36,6 +36,19 @@ fn the_container_driver_passes_the_whole_contract() -> Res {
     };
     assert_eq!(driver.name(), "container");
     assert_eq!(driver.isolation(), Isolation::Container);
+    // Ready for the image: the runtime answers, has it, and starts it under an init (ADR-0043). The
+    // probe leaves nothing behind.
+    let before = driver.existing()?;
+    driver.ready(IMAGE)?;
+    assert_eq!(driver.existing()?, before);
+    assert_eq!(
+        driver.recorded_as().as_str(),
+        format!("container.{}", driver.runtime())
+    );
+    let Err(missing) = driver.ready("hyalos-no-such-image:0") else {
+        return Err("a missing image was ready".into());
+    };
+    assert!(missing.to_string().contains("has no image"), "{missing}");
     let work_dir =
         std::env::temp_dir().join(format!("hyalos-contract-container-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work_dir);

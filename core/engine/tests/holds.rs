@@ -14,7 +14,7 @@ use hyalos_sim::{FakeClock, START, Sim};
 use hyalos_types::event::SCHEMA_VERSION;
 use hyalos_types::{
     Answer, Clock, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode,
-    Resolution, Sensitive, Stakes, TaskId, Tier, Timestamp,
+    Resolution, Sensitive, Stakes, SubstrateName, TaskId, Tier, Timestamp,
 };
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -107,7 +107,15 @@ impl World {
         );
         let job = JobId::from_seq(
             self.engine
-                .submit(self.now(), Origin::Engine, Event::JobStarted { task })?
+                .submit(
+                    self.now(),
+                    Origin::Engine,
+                    Event::JobStarted {
+                        task,
+                        substrate: SubstrateName::new("test")
+                            .unwrap_or_else(SubstrateName::unrecorded),
+                    },
+                )?
                 .seq,
         );
         let Ruling::Held(hold) = self.engine.rule_gate(
@@ -180,7 +188,14 @@ fn a_fresh_on_time_allow_releases_the_hold_as_reevaluated() -> Res {
     // The held job stays ended; a new job is what runs next.
     let again = w
         .engine
-        .submit(w.now(), Origin::Engine, Event::JobStarted { task: h.task })?
+        .submit(
+            w.now(),
+            Origin::Engine,
+            Event::JobStarted {
+                task: h.task,
+                substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            },
+        )?
         .seq;
     assert_ne!(again, h.job.seq());
 
@@ -538,7 +553,15 @@ fn log_with_release(name: &str, stakes: Stakes, release: Event) -> Res<PathBuf> 
         Origin::Engine,
         &Event::TaskCreated { request: d(1) },
     )?;
-    raw_event(&mut log, 2, Origin::Engine, &Event::JobStarted { task })?;
+    raw_event(
+        &mut log,
+        2,
+        Origin::Engine,
+        &Event::JobStarted {
+            task,
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+        },
+    )?;
     raw_event(
         &mut log,
         3,
@@ -784,9 +807,14 @@ fn time_passing_releases_nothing() -> Res {
     w.clock.advance(Duration::from_secs(60 * 60 * 24 * 90));
     assert_eq!(w.snapshot()?, before);
     assert_eq!(w.engine.state().tasks()[&h.task].status(), TaskStatus::Held);
-    let start = w
-        .engine
-        .submit(w.now(), Origin::Engine, Event::JobStarted { task: h.task });
+    let start = w.engine.submit(
+        w.now(),
+        Origin::Engine,
+        Event::JobStarted {
+            task: h.task,
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+        },
+    );
     assert!(matches!(
         start,
         Err(EngineError::Rule(RuleViolation::TaskNotOpen { .. }))
@@ -812,7 +840,14 @@ fn a_gate_that_reports_after_the_jobs_deadline_can_neither_hold_nor_allow() -> R
     );
     let job = JobId::from_seq(
         w.engine
-            .submit(w.now(), Origin::Engine, Event::JobStarted { task })?
+            .submit(
+                w.now(),
+                Origin::Engine,
+                Event::JobStarted {
+                    task,
+                    substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                },
+            )?
             .seq,
     );
     // The deadline passes and the engine ends the job.

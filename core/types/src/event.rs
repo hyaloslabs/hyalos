@@ -10,20 +10,22 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Answer, Digest, HoldId, JobId, Origin, ReasonCode, Schema, Stakes, TaskId, Upcast, Value,
+    Answer, Digest, HoldId, JobId, Origin, ReasonCode, Schema, Stakes, SubstrateName, TaskId,
+    Upcast, Value,
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
-/// What this build reads: version 5, and versions 1 to 4 upcast to it (ADR-0023, ADR-0025, ADR-0027,
-/// ADR-0029, ADR-0034).
+/// What this build reads: version 6, and versions 1 to 5 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// ADR-0029, ADR-0034, ADR-0043).
 ///
 /// Version 2 added the stakes of a hold and the reason for resolving one. A version 1 hold is given the
 /// most cautious stakes, so only a human can release it; a version 1 resolution is given an explicit
 /// "unrecorded" reason. Version 3 added `archive.pruned` and changed no payload. Every other kind is the
 /// same in all versions. Version 4 added `task.cancelled` and `hold.refused` and changed no payload.
-/// Version 5 added `policy.approved` and changed no payload.
+/// Version 5 added `policy.approved` and changed no payload. Version 6 added the substrate to
+/// `job.started`; an older one reads as `unrecorded`.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -36,6 +38,11 @@ pub static SCHEMA: Schema = Schema {
             kind: "hold.resolved",
             from: 1,
             step: hold_resolved_v1,
+        },
+        Upcast {
+            kind: "job.started",
+            from: 5,
+            step: job_started_v5,
         },
     ],
 };
@@ -58,6 +65,10 @@ fn hold_opened_v1(payload: Value) -> Result<Value, String> {
 
 fn hold_resolved_v1(payload: Value) -> Result<Value, String> {
     insert(payload, "reason", Value::String("legacy.unrecorded".into()))
+}
+
+fn job_started_v5(payload: Value) -> Result<Value, String> {
+    insert(payload, "substrate", Value::String("unrecorded".into()))
 }
 
 /// How a job ended.
@@ -112,8 +123,12 @@ pub enum Event {
     TaskCreated { request: Digest },
     #[serde(rename = "task.completed")]
     TaskCompleted { task: TaskId },
+    /// A job started on `task`, in a sandbox from the substrate named (ADR-0011, ADR-0043).
     #[serde(rename = "job.started")]
-    JobStarted { task: TaskId },
+    JobStarted {
+        task: TaskId,
+        substrate: SubstrateName,
+    },
     #[serde(rename = "job.ended")]
     JobEnded { job: JobId, outcome: JobOutcome },
     /// A gate answered a request made by a running job. `inputs` is the digest of what it was asked.
@@ -348,8 +363,9 @@ mod tests {
             (
                 Event::JobStarted {
                     task: TaskId::from_seq(3),
+                    substrate: SubstrateName::new("container.podman").unwrap(),
                 },
-                r#"{"kind":"job.started","task":3}"#.to_string(),
+                r#"{"kind":"job.started","task":3,"substrate":"container.podman"}"#.to_string(),
             ),
             (
                 Event::JobEnded {
@@ -470,7 +486,7 @@ mod tests {
 
     #[test]
     fn a_wrong_kind_column_is_refused() {
-        let json = r#"{"kind":"job.started","task":3}"#;
+        let json = r#"{"kind":"job.started","task":3,"substrate":"container.docker"}"#;
         let err = Event::decode("task.completed", SCHEMA_VERSION, json.as_bytes()).unwrap_err();
         assert!(matches!(err, EventError::KindMismatch { .. }), "{err}");
     }
@@ -501,7 +517,10 @@ mod tests {
     #[test]
     fn unknown_fields_kinds_and_versions_are_refused() {
         let bad = [
-            r#"{"kind":"job.started","task":3,"extra":1}"#,
+            r#"{"kind":"job.started","task":3,"substrate":"local","extra":1}"#,
+            // Since version 6 a job names its substrate; only an older event may leave it out.
+            r#"{"kind":"job.started","task":3}"#,
+            r#"{"kind":"job.started","task":3,"substrate":"/usr/bin/podman"}"#,
             r#"{"kind":"job.vanished","task":3}"#,
             r#"{"kind":"job.started"}"#,
             r#"{"kind":"job.started","task":"3"}"#,

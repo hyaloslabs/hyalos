@@ -14,6 +14,8 @@ use std::process::{Child, Command, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use hyalos_types::SubstrateName;
+
 use crate::spec::{BROKER_SOCKET_IN_SANDBOX, OUTPUT_LIMIT};
 use crate::{Ending, Isolation, Outcome, Sandbox, SandboxSpec, StartError, Substrate, Unavailable};
 
@@ -25,6 +27,9 @@ const POLL: Duration = Duration::from_millis(10);
 
 /// The label that marks a container as one of ours, for listing and for cleaning up after a crash.
 const LABEL: &str = "hyalos.job";
+
+/// The runtimes the engine looks for, in order of preference.
+const RUNTIMES: [&str; 2] = ["podman", "docker"];
 
 #[derive(Debug, Clone)]
 pub struct ContainerSubstrate {
@@ -39,17 +44,84 @@ impl ContainerSubstrate {
         }
     }
 
-    /// The first of `podman` and `docker` that is installed and answers, or `None`. Podman first: it
-    /// runs without a root daemon.
-    pub fn detect() -> Option<Self> {
-        ["podman", "docker"]
-            .into_iter()
-            .map(Self::new)
-            .find(|d| d.available().is_ok())
+    /// A driver for each runtime the engine looks for, in order of preference. Podman first: it runs
+    /// without a root daemon.
+    pub fn candidates() -> Vec<Self> {
+        RUNTIMES.into_iter().map(Self::new).collect()
     }
 
     pub fn runtime(&self) -> &str {
         &self.runtime
+    }
+
+    /// Which of the runtimes it drives, by the command's file name, if it is one of them.
+    fn known_runtime(&self) -> Option<&'static str> {
+        let file = std::path::Path::new(&self.runtime).file_name()?;
+        RUNTIMES.into_iter().find(|r| file == *r)
+    }
+
+    /// What to install or set when the runtime cannot start an init (ADR-0041).
+    fn init_advice(&self) -> &'static str {
+        match self.known_runtime() {
+            Some("podman") => {
+                "Podman runs the init named by `init_path` in containers.conf: install catatonit (the default), or point `init_path` at an init that is installed"
+            }
+            Some("docker") => {
+                "Docker runs docker-init, which ships with Docker Engine: reinstall Docker Engine, or point `init-path` in daemon.json at an init that is installed"
+            }
+            _ => "install the init this runtime runs for `--init`",
+        }
+    }
+
+    /// Whether the runtime has `image` locally. Jobs never pull (`--pull never`).
+    fn has_image(&self, image: &str) -> Result<(), Unavailable> {
+        let out = self.run(&["image", "inspect", "--format", "{{.Id}}", image])?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(Unavailable(format!(
+                "{} has no image {image}; build or load it first",
+                self.runtime
+            )))
+        }
+    }
+
+    /// Starts and removes one short container from `image` under `--init`, the way a job's sandbox
+    /// starts, running `true`. A runtime with no init refuses it (ADR-0041).
+    fn starts_an_init(&self, image: &str) -> Result<(), Unavailable> {
+        let out = self.run(&[
+            "run",
+            "--rm",
+            "--init",
+            "--network",
+            "none",
+            "--read-only",
+            "--user",
+            SANDBOX_USER,
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pull",
+            "never",
+            "--log-driver",
+            "none",
+            "--label",
+            &format!("{LABEL}=probe"),
+            "--entrypoint",
+            "true",
+            image,
+        ])?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(Unavailable(format!(
+                "{} cannot start a container with an init ({}). {}",
+                self.runtime,
+                first_line(&out.stderr),
+                self.init_advice()
+            )))
+        }
     }
 
     fn run(&self, args: &[&str]) -> Result<std::process::Output, Unavailable> {
@@ -75,8 +147,27 @@ impl Substrate for ContainerSubstrate {
         "container"
     }
 
+    /// `container.podman` or `container.docker`, or `container` for a command that is neither.
+    fn recorded_as(&self) -> SubstrateName {
+        self.known_runtime()
+            .and_then(|r| SubstrateName::new(&format!("container.{r}")))
+            .or_else(|| SubstrateName::new("container"))
+            .unwrap_or_else(SubstrateName::unrecorded)
+    }
+
     fn isolation(&self) -> Isolation {
         Isolation::Container
+    }
+
+    fn ready(&self, image: &str) -> Result<(), Unavailable> {
+        if !crate::spec::image_ok(image) {
+            return Err(Unavailable(format!(
+                "{image:?} is not a plain image reference"
+            )));
+        }
+        self.available()?;
+        self.has_image(image)?;
+        self.starts_an_init(image)
     }
 
     fn available(&self) -> Result<(), Unavailable> {

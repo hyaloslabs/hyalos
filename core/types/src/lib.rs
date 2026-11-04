@@ -13,6 +13,7 @@ pub mod reason;
 pub mod schema;
 pub mod snapshot;
 pub mod stakes;
+pub mod substrate;
 pub mod time;
 pub mod wire;
 
@@ -29,4 +30,5 @@ pub use reason::{Answer, ReasonCode};
 pub use schema::{Schema, Upcast, UpcastFn, Value};
 pub use snapshot::{ImageError, PolicyImage, STATE_VERSION, StateImage};
 pub use stakes::{Sensitive, Stakes, Tier, Touches};
+pub use substrate::SubstrateName;
 pub use time::{Clock, Timestamp};

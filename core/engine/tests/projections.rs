@@ -10,7 +10,7 @@ use hyalos_policy::{GateRequest, Outcome};
 use hyalos_sim::Sim;
 use hyalos_types::{
     Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode,
-    Resolution, SeededRng, Sensitive, Stakes, TaskId, Timestamp,
+    Resolution, SeededRng, Sensitive, Stakes, SubstrateName, TaskId, Timestamp,
 };
 
 type Res = Result<(), Box<dyn std::error::Error>>;
@@ -82,7 +82,14 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
         1,
         "an id is the sequence of the event that made it"
     );
-    let job = JobId::from_seq(submit(&mut e, 2, Event::JobStarted { task })?);
+    let job = JobId::from_seq(submit(
+        &mut e,
+        2,
+        Event::JobStarted {
+            task,
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+        },
+    )?);
     submit(
         &mut e,
         3,
@@ -105,7 +112,14 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
     assert_eq!(e.state().tasks()[&task].status(), TaskStatus::Held);
     assert!(
         matches!(
-            submit(&mut e, 5, Event::JobStarted { task }),
+            submit(
+                &mut e,
+                5,
+                Event::JobStarted {
+                    task,
+                    substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded)
+                }
+            ),
             Err(EngineError::Rule(RuleViolation::TaskNotOpen { .. }))
         ),
         "a held task starts no job"
@@ -120,7 +134,14 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
         },
     )?;
     assert_eq!(e.state().tasks()[&task].status(), TaskStatus::Open);
-    let job2 = JobId::from_seq(submit(&mut e, 7, Event::JobStarted { task })?);
+    let job2 = JobId::from_seq(submit(
+        &mut e,
+        7,
+        Event::JobStarted {
+            task,
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+        },
+    )?);
     submit(
         &mut e,
         8,
@@ -203,12 +224,25 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
     let path = fresh_path("refused")?;
     let mut e = Engine::open(&path, key())?;
     let task = TaskId::from_seq(submit(&mut e, 1, Event::TaskCreated { request: d(1) })?);
-    let job = JobId::from_seq(submit(&mut e, 2, Event::JobStarted { task })?);
+    let job = JobId::from_seq(submit(
+        &mut e,
+        2,
+        Event::JobStarted {
+            task,
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+        },
+    )?);
     let before = (e.head()?, e.state().clone());
 
     let nobody = TaskId::from_seq(99);
     let cases: Vec<(Event, &str)> = vec![
-        (Event::JobStarted { task: nobody }, "unknown task"),
+        (
+            Event::JobStarted {
+                task: nobody,
+                substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            },
+            "unknown task",
+        ),
         (Event::TaskCompleted { task: nobody }, "unknown task"),
         (
             Event::JobEnded {
@@ -240,7 +274,10 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
             "holding with a job running",
         ),
         (
-            Event::JobStarted { task },
+            Event::JobStarted {
+                task,
+                substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            },
             "a second job while one is running",
         ),
     ];
@@ -313,7 +350,10 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
     // A completed task takes no more holds, jobs or completions.
     submit(&mut e, 16, Event::TaskCompleted { task })?;
     for event in [
-        Event::JobStarted { task },
+        Event::JobStarted {
+            task,
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+        },
         Event::TaskCompleted { task },
         Event::HoldOpened {
             task,
@@ -349,7 +389,14 @@ fn deleting_the_projection_and_replaying_gives_identical_state() -> Res {
         let mut e = Engine::open(&path, key())?;
         let t1 = TaskId::from_seq(submit(&mut e, 1, Event::TaskCreated { request: d(1) })?);
         let t2 = TaskId::from_seq(submit(&mut e, 2, Event::TaskCreated { request: d(2) })?);
-        let j = JobId::from_seq(submit(&mut e, 3, Event::JobStarted { task: t1 })?);
+        let j = JobId::from_seq(submit(
+            &mut e,
+            3,
+            Event::JobStarted {
+                task: t1,
+                substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            },
+        )?);
         submit(
             &mut e,
             4,
@@ -414,6 +461,7 @@ fn a_validly_signed_log_with_an_illegal_event_is_refused_on_replay() -> Res {
         let mut log = Log::open(&path, key())?;
         let job_on_nothing = Event::JobStarted {
             task: TaskId::from_seq(42),
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
         };
         log.append(
             at(1),
@@ -501,7 +549,10 @@ fn random_event(rng: &mut SeededRng, state: &State, seq_next: u64) -> Event {
             request: Digest::from_bytes([rng.below(256) as u8; 32]),
         },
         1 => Event::TaskCompleted { task: task(rng) },
-        2 => Event::JobStarted { task: task(rng) },
+        2 => Event::JobStarted {
+            task: task(rng),
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+        },
         3 => {
             let ids: Vec<JobId> = state.jobs().keys().copied().collect();
             let job = if ids.is_empty() || rng.below(10) == 0 {

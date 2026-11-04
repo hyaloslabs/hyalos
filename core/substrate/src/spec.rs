@@ -71,14 +71,7 @@ impl SandboxSpec {
     /// environment name that is not a name, or a path a mount option could be smuggled through.
     /// Every driver checks this first, so a bad spec does the same thing everywhere.
     pub fn validate(&self) -> Result<(), SpecError> {
-        let image_ok = !self.image.is_empty()
-            && !self.image.starts_with('-')
-            && self.image.len() <= 255
-            && self
-                .image
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"._/:@-".contains(&b));
-        if !image_ok {
+        if !image_ok(&self.image) {
             return Err(SpecError::Image);
         }
         if self.command.is_empty() || self.command.iter().any(|a| a.contains('\0')) {
@@ -108,6 +101,16 @@ impl SandboxSpec {
         }
         Ok(())
     }
+}
+
+/// Whether `image` is a plain image reference, one that cannot be read as a runtime option.
+pub(crate) fn image_ok(image: &str) -> bool {
+    !image.is_empty()
+        && !image.starts_with('-')
+        && image.len() <= 255
+        && image
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._/:@-".contains(&b))
 }
 
 /// Why a spec was refused.

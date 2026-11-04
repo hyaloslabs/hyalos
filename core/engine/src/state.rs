@@ -462,7 +462,7 @@ impl State {
                 }
                 self.no_running_job(*task)
             }
-            Event::JobStarted { task } => {
+            Event::JobStarted { task, .. } => {
                 let status = self.task(*task)?.status();
                 if status != TaskStatus::Open {
                     return Err(RuleViolation::TaskNotOpen {
@@ -611,7 +611,7 @@ impl State {
                     t.completed_at = Some(at);
                 }
             }
-            Event::JobStarted { task } => {
+            Event::JobStarted { task, .. } => {
                 self.jobs.insert(
                     JobId::from_seq(seq),
                     Job {

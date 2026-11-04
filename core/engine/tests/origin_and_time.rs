@@ -8,7 +8,7 @@ use hyalos_log::{Log, LogKey};
 use hyalos_policy::{GateRequest, Outcome};
 use hyalos_types::{
     Answer, Digest, Event, Gate, HoldReason, JobId, JobOutcome, Origin, ReasonCode, Resolution,
-    Stakes, TaskId, Timestamp,
+    Stakes, SubstrateName, TaskId, Timestamp,
 };
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -82,11 +82,21 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
         }
         "job.started" => {
             let task = TaskId::from_seq(go(&mut e, 1, Event::TaskCreated { request: d(1) })?);
-            Event::JobStarted { task }
+            Event::JobStarted {
+                task,
+                substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            }
         }
         "job.ended" => {
             let task = TaskId::from_seq(go(&mut e, 1, Event::TaskCreated { request: d(1) })?);
-            let job = JobId::from_seq(go(&mut e, 2, Event::JobStarted { task })?);
+            let job = JobId::from_seq(go(
+                &mut e,
+                2,
+                Event::JobStarted {
+                    task,
+                    substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                },
+            )?);
             Event::JobEnded {
                 job,
                 outcome: JobOutcome::Succeeded,
@@ -94,7 +104,14 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
         }
         "gate.answered" => {
             let task = TaskId::from_seq(go(&mut e, 1, Event::TaskCreated { request: d(1) })?);
-            let job = JobId::from_seq(go(&mut e, 2, Event::JobStarted { task })?);
+            let job = JobId::from_seq(go(
+                &mut e,
+                2,
+                Event::JobStarted {
+                    task,
+                    substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                },
+            )?);
             Event::GateAnswered {
                 job,
                 gate: Gate::Egress,
@@ -105,7 +122,14 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
         }
         "hold.resolved" | "task.cancelled" | "hold.refused" => {
             let task = TaskId::from_seq(go(&mut e, 1, Event::TaskCreated { request: d(1) })?);
-            let job = JobId::from_seq(go(&mut e, 2, Event::JobStarted { task })?);
+            let job = JobId::from_seq(go(
+                &mut e,
+                2,
+                Event::JobStarted {
+                    task,
+                    substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                },
+            )?);
             let Ruling::Held(hold) = e.rule_gate(
                 at(3),
                 Origin::Broker,
@@ -262,7 +286,14 @@ fn unknown_batch(job: JobId, task: TaskId, ended: Origin, opened: Origin) -> Vec
 fn a_hold_and_the_job_ending_that_goes_with_it_cannot_come_from_the_broker() -> Res {
     let mut e = Engine::open(&path("hold-origin")?, key())?;
     let task = TaskId::from_seq(go(&mut e, 1, Event::TaskCreated { request: d(1) })?);
-    let job = JobId::from_seq(go(&mut e, 2, Event::JobStarted { task })?);
+    let job = JobId::from_seq(go(
+        &mut e,
+        2,
+        Event::JobStarted {
+            task,
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+        },
+    )?);
     let before = (e.head()?, e.state().clone());
 
     for (ended, opened, refused) in [
@@ -299,7 +330,14 @@ fn a_gate_hold_is_recorded_with_the_gates_origin_and_the_engines_consequences() 
     let p = path("recorded-origins")?;
     let mut e = Engine::open(&p, key())?;
     let task = TaskId::from_seq(go(&mut e, 1, Event::TaskCreated { request: d(1) })?);
-    let job = JobId::from_seq(go(&mut e, 2, Event::JobStarted { task })?);
+    let job = JobId::from_seq(go(
+        &mut e,
+        2,
+        Event::JobStarted {
+            task,
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+        },
+    )?);
     e.rule_gate(
         at(3),
         Origin::Broker,
@@ -379,7 +417,14 @@ fn an_event_may_share_a_time_with_the_one_before_but_not_precede_it() -> Res {
 fn time_is_enforced_for_batches_and_gates_and_nothing_is_half_written() -> Res {
     let mut e = Engine::open(&path("time-batch")?, key())?;
     let task = TaskId::from_seq(go(&mut e, 10, Event::TaskCreated { request: d(1) })?);
-    let job = JobId::from_seq(go(&mut e, 11, Event::JobStarted { task })?);
+    let job = JobId::from_seq(go(
+        &mut e,
+        11,
+        Event::JobStarted {
+            task,
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+        },
+    )?);
     let before = (e.head()?, e.state().clone());
 
     let batch = unknown_batch(job, task, Origin::Engine, Origin::Engine);
