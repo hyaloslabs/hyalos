@@ -9,19 +9,54 @@ use serde_json::Value;
 
 use super::MAX_BODY;
 
-/// Tokens spent per job, as the provider reported them.
+/// One job's account: tokens spent, as the provider reported them, and tokens held for calls still
+/// in flight.
+#[derive(Debug, Default, Clone, Copy)]
+struct Account {
+    spent: u64,
+    held: u64,
+}
+
+/// Tokens spent per job, and held for calls in flight, so calls made side by side cannot together
+/// pass the budget by more than their input.
 #[derive(Debug, Default)]
-pub struct Meter(Mutex<BTreeMap<JobId, u64>>);
+pub struct Meter(Mutex<BTreeMap<JobId, Account>>);
 
 impl Meter {
     pub fn spent(&self, job: JobId) -> u64 {
-        self.lock().get(&job).copied().unwrap_or(0)
+        self.lock().get(&job).map_or(0, |a| a.spent)
+    }
+
+    /// Tokens held for calls in flight.
+    pub fn held(&self, job: JobId) -> u64 {
+        self.lock().get(&job).map_or(0, |a| a.held)
     }
 
     pub fn charge(&self, job: JobId, tokens: u64) {
-        let mut spent = self.lock();
-        let total = spent.entry(job).or_default();
-        *total = total.saturating_add(tokens);
+        let mut accounts = self.lock();
+        let account = accounts.entry(job).or_default();
+        account.spent = account.spent.saturating_add(tokens);
+    }
+
+    /// Holds up to `want` tokens of what is left of `budget`. `Err(true)` means the budget is spent;
+    /// `Err(false)` that what is left is held by calls in flight, which will release it.
+    pub(super) fn hold(self: &Arc<Self>, job: JobId, budget: u64, want: u64) -> Result<Hold, bool> {
+        let mut accounts = self.lock();
+        let account = accounts.entry(job).or_default();
+        if account.spent >= budget {
+            return Err(true);
+        }
+        let left = budget.saturating_sub(account.spent.saturating_add(account.held));
+        let amount = want.min(left);
+        if amount == 0 {
+            return Err(false);
+        }
+        account.held += amount;
+        Ok(Hold {
+            meter: Arc::clone(self),
+            job,
+            amount,
+        })
     }
 
     /// Drops a job that has ended.
@@ -29,9 +64,44 @@ impl Meter {
         self.lock().remove(&job);
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<JobId, u64>> {
+    fn release(&self, job: JobId, amount: u64, spent: u64) {
+        let mut accounts = self.lock();
+        let account = accounts.entry(job).or_default();
+        account.held = account.held.saturating_sub(amount);
+        account.spent = account.spent.saturating_add(spent);
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<JobId, Account>> {
         // A panic while holding the lock cannot leave a half-written count.
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Tokens held for one call. Settling charges what it spent; dropping it unsettled charges nothing
+/// (the call never reached a successful response).
+pub(super) struct Hold {
+    meter: Arc<Meter>,
+    job: JobId,
+    amount: u64,
+}
+
+impl Hold {
+    /// The tokens held, which is the most output the call may ask for.
+    pub(super) fn amount(&self) -> u64 {
+        self.amount
+    }
+
+    fn settle(mut self, spent: u64) {
+        self.meter.release(self.job, self.amount, spent);
+        self.amount = 0;
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        if self.amount > 0 {
+            self.meter.release(self.job, self.amount, 0);
+        }
     }
 }
 
@@ -151,9 +221,7 @@ impl Scanner {
 /// usage cannot be read in full is charged the job's whole budget: metering fails closed.
 pub(super) struct Metered {
     inner: Box<dyn Read + Send>,
-    scanner: Option<Scanner>,
-    meter: Arc<Meter>,
-    job: JobId,
+    scanner: Option<(Scanner, Hold)>,
     budget: u64,
 }
 
@@ -161,23 +229,19 @@ impl Metered {
     pub(super) fn new(
         inner: Box<dyn Read + Send>,
         scanner: Scanner,
-        meter: Arc<Meter>,
-        job: JobId,
+        hold: Hold,
         budget: u64,
     ) -> Self {
         Self {
             inner,
-            scanner: Some(scanner),
-            meter,
-            job,
+            scanner: Some((scanner, hold)),
             budget,
         }
     }
 
     fn settle(&mut self) {
-        if let Some(scanner) = self.scanner.take() {
-            let tokens = scanner.finish().unwrap_or(self.budget);
-            self.meter.charge(self.job, tokens);
+        if let Some((scanner, hold)) = self.scanner.take() {
+            hold.settle(scanner.finish().unwrap_or(self.budget));
         }
     }
 }
@@ -187,7 +251,7 @@ impl Read for Metered {
         let n = self.inner.read(buf)?;
         if n == 0 {
             self.settle();
-        } else if let Some(scanner) = self.scanner.as_mut() {
+        } else if let Some((scanner, _)) = self.scanner.as_mut() {
             scanner.feed(&buf[..n]);
         }
         Ok(n)

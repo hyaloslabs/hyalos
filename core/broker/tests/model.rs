@@ -288,6 +288,7 @@ fn contract(case: &Case) -> Res {
     key_is_added_and_placeholder_dropped(case)?;
     usage_is_metered_per_job(case)?;
     unread_usage_spends_the_budget(case)?;
+    calls_in_flight_hold_their_output(case)?;
     a_malformed_request_is_refused_not_retried(case)?;
     a_spent_budget_is_402_naming_it(case)?;
     a_reader_may_send_no_tools(case)?;
@@ -381,6 +382,51 @@ fn usage_is_metered_per_job(case: &Case) -> Res {
     );
     read_all(r.relay.handle(&big, call(case, case.path, &plain())).body)?;
     assert_eq!(r.meter.spent(big.job), case.stream_tokens);
+    Ok(())
+}
+
+/// A call in flight holds the output it may produce, capped to what the budget has left, so calls
+/// side by side cannot all pass it; one that finds the rest held is told to try again, not refused.
+fn calls_in_flight_hold_their_output(case: &Case) -> Res {
+    let r = rig(case)?;
+    let field = case.adapter.output_limit();
+    let job = manifest(60, Role::Actor, 100);
+    let mut asks = plain();
+    asks[field] = json!(70);
+
+    let first = r.relay.handle(&job, call(case, case.path, &asks));
+    assert_eq!(first.status, 200);
+    assert_eq!(r.meter.held(job.job), 70);
+    let second = r.relay.handle(&job, call(case, case.path, &asks));
+    assert_eq!(second.status, 200);
+    assert_eq!(r.meter.held(job.job), 100);
+    let sent = r.script.sent();
+    assert_eq!(sent[0].2[field], 70);
+    assert_eq!(sent[1].2[field], 30, "capped to what was left");
+
+    let third = r.relay.handle(&job, call(case, case.path, &asks));
+    assert_eq!(third.status, case.overloaded, "the rest is held: try again");
+    assert_eq!(
+        third.reason.as_ref().map(|r| r.as_str()),
+        Some("budget.held")
+    );
+
+    // Ending the calls releases the holds and charges what they reported (2 each).
+    read_all(first.body)?;
+    read_all(second.body)?;
+    assert_eq!((r.meter.spent(job.job), r.meter.held(job.job)), (4, 0));
+
+    // A call with no limit asks for no more than is left.
+    let open = manifest(61, Role::Actor, 500);
+    let mut body = plain();
+    body.as_object_mut().ok_or("object")?.remove(field);
+    read_all(r.relay.handle(&open, call(case, case.path, &body)).body)?;
+    assert_eq!(r.script.sent().last().ok_or("sent")?.2[field], 500);
+
+    // A refused or failed call holds nothing afterwards.
+    r.script.answer(400, &[], b"{}");
+    read_all(r.relay.handle(&open, call(case, case.path, &plain())).body)?;
+    assert_eq!(r.meter.held(open.job), 0);
     Ok(())
 }
 
@@ -591,6 +637,7 @@ fn a_busy_provider_is_retried_then_answered_retryably(case: &Case) -> Res {
     r.script.answer(200, &[], OK);
     let response = r.relay.handle(&actor, call(case, case.path, &plain()));
     assert_eq!(response.status, 200, "absorbed three busy answers");
+    read_all(response.body)?;
     assert_eq!(
         r.waits.all(),
         vec![

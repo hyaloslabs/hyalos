@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use crate::{Answer, Digest, Gate, JobId, ManifestPublicKey, ReasonCode, Role, hex};
 
 /// The version of this protocol. Both sides say theirs first and stop on a mismatch.
-pub const WIRE_VERSION: u32 = 1;
+pub const WIRE_VERSION: u32 = 2;
 
 /// The most bytes in one frame. A signed manifest is a few kilobytes; nothing here is larger.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -38,12 +38,16 @@ pub enum ToBroker {
         manifest_key: ManifestPublicKey,
     },
     /// A job has started. `manifest` is the signed manifest's envelope (`SignedManifest::to_bytes`),
-    /// and `role` is the role the credential for the job will have.
+    /// and `role` is the role the credential for the job will have. `socket` is the absolute path,
+    /// in a directory the engine made for this job alone, where the broker listens for the job's
+    /// sandbox (ADR-0038). It comes over the channel, never on the broker's command line, because
+    /// knowing it is what lets a process reach the job's socket.
     StartJob {
         job: JobId,
         role: Role,
         #[serde(with = "bytes_hex")]
         manifest: Vec<u8>,
+        socket: String,
     },
     /// A job has ended, so a manifest for it is no longer admitted.
     EndJob { job: JobId },
@@ -220,7 +224,7 @@ mod tests {
                     manifest_key: key,
                 },
                 format!(
-                    r#"{{"kind":"hello","version":1,"manifest_key":"{}"}}"#,
+                    r#"{{"kind":"hello","version":2,"manifest_key":"{}"}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -229,8 +233,9 @@ mod tests {
                     job: JobId::from_seq(3),
                     role: Role::Actor,
                     manifest: vec![0x00, 0xab, 0xff],
+                    socket: "/run/user/1000/hyalos-job-ab/broker.sock".into(),
                 },
-                r#"{"kind":"start_job","job":3,"role":"actor","manifest":"00abff"}"#.to_string(),
+                r#"{"kind":"start_job","job":3,"role":"actor","manifest":"00abff","socket":"/run/user/1000/hyalos-job-ab/broker.sock"}"#.to_string(),
             ),
             (
                 ToBroker::EndJob {
@@ -378,6 +383,7 @@ mod tests {
             job: JobId::from_seq(job),
             role: Role::Actor,
             manifest: vec![0; bytes],
+            socket: "/s".into(),
         };
         let size = |job: u64, bytes: usize| -> Res<usize> {
             Ok(serde_json::to_vec(&message(job, bytes))?.len())
@@ -413,6 +419,7 @@ mod tests {
             job: JobId::from_seq(1),
             role: Role::Actor,
             manifest: vec![0; MAX_FRAME],
+            socket: "/s".into(),
         };
         let mut out = Vec::new();
         assert_eq!(write_frame(&mut out, &big), Err(WireError::Unwritable));
@@ -422,9 +429,9 @@ mod tests {
     #[test]
     fn a_manifest_that_is_not_hex_or_a_key_that_is_not_32_bytes_is_malformed() {
         for body in [
-            r#"{"kind":"start_job","job":3,"role":"actor","manifest":"0g"}"#,
-            r#"{"kind":"start_job","job":3,"role":"actor","manifest":"abc"}"#,
-            r#"{"kind":"start_job","job":3,"role":"actor","manifest":"é1"}"#,
+            r#"{"kind":"start_job","job":3,"role":"actor","manifest":"0g","socket":"/s"}"#,
+            r#"{"kind":"start_job","job":3,"role":"actor","manifest":"abc","socket":"/s"}"#,
+            r#"{"kind":"start_job","job":3,"role":"actor","manifest":"é1","socket":"/s"}"#,
             r#"{"kind":"hello","version":1,"manifest_key":"0707"}"#,
             r#"{"kind":"hello","version":1,"manifest_key":7}"#,
         ] {

@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 pub const LOG_FILE: &str = "events.db";
 pub const ENGINE_PUBLIC_KEY_FILE: &str = "engine.pub";
 pub const ENGINE_KEY_FILE: &str = "engine.key";
+/// The provider API keys the broker reads (ADR-0038), owner-only like `engine.key`.
+pub const PROVIDER_KEYS_FILE: &str = "provider.keys";
 
 pub type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
 
@@ -24,6 +26,11 @@ pub fn log_file(env: Env<'_>) -> Result<PathBuf, String> {
 /// explicit key never fails because a directory it does not use cannot be found.
 pub fn engine_public_key(env: Env<'_>) -> Result<PathBuf, String> {
     Ok(config_dir(env)?.join(ENGINE_PUBLIC_KEY_FILE))
+}
+
+/// `provider.keys` in the config directory.
+pub fn provider_keys(env: Env<'_>) -> Result<PathBuf, String> {
+    Ok(config_dir(env)?.join(PROVIDER_KEYS_FILE))
 }
 
 pub fn data_dir(env: Env<'_>) -> Result<PathBuf, String> {

@@ -653,6 +653,7 @@ dependencies = [
  "hyalos-log",
  "hyalos-policy",
  "hyalos-substrate",
+ "hyalos-substrate-contract",
  "hyalos-types",
  "rusqlite",
  "rustix",

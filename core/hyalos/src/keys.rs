@@ -390,6 +390,18 @@ pub fn load(path: &Path) -> Result<LogKey, KeyError> {
 }
 
 fn load_as(path: &Path, user: u32) -> Result<LogKey, KeyError> {
+    let raw = read_private_as(path, KEY_FILE_LIMIT, user)?;
+    let seed = parse(&raw).ok_or_else(|| KeyError::Malformed(path.to_path_buf()))?;
+    Ok(LogKey::from_seed(*seed))
+}
+
+/// Reads a secret file: a regular file owned by the effective user and closed to group and others
+/// (ADR-0030), at most `limit` bytes. The provider key file is read this way (ADR-0038).
+pub fn read_private(path: &Path, limit: u64) -> Result<Zeroizing<Vec<u8>>, KeyError> {
+    read_private_as(path, limit, current_user())
+}
+
+fn read_private_as(path: &Path, limit: u64, user: u32) -> Result<Zeroizing<Vec<u8>>, KeyError> {
     let meta = fs::symlink_metadata(path).map_err(|e| io(format!("read {}", path.display()), e))?;
     if !meta.file_type().is_file() {
         return Err(KeyError::NotRegular(path.to_path_buf()));
@@ -407,12 +419,11 @@ fn load_as(path: &Path, user: u32) -> Result<LogKey, KeyError> {
             mode: meta.mode(),
         });
     }
-    let mut raw = Zeroizing::new(Vec::with_capacity(KEY_FILE_LIMIT as usize + 1));
+    let mut raw = Zeroizing::new(Vec::new());
     File::open(path)
-        .and_then(|f| f.take(KEY_FILE_LIMIT).read_to_end(&mut raw))
+        .and_then(|f| f.take(limit).read_to_end(&mut raw))
         .map_err(|e| io(format!("read {}", path.display()), e))?;
-    let seed = parse(&raw).ok_or_else(|| KeyError::Malformed(path.to_path_buf()))?;
-    Ok(LogKey::from_seed(*seed))
+    Ok(raw)
 }
 
 fn parse(raw: &[u8]) -> Option<Zeroizing<[u8; 32]>> {

@@ -7,7 +7,8 @@
 
 use std::fmt;
 use std::io;
-use std::path::Path;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
@@ -26,6 +27,43 @@ pub fn fresh_manifest_key() -> Result<ManifestKey, io::Error> {
     let mut seed = Zeroizing::new([0u8; 32]);
     getrandom::fill(&mut *seed).map_err(|e| io::Error::other(e.to_string()))?;
     Ok(ManifestKey::from_seed(*seed))
+}
+
+/// A directory made for one job's broker socket (ADR-0038). Its name is drawn from the operating
+/// system, so only a process told the path can reach the socket in it; it can be entered but not
+/// listed by others (0711), because the sandbox runs as another user. Dropping it removes it.
+#[derive(Debug)]
+pub struct JobDir {
+    path: PathBuf,
+}
+
+impl JobDir {
+    /// Makes a fresh directory in `runtime_dir`, refusing one that exists.
+    pub fn create(runtime_dir: &Path) -> io::Result<Self> {
+        let mut name = [0u8; 16];
+        getrandom::fill(&mut name).map_err(|e| io::Error::other(e.to_string()))?;
+        let hex: String = name.iter().map(|b| format!("{b:02x}")).collect();
+        let path = runtime_dir.join(format!("hyalos-job-{hex}"));
+        std::fs::DirBuilder::new().mode(0o711).create(&path)?;
+        // The mode given is narrowed by the umask; set it exactly.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o711))?;
+        Ok(Self { path })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The socket the broker listens on for this job, and the sandbox's `broker_socket`.
+    pub fn socket(&self) -> PathBuf {
+        self.path.join("broker.sock")
+    }
+}
+
+impl Drop for JobDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 #[derive(Debug)]
@@ -71,18 +109,33 @@ pub struct BrokerProcess {
 }
 
 impl BrokerProcess {
-    /// Starts `exe` as the broker, with `runtime_dir` for its socket.
+    /// Starts `exe` as the broker, with `runtime_dir` for its socket and no provider keys.
     pub fn launch(
         exe: &Path,
         runtime_dir: &Path,
         key: &ManifestPublicKey,
         wait: Duration,
     ) -> Result<Self, LaunchError> {
+        Self::launch_with(exe, runtime_dir, key, None, wait)
+    }
+
+    /// Starts `exe` as the broker, which reads the provider key file at `provider_keys` itself, so
+    /// the keys never pass through the engine (ADR-0038). The path is not a secret; the file is the
+    /// operator's alone.
+    pub fn launch_with(
+        exe: &Path,
+        runtime_dir: &Path,
+        key: &ManifestPublicKey,
+        provider_keys: Option<&Path>,
+        wait: Duration,
+    ) -> Result<Self, LaunchError> {
         let listener = Listener::bind(runtime_dir)?;
         let mut command = Command::new(exe);
+        command.arg("broker").arg(listener.path());
+        if let Some(keys) = provider_keys {
+            command.arg(keys);
+        }
         command
-            .arg("broker")
-            .arg(listener.path())
             // Nothing from the engine's environment, and no way in or out but the channel.
             .env_clear()
             .stdin(Stdio::null())
@@ -90,14 +143,15 @@ impl BrokerProcess {
         Self::start(command, listener, key, wait)
     }
 
-    /// Starts this very executable as the broker.
+    /// Starts this very executable as the broker, with the provider key file at `provider_keys`.
     pub fn launch_self(
         runtime_dir: &Path,
         key: &ManifestPublicKey,
+        provider_keys: Option<&Path>,
         wait: Duration,
     ) -> Result<Self, LaunchError> {
         let exe = std::env::current_exe().map_err(|e| LaunchError::Spawn(e.kind()))?;
-        Self::launch(&exe, runtime_dir, key, wait)
+        Self::launch_with(&exe, runtime_dir, key, provider_keys, wait)
     }
 
     /// Runs `command` as the broker, accepts its connection on `listener` and says hello. Anything

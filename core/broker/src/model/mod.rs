@@ -100,6 +100,8 @@ pub trait Adapter: Send + Sync {
     fn harness_runs(&self, tool: &Value) -> bool;
     /// Removes request fields that only make sense with a provider-hosted tool.
     fn scrub(&self, _body: &mut Map<String, Value>) {}
+    /// The request field that caps a generation's output tokens.
+    fn output_limit(&self) -> &'static str;
     /// The status the harness retries when the broker gives up on an overloaded provider.
     fn overloaded(&self) -> u16;
     /// An error body in this protocol's shape.
@@ -145,6 +147,16 @@ impl std::error::Error for TransportError {}
 /// Carries a request to the provider and returns its answer. Requests are always `POST`.
 pub trait Transport: Send + Sync {
     fn send(&self, request: &Upstream) -> Result<UpstreamResponse, TransportError>;
+}
+
+/// The broker's own answer in a protocol's error shape. `code` is a reason code.
+pub fn refusal(adapter: &dyn Adapter, status: u16, code: &str, message: &str) -> Response {
+    Response {
+        status,
+        content_type: "application/json".into(),
+        body: Box::new(std::io::Cursor::new(adapter.error_body(status, message))),
+        reason: ReasonCode::new(code),
+    }
 }
 
 fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {

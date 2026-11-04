@@ -12,10 +12,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::{Read, Write};
+use std::path::Path;
 
 use hyalos_types::wire::{ToBroker, ToEngine, WIRE_VERSION, WireError, read_frame, write_frame};
 use hyalos_types::{Clock, JobId, Manifest, ManifestPublicKey, ReasonCode, SignedManifest};
 
+use crate::sandbox::{JobSocket, Sandboxes};
 use crate::{Admission, Credential, LiveJobs};
 
 /// The jobs the engine has started and not ended.
@@ -34,14 +36,28 @@ pub struct Broker {
     admission: Admission,
     jobs: Jobs,
     admitted: BTreeMap<JobId, Manifest>,
+    /// With sandboxes, each admitted job gets a socket its sandbox calls models through (ADR-0038).
+    sandboxes: Option<Sandboxes>,
+    sockets: BTreeMap<JobId, JobSocket>,
 }
 
 impl Broker {
+    /// A broker that admits jobs and opens no sockets.
     pub fn new(key: ManifestPublicKey) -> Self {
         Self {
             admission: Admission::new(key),
             jobs: Jobs::default(),
             admitted: BTreeMap::new(),
+            sandboxes: None,
+            sockets: BTreeMap::new(),
+        }
+    }
+
+    /// A broker that serves each admitted job's sandbox on the socket the engine named for it.
+    pub fn with_sandboxes(key: ManifestPublicKey, sandboxes: Sandboxes) -> Self {
+        Self {
+            sandboxes: Some(sandboxes),
+            ..Self::new(key)
         }
     }
 
@@ -62,12 +78,18 @@ impl Broker {
             ToBroker::EndJob { job } => {
                 self.jobs.0.remove(&job);
                 self.admitted.remove(&job);
+                // Closes the socket before the meter goes, so no call is charged to a forgotten job.
+                self.sockets.remove(&job);
+                if let Some(sandboxes) = &self.sandboxes {
+                    sandboxes.models.meter().forget(job);
+                }
                 Ok(Some(Vec::new()))
             }
             ToBroker::StartJob {
                 job,
                 role,
                 manifest,
+                socket,
             } => {
                 let refuse = |reason: ReasonCode| Ok(Some(vec![ToEngine::Refused { job, reason }]));
                 // A job is started once. The first admission stands.
@@ -84,6 +106,21 @@ impl Broker {
                     .admit(&signed, &Credential { job, role }, &self.jobs, clock)
                 {
                     Ok(manifest) => {
+                        if let Some(sandboxes) = &self.sandboxes {
+                            match JobSocket::open(
+                                Path::new(&socket),
+                                manifest.clone(),
+                                sandboxes.clone(),
+                            ) {
+                                Ok(open) => {
+                                    self.sockets.insert(job, open);
+                                }
+                                Err(_) => {
+                                    self.jobs.0.remove(&job);
+                                    return refuse(code("broker.socket_unavailable"));
+                                }
+                            }
+                        }
                         self.admitted.insert(job, manifest);
                         Ok(Some(vec![ToEngine::Admitted { job }]))
                     }
@@ -148,6 +185,16 @@ pub fn serve<R: Read, W: Write>(
     output: &mut W,
     clock: &dyn Clock,
 ) -> Result<Exit, ServeError> {
+    serve_with(input, output, clock, None)
+}
+
+/// As [`serve`], and with `sandboxes`, each admitted job's sandbox is served on its socket.
+pub fn serve_with<R: Read, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    clock: &dyn Clock,
+    sandboxes: Option<Sandboxes>,
+) -> Result<Exit, ServeError> {
     let Some(ToBroker::Hello {
         version,
         manifest_key,
@@ -164,7 +211,10 @@ pub fn serve<R: Read, W: Write>(
             version: WIRE_VERSION,
         },
     )?;
-    let mut broker = Broker::new(manifest_key);
+    let mut broker = match sandboxes {
+        Some(sandboxes) => Broker::with_sandboxes(manifest_key, sandboxes),
+        None => Broker::new(manifest_key),
+    };
     while let Some(message) = read_frame::<_, ToBroker>(input)? {
         match broker.handle(message, clock)? {
             None => return Ok(Exit::Shutdown),

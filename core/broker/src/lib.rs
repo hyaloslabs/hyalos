@@ -4,7 +4,8 @@
 
 mod admission;
 pub mod model;
+pub mod sandbox;
 mod serve;
 
 pub use admission::{Admission, Credential, LiveJobs, Refusal};
-pub use serve::{Broker, Exit, ServeError, serve};
+pub use serve::{Broker, Exit, ServeError, serve, serve_with};

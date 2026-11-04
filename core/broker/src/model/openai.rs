@@ -61,6 +61,10 @@ impl Adapter for OpenAi {
         }
     }
 
+    fn output_limit(&self) -> &'static str {
+        "max_output_tokens"
+    }
+
     fn overloaded(&self) -> u16 {
         503
     }

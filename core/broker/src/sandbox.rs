@@ -1,0 +1,420 @@
+//! The broker's side facing a job's sandbox (ADR-0016, ADR-0038).
+//!
+//! When a job is admitted the broker listens on a Unix socket made for that job alone, at the path
+//! the engine chose. The engine mounts it in the job's sandbox, where the harness's forwarder
+//! connects to it. Which socket a call arrives on is which job it is for, so nothing in the sandbox
+//! is a credential. Each connection carries one HTTP/1.1 model call, which goes to the relay for its
+//! protocol under the job's admitted manifest; the provider key is added there and never sent back.
+
+use std::fmt;
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use hyalos_types::{Clock, Manifest};
+
+use crate::model::{
+    Adapter, Anthropic, ApiKey, HttpTransport, MAX_BODY, Meter, OpenAi, Relay, Request, Response,
+    Sleep, refusal,
+};
+
+/// The longest socket path accepted: a Unix socket path is limited to about 107 bytes.
+pub const MAX_SOCKET_PATH: usize = 100;
+/// Calls one job may have open at once. Another connection is closed unanswered.
+const MAX_CONNECTIONS: usize = 16;
+const MAX_HEAD: u64 = 16 * 1024;
+const MAX_HEADERS: usize = 100;
+/// How long the harness may take to send its request.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// How often the accept loop looks for a connection or a stop.
+const ACCEPT_POLL: Duration = Duration::from_millis(20);
+/// How long a write to the harness may block while a response streams.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// One provider's key and where to reach it.
+#[derive(Debug, Clone)]
+pub struct Provider {
+    pub key: ApiKey,
+    pub base: String,
+}
+
+/// The providers the broker may call, read from the operator's key file.
+#[derive(Debug, Clone, Default)]
+pub struct Providers {
+    pub anthropic: Option<Provider>,
+    pub openai: Option<Provider>,
+}
+
+/// Why a key file was refused. It names a line or a provider, never what the line held.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderError {
+    /// Not `name = value`, or a name this build does not know.
+    Line(usize),
+    /// A name given twice.
+    Repeated(usize),
+    /// A key that is not printable ASCII without spaces.
+    Key(&'static str),
+    /// A base given for a provider with no key.
+    BaseWithoutKey(&'static str),
+}
+
+impl fmt::Display for ProviderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ProviderError::Line(n) => write!(
+                f,
+                "line {n} is not one of anthropic.key, anthropic.base, openai.key or openai.base = value"
+            ),
+            ProviderError::Repeated(n) => write!(f, "line {n} gives a name a second time"),
+            ProviderError::Key(p) => write!(f, "the {p} key is not a key"),
+            ProviderError::BaseWithoutKey(p) => write!(f, "{p}.base is given with no {p}.key"),
+        }
+    }
+}
+
+impl std::error::Error for ProviderError {}
+
+impl Providers {
+    /// Reads `name = value` lines; blank lines and lines starting with `#` are skipped. The names are
+    /// `anthropic.key`, `anthropic.base`, `openai.key` and `openai.base`. A base defaults to the
+    /// provider's public API.
+    pub fn parse(text: &str) -> Result<Self, ProviderError> {
+        let mut values: [Option<&str>; 4] = [None; 4];
+        const NAMES: [&str; 4] = [
+            "anthropic.key",
+            "anthropic.base",
+            "openai.key",
+            "openai.base",
+        ];
+        for (i, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (name, value) = line
+                .split_once('=')
+                .map(|(n, v)| (n.trim(), v.trim()))
+                .ok_or(ProviderError::Line(i + 1))?;
+            let slot = NAMES
+                .iter()
+                .position(|n| *n == name)
+                .filter(|_| !value.is_empty())
+                .ok_or(ProviderError::Line(i + 1))?;
+            if values[slot].replace(value).is_some() {
+                return Err(ProviderError::Repeated(i + 1));
+            }
+        }
+        let provider = |name: &'static str,
+                        key: Option<&str>,
+                        base: Option<&str>,
+                        default: &str| match (key, base) {
+            (None, None) => Ok(None),
+            (None, Some(_)) => Err(ProviderError::BaseWithoutKey(name)),
+            (Some(key), base) => Ok(Some(Provider {
+                key: ApiKey::new(key).ok_or(ProviderError::Key(name))?,
+                base: base.unwrap_or(default).to_string(),
+            })),
+        };
+        Ok(Self {
+            anthropic: provider(
+                "anthropic",
+                values[0],
+                values[1],
+                "https://api.anthropic.com",
+            )?,
+            openai: provider("openai", values[2], values[3], "https://api.openai.com")?,
+        })
+    }
+}
+
+/// The relays for each protocol, and the meter they share. A protocol with no usable provider holds
+/// the reason instead, and its calls are refused with it.
+pub struct Models {
+    anthropic: Result<Relay, &'static str>,
+    openai: Result<Relay, &'static str>,
+    meter: Arc<Meter>,
+}
+
+impl fmt::Debug for Models {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Models")
+            .field("anthropic", &self.anthropic.is_ok())
+            .field("openai", &self.openai.is_ok())
+            .finish()
+    }
+}
+
+impl Models {
+    /// Relays as given, sharing `meter`. `Err` holds the reason code a call is refused with.
+    pub fn new(
+        anthropic: Result<Relay, &'static str>,
+        openai: Result<Relay, &'static str>,
+        meter: Arc<Meter>,
+    ) -> Self {
+        Self {
+            anthropic,
+            openai,
+            meter,
+        }
+    }
+
+    /// Relays over [`HttpTransport`] for the providers in the key file. A provider whose base this
+    /// build cannot reach (an `https://` base until TLS is built) is refused with the transport's code.
+    pub fn from_providers(providers: &Providers, sleep: Arc<dyn Sleep>) -> Self {
+        let meter = Arc::new(Meter::default());
+        let relay = |provider: &Option<Provider>, adapter: Arc<dyn Adapter>| {
+            let provider = provider.as_ref().ok_or("model.no_provider")?;
+            let transport = HttpTransport::new(&provider.base).map_err(|e| e.0)?;
+            Ok(Relay::new(
+                adapter,
+                Arc::new(transport),
+                provider.key.clone(),
+                Arc::clone(&meter),
+                Arc::clone(&sleep),
+            ))
+        };
+        Self {
+            anthropic: relay(&providers.anthropic, Arc::new(Anthropic)),
+            openai: relay(&providers.openai, Arc::new(OpenAi)),
+            meter: Arc::clone(&meter),
+        }
+    }
+
+    pub fn meter(&self) -> &Arc<Meter> {
+        &self.meter
+    }
+
+    /// Answers one call for the job whose admitted manifest is `manifest`.
+    pub fn answer(&self, manifest: &Manifest, request: Request, clock: &dyn Clock) -> Response {
+        let path = request.target.split('?').next().unwrap_or_default();
+        let (adapter, relay): (&dyn Adapter, _) = if path.starts_with("/v1/messages") {
+            (&Anthropic, &self.anthropic)
+        } else if path.starts_with("/v1/responses") {
+            (&OpenAi, &self.openai)
+        } else {
+            return refusal(
+                &OpenAi,
+                404,
+                "model.route_refused",
+                "the broker serves no model call at this path",
+            );
+        };
+        // The manifest is enforced on every call, not only at admission (ADR-0004).
+        if clock.now() > manifest.deadline {
+            return refusal(
+                adapter,
+                403,
+                "admission.expired",
+                "refused by the job's manifest: its deadline has passed",
+            );
+        }
+        match relay {
+            Ok(relay) => relay.handle(manifest, request),
+            Err(code) => refusal(
+                adapter,
+                403,
+                code,
+                &format!("the broker has no usable key for this provider ({code})"),
+            ),
+        }
+    }
+}
+
+/// What the broker needs to serve sandboxes: the relays, and a clock its threads can share.
+#[derive(Clone)]
+pub struct Sandboxes {
+    pub models: Arc<Models>,
+    pub clock: Arc<dyn Clock + Send + Sync>,
+}
+
+impl fmt::Debug for Sandboxes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Sandboxes")
+            .field("models", &self.models)
+            .finish()
+    }
+}
+
+/// A job's socket. Dropping it stops listening and removes the socket file.
+#[derive(Debug)]
+pub(crate) struct JobSocket {
+    path: PathBuf,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl JobSocket {
+    /// Listens at `path` for the job `manifest` is for. The path must be absolute, short, and not
+    /// exist; its directory is the engine's, made for this job.
+    pub(crate) fn open(path: &Path, manifest: Manifest, sandboxes: Sandboxes) -> io::Result<Self> {
+        let text = path.to_string_lossy();
+        if !path.is_absolute() || text.len() > MAX_SOCKET_PATH || text.contains('\0') {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let listener = UnixListener::bind(path)?;
+        // The sandbox runs as another user (ADR-0032); the directory's name is what keeps others out.
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666))?;
+        // Polled, so stopping never depends on the socket file still being there to connect to.
+        listener.set_nonblocking(true)?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::clone(&stop);
+        let manifest = Arc::new(manifest);
+        let thread = std::thread::spawn(move || {
+            let active = Arc::new(AtomicUsize::new(0));
+            while !stopped.load(Ordering::SeqCst) {
+                let stream = match listener.accept() {
+                    Ok((stream, _)) => stream,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(ACCEPT_POLL);
+                        continue;
+                    }
+                    Err(_) => continue,
+                };
+                if stream.set_nonblocking(false).is_err() {
+                    continue;
+                }
+                if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    continue;
+                }
+                let (active, manifest, sandboxes) = (
+                    Arc::clone(&active),
+                    Arc::clone(&manifest),
+                    sandboxes.clone(),
+                );
+                std::thread::spawn(move || {
+                    let _ = connection(&stream, &manifest, &sandboxes);
+                    active.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+        Ok(Self {
+            path: path.to_path_buf(),
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for JobSocket {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn connection(stream: &UnixStream, manifest: &Manifest, sandboxes: &Sandboxes) -> io::Result<()> {
+    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
+    let response = match read_request(&mut BufReader::new(stream)) {
+        Ok(request) => sandboxes
+            .models
+            .answer(manifest, request, sandboxes.clock.as_ref()),
+        Err((status, message)) => refusal(&OpenAi, status, "model.bad_request", message),
+    };
+    write_response(&mut &*stream, response)
+}
+
+/// Reads one HTTP/1.1 request: a request line, headers and a body of `content-length` bytes.
+pub fn read_request<R: BufRead>(input: &mut R) -> Result<Request, (u16, &'static str)> {
+    let bad = (400, "the request is not one the broker reads");
+    let mut lines = Vec::new();
+    let mut head = input.take(MAX_HEAD);
+    loop {
+        let mut line = Vec::new();
+        head.read_until(b'\n', &mut line).map_err(|_| bad)?;
+        if !line.ends_with(b"\n") {
+            return Err((431, "the request head is too large or cut short"));
+        }
+        let line = String::from_utf8(line).map_err(|_| bad)?;
+        let line = line.trim_end_matches(['\r', '\n']).to_string();
+        if line.is_empty() {
+            break;
+        }
+        if lines.len() > MAX_HEADERS {
+            return Err((431, "the request has too many headers"));
+        }
+        lines.push(line);
+    }
+    let mut lines = lines.into_iter();
+    let first = lines.next().ok_or(bad)?;
+    let mut parts = first.split(' ');
+    let (Some(method), Some(target), Some(version), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(bad);
+    };
+    if !version.starts_with("HTTP/1.") || !target.starts_with('/') {
+        return Err(bad);
+    }
+    let mut headers = Vec::new();
+    for line in lines {
+        let (name, value) = line.split_once(':').ok_or(bad)?;
+        headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
+    }
+    let get = |n: &str| {
+        headers
+            .iter()
+            .find(|(k, _)| k == n)
+            .map(|(_, v)| v.as_str())
+    };
+    if get("transfer-encoding").is_some() {
+        return Err((411, "the broker reads only a body with a content-length"));
+    }
+    let length = match get("content-length") {
+        None => 0,
+        Some(v) => v.parse::<usize>().map_err(|_| bad)?,
+    };
+    if length > MAX_BODY {
+        return Err((413, "the request is larger than the broker reads"));
+    }
+    let mut body = vec![0; length];
+    input
+        .read_exact(&mut body)
+        .map_err(|_| (400, "the request body was cut short"))?;
+    Ok(Request {
+        method: method.to_string(),
+        target: target.to_string(),
+        headers,
+        body,
+    })
+}
+
+/// Writes a response and its body as it arrives, then the connection closes: the body runs to the
+/// end of the stream, so a streamed generation reaches the harness as it is made.
+pub fn write_response<W: Write>(output: &mut W, response: Response) -> io::Result<()> {
+    let content_type = if response.content_type.bytes().any(|b| b.is_ascii_control()) {
+        "application/octet-stream"
+    } else {
+        response.content_type.as_str()
+    };
+    let phrase = match response.status {
+        200..=299 => "OK",
+        400..=499 => "Refused",
+        _ => "Unavailable",
+    };
+    write!(
+        output,
+        "HTTP/1.1 {} {phrase}\r\ncontent-type: {content_type}\r\ncache-control: no-cache\r\nconnection: close\r\n\r\n",
+        response.status
+    )?;
+    let mut body = response.body;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let n = body.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        output.write_all(&buffer[..n])?;
+        output.flush()?;
+    }
+    output.flush()
+}

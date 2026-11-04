@@ -53,6 +53,10 @@ impl Adapter for Anthropic {
         }
     }
 
+    fn output_limit(&self) -> &'static str {
+        "max_tokens"
+    }
+
     fn overloaded(&self) -> u16 {
         529
     }
