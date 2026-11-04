@@ -1,6 +1,6 @@
 # ADR-0044: Minting per-job GitHub tokens from the App
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
