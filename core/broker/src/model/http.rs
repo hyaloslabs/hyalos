@@ -75,7 +75,7 @@ impl Transport for HttpTransport {
         }
         head.push_str("\r\n");
 
-        let unreachable = |_| TransportError("transport.unreachable");
+        let unreachable = |_| TransportError::UNREACHABLE;
         let mut stream = TcpStream::connect(&self.authority).map_err(unreachable)?;
         stream
             .set_write_timeout(Some(WRITE_TIMEOUT))

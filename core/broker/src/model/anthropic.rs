@@ -8,9 +8,21 @@ use super::{Adapter, Route};
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Anthropic;
 
-/// Anthropic-defined tools that the client runs. Server tools (web search, web fetch, code
-/// execution, MCP toolsets) and any type not listed here are removed.
-const CLIENT_TYPES: &[&str] = &["bash_", "text_editor_", "computer_", "memory_"];
+/// Anthropic-defined tools that the client runs, by exact versioned type. Server tools (web search,
+/// web fetch, code execution and its `bash_code_execution_*`, MCP toolsets) and any type not listed
+/// here, a newer version of a client tool included, are removed: the harness loses that tool, which
+/// is the safe direction.
+const CLIENT_TYPES: &[&str] = &[
+    "bash_20241022",
+    "bash_20250124",
+    "text_editor_20241022",
+    "text_editor_20250124",
+    "text_editor_20250429",
+    "text_editor_20250728",
+    "computer_20241022",
+    "computer_20250124",
+    "memory_20250818",
+];
 
 impl Adapter for Anthropic {
     fn route(&self, path: &str) -> Option<Route> {
@@ -36,9 +48,7 @@ impl Adapter for Anthropic {
     fn harness_runs(&self, tool: &Value) -> bool {
         match tool.get("type") {
             None => true,
-            Some(Value::String(t)) => {
-                t == "custom" || CLIENT_TYPES.iter().any(|prefix| t.starts_with(prefix))
-            }
+            Some(Value::String(t)) => t == "custom" || CLIENT_TYPES.contains(&t.as_str()),
             Some(_) => false,
         }
     }
@@ -54,6 +64,7 @@ impl Adapter for Anthropic {
             404 => "not_found_error",
             413 => "request_too_large",
             529 => "overloaded_error",
+            500..=599 => "api_error",
             _ => "invalid_request_error",
         };
         json!({ "type": "error", "error": { "type": kind, "message": message } })

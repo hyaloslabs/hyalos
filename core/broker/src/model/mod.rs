@@ -128,6 +128,12 @@ pub struct UpstreamResponse {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransportError(pub &'static str);
 
+impl TransportError {
+    /// Nothing was sent: the provider could not be reached. Only this error is retried, since after
+    /// a request is sent the provider may already be generating, and a retry would pay twice.
+    pub const UNREACHABLE: TransportError = TransportError("transport.unreachable");
+}
+
 impl fmt::Display for TransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0)

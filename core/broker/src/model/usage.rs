@@ -9,9 +9,6 @@ use serde_json::Value;
 
 use super::MAX_BODY;
 
-/// The longest server-sent event line the scanner reads. A longer one is skipped.
-const MAX_LINE: usize = 1024 * 1024;
-
 /// Tokens spent per job, as the provider reported them.
 #[derive(Debug, Default)]
 pub struct Meter(Mutex<BTreeMap<JobId, u64>>);
@@ -51,12 +48,13 @@ impl Usage {
         self.input.saturating_add(self.output)
     }
 
-    fn absorb(&mut self, event: &Value) {
+    /// Takes the usage an event or document reports, and says whether it reported any.
+    fn absorb(&mut self, event: &Value) -> bool {
         let Some(usage) = ["/usage", "/message/usage", "/response/usage"]
             .iter()
             .find_map(|p| event.pointer(p).filter(|u| u.is_object()))
         else {
-            return;
+            return false;
         };
         let n = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
         let input = [
@@ -70,6 +68,7 @@ impl Usage {
         let output = n("output_tokens").saturating_add(n("completion_tokens"));
         self.input = self.input.max(input);
         self.output = self.output.max(output);
+        true
     }
 }
 
@@ -77,7 +76,10 @@ impl Usage {
 pub(super) struct Scanner {
     events: bool,
     buf: Vec<u8>,
-    skipping: bool,
+    /// Some of the body was not read for usage, so what was read may be short.
+    lost: bool,
+    /// The provider reported usage at least once.
+    seen: bool,
     usage: Usage,
 }
 
@@ -89,19 +91,15 @@ impl Scanner {
                 .to_ascii_lowercase()
                 .starts_with("text/event-stream"),
             buf: Vec::new(),
-            skipping: false,
+            lost: false,
+            seen: false,
             usage: Usage::default(),
         }
     }
 
     fn feed(&mut self, mut chunk: &[u8]) {
         if !self.events {
-            // A response this large is beyond any model's output; its usage is not read.
-            if self.buf.len() + chunk.len() <= MAX_BODY {
-                self.buf.extend_from_slice(chunk);
-            } else {
-                self.skipping = true;
-            }
+            self.push(chunk);
             return;
         }
         while let Some(i) = chunk.iter().position(|&b| b == b'\n') {
@@ -112,44 +110,51 @@ impl Scanner {
         self.push(chunk);
     }
 
+    /// Keeps up to `MAX_BODY` of the current line (or document); past that it is lost.
     fn push(&mut self, part: &[u8]) {
-        if self.buf.len() + part.len() > MAX_LINE {
-            self.skipping = true;
-            self.buf.clear();
-        } else if !self.skipping {
+        if self.buf.len() + part.len() > MAX_BODY {
+            self.lost = true;
+            self.buf = Vec::new();
+        } else {
             self.buf.extend_from_slice(part);
         }
     }
 
     fn line(&mut self) {
-        if !self.skipping
-            && let Some(data) = self.buf.strip_prefix(b"data:")
-            && let Ok(event) = serde_json::from_slice::<Value>(data)
-        {
-            self.usage.absorb(&event);
+        let line = std::mem::take(&mut self.buf);
+        if let Some(data) = line.strip_prefix(b"data:") {
+            self.absorb(data);
         }
-        self.skipping = false;
-        self.buf.clear();
     }
 
-    fn finish(mut self) -> u64 {
+    fn absorb(&mut self, json: &[u8]) {
+        match serde_json::from_slice::<Value>(json) {
+            Ok(value) => self.seen |= self.usage.absorb(&value),
+            Err(_) => self.lost = true,
+        }
+    }
+
+    /// The tokens the body reported, or `None` if it cannot be trusted to have reported them all:
+    /// part of it could not be read, or it reported no usage at all.
+    fn finish(mut self) -> Option<u64> {
         if self.events {
             self.line();
-        } else if !self.skipping
-            && let Ok(doc) = serde_json::from_slice::<Value>(&self.buf)
-        {
-            self.usage.absorb(&doc);
+        } else if !self.lost {
+            let doc = std::mem::take(&mut self.buf);
+            self.absorb(&doc);
         }
-        self.usage.total()
+        (self.seen && !self.lost).then(|| self.usage.total())
     }
 }
 
-/// A response body that charges its job when it ends, or when it is dropped part way.
+/// A response body that charges its job when it ends, or when it is dropped part way. A body whose
+/// usage cannot be read in full is charged the job's whole budget: metering fails closed.
 pub(super) struct Metered {
     inner: Box<dyn Read + Send>,
     scanner: Option<Scanner>,
     meter: Arc<Meter>,
     job: JobId,
+    budget: u64,
 }
 
 impl Metered {
@@ -158,18 +163,21 @@ impl Metered {
         scanner: Scanner,
         meter: Arc<Meter>,
         job: JobId,
+        budget: u64,
     ) -> Self {
         Self {
             inner,
             scanner: Some(scanner),
             meter,
             job,
+            budget,
         }
     }
 
     fn settle(&mut self) {
         if let Some(scanner) = self.scanner.take() {
-            self.meter.charge(self.job, scanner.finish());
+            let tokens = scanner.finish().unwrap_or(self.budget);
+            self.meter.charge(self.job, tokens);
         }
     }
 }

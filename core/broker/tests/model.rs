@@ -19,6 +19,8 @@ type Res = Result<(), Box<dyn std::error::Error>>;
 
 const KEY: &str = "sk-real-provider-key-0123456789";
 const PLACEHOLDER: &str = "placeholder-key";
+/// A successful answer that reports a little usage.
+const OK: &[u8] = br#"{"usage":{"input_tokens":1,"output_tokens":1}}"#;
 
 type Headers = Vec<(String, String)>;
 type Answer = Result<(u16, Headers, Vec<u8>), TransportError>;
@@ -41,8 +43,11 @@ impl Script {
     }
 
     fn fail(&self) {
-        self.lock_answers()
-            .push_back(Err(TransportError("transport.unreachable")));
+        self.fail_with("transport.unreachable");
+    }
+
+    fn fail_with(&self, code: &'static str) {
+        self.lock_answers().push_back(Err(TransportError(code)));
     }
 
     fn lock_answers(&self) -> std::sync::MutexGuard<'_, VecDeque<Answer>> {
@@ -78,7 +83,7 @@ impl Transport for Script {
         let (status, headers, body) =
             self.lock_answers()
                 .pop_front()
-                .unwrap_or(Ok((200, Vec::new(), b"{}".to_vec())))?;
+                .unwrap_or(Ok((200, Vec::new(), OK.to_vec())))?;
         Ok(UpstreamResponse {
             status,
             headers,
@@ -265,6 +270,13 @@ fn with_tools(tools: Vec<Value>) -> Value {
     body
 }
 
+/// The status of a response, read to the end as a harness would, so it is metered.
+fn status(response: hyalos_broker::model::Response) -> u16 {
+    let status = response.status;
+    let _ = read_all(response.body);
+    status
+}
+
 fn read_all(mut body: impl Read) -> Result<String, Box<dyn std::error::Error>> {
     let mut text = String::new();
     body.read_to_string(&mut text)?;
@@ -275,6 +287,8 @@ fn read_all(mut body: impl Read) -> Result<String, Box<dyn std::error::Error>> {
 fn contract(case: &Case) -> Res {
     key_is_added_and_placeholder_dropped(case)?;
     usage_is_metered_per_job(case)?;
+    unread_usage_spends_the_budget(case)?;
+    a_malformed_request_is_refused_not_retried(case)?;
     a_spent_budget_is_402_naming_it(case)?;
     a_reader_may_send_no_tools(case)?;
     hosted_tools_are_removed_from_every_request(case)?;
@@ -285,7 +299,7 @@ fn contract(case: &Case) -> Res {
 
 fn key_is_added_and_placeholder_dropped(case: &Case) -> Res {
     let r = rig(case)?;
-    r.script.answer(200, &[], b"{}");
+    r.script.answer(200, &[], OK);
     let response = r.relay.handle(
         &manifest(1, Role::Actor, 1000),
         call(case, case.path, &plain()),
@@ -345,20 +359,6 @@ fn usage_is_metered_per_job(case: &Case) -> Res {
     );
     assert_eq!(r.meter.spent(other.job), 0, "another job is not charged");
 
-    // A stream the harness drops part way is charged for what it reported.
-    r.script.answer(
-        200,
-        &[("content-type", "text/event-stream")],
-        case.stream.as_bytes(),
-    );
-    let response = r.relay.handle(&other, call(case, case.path, &plain()));
-    drop(response);
-    assert_eq!(
-        r.meter.spent(other.job),
-        0,
-        "nothing read, nothing reported"
-    );
-
     // Counting tokens spends none.
     r.script.answer(200, &[], br#"{"input_tokens": 999}"#);
     let response = r
@@ -367,6 +367,81 @@ fn usage_is_metered_per_job(case: &Case) -> Res {
     assert_eq!(response.status, 200);
     read_all(response.body)?;
     assert_eq!(r.meter.spent(other.job), 0);
+
+    // An event line far over a megabyte is still read for its usage.
+    let big = manifest(30, Role::Actor, 10_000_000);
+    let mut long = case
+        .stream
+        .replace("\"usage\"", "\"pad\":\"PAD\",\"usage\"");
+    long = long.replace("PAD", &"x".repeat(2 * 1024 * 1024));
+    r.script.answer(
+        200,
+        &[("content-type", "text/event-stream")],
+        long.as_bytes(),
+    );
+    read_all(r.relay.handle(&big, call(case, case.path, &plain())).body)?;
+    assert_eq!(r.meter.spent(big.job), case.stream_tokens);
+    Ok(())
+}
+
+/// Metering fails closed: a generation whose usage cannot be read in full spends the whole budget.
+fn unread_usage_spends_the_budget(case: &Case) -> Res {
+    let r = rig(case)?;
+    let bodies: [(&str, &[u8]); 3] = [
+        ("application/json", br#"{"output":[]}"#),
+        ("application/json", b"{not json"),
+        ("text/event-stream", b"data: {\"type\":\"ping\"}\n\n"),
+    ];
+    for (n, (content_type, body)) in bodies.into_iter().enumerate() {
+        let job = manifest(40 + n as u64, Role::Actor, 777);
+        r.script
+            .answer(200, &[("content-type", content_type)], body);
+        read_all(r.relay.handle(&job, call(case, case.path, &plain())).body)?;
+        assert_eq!(r.meter.spent(job.job), 777, "{content_type} {body:?}");
+    }
+
+    // A stream the harness drops before its usage arrived.
+    let job = manifest(43, Role::Actor, 555);
+    r.script.answer(
+        200,
+        &[("content-type", "text/event-stream")],
+        case.stream.as_bytes(),
+    );
+    drop(r.relay.handle(&job, call(case, case.path, &plain())));
+    assert_eq!(r.meter.spent(job.job), 555);
+    Ok(())
+}
+
+/// A request the broker cannot pass on safely is refused, not presented as a busy provider.
+fn a_malformed_request_is_refused_not_retried(case: &Case) -> Res {
+    let r = rig(case)?;
+    let actor = manifest(50, Role::Actor, 1000);
+    let spaced = format!("{} HTTP/1.1", case.path);
+    let mut tab = call(case, case.path, &plain());
+    tab.headers.push(("accept".into(), "a\tb".into()));
+    let mut background = plain();
+    background["background"] = json!(true);
+    for (request, code) in [
+        (call(case, &spaced, &plain()), "model.bad_request"),
+        (tab, "model.bad_request"),
+        (
+            call(case, case.path, &background),
+            "model.background_refused",
+        ),
+    ] {
+        let response = r.relay.handle(&actor, request);
+        assert_eq!(response.status, 400);
+        assert_eq!(response.reason.as_ref().map(|r| r.as_str()), Some(code));
+    }
+    assert!(r.script.sent().is_empty());
+    assert!(r.waits.all().is_empty());
+
+    // An answer that could not be read is not retried: the provider may have generated already.
+    r.script.fail_with("transport.bad_response");
+    let response = r.relay.handle(&actor, call(case, case.path, &plain()));
+    assert_eq!(response.status, 502);
+    assert_eq!(r.script.sent().len(), 1);
+    assert!(r.waits.all().is_empty());
     Ok(())
 }
 
@@ -453,7 +528,7 @@ fn hosted_tools_are_removed_from_every_request(case: &Case) -> Res {
         "reasoning.encrypted_content"
     ]);
     assert_eq!(
-        r.relay.handle(&actor, call(case, case.path, &mixed)).status,
+        status(r.relay.handle(&actor, call(case, case.path, &mixed))),
         200
     );
 
@@ -462,15 +537,13 @@ fn hosted_tools_are_removed_from_every_request(case: &Case) -> Res {
     alone["tool_choice"] = case.hosted_choice.clone();
     alone["parallel_tool_calls"] = json!(true);
     assert_eq!(
-        r.relay.handle(&actor, call(case, case.path, &alone)).status,
+        status(r.relay.handle(&actor, call(case, case.path, &alone))),
         200
     );
 
     // The same on the counting path.
     assert_eq!(
-        r.relay
-            .handle(&actor, call(case, case.count_path, &mixed))
-            .status,
+        status(r.relay.handle(&actor, call(case, case.count_path, &mixed))),
         200
     );
 
@@ -515,7 +588,7 @@ fn a_busy_provider_is_retried_then_answered_retryably(case: &Case) -> Res {
     r.script.answer(429, &[("retry-after", "3")], b"{}");
     r.script.answer(case.overloaded, &[], b"{}");
     r.script.fail();
-    r.script.answer(200, &[], b"{}");
+    r.script.answer(200, &[], OK);
     let response = r.relay.handle(&actor, call(case, case.path, &plain()));
     assert_eq!(response.status, 200, "absorbed three busy answers");
     assert_eq!(
@@ -568,7 +641,7 @@ fn unknown_paths_and_methods_are_refused(case: &Case) -> Res {
     }
     let mut bad = call(case, case.path, &plain());
     bad.body = b"not json".to_vec();
-    assert_eq!(r.relay.handle(&actor, bad).status, 400);
+    assert_eq!(status(r.relay.handle(&actor, bad)), 400);
     assert!(r.script.sent().is_empty());
     Ok(())
 }
@@ -629,6 +702,7 @@ fn anthropic_client_tools_are_kept() -> Res {
         json!({ "type": "text_editor_20250728", "name": "str_replace_based_edit_tool" }),
         json!({ "type": "custom", "name": "x", "input_schema": {} }),
         json!({ "type": "something_new_20270101", "name": "unknown" }),
+        json!({ "type": "bash_code_execution_20250825", "name": "server_bash" }),
     ];
     r.relay.handle(
         &manifest(12, Role::Actor, 1000),

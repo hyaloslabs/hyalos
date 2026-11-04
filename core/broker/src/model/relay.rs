@@ -9,8 +9,8 @@ use serde_json::{Map, Value};
 
 use super::usage::{Metered, Scanner};
 use super::{
-    Adapter, ApiKey, MAX_BODY, Meter, Request, Response, Route, Transport, Upstream,
-    UpstreamResponse, header,
+    Adapter, ApiKey, MAX_BODY, Meter, Request, Response, Route, Transport, TransportError,
+    Upstream, UpstreamResponse, header,
 };
 
 /// Upstream statuses that mean "busy, try later": rate limits and overload.
@@ -144,6 +144,14 @@ impl Relay {
                     "the broker serves no model call at this path",
                 )
             })?;
+        // A space or control character would split the request line upstream.
+        if !request.target.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(refused(
+                400,
+                "model.bad_request",
+                "the request path is not one the broker passes on",
+            ));
+        }
         if request.body.len() > MAX_BODY {
             return Err(refused(
                 413,
@@ -158,6 +166,17 @@ impl Relay {
                 "the request body is not a JSON object",
             ));
         };
+        // A background response keeps generating after this call returns, where no meter sees it.
+        if body
+            .get("background")
+            .is_some_and(|b| b != &Value::Bool(false) && !b.is_null())
+        {
+            return Err(refused(
+                400,
+                "model.background_refused",
+                "the broker does not serve background responses",
+            ));
+        }
         if manifest.role == Role::Reader && declares_tools(&body) {
             return Err(refused(
                 403,
@@ -178,14 +197,14 @@ impl Relay {
         strip_hosted(self.adapter.as_ref(), &mut body);
         let upstream = Upstream {
             target: request.target.clone(),
-            headers: self.headers(request),
+            headers: self.headers(request)?,
             body: serde_json::to_vec(&body)
                 .map_err(|_| refused(400, "model.bad_request", "the request cannot be written"))?,
         };
         self.deliver(manifest, route, &upstream)
     }
 
-    fn headers(&self, request: &Request) -> Vec<(String, String)> {
+    fn headers(&self, request: &Request) -> Result<Vec<(String, String)>, Refused> {
         let pass = self.adapter.passthrough();
         let mut out: Vec<(String, String)> = request
             .headers
@@ -193,6 +212,16 @@ impl Relay {
             .map(|(n, v)| (n.to_ascii_lowercase(), v.clone()))
             .filter(|(n, _)| pass.contains(&n.as_str()))
             .collect();
+        if out
+            .iter()
+            .any(|(_, v)| v.bytes().any(|b| b.is_ascii_control()))
+        {
+            return Err(refused(
+                400,
+                "model.bad_request",
+                "a request header has a control character",
+            ));
+        }
         for (name, value) in self.adapter.defaults() {
             if header(&out, name).is_none() {
                 out.push(((*name).into(), (*value).into()));
@@ -201,7 +230,7 @@ impl Relay {
         let (name, prefix) = self.adapter.credential_header();
         out.push((name.into(), format!("{prefix}{}", self.key.expose())));
         out.push(("content-type".into(), "application/json".into()));
-        out
+        Ok(out)
     }
 
     fn deliver(
@@ -234,7 +263,16 @@ impl Relay {
                     }
                     retry_after
                 }
-                Err(_) => None,
+                // Nothing was sent, so trying again cannot pay for a generation twice.
+                Err(e) if e == TransportError::UNREACHABLE => None,
+                // The provider may have generated already; the harness decides whether to ask again.
+                Err(_) => {
+                    return Err(refused(
+                        502,
+                        "provider.bad_response",
+                        "the model provider's answer could not be read",
+                    ));
+                }
             };
             if attempt >= self.backoff.attempts {
                 return Err(refused(
@@ -258,6 +296,7 @@ impl Relay {
                     Scanner::new(&content_type),
                     Arc::clone(&self.meter),
                     manifest.job,
+                    manifest.budget.tokens,
                 ))
             } else {
                 r.body
