@@ -3,7 +3,7 @@
 use hyalos_types::event::{SCHEMA, SCHEMA_VERSION};
 use hyalos_types::{
     Answer, Digest, Event, EventError, Gate, HoldId, HoldReason, JobId, JobOutcome, ReasonCode,
-    Resolution, Schema, Sensitive, Stakes, TaskId, Upcast,
+    Resolution, Schema, Sensitive, Stakes, SubstrateName, TaskId, Upcast,
 };
 use serde_json::{Value, json};
 
@@ -41,8 +41,10 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             1,
             "job.started",
             r#"{"kind":"job.started","task":3}"#.into(),
+            // Before version 6 a job did not name its substrate; it reads as unrecorded.
             Event::JobStarted {
                 task: TaskId::from_seq(3),
+                substrate: SubstrateName::unrecorded(),
             },
         ),
         (
@@ -194,6 +196,26 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             reason: ReasonCode::new("policy.approved").ok_or("reason")?,
         },
     ));
+
+    // Version 6 added the substrate to `job.started`, so the ten other kinds read as they did at
+    // version 5.
+    let at_5: Vec<_> = all
+        .iter()
+        .filter(|g| g.0 == 5 && g.1 != "job.started")
+        .cloned()
+        .collect();
+    for (_, kind, json, event) in at_5 {
+        all.push((6, kind, json, event));
+    }
+    all.push((
+        6,
+        "job.started",
+        r#"{"kind":"job.started","task":3,"substrate":"container.podman"}"#.into(),
+        Event::JobStarted {
+            task: TaskId::from_seq(3),
+            substrate: SubstrateName::new("container.podman").ok_or("substrate")?,
+        },
+    ));
     Ok(all)
 }
 
@@ -278,7 +300,11 @@ fn created_v2(v: Value) -> Result<Value, String> {
     rename(v, "request_digest", "request")
 }
 fn started_v2(v: Value) -> Result<Value, String> {
-    rename(v, "task_id", "task")
+    let mut v = rename(v, "task_id", "task")?;
+    v.as_object_mut()
+        .ok_or("not an object")?
+        .insert("substrate".into(), json!("unrecorded"));
+    Ok(v)
 }
 fn answered_v2(mut v: Value) -> Result<Value, String> {
     // Version 2 did not record why. The default is a constant, as ADR-0023 requires.
@@ -357,7 +383,8 @@ fn a_kind_with_no_step_at_a_version_passes_through_unchanged() -> Res {
     assert_eq!(
         decode(1, "job.started", r#"{"kind":"job.started","task_id":3}"#)?,
         Event::JobStarted {
-            task: TaskId::from_seq(3)
+            task: TaskId::from_seq(3),
+            substrate: SubstrateName::unrecorded(),
         }
     );
     // A kind with no step anywhere is read as stored, at every older version.
@@ -431,7 +458,11 @@ fn what_an_upcast_leaves_wrong_is_still_refused() {
     ));
     // A kind column that disagrees with the payload.
     assert!(matches!(
-        decode(1, "task.completed", r#"{"kind":"job.started","task":3}"#),
+        decode(
+            1,
+            "task.completed",
+            r#"{"kind":"job.started","task":3,"substrate":"local"}"#
+        ),
         Err(EventError::KindMismatch { .. })
     ));
 }
@@ -440,6 +471,9 @@ fn retag(mut v: Value) -> Result<Value, String> {
     v.as_object_mut()
         .ok_or("not an object")?
         .insert("kind".into(), json!("job.started"));
+    v.as_object_mut()
+        .ok_or("not an object")?
+        .insert("substrate".into(), json!("local"));
     Ok(v)
 }
 

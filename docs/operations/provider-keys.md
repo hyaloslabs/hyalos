@@ -7,7 +7,7 @@ The broker reads `provider.keys` from the config directory (`$HYALOS_CONFIG_DIR`
 ## Before you start
 
 - Make a **dedicated** API key for Hyalos at each provider you use, not one you use anywhere else.
-- Set a **spend cap** on that key at the provider. Each job's budget is enforced by Hyalos, but a provider key cannot be scoped to one job, so the cap is what bounds a loss.
+- Set a **spend cap** on that key at the provider. Each job's budget is enforced by Hyalos, but a provider key cannot be scoped to one job, so the cap is what bounds a loss. `hyalos doctor` reminds you.
 
 ## The file
 

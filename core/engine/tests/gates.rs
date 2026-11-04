@@ -9,7 +9,7 @@ use hyalos_policy::{Evaluate, Fault, GateRequest, Outcome, Verdict, ask};
 use hyalos_sim::{FakeClock, START, Sim};
 use hyalos_types::{
     Answer, Clock, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode,
-    Stakes, TaskId, Timestamp,
+    Stakes, SubstrateName, TaskId, Timestamp,
 };
 
 type Res = Result<(), Box<dyn std::error::Error>>;
@@ -87,7 +87,14 @@ fn rig(name: &str) -> Result<Rig, Box<dyn std::error::Error>> {
     );
     let job = JobId::from_seq(
         engine
-            .submit(clock.now(), Origin::Engine, Event::JobStarted { task })?
+            .submit(
+                clock.now(),
+                Origin::Engine,
+                Event::JobStarted {
+                    task,
+                    substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                },
+            )?
             .seq,
     );
     Ok(Rig {
@@ -223,14 +230,26 @@ fn a_held_task_is_released_by_resolving_its_one_hold() -> Res {
     };
     let at = r.clock.now();
     assert!(matches!(
-        r.engine
-            .submit(at, Origin::Engine, Event::JobStarted { task: r.task }),
+        r.engine.submit(
+            at,
+            Origin::Engine,
+            Event::JobStarted {
+                task: r.task,
+                substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded)
+            }
+        ),
         Err(EngineError::Rule(RuleViolation::TaskNotOpen { .. }))
     ));
     r.engine.decide_hold(at, hold, Decider::Human, why())?;
     assert_eq!(r.engine.state().tasks()[&r.task].status(), TaskStatus::Open);
-    r.engine
-        .submit(at, Origin::Engine, Event::JobStarted { task: r.task })?;
+    r.engine.submit(
+        at,
+        Origin::Engine,
+        Event::JobStarted {
+            task: r.task,
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+        },
+    )?;
     Ok(())
 }
 
@@ -394,6 +413,7 @@ fn prefix() -> Vec<Event> {
         Event::TaskCreated { request: d(1) },
         Event::JobStarted {
             task: TaskId::from_seq(1),
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
         },
     ]
 }
@@ -582,7 +602,15 @@ fn random_gate_outcomes_never_let_unknown_through() -> Res {
                 }
                 r.job = JobId::from_seq(
                     r.engine
-                        .submit(at, Origin::Engine, Event::JobStarted { task: r.task })?
+                        .submit(
+                            at,
+                            Origin::Engine,
+                            Event::JobStarted {
+                                task: r.task,
+                                substrate: SubstrateName::new("test")
+                                    .unwrap_or_else(SubstrateName::unrecorded),
+                            },
+                        )?
                         .seq,
                 );
             }

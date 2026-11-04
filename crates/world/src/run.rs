@@ -143,7 +143,14 @@ pub fn run_job(seed: u64, dir: &Path) -> Res<Run> {
     );
     let job = JobId::from_seq(
         engine
-            .submit(clock.now(), Origin::Engine, Event::JobStarted { task })?
+            .submit(
+                clock.now(),
+                Origin::Engine,
+                Event::JobStarted {
+                    task,
+                    substrate: substrate.recorded_as(),
+                },
+            )?
             .seq,
     );
 

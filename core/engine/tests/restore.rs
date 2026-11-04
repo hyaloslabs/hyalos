@@ -7,7 +7,7 @@ use hyalos_log::{Log, LogKey, copy_verified};
 use hyalos_policy::{GateRequest, Outcome};
 use hyalos_types::{
     Digest, Event, Gate, HoldReason, JobId, JobOutcome, Origin, ReasonCode, Resolution, Stakes,
-    TaskId, Timestamp,
+    SubstrateName, TaskId, Timestamp,
 };
 
 type Res = Result<(), Box<dyn std::error::Error>>;
@@ -49,7 +49,13 @@ fn busy(path: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
         Ok(e.submit(at(10 * n), Origin::Engine, event)?.seq)
     };
     let done = TaskId::from_seq(step(&mut e, Event::TaskCreated { request: d(1) })?);
-    let job = JobId::from_seq(step(&mut e, Event::JobStarted { task: done })?);
+    let job = JobId::from_seq(step(
+        &mut e,
+        Event::JobStarted {
+            task: done,
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+        },
+    )?);
     step(
         &mut e,
         Event::JobEnded {
@@ -60,7 +66,13 @@ fn busy(path: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
     step(&mut e, Event::TaskCompleted { task: done })?;
 
     let held = TaskId::from_seq(step(&mut e, Event::TaskCreated { request: d(2) })?);
-    let job = JobId::from_seq(step(&mut e, Event::JobStarted { task: held })?);
+    let job = JobId::from_seq(step(
+        &mut e,
+        Event::JobStarted {
+            task: held,
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+        },
+    )?);
     let request = GateRequest {
         gate: Gate::Egress,
         inputs: d(9),
@@ -87,7 +99,13 @@ fn busy(path: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
             reason: why(),
         },
     )?;
-    let job = JobId::from_seq(step(&mut e, Event::JobStarted { task: held })?);
+    let job = JobId::from_seq(step(
+        &mut e,
+        Event::JobStarted {
+            task: held,
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+        },
+    )?);
     e.rule_gate(
         at(85),
         Origin::Broker,

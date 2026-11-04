@@ -13,7 +13,7 @@ use hyalos_log::{Log, LogKey, copy_verified, verify};
 use hyalos_types::event::{SCHEMA, SCHEMA_VERSION};
 use hyalos_types::{
     Answer, Digest, Event, EventError, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin,
-    ReasonCode, Schema, Stakes, TaskId, Timestamp, Upcast, Value,
+    ReasonCode, Schema, Stakes, SubstrateName, TaskId, Timestamp, Upcast, Value,
 };
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -64,7 +64,12 @@ fn created(v: Value) -> Result<Value, String> {
 }
 
 fn started(v: Value) -> Result<Value, String> {
-    rename(v, "task_id", "task")
+    // Today's job.started also names its substrate (ADR-0043); a version 1 one did not.
+    let mut v = rename(v, "task_id", "task")?;
+    v.as_object_mut()
+        .ok_or("not an object")?
+        .insert("substrate".into(), Value::String("unrecorded".into()));
+    Ok(v)
 }
 
 fn answered(mut v: Value) -> Result<Value, String> {
@@ -74,7 +79,8 @@ fn answered(mut v: Value) -> Result<Value, String> {
     Ok(v)
 }
 
-/// Version 1 called the request `digest`, the job's task `task_id`, and did not record a reason.
+/// Version 1 called the request `digest`, the job's task `task_id`, and did not record a reason or a
+/// substrate.
 /// A version 1 hold had no stakes. Everything else is unchanged, so `job.ended`, `task.completed` and
 /// `hold.resolved` need no step.
 fn opened(v: Value) -> Result<Value, String> {
@@ -195,6 +201,7 @@ fn reference_state(path: &Path) -> Res<hyalos_engine::State> {
         &mut e,
         Event::JobStarted {
             task: TaskId::from_seq(1),
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
         },
     )?;
     go(
@@ -225,6 +232,7 @@ fn reference_state(path: &Path) -> Res<hyalos_engine::State> {
         &mut e,
         Event::JobStarted {
             task: TaskId::from_seq(6),
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
         },
     )?;
     e.submit_all(
@@ -310,6 +318,7 @@ fn new_events_are_written_at_the_new_version_and_the_mixed_log_keeps_working() -
             Origin::Engine,
             Event::JobStarted {
                 task: TaskId::from_seq(12),
+                substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             },
         )],
     )?;

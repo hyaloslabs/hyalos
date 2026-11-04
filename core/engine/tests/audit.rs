@@ -8,8 +8,8 @@ use hyalos_log::{Head, Log, LogKey, Origin, VerifyError, verify_history};
 use hyalos_policy::{GateRequest, Outcome};
 use hyalos_types::snapshot::{STATE_VERSION, StateImage};
 use hyalos_types::{
-    Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, ReasonCode, Stakes, TaskId,
-    Timestamp,
+    Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, ReasonCode, Stakes, SubstrateName,
+    TaskId, Timestamp,
 };
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -51,6 +51,7 @@ fn first_part(e: &mut Engine) -> Res {
         3,
         Event::JobStarted {
             task: TaskId::from_seq(1),
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
         },
     )?;
     put(
@@ -73,6 +74,7 @@ fn first_part(e: &mut Engine) -> Res {
         6,
         Event::JobStarted {
             task: TaskId::from_seq(2),
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
         },
     )?;
     let request = GateRequest {
@@ -107,6 +109,7 @@ fn second_part(e: &mut Engine) -> Res {
         12,
         Event::JobStarted {
             task: TaskId::from_seq(11),
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
         },
     )?;
     Ok(())

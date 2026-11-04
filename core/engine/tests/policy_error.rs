@@ -5,7 +5,9 @@ use hyalos_engine::{Engine, Ruling, TaskStatus};
 use hyalos_log::{Log, LogKey};
 use hyalos_policy::{Evaluate, Fault, GateRequest, Policies, Query, Verdict, ask};
 use hyalos_sim::{FakeClock, START};
-use hyalos_types::{Clock, Digest, Event, Gate, JobId, Origin, Stakes, TaskId, Timestamp};
+use hyalos_types::{
+    Clock, Digest, Event, Gate, JobId, Origin, Stakes, SubstrateName, TaskId, Timestamp,
+};
 
 type Res = Result<(), Box<dyn std::error::Error>>;
 
@@ -69,7 +71,14 @@ fn rig(name: &str) -> Result<Rig, Box<dyn std::error::Error>> {
     );
     let job = JobId::from_seq(
         engine
-            .submit(clock.now(), Origin::Engine, Event::JobStarted { task })?
+            .submit(
+                clock.now(),
+                Origin::Engine,
+                Event::JobStarted {
+                    task,
+                    substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                },
+            )?
             .seq,
     );
     Ok(Rig {

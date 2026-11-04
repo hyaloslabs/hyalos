@@ -1,6 +1,6 @@
 # ADR-0041: An init in the sandbox, and the image test's further checks
 
-**Status:** Accepted. The `skipWebFetchPreflight` check is in the egress test of [ADR-0042](0042-the-egress-gate-and-the-allowlisting-proxy.md).
+**Status:** Accepted. The `skipWebFetchPreflight` check is in the egress test of [ADR-0042](0042-the-egress-gate-and-the-allowlisting-proxy.md). Since [ADR-0043](0043-choosing-the-substrate-recording-it-and-doctor.md) detection and `hyalos doctor` check that the runtime starts an init, and a runtime that cannot is not chosen.
 
 ## Context
 

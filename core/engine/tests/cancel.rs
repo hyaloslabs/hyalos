@@ -11,7 +11,7 @@ use hyalos_policy::{GateRequest, Outcome};
 use hyalos_types::snapshot::CancelledImage;
 use hyalos_types::{
     Digest, Event, Gate, HoldId, HoldReason, JobId, Origin, ReasonCode, Resolution, Schema,
-    Sensitive, Stakes, TaskId, Tier, Timestamp, Touches,
+    Sensitive, Stakes, SubstrateName, TaskId, Tier, Timestamp, Touches,
 };
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -67,7 +67,14 @@ fn held_by_a_job(
     stakes: Stakes,
 ) -> Res<(TaskId, JobId, HoldId, GateRequest)> {
     let task = TaskId::from_seq(put(e, n, Event::TaskCreated { request: d(1) })?);
-    let job = JobId::from_seq(put(e, n + 1, Event::JobStarted { task })?);
+    let job = JobId::from_seq(put(
+        e,
+        n + 1,
+        Event::JobStarted {
+            task,
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+        },
+    )?);
     let request = GateRequest {
         gate: Gate::Egress,
         inputs: d(9),
@@ -144,7 +151,10 @@ fn a_held_task_is_ended_by_a_recorded_decision_and_replay_agrees() -> Res {
     assert!(cancelled_status(rule(e.submit(
         at(11),
         Origin::Engine,
-        Event::JobStarted { task }
+        Event::JobStarted {
+            task,
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded)
+        }
     ))?));
     assert!(cancelled_status(rule(e.submit(
         at(11),

@@ -278,3 +278,29 @@ fn the_fixtures_are_unique_to_the_seed_and_none_contains_another() {
         }
     }
 }
+
+#[test]
+fn the_job_records_the_substrate_that_ran_it() -> Res {
+    // ADR-0011, ADR-0043: each job.started names its substrate, at the current schema version.
+    let run = run(17, "substrate")?;
+    let started: Vec<_> = run
+        .events
+        .iter()
+        .filter(|e| e.kind == "job.started")
+        .collect();
+    assert_eq!(started.len(), 1);
+    let event = hyalos_types::Event::decode(
+        &started[0].kind,
+        started[0].schema_version,
+        &started[0].payload,
+    )?;
+    let hyalos_types::Event::JobStarted { substrate, .. } = event else {
+        return Err("not a job.started".into());
+    };
+    assert_eq!(substrate.as_str(), "seeded");
+    assert_eq!(
+        started[0].schema_version,
+        hyalos_types::event::SCHEMA_VERSION
+    );
+    Ok(())
+}

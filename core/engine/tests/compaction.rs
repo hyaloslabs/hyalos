@@ -10,7 +10,7 @@ use hyalos_sim::Sim;
 use hyalos_types::snapshot::{STATE_VERSION, StateImage};
 use hyalos_types::{
     Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode, Resolution,
-    Sensitive, Stakes, TaskId, Timestamp,
+    Sensitive, Stakes, SubstrateName, TaskId, Timestamp,
 };
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -61,7 +61,14 @@ fn apply(e: &mut Engine, n: u64, op: &Op) -> Res {
             e.submit(t, Origin::Engine, Event::TaskCreated { request: d(*b) })?;
         }
         Op::Start(task) => {
-            e.submit(t, Origin::Engine, Event::JobStarted { task: *task })?;
+            e.submit(
+                t,
+                Origin::Engine,
+                Event::JobStarted {
+                    task: *task,
+                    substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                },
+            )?;
         }
         Op::End(job, outcome) => {
             e.submit(
