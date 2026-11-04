@@ -23,12 +23,12 @@ The gate (`hyalos_broker::egress`) allows a proxy request only if all of these h
 - **The target is a host name.** Any IP literal is refused (`egress.ip_literal`), whether or not the manifest lists it. That includes numeric forms a resolver would read as an address, such as `127.1` or `0x7f000001`. A host must be letters, digits and hyphens in dot-separated labels, and is compared lowercase without a trailing dot. Anything else is `egress.bad_target`.
 - **The port is the one for the request:** 443 for CONNECT, 80 for plain HTTP (`egress.port_not_allowed`).
 - **The host is one of the manifest's egress hosts, and is not a model provider's API host** (`egress.host_not_allowed`). `api.anthropic.com` and `api.openai.com` are refused even when listed. ADR-0016 already says a prompt-injected agent could use one of them with an attacker's key; model calls go through the relay with the broker's key.
-- **The host resolves to a public address** (`egress.not_public`). The broker's resolver keeps only public unicast addresses. Loopback, private networks, link-local (which includes cloud metadata at `169.254.169.254`), shared, benchmarking, documentation, multicast and reserved ranges are dropped, as are IPv6 forms that carry an IPv4 address or stand for one. So a DNS answer cannot point an allowed name at the broker's own host or network. A test can supply another resolver from code (`Egress::with_resolver`), as it can other TLS roots (ADR-0039); nothing in configuration replaces the resolver.
+- **The host resolves to a public address** (`egress.not_public`). The broker resolves the absolute name (with a trailing dot), so the resolver's search domains cannot turn it into another host. It resolves once, and connects only to the addresses it kept. The resolver keeps only public unicast addresses. Loopback, private networks, link-local (which includes cloud metadata at `169.254.169.254`), shared, benchmarking, documentation, multicast and reserved ranges are dropped, as are IPv6 forms that carry an IPv4 address or stand for one. So a DNS answer cannot point an allowed name at the broker's own host or network. A test can supply another resolver from code (`Egress::with_resolver`), as it can other TLS roots (ADR-0039); nothing in configuration replaces the resolver.
 
 **What the broker does with an allowed request.**
 - **CONNECT:** the broker connects to the first public address that answers, replies `200 Connection established`, and relays bytes both ways. It first sends on any bytes the harness wrote after its CONNECT, such as a TLS hello. The harness's TLS runs end to end, so the broker sees neither content nor credentials.
-- **Plain HTTP:** the request is sent in origin form, with `host` set to the destination. The hop-by-hop and proxy headers are dropped: `proxy-authorization`, `proxy-connection`, `connection`, `keep-alive`, `te` and `upgrade`. The body must have a `content-length`, and the response is relayed until the host closes.
-- **Ending:** a relay ends when both ends close, after 300 seconds with no bytes, or when the job ends.
+- **Plain HTTP:** a request that the host could read as a different request is refused with 400 (`egress.bad_request`) before anything is sent. That means a method that is not capital letters, a path with a space or control byte, a header name that is not a token, or a header value with a control byte other than a tab. Otherwise the request is sent in origin form, with `host` set to the destination. The hop-by-hop and proxy headers are dropped: `proxy-authorization`, `proxy-connection`, `connection`, `keep-alive`, `te` and `upgrade`. The body must have a `content-length`, and the response is relayed until the host closes.
+- **Ending:** a relay ends when both ends close, after 300 seconds with no bytes moving either way, or when the job ends. Writes have short timeouts and are retried until one of those happens, so a host or harness that stops reading cannot hold a relay, or its connection slot, after the job ends. The deadline is checked when a request arrives; a tunnel already open runs until one of those ends, as a model stream does.
 
 A host that does not resolve or does not answer is a 502 (`egress.unresolved`, `egress.unreachable`): the request was allowed, and the gate did not refuse it.
 
@@ -36,7 +36,7 @@ A host that does not resolve or does not answer is a 502 (`egress.unresolved`, `
 
 `inputs` is the SHA-256 of `host:port` as the broker read it, or of the target as written when it is not a host and port. The log holds the digest, not the name ([ADR-0003](0003-event-log-is-the-database.md)): anyone holding a candidate name can check it against the digest, and the channel still carries no free text.
 
-Each job reports each distinct refusal once, and at most 32 of them. After that, one more report with `egress.too_many_refusals` says that further ones were not reported. A harness repeating a refused request therefore fills neither the channel nor the log. Allowed requests are not reported.
+A refusal made after the job has ended is not reported. Each job reports each distinct refusal once, and at most 32 of them. After that, one more report with `egress.too_many_refusals` says that further ones were not reported. A harness repeating a refused request therefore fills neither the channel nor the log. Allowed requests are not reported.
 
 **The image test checks all of this with the real harnesses.** `crates/sandbox-tools/tests/egress.rs` runs the image as the container substrate would, against the real broker:
 - `allowed.hyalos.test` is an HTTPS server on loopback. Its certificate comes from a test authority whose key was discarded, and only the image's `test` target trusts that authority.
@@ -57,11 +57,12 @@ No request goes to `api.anthropic.com`, so `skipWebFetchPreflight` works. That w
 
 ## Consequences
 
-A job can reach exactly the hosts its manifest names, over TLS end to end, and nothing it refuses passes unrecorded. The engine still has no loop that reads the broker's messages and records them (`Engine::submit` with `Origin::Broker`). That comes with the first command that starts the engine. Until then the reports are on the channel and tested there.
+A job can reach exactly the hosts its manifest names, over TLS end to end, and nothing it refuses passes unrecorded. Any target that is not a path is now a proxy request, so a malformed model call such as `POST v1/messages` gets a 403 from the gate (`egress.bad_target`) and a report, where it used to get a 400. The engine will therefore receive `gate` messages between its answers, and its reading loop must take them in any order. The engine still has no loop that reads the broker's messages and records them (`Engine::submit` with `Origin::Broker`). That comes with the first command that starts the engine. Until then the reports are on the channel and tested there.
 
 Not here:
 - **Declared data flows**, which name what may move to a host rather than which hosts. Enforcing them needs the content of a request, and a TLS tunnel hides it.
 - **Ports other than 443 and 80.**
 - **Wildcard hosts.**
+- **Other provider endpoints.** Only those two exact names are refused. Subdomains of them, and an operator's own `anthropic.base` or `openai.base` host such as a corporate gateway, are not.
 - **Recording allowed requests.**
 - **Rate limits on a tunnel.**

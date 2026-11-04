@@ -277,6 +277,8 @@ fn only_public_addresses_are_public() {
         "2001:0:1::1",
         "::ffff:127.0.0.1",
         "::ffff:169.254.169.254",
+        "192.88.99.1",
+        "3fff::1",
     ] {
         let ip: IpAddr = private.parse().unwrap_or(IpAddr::from([1, 1, 1, 1]));
         assert!(!is_public(ip), "{private}");
@@ -384,6 +386,21 @@ fn anything_else_is_refused_with_403_and_reported_once() -> Res {
             "{head}"
         );
     }
+    // A plain-HTTP request that could be read as another is refused before anything is sent.
+    for head in [
+        "GET\thttp://evil/ http://allowed.test/ HTTP/1.1\r\n\r\n",
+        "get http://allowed.test/ HTTP/1.1\r\n\r\n",
+        "GET http://allowed.test/a\rb HTTP/1.1\r\n\r\n",
+        "GET http://allowed.test/ HTTP/1.1\r\nx: a\rhost: evil\r\n\r\n",
+        "GET http://allowed.test/ HTTP/1.1\r\nx y: a\r\n\r\n",
+        "GET http://allowed.test/ HTTP/1.1\r\nx: a\u{0}b\r\n\r\n",
+    ] {
+        let (status, answer) = ask(&socket, head)?;
+        assert_eq!(status, 400, "{head:?}: {answer}");
+        assert!(answer.contains("egress.bad_request"), "{answer}");
+    }
+    assert!(denials(&r.reports).is_empty());
+
     // Asked again, refused again, and not reported again.
     let (status, _) = ask(&socket, "CONNECT other.test:443 HTTP/1.1\r\n\r\n")?;
     assert_eq!(status, 403);

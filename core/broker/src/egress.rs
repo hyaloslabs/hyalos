@@ -52,7 +52,8 @@ pub struct PublicResolver;
 
 impl Resolve for PublicResolver {
     fn resolve(&self, host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
-        Ok((host, port)
+        // The absolute name, so the resolver's search domains cannot turn it into another host.
+        Ok((format!("{host}."), port)
             .to_socket_addrs()?
             .filter(|a| is_public(a.ip()))
             .collect())
@@ -72,6 +73,7 @@ pub fn is_public(ip: IpAddr) -> bool {
             // which carry or stand for other addresses.
             (s[0] & 0xe000) == 0x2000
                 && !(s[0] == 0x2001 && s[1] == 0x0db8)
+                && (s[0] & 0xfff0) != 0x3ff0
                 && s[0] != 0x2002
                 && !(s[0] == 0x2001 && s[1] < 0x0200)
                 && v6 != Ipv6Addr::UNSPECIFIED
@@ -91,6 +93,7 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
         || a == 0
         || (a == 100 && (64..128).contains(&b))
         || (a == 192 && b == 0 && c == 0)
+        || (a == 192 && b == 88 && c == 99)
         || (a == 198 && (b == 18 || b == 19))
         || a >= 240)
 }
@@ -147,7 +150,11 @@ impl Reports {
     }
 
     /// Reports the egress gate's `deny` for `inputs` once per job, up to [`MAX_REPORTS`].
-    fn deny(&self, reason: &str, inputs: Digest) {
+    fn deny(&self, reason: &str, inputs: Digest, ended: &AtomicBool) {
+        // A refusal made as the job ends is not reported after its end.
+        if ended.load(Ordering::SeqCst) {
+            return;
+        }
         let (Some(to), Some(code)) = (&self.to, ReasonCode::new(reason)) else {
             return;
         };
@@ -297,13 +304,16 @@ pub fn proxy(
     let to = match destination(&request.method, &request.target) {
         Ok(to) => to,
         Err(code) => {
-            reports.deny(code, inputs_digest(&request.target));
+            reports.deny(code, inputs_digest(&request.target), ended);
             return Ok(Some(refused(403, code)));
         }
     };
+    if to.path.is_some() && !well_formed(&request, to.path.as_deref().unwrap_or_default()) {
+        return Ok(Some(refused(400, "egress.bad_request")));
+    }
     let inputs = inputs_digest(&format!("{}:{}", to.host, to.port));
     if !allowed(manifest, &to.host) {
-        reports.deny("egress.host_not_allowed", inputs);
+        reports.deny("egress.host_not_allowed", inputs, ended);
         return Ok(Some(refused(403, "egress.host_not_allowed")));
     }
     let addresses = match egress.resolver.resolve(&to.host, to.port) {
@@ -311,7 +321,7 @@ pub fn proxy(
         Err(_) => return Ok(Some(refused(502, "egress.unresolved"))),
     };
     if addresses.is_empty() {
-        reports.deny("egress.not_public", inputs);
+        reports.deny("egress.not_public", inputs, ended);
         return Ok(Some(refused(403, "egress.not_public")));
     }
     let Some(upstream) = addresses
@@ -326,8 +336,10 @@ pub fn proxy(
             let early = reader.buffer().to_vec();
             let mut client_out = client;
             client_out.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")?;
-            (&upstream).write_all(&early)?;
-            tunnel(client, &upstream, ended)?;
+            upstream.set_write_timeout(Some(POLL))?;
+            if send(&mut &upstream, &early, ended) {
+                tunnel(client, &upstream, ended)?;
+            }
         }
         Some(path) => {
             let body = match request_body(&request.headers, reader) {
@@ -358,15 +370,39 @@ pub fn proxy(
                 "content-length: {}\r\nconnection: close\r\n\r\n",
                 body.len()
             ));
-            (&upstream).write_all(head.as_bytes())?;
-            (&upstream).write_all(&body)?;
+            upstream.set_write_timeout(Some(POLL))?;
             upstream.set_read_timeout(Some(POLL))?;
+            if !send(&mut &upstream, head.as_bytes(), ended) || !send(&mut &upstream, &body, ended)
+            {
+                let _ = upstream.shutdown(Shutdown::Both);
+                return Ok(None);
+            }
             pump(&mut &upstream, &mut &*client, ended);
             let _ = client.shutdown(Shutdown::Both);
         }
     }
     let _ = upstream.shutdown(Shutdown::Both);
     Ok(None)
+}
+
+/// Whether a plain-HTTP request can be sent on as it is: a method of capital letters, a path with
+/// no space or control byte, header names that are tokens and values with no control byte but a tab.
+/// Anything else could be read by the host as a different request.
+fn well_formed(request: &ProxyRequest, path: &str) -> bool {
+    let token = |t: &str| {
+        !t.is_empty()
+            && t.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+    };
+    (1..=16).contains(&request.method.len())
+        && request.method.bytes().all(|b| b.is_ascii_uppercase())
+        && path.bytes().all(|b| b > 0x20 && b != 0x7f)
+        && request.headers.iter().all(|(name, value)| {
+            token(name)
+                && value
+                    .bytes()
+                    .all(|b| b == b'\t' || (b >= 0x20 && b != 0x7f))
+        })
 }
 
 fn request_body<R: Read>(
@@ -396,6 +432,7 @@ fn request_body<R: Read>(
 /// Relays both ways until both ends have closed, either has been idle too long, or the job ends.
 fn tunnel(client: &UnixStream, upstream: &TcpStream, ended: &Arc<AtomicBool>) -> io::Result<()> {
     client.set_read_timeout(Some(POLL))?;
+    client.set_write_timeout(Some(POLL))?;
     upstream.set_read_timeout(Some(POLL))?;
     let (up_in, client_out) = (upstream.try_clone()?, client.try_clone()?);
     let down_ended = Arc::clone(ended);
@@ -410,6 +447,38 @@ fn tunnel(client: &UnixStream, upstream: &TcpStream, ended: &Arc<AtomicBool>) ->
     Ok(())
 }
 
+/// Writes all of `bytes` to `to`, which has a write timeout of [`POLL`], waiting while it is full until
+/// [`IDLE`] passes without progress or the job ends. A peer that stops reading cannot hold the relay.
+fn send(to: &mut impl Write, mut bytes: &[u8], ended: &AtomicBool) -> bool {
+    let mut idle = Duration::ZERO;
+    while !bytes.is_empty() {
+        if ended.load(Ordering::SeqCst) {
+            return false;
+        }
+        match to.write(bytes) {
+            Ok(0) => return false,
+            Ok(n) => {
+                bytes = &bytes[n..];
+                idle = Duration::ZERO;
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                idle += POLL;
+                if idle >= IDLE {
+                    return false;
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return false,
+        }
+    }
+    to.flush().is_ok()
+}
+
 /// Copies from `from` to `to` until the end, an error, [`IDLE`] without a byte, or the job ending.
 fn pump(from: &mut impl Read, to: &mut impl Write, ended: &AtomicBool) {
     let mut buffer = [0u8; 16 * 1024];
@@ -419,11 +488,7 @@ fn pump(from: &mut impl Read, to: &mut impl Write, ended: &AtomicBool) {
             Ok(0) => return,
             Ok(n) => {
                 idle = Duration::ZERO;
-                if to
-                    .write_all(&buffer[..n])
-                    .and_then(|()| to.flush())
-                    .is_err()
-                {
+                if !send(to, &buffer[..n], ended) {
                     return;
                 }
             }
@@ -441,5 +506,37 @@ fn pump(from: &mut impl Read, to: &mut impl Write, ended: &AtomicBool) {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(_) => return,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::time::Instant;
+
+    /// A host that accepts and never reads cannot hold a write: it gives up when the job ends.
+    #[test]
+    fn a_write_to_a_host_that_stops_reading_ends_with_the_job()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let stream = TcpStream::connect(listener.local_addr()?)?;
+        let (_held, _) = listener.accept()?;
+        stream.set_write_timeout(Some(POLL))?;
+        let ended = Arc::new(AtomicBool::new(false));
+        let ending = Arc::clone(&ended);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            ending.store(true, Ordering::SeqCst);
+        });
+        let began = Instant::now();
+        // Far more than the socket buffers hold.
+        let sent = send(&mut &stream, &vec![0u8; 64 * 1024 * 1024], &ended);
+        assert!(!sent);
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "the write outlived its job"
+        );
+        Ok(())
     }
 }
