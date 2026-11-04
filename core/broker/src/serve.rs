@@ -78,7 +78,8 @@ impl Broker {
             ToBroker::EndJob { job } => {
                 self.jobs.0.remove(&job);
                 self.admitted.remove(&job);
-                // Closes the socket before the meter goes, so no call is charged to a forgotten job.
+                // Ends the socket first: calls still open are refused or cut off, and anything they
+                // settle later is not added back to a forgotten meter.
                 self.sockets.remove(&job);
                 if let Some(sandboxes) = &self.sandboxes {
                     sandboxes.models.meter().forget(job);

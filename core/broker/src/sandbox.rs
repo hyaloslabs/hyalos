@@ -257,42 +257,55 @@ impl JobSocket {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let listener = UnixListener::bind(path)?;
-        // The sandbox runs as another user (ADR-0032); the directory's name is what keeps others out.
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666))?;
-        // Polled, so stopping never depends on the socket file still being there to connect to.
-        listener.set_nonblocking(true)?;
+        let ready = (|| {
+            // The sandbox runs as another user (ADR-0032); the directory's name keeps others out.
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666))?;
+            // Polled, so stopping never depends on the socket file still being there.
+            listener.set_nonblocking(true)
+        })();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
         let manifest = Arc::new(manifest);
-        let thread = std::thread::spawn(move || {
-            let active = Arc::new(AtomicUsize::new(0));
-            while !stopped.load(Ordering::SeqCst) {
-                let stream = match listener.accept() {
-                    Ok((stream, _)) => stream,
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(ACCEPT_POLL);
+        let thread = ready.and_then(|()| {
+            std::thread::Builder::new().spawn(move || {
+                let active = Arc::new(AtomicUsize::new(0));
+                while !stopped.load(Ordering::SeqCst) {
+                    let stream = match listener.accept() {
+                        Ok((stream, _)) => stream,
+                        // Waiting, or an error such as too many open files: either way, pause.
+                        Err(_) => {
+                            std::thread::sleep(ACCEPT_POLL);
+                            continue;
+                        }
+                    };
+                    if stream.set_nonblocking(false).is_err() {
                         continue;
                     }
-                    Err(_) => continue,
-                };
-                if stream.set_nonblocking(false).is_err() {
-                    continue;
+                    if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        continue;
+                    }
+                    let slot = Slot(Arc::clone(&active));
+                    let (manifest, sandboxes, ended) = (
+                        Arc::clone(&manifest),
+                        sandboxes.clone(),
+                        Arc::clone(&stopped),
+                    );
+                    // A thread that cannot start drops the stream and its slot.
+                    let _ = std::thread::Builder::new().spawn(move || {
+                        let _slot = slot;
+                        let _ = connection(&stream, &manifest, &sandboxes, &ended);
+                    });
                 }
-                if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
-                    active.fetch_sub(1, Ordering::SeqCst);
-                    continue;
-                }
-                let (active, manifest, sandboxes) = (
-                    Arc::clone(&active),
-                    Arc::clone(&manifest),
-                    sandboxes.clone(),
-                );
-                std::thread::spawn(move || {
-                    let _ = connection(&stream, &manifest, &sandboxes);
-                    active.fetch_sub(1, Ordering::SeqCst);
-                });
-            }
+            })
         });
+        let thread = match thread {
+            Ok(thread) => thread,
+            Err(e) => {
+                let _ = std::fs::remove_file(path);
+                return Err(e);
+            }
+        };
         Ok(Self {
             path: path.to_path_buf(),
             stop,
@@ -311,16 +324,67 @@ impl Drop for JobSocket {
     }
 }
 
-fn connection(stream: &UnixStream, manifest: &Manifest, sandboxes: &Sandboxes) -> io::Result<()> {
+fn connection(
+    stream: &UnixStream,
+    manifest: &Manifest,
+    sandboxes: &Sandboxes,
+    ended: &Arc<AtomicBool>,
+) -> io::Result<()> {
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     let response = match read_request(&mut BufReader::new(stream)) {
-        Ok(request) => sandboxes
-            .models
-            .answer(manifest, request, sandboxes.clock.as_ref()),
+        // A call read after the job ended never reaches a provider.
+        Ok(request) if ended.load(Ordering::SeqCst) => {
+            let adapter: &dyn Adapter = if request.target.starts_with("/v1/messages") {
+                &Anthropic
+            } else {
+                &OpenAi
+            };
+            refusal(
+                adapter,
+                403,
+                "admission.ended",
+                "refused: the job has ended",
+            )
+        }
+        Ok(request) => {
+            let mut response = sandboxes
+                .models
+                .answer(manifest, request, sandboxes.clock.as_ref());
+            // A stream is cut off when the job ends.
+            response.body = Box::new(UntilEnded {
+                inner: response.body,
+                ended: Arc::clone(ended),
+            });
+            response
+        }
         Err((status, message)) => refusal(&OpenAi, status, "model.bad_request", message),
     };
     write_response(&mut &*stream, response)
+}
+
+/// A response body that stops when its job ends.
+struct UntilEnded {
+    inner: Box<dyn Read + Send>,
+    ended: Arc<AtomicBool>,
+}
+
+impl Read for UntilEnded {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.ended.load(Ordering::SeqCst) {
+            return Err(io::Error::other("the job has ended"));
+        }
+        self.inner.read(buf)
+    }
+}
+
+/// Gives back a connection's slot however its thread ends.
+struct Slot(Arc<AtomicUsize>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 /// Reads one HTTP/1.1 request: a request line, headers and a body of `content-length` bytes.

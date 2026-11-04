@@ -318,6 +318,36 @@ fn ending_the_job_closes_its_socket_and_drops_its_meter() -> Res {
 }
 
 #[test]
+fn a_call_still_open_when_the_job_ends_never_reaches_the_provider() -> Res {
+    let mut r = rig(true)?;
+    let dir = job_dir("f")?;
+    let socket = dir.join("broker.sock");
+    let m = manifest(9, Role::Actor, 1_000, 10_000);
+    start(&mut r, &m, &socket)?;
+    // Connected, and accepted, but the request not yet sent.
+    let mut open = UnixStream::connect(&socket)?;
+    std::thread::sleep(Duration::from_millis(200));
+    r.broker
+        .handle(ToBroker::EndJob { job: m.job }, r.clock.as_ref())?;
+
+    let body = serde_json::to_vec(&messages())?;
+    write!(
+        open,
+        "POST /v1/messages HTTP/1.1\r\ncontent-length: {}\r\n\r\n",
+        body.len()
+    )?;
+    open.write_all(&body)?;
+    let mut answer = String::new();
+    open.read_to_string(&mut answer)?;
+    assert!(answer.starts_with("HTTP/1.1 403 "), "{answer}");
+    assert!(answer.contains("the job has ended"), "{answer}");
+    assert!(r.provider.sent.lock().map_err(|_| "lock")?.is_empty());
+    assert_eq!(r.meter.spent(m.job), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
 fn a_socket_that_cannot_be_made_fails_the_job() -> Res {
     let mut r = rig(true)?;
     let dir = job_dir("e")?;

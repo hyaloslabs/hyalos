@@ -64,11 +64,13 @@ impl Meter {
         self.lock().remove(&job);
     }
 
+    /// Ends a hold. A job already forgotten stays forgotten: a call that outlived its job adds
+    /// nothing back.
     fn release(&self, job: JobId, amount: u64, spent: u64) {
-        let mut accounts = self.lock();
-        let account = accounts.entry(job).or_default();
-        account.held = account.held.saturating_sub(amount);
-        account.spent = account.spent.saturating_add(spent);
+        if let Some(account) = self.lock().get_mut(&job) {
+            account.held = account.held.saturating_sub(amount);
+            account.spent = account.spent.saturating_add(spent);
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<JobId, Account>> {
