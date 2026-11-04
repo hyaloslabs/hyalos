@@ -17,3 +17,5 @@ workspace = true
 hyalos-broker = { path = "../../core/broker" }
 hyalos-types = { path = "../../core/types" }
 serde_json = "1"
+# The egress test's HTTPS server, for a made-up host the harness reaches through the broker.
+rustls = { version = "0.23.46", default-features = false, features = ["std", "ring", "tls12"] }

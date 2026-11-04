@@ -13,6 +13,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::time::Duration;
 
 use hyalos_types::wire::{ToBroker, ToEngine, WIRE_VERSION, WireError, read_frame, write_frame};
 use hyalos_types::{Clock, JobId, Manifest, ManifestPublicKey, ReasonCode, SignedManifest};
@@ -39,6 +42,8 @@ pub struct Broker {
     /// With sandboxes, each admitted job gets a socket its sandbox calls models through (ADR-0038).
     sandboxes: Option<Sandboxes>,
     sockets: BTreeMap<JobId, JobSocket>,
+    /// Where facts the broker reports unprompted go: the egress gate's refusals (ADR-0042).
+    reports: Option<Sender<ToEngine>>,
 }
 
 impl Broker {
@@ -50,7 +55,14 @@ impl Broker {
             admitted: BTreeMap::new(),
             sandboxes: None,
             sockets: BTreeMap::new(),
+            reports: None,
         }
+    }
+
+    /// Sends the egress gate's refusals for every job admitted from now on to `to`.
+    pub fn report_to(mut self, to: Sender<ToEngine>) -> Self {
+        self.reports = Some(to);
+        self
     }
 
     /// A broker that serves each admitted job's sandbox on the socket the engine named for it.
@@ -112,6 +124,7 @@ impl Broker {
                                 Path::new(&socket),
                                 manifest.clone(),
                                 sandboxes.clone(),
+                                self.reports.clone(),
                             ) {
                                 Ok(open) => {
                                     self.sockets.insert(job, open);
@@ -181,7 +194,7 @@ pub enum Exit {
 }
 
 /// Reads the engine's `Hello`, answers `Ready`, then serves until told to stop or the channel ends.
-pub fn serve<R: Read, W: Write>(
+pub fn serve<R: Read, W: Write + Send>(
     input: &mut R,
     output: &mut W,
     clock: &dyn Clock,
@@ -189,8 +202,12 @@ pub fn serve<R: Read, W: Write>(
     serve_with(input, output, clock, None)
 }
 
-/// As [`serve`], and with `sandboxes`, each admitted job's sandbox is served on its socket.
-pub fn serve_with<R: Read, W: Write>(
+/// How often the writer looks for the end of serving.
+const WRITER_POLL: Duration = Duration::from_millis(50);
+
+/// As [`serve`], and with `sandboxes`, each admitted job's sandbox is served on its socket. Answers and
+/// the reports the sandboxes' requests give rise to are written by one writer, in the order made.
+pub fn serve_with<R: Read, W: Write + Send>(
     input: &mut R,
     output: &mut W,
     clock: &dyn Clock,
@@ -212,19 +229,56 @@ pub fn serve_with<R: Read, W: Write>(
             version: WIRE_VERSION,
         },
     )?;
-    let mut broker = match sandboxes {
-        Some(sandboxes) => Broker::with_sandboxes(manifest_key, sandboxes),
-        None => Broker::new(manifest_key),
-    };
-    while let Some(message) = read_frame::<_, ToBroker>(input)? {
-        match broker.handle(message, clock)? {
-            None => return Ok(Exit::Shutdown),
-            Some(answers) => {
-                for answer in answers {
-                    write_frame(output, &answer)?;
+    let (to_writer, from_broker) = mpsc::channel::<ToEngine>();
+    let done = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let done = &done;
+        let writer = scope.spawn(move || -> Result<(), WireError> {
+            loop {
+                match from_broker.recv_timeout(WRITER_POLL) {
+                    Ok(message) => write_frame(output, &message)?,
+                    Err(RecvTimeoutError::Timeout) if done.load(Ordering::SeqCst) => {
+                        while let Ok(message) = from_broker.try_recv() {
+                            write_frame(output, &message)?;
+                        }
+                        return Ok(());
+                    }
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => return Ok(()),
                 }
             }
+        });
+        let mut broker = match sandboxes {
+            Some(sandboxes) => Broker::with_sandboxes(manifest_key, sandboxes),
+            None => Broker::new(manifest_key),
         }
-    }
-    Ok(Exit::EngineClosed)
+        .report_to(to_writer.clone());
+        let served = (|| {
+            while let Some(message) = read_frame::<_, ToBroker>(input)? {
+                match broker.handle(message, clock)? {
+                    None => return Ok(Exit::Shutdown),
+                    Some(answers) => {
+                        for answer in answers {
+                            // The writer has stopped on an error, which it returns below.
+                            if to_writer.send(answer).is_err() {
+                                return Ok(Exit::EngineClosed);
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Exit::EngineClosed)
+        })();
+        // Closes every job's socket before the writer finishes what was queued.
+        drop(broker);
+        done.store(true, Ordering::SeqCst);
+        let written = writer
+            .join()
+            .unwrap_or(Err(WireError::Io(std::io::ErrorKind::Other)));
+        match (served, written) {
+            (Err(e), _) => Err(e),
+            (Ok(_), Err(e)) => Err(ServeError::Wire(e)),
+            (Ok(exit), Ok(())) => Ok(exit),
+        }
+    })
 }

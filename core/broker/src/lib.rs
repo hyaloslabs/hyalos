@@ -3,6 +3,7 @@
 //! Layout rule (ADR-0017): this crate depends on no workspace crate except hyalos-types.
 
 mod admission;
+pub mod egress;
 pub mod model;
 pub mod sandbox;
 mod serve;

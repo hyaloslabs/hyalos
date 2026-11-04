@@ -679,6 +679,7 @@ dependencies = [
  "hyalos-types",
  "rustls",
  "serde_json",
+ "sha2",
  "webpki-roots",
 ]
 
@@ -729,6 +730,7 @@ version = "0.0.0"
 dependencies = [
  "hyalos-broker",
  "hyalos-types",
+ "rustls",
  "serde_json",
 ]
 

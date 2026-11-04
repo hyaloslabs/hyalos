@@ -16,8 +16,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use hyalos_types::wire::ToEngine;
 use hyalos_types::{Clock, Manifest};
+use std::sync::mpsc::Sender;
 
+use crate::egress::{self, Egress, ProxyRequest, Reports};
 use crate::model::{
     Adapter, Anthropic, ApiKey, HttpTransport, MAX_BODY, Meter, OpenAi, Relay, Request, Response,
     Sleep, refusal,
@@ -224,10 +227,12 @@ impl Models {
     }
 }
 
-/// What the broker needs to serve sandboxes: the relays, and a clock its threads can share.
+/// What the broker needs to serve sandboxes: the relays, how to reach allowed hosts, and a clock its
+/// threads can share.
 #[derive(Clone)]
 pub struct Sandboxes {
     pub models: Arc<Models>,
+    pub egress: Egress,
     pub clock: Arc<dyn Clock + Send + Sync>,
 }
 
@@ -249,8 +254,13 @@ pub(crate) struct JobSocket {
 
 impl JobSocket {
     /// Listens at `path` for the job `manifest` is for. The path must be absolute, short, and not
-    /// exist; its directory is the engine's, made for this job.
-    pub(crate) fn open(path: &Path, manifest: Manifest, sandboxes: Sandboxes) -> io::Result<Self> {
+    /// exist; its directory is the engine's, made for this job. Egress refusals go to `reports`.
+    pub(crate) fn open(
+        path: &Path,
+        manifest: Manifest,
+        sandboxes: Sandboxes,
+        reports: Option<Sender<ToEngine>>,
+    ) -> io::Result<Self> {
         let text = path.to_string_lossy();
         if !path.is_absolute() || text.len() > MAX_SOCKET_PATH || text.contains('\0') {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -264,6 +274,7 @@ impl JobSocket {
         })();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
+        let reports = Arc::new(Reports::new(manifest.job, reports));
         let manifest = Arc::new(manifest);
         let thread = ready.and_then(|()| {
             std::thread::Builder::new().spawn(move || {
@@ -285,15 +296,16 @@ impl JobSocket {
                         continue;
                     }
                     let slot = Slot(Arc::clone(&active));
-                    let (manifest, sandboxes, ended) = (
+                    let (manifest, sandboxes, ended, reports) = (
                         Arc::clone(&manifest),
                         sandboxes.clone(),
                         Arc::clone(&stopped),
+                        Arc::clone(&reports),
                     );
                     // A thread that cannot start drops the stream and its slot.
                     let _ = std::thread::Builder::new().spawn(move || {
                         let _slot = slot;
-                        let _ = connection(&stream, &manifest, &sandboxes, &ended);
+                        let _ = connection(&stream, &manifest, &sandboxes, &ended, &reports);
                     });
                 }
             })
@@ -328,10 +340,43 @@ fn connection(
     manifest: &Manifest,
     sandboxes: &Sandboxes,
     ended: &Arc<AtomicBool>,
+    reports: &Reports,
 ) -> io::Result<()> {
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
-    let response = match read_request(&mut BufReader::new(stream)) {
+    let mut reader = BufReader::new(stream);
+    let head = match read_head(&mut reader) {
+        Ok(head) => head,
+        Err((status, message)) => {
+            return write_response(
+                &mut &*stream,
+                refusal(&OpenAi, status, "model.bad_request", message),
+            );
+        }
+    };
+    // Anything but a model call is a proxy request, for the egress gate (ADR-0042).
+    if head.method == "CONNECT" || !head.target.starts_with('/') {
+        let response = if ended.load(Ordering::SeqCst) {
+            Some(egress::refused(403, "admission.ended"))
+        } else if sandboxes.clock.now() > manifest.deadline {
+            Some(egress::refused(403, "admission.expired"))
+        } else {
+            egress::proxy(
+                head,
+                &mut reader,
+                stream,
+                manifest,
+                &sandboxes.egress,
+                reports,
+                ended,
+            )?
+        };
+        return match response {
+            Some(response) => write_response(&mut &*stream, response),
+            None => Ok(()),
+        };
+    }
+    let response = match read_body(head, &mut reader) {
         // A call read after the job ended never reaches a provider.
         Ok(request) if ended.load(Ordering::SeqCst) => {
             let adapter: &dyn Adapter = if request.target.starts_with("/v1/messages") {
@@ -386,9 +431,21 @@ impl Drop for Slot {
     }
 }
 
-/// Reads one HTTP/1.1 request: a request line, headers and a body of `content-length` bytes.
+/// Reads one HTTP/1.1 model call: a request line, headers and a body of `content-length` bytes.
 pub fn read_request<R: BufRead>(input: &mut R) -> Result<Request, (u16, &'static str)> {
-    let bad = (400, "the request is not one the broker reads");
+    let head = read_head(input)?;
+    if !head.target.starts_with('/') {
+        return Err(BAD);
+    }
+    read_body(head, input)
+}
+
+const BAD: (u16, &str) = (400, "the request is not one the broker reads");
+
+/// Reads a request line and headers. The target is as given: a path, `host:port` for a CONNECT, or
+/// an absolute `http://` URL.
+fn read_head<R: BufRead>(input: &mut R) -> Result<ProxyRequest, (u16, &'static str)> {
+    let bad = BAD;
     let mut lines = Vec::new();
     let mut head = input.take(MAX_HEAD);
     loop {
@@ -415,7 +472,7 @@ pub fn read_request<R: BufRead>(input: &mut R) -> Result<Request, (u16, &'static
     else {
         return Err(bad);
     };
-    if !version.starts_with("HTTP/1.") || !target.starts_with('/') {
+    if !version.starts_with("HTTP/1.") || target.is_empty() {
         return Err(bad);
     }
     let mut headers = Vec::new();
@@ -423,6 +480,24 @@ pub fn read_request<R: BufRead>(input: &mut R) -> Result<Request, (u16, &'static
         let (name, value) = line.split_once(':').ok_or(bad)?;
         headers.push((name.trim().to_ascii_lowercase(), value.trim().to_string()));
     }
+    Ok(ProxyRequest {
+        method: method.to_string(),
+        target: target.to_string(),
+        headers,
+    })
+}
+
+/// Reads a model call's body, of `content-length` bytes.
+fn read_body<R: BufRead>(
+    head: ProxyRequest,
+    input: &mut R,
+) -> Result<Request, (u16, &'static str)> {
+    let bad = BAD;
+    let ProxyRequest {
+        method,
+        target,
+        headers,
+    } = head;
     let get = |n: &str| {
         headers
             .iter()
@@ -444,8 +519,8 @@ pub fn read_request<R: BufRead>(input: &mut R) -> Result<Request, (u16, &'static
         .read_exact(&mut body)
         .map_err(|_| (400, "the request body was cut short"))?;
     Ok(Request {
-        method: method.to_string(),
-        target: target.to_string(),
+        method,
+        target,
         headers,
         body,
     })
