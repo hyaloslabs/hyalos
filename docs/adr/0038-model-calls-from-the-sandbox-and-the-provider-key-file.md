@@ -1,6 +1,6 @@
 # ADR-0038: Model calls from the sandbox, and the provider key file
 
-**Status:** Accepted
+**Status:** Accepted; an `https://` base is reached over TLS since [ADR-0039](0039-tls-to-model-providers.md)
 
 ## Context
 

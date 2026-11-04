@@ -283,6 +283,13 @@ impl Relay {
                 }
                 // Nothing was sent, so trying again cannot pay for a generation twice.
                 Err(e) if e == TransportError::UNREACHABLE => None,
+                Err(e) if e == TransportError::TLS_REFUSED => {
+                    return Err(refused(
+                        502,
+                        "provider.tls_refused",
+                        "the model provider's TLS certificate or handshake was refused",
+                    ));
+                }
                 // The provider may have generated already; the harness decides whether to ask again.
                 Err(_) => {
                     return Err(refused(

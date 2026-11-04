@@ -481,9 +481,22 @@ fn the_key_file_names_providers_and_never_echoes_a_value() -> Res {
     }
     assert!(Providers::parse("")?.anthropic.is_none());
 
-    // A provider on the internet cannot be reached until TLS is built, and says so.
+    // Nothing in the file can turn certificate checks off: there is no such setting (ADR-0039).
+    for setting in [
+        "openai.insecure = true",
+        "anthropic.verify = false",
+        "openai.ca = /tmp/ca",
+    ] {
+        assert_eq!(
+            Providers::parse(&format!("openai.key = sk-1\n{setting}")).err(),
+            Some(ProviderError::Line(2)),
+            "{setting}"
+        );
+    }
+
+    // A base the transport refuses (plain HTTP off this host) makes calls 403 with its code.
     let models = Models::from_providers(
-        &Providers::parse("anthropic.key = sk-1\n")?,
+        &Providers::parse("anthropic.key = sk-1\nanthropic.base = http://10.0.0.5:8000\n")?,
         Arc::new(NoWait),
     );
     let mut r = rig(true)?;
@@ -498,7 +511,7 @@ fn the_key_file_names_providers_and_never_echoes_a_value() -> Res {
     assert_eq!(response.status, 403);
     assert_eq!(
         response.reason.map(|c| c.as_str().to_string()),
-        Some("transport.tls_unavailable".into())
+        Some("transport.not_loopback".into())
     );
     r.broker.handle(ToBroker::Shutdown, r.clock.as_ref())?;
     Ok(())

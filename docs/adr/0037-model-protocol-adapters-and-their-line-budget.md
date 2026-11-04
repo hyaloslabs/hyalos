@@ -1,6 +1,6 @@
 # ADR-0037: Model protocol adapters and their line budget
 
-**Status:** Accepted
+**Status:** Accepted; `HttpTransport` reaches `https://` providers over TLS since [ADR-0039](0039-tls-to-model-providers.md)
 
 ## Context
 

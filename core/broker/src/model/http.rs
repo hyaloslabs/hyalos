@@ -1,36 +1,76 @@
-//! Plain HTTP/1.1 to a model server on this host (ADR-0037).
+//! HTTP/1.1 to a model provider (ADR-0037, ADR-0039).
 //!
-//! This carries the key in clear, so it reaches only a loopback address: a local OpenAI-compatible
-//! server such as Ollama or vLLM. A provider on the internet needs TLS, which this build does not have.
+//! An `https://` base is reached over TLS (rustls), checked against the Mozilla roots compiled into
+//! the binary; nothing in configuration can turn the check off. An `http://` base carries the key in
+//! clear, so it reaches only a loopback address: a local server such as Ollama or vLLM.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::sync::Arc;
 use std::time::Duration;
+
+use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 use super::{Transport, TransportError, Upstream, UpstreamResponse};
 
 const MAX_HEAD: usize = 16 * 1024;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+/// The longest a connection or a TLS handshake may take.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The longest silence allowed while a response streams.
 const READ_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Sends model calls to a loopback HTTP server.
-#[derive(Debug, Clone)]
+/// Sends model calls to a provider over TLS, or to a loopback server over plain HTTP.
+#[derive(Clone)]
 pub struct HttpTransport {
     authority: String,
+    tls: Option<(Arc<ClientConfig>, ServerName<'static>)>,
+}
+
+impl std::fmt::Debug for HttpTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let scheme = if self.tls.is_some() { "https" } else { "http" };
+        write!(f, "HttpTransport({scheme}://{})", self.authority)
+    }
 }
 
 impl HttpTransport {
-    /// `base` is `http://host[:port]` with no path, where host is `localhost`, `127.0.0.1` or `[::1]`.
+    /// `base` is `https://host[:port]` or `http://host[:port]` with no path; a plain `http` host must
+    /// be `localhost`, `127.0.0.1` or `[::1]`.
     pub fn new(base: &str) -> Result<Self, TransportError> {
-        if base.starts_with("https://") {
-            return Err(TransportError("transport.tls_unavailable"));
+        Self::with_roots(
+            base,
+            webpki_roots::TLS_SERVER_ROOTS.iter().cloned().collect(),
+        )
+    }
+
+    /// As [`HttpTransport::new`], trusting only the certificate authorities in `roots`, for a test's
+    /// own authority. Code chooses this; nothing read from a file or the environment reaches it.
+    pub fn with_roots_der(
+        base: &str,
+        roots: &[CertificateDer<'_>],
+    ) -> Result<Self, TransportError> {
+        let mut store = RootCertStore::empty();
+        for root in roots {
+            store
+                .add(root.clone().into_owned())
+                .map_err(|_| TransportError("transport.bad_root"))?;
         }
-        let authority = base
-            .strip_prefix("http://")
-            .map(|a| a.trim_end_matches('/'))
+        Self::with_roots(base, store)
+    }
+
+    fn with_roots(base: &str, roots: RootCertStore) -> Result<Self, TransportError> {
+        let bad = TransportError("transport.bad_base");
+        let (authority, tls) = match base.split_once("://") {
+            Some(("https", rest)) => (rest, true),
+            Some(("http", rest)) => (rest, false),
+            _ => return Err(bad),
+        };
+        let authority = Some(authority.trim_end_matches('/'))
             .filter(|a| !a.is_empty() && !a.contains(['/', '?', '#', '@']))
-            .ok_or(TransportError("transport.bad_base"))?;
+            .filter(|a| clean(a))
+            .ok_or(bad)?;
         let host = match authority.rsplit_once(':') {
             Some((host, port)) if !port.contains(']') => {
                 port.parse::<u16>()
@@ -39,17 +79,43 @@ impl HttpTransport {
             }
             _ => authority,
         };
-        if !["localhost", "127.0.0.1", "[::1]"].contains(&host) {
+        if !tls && !["localhost", "127.0.0.1", "[::1]"].contains(&host) {
             return Err(TransportError("transport.not_loopback"));
         }
-        let authority = if authority == host {
-            format!("{host}:80")
-        } else {
-            authority.to_string()
+        let authority = match (authority == host, tls) {
+            (true, true) => format!("{host}:443"),
+            (true, false) => format!("{host}:80"),
+            (false, _) => authority.to_string(),
         };
-        Ok(Self { authority })
+        let tls = if tls {
+            let name = host.trim_start_matches('[').trim_end_matches(']');
+            let name = ServerName::try_from(name.to_string()).map_err(|_| bad)?;
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let config = ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .map_err(|_| TransportError("transport.tls_config"))?
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            Some((Arc::new(config), name))
+        } else {
+            None
+        };
+        Ok(Self { authority, tls })
     }
 }
+
+/// Connects to the first address of `authority` that answers within the connect timeout.
+fn connect(authority: &str) -> Option<TcpStream> {
+    use std::net::ToSocketAddrs;
+    authority
+        .to_socket_addrs()
+        .ok()?
+        .find_map(|addr| TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).ok())
+}
+
+/// A connection the request is written to and the response read from.
+trait Stream: Read + Write + Send {}
+impl<T: Read + Write + Send> Stream for T {}
 
 fn clean(text: &str) -> bool {
     !text.bytes().any(|b| b.is_ascii_control() || b == b' ')
@@ -76,13 +142,35 @@ impl Transport for HttpTransport {
         head.push_str("\r\n");
 
         let unreachable = |_| TransportError::UNREACHABLE;
-        let mut stream = TcpStream::connect(&self.authority).map_err(unreachable)?;
-        stream
-            .set_write_timeout(Some(WRITE_TIMEOUT))
+        let mut tcp = connect(&self.authority).ok_or(TransportError::UNREACHABLE)?;
+        tcp.set_write_timeout(Some(WRITE_TIMEOUT))
             .map_err(unreachable)?;
-        stream
-            .set_read_timeout(Some(READ_TIMEOUT))
+        tcp.set_read_timeout(Some(CONNECT_TIMEOUT))
             .map_err(unreachable)?;
+        let mut stream: Box<dyn Stream> = match &self.tls {
+            None => {
+                tcp.set_read_timeout(Some(READ_TIMEOUT))
+                    .map_err(unreachable)?;
+                Box::new(tcp)
+            }
+            Some((config, name)) => {
+                let mut tls = ClientConnection::new(Arc::clone(config), name.clone())
+                    .map_err(|_| TransportError::TLS_REFUSED)?;
+                // The handshake completes, and the certificate is checked, before the key is sent.
+                // A TLS failure is refused; a network one sent nothing and may be tried again.
+                while tls.is_handshaking() {
+                    tls.complete_io(&mut tcp).map_err(|e| {
+                        match e.get_ref().is_some_and(|inner| inner.is::<rustls::Error>()) {
+                            true => TransportError::TLS_REFUSED,
+                            false => TransportError::UNREACHABLE,
+                        }
+                    })?;
+                }
+                tcp.set_read_timeout(Some(READ_TIMEOUT))
+                    .map_err(unreachable)?;
+                Box::new(StreamOwned::new(tls, tcp))
+            }
+        };
         stream.write_all(head.as_bytes()).map_err(unreachable)?;
         stream.write_all(&request.body).map_err(unreachable)?;
         stream.flush().map_err(unreachable)?;
@@ -90,7 +178,9 @@ impl Transport for HttpTransport {
     }
 }
 
-fn read_response(mut reader: BufReader<TcpStream>) -> Result<UpstreamResponse, TransportError> {
+fn read_response(
+    mut reader: BufReader<Box<dyn Stream>>,
+) -> Result<UpstreamResponse, TransportError> {
     let protocol = TransportError("transport.bad_response");
     let mut lines = Vec::new();
     let mut read = 0;

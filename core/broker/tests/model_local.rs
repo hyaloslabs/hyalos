@@ -1,5 +1,5 @@
 //! A local OpenAI-compatible server works through the OpenAI adapter over plain HTTP on loopback
-//! (S3.8, ADR-0037), and the transport reaches nothing else.
+//! (S3.8, ADR-0037), and plain HTTP reaches nothing else (TLS is in `model_tls.rs`, ADR-0039).
 
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -186,9 +186,12 @@ fn a_local_openai_compatible_server_works_through_the_openai_adapter() -> Res {
 }
 
 #[test]
-fn the_transport_reaches_only_loopback_and_needs_tls_for_anything_else() {
+fn plain_http_reaches_only_loopback_and_anything_else_needs_tls() {
     for (base, code) in [
-        ("https://api.openai.com", "transport.tls_unavailable"),
+        ("https://", "transport.bad_base"),
+        ("https://api.openai.com/v1", "transport.bad_base"),
+        ("https://user@api.openai.com", "transport.bad_base"),
+        ("https://api.openai.com:https", "transport.bad_base"),
         ("http://api.openai.com", "transport.not_loopback"),
         ("http://10.0.0.5:8000", "transport.not_loopback"),
         ("http://127.0.0.1:8000/v1", "transport.bad_base"),
@@ -207,6 +210,9 @@ fn the_transport_reaches_only_loopback_and_needs_tls_for_anything_else() {
         "http://localhost:8000/",
         "http://[::1]:8000",
         "http://127.0.0.1",
+        "https://api.openai.com",
+        "https://api.anthropic.com:443/",
+        "https://10.0.0.5:8443",
     ] {
         assert!(HttpTransport::new(base).is_ok(), "{base}");
     }

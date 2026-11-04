@@ -164,7 +164,7 @@ impl Models {
     }
 
     /// Relays over [`HttpTransport`] for the providers in the key file. A provider whose base this
-    /// build cannot reach (an `https://` base until TLS is built) is refused with the transport's code.
+    /// transport refuses (plain `http://` off this host) is refused with the transport's code.
     pub fn from_providers(providers: &Providers, sleep: Arc<dyn Sleep>) -> Self {
         let meter = Arc::new(Meter::default());
         let relay = |provider: &Option<Provider>, adapter: Arc<dyn Adapter>| {

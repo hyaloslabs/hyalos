@@ -134,6 +134,9 @@ impl TransportError {
     /// Nothing was sent: the provider could not be reached. Only this error is retried, since after
     /// a request is sent the provider may already be generating, and a retry would pay twice.
     pub const UNREACHABLE: TransportError = TransportError("transport.unreachable");
+    /// The provider's TLS failed: its certificate, its name or the protocol. Nothing was sent, but
+    /// trying again cannot fix it, so it is not retried (ADR-0039).
+    pub const TLS_REFUSED: TransportError = TransportError("transport.tls_refused");
 }
 
 impl fmt::Display for TransportError {
