@@ -1,6 +1,6 @@
 # ADR-0040: The sandbox image
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
