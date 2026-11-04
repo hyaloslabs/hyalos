@@ -28,6 +28,10 @@ const POLL: Duration = Duration::from_millis(10);
 /// The label that marks a container as one of ours, for listing and for cleaning up after a crash.
 const LABEL: &str = "hyalos.job";
 
+/// The label on the readiness probe (ADR-0043). It is not a job's sandbox, so `existing` never
+/// lists it.
+const PROBE_LABEL: &str = "hyalos.probe";
+
 /// The runtimes the engine looks for, in order of preference.
 const RUNTIMES: [&str; 2] = ["podman", "docker"];
 
@@ -107,7 +111,7 @@ impl ContainerSubstrate {
             "--log-driver",
             "none",
             "--label",
-            &format!("{LABEL}=probe"),
+            PROBE_LABEL,
             "--entrypoint",
             "true",
             image,

@@ -22,7 +22,7 @@ This is story S2.3 (#11).
 1. the image is a plain reference;
 2. the runtime answers;
 3. the runtime has the image (`image inspect`; jobs never pull);
-4. the runtime starts one container from the image under `--init` and runs `true`. The probe uses the job sandbox's options that bear on starting (`--rm`, `--network none`, read-only root, user 65534, no capabilities, no new privileges, `--pull never`, no log) and leaves nothing behind.
+4. the runtime starts one container from the image under `--init` and runs `true`. The probe uses the job sandbox's options that bear on starting (`--rm`, `--network none`, read-only root, user 65534, no capabilities, no new privileges, `--pull never`, no log) and leaves nothing behind. It is labelled `hyalos.probe`, not `hyalos.job`, so `existing` never lists it as a job's sandbox.
 
 Starting a container is the only check that is the same on both runtimes and shows what a job needs. Unlike `available`, `ready` may start this probe, never a job's sandbox. When the probe fails, the message gives the runtime's first line and what to install. For Podman that is `catatonit` (or an `init_path` in `containers.conf` that is installed); for Docker, Docker Engine's own `docker-init` (or `init-path` in `daemon.json`).
 
