@@ -474,7 +474,10 @@ fn every_harness_in_the_image_makes_no_lookup_and_reaches_its_model_through_the_
     )?;
     let control = not_model_calls(&job_c);
     eprintln!("Claude Code with non-essential traffic on: other requests {control:?}");
-    if !control.iter().any(|r| r.contains("anthropic.com")) {
+    if !control
+        .iter()
+        .any(|r| r.starts_with("CONNECT api.anthropic.com:"))
+    {
         failures.push(format!(
             "the Claude Code control's call was not seen\n{output}"
         ));

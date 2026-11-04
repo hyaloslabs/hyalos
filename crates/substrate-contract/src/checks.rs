@@ -425,7 +425,8 @@ fn init_reaps(s: &dyn Substrate, c: &Ctx) -> Result<(), String> {
     // backgrounded command is, is reaped rather than left a zombie counting against the limit.
     let script = r#"[ "$$" = 1 ] && echo the-program-is-pid-1
 (sleep 0 &); sleep 1
-z=0; for f in /proc/[0-9]*/status; do grep -qs '^State:[[:space:]]*Z' "$f" && z=$((z+1)); done
+n=0; z=0; for f in /proc/[0-9]*/status; do [ -r "$f" ] && n=$((n+1)); grep -qs '^State:[[:space:]]*Z' "$f" && z=$((z+1)); done
+[ "$n" -gt 0 ] || echo no-processes-visible
 echo "zombies $z""#;
     let out = run_to_end(s, &c.sh(script))?;
     expect("init", &out, Ending::Exited(0), "zombies 0\n")

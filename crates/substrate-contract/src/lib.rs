@@ -5,7 +5,7 @@
 //! * **Behaviour**, which every driver must pass: exit codes, output, environment, deadlines,
 //!   stopping, cleaning up, refusing a bad spec or a missing image.
 //! * **Isolation**, which a driver that claims to isolate must pass: no network, no root, a read-only
-//!   root filesystem, and the broker's socket as the one way out. A fake that runs programs on the host
+//!   root filesystem, the broker's socket as the one way out, and an init as PID 1 that reaps orphans. A fake that runs programs on the host
 //!   skips these and says so in the report: a skip is never a pass.
 //!
 //! The programs it runs are `sh` and `perl` scripts, so the image needs both. They are short and
