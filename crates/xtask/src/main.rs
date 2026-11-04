@@ -13,6 +13,13 @@ use std::process::{Command, ExitCode};
 /// The trusted-core budget from the PRD's success metrics.
 const BUDGET: usize = 30_000;
 
+/// Budgets for parts of the trusted core, each set by the story that planned the part. A path is a
+/// directory under `core/`; its counted lines may not pass the number.
+const PART_BUDGETS: &[(&str, usize)] = &[
+    // The model protocols: both adapters, the relay, metering and the loopback transport (S3.8, ADR-0037).
+    ("broker/src/model", 1_200),
+];
+
 /// For each crate in `core/`, the workspace crates it may depend on outside dev-dependencies.
 /// A new core crate, or a new edge, is a change to this table and so is reviewed (ADR-0017).
 const CORE: &[(&str, &[&str])] = &[
@@ -310,6 +317,7 @@ fn config_violations(files: &[(String, Option<String>)]) -> Vec<String> {
 fn lines(root: &Path) -> Result<(), String> {
     let core = root.join("core");
     let mut per_crate: BTreeMap<String, usize> = BTreeMap::new();
+    let mut per_part: BTreeMap<&str, usize> = BTreeMap::new();
     let mut files = Vec::new();
     collect(&core, &mut files).map_err(|e| format!("could not read core/: {e}"))?;
     for file in files {
@@ -330,8 +338,28 @@ fn lines(root: &Path) -> Result<(), String> {
             _ => 0,
         };
         *per_crate.entry(krate).or_default() += n;
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        for (part, _) in PART_BUDGETS {
+            if rel.starts_with(&format!("{part}/")) {
+                *per_part.entry(part).or_default() += n;
+            }
+        }
     }
     let total: usize = per_crate.values().sum();
+    let mut over = Vec::new();
+    for (part, budget) in PART_BUDGETS {
+        let n = per_part.get(part).copied().unwrap_or(0);
+        println!("  part core/{part}: {n} / {budget}");
+        if n > *budget {
+            over.push(format!(
+                "core/{part} is {} lines over its budget of {budget}",
+                n - budget
+            ));
+        }
+    }
+    if !over.is_empty() {
+        return Err(over.join("\n"));
+    }
     println!(
         "trusted core: {total} / {BUDGET} lines ({:.1}%)",
         total as f64 * 100.0 / BUDGET as f64

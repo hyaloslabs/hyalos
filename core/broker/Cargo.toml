@@ -11,8 +11,9 @@ workspace = true
 
 [dependencies]
 hyalos-types = { path = "../types" }
+# Model requests and responses are JSON (ADR-0016, ADR-0037); the broker reads and rewrites them.
+serde_json = "1"
 
 [dev-dependencies]
 # Hand-built signatures in tests, to show what the broker refuses.
 ed25519-dalek = "3"
-serde_json = "1"

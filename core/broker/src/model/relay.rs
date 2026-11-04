@@ -1,0 +1,325 @@
+//! The one path every model call takes, whichever protocol it speaks.
+
+use std::io::{Cursor, Read};
+use std::sync::Arc;
+use std::time::Duration;
+
+use hyalos_types::{Manifest, ReasonCode, Role};
+use serde_json::{Map, Value};
+
+use super::usage::{Metered, Scanner};
+use super::{
+    Adapter, ApiKey, MAX_BODY, Meter, Request, Response, Route, Transport, Upstream,
+    UpstreamResponse, header,
+};
+
+/// Upstream statuses that mean "busy, try later": rate limits and overload.
+const TRANSIENT: &[u16] = &[429, 502, 503, 504, 529];
+
+/// How much of a 429 body is read to tell a spent quota from a rate limit.
+const MAX_ERROR_BODY: u64 = 64 * 1024;
+
+/// Waits between attempts. The broker's is the thread's sleep; a test's records the waits.
+pub trait Sleep: Send + Sync {
+    fn sleep(&self, duration: Duration);
+}
+
+/// Sleeps the calling thread.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ThreadSleep;
+
+impl Sleep for ThreadSleep {
+    fn sleep(&self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
+/// How the relay retries a busy provider: up to `attempts` calls, waiting the provider's
+/// `retry-after` or else `base` doubled each time, never more than `cap`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Backoff {
+    pub attempts: u32,
+    pub base: Duration,
+    pub cap: Duration,
+}
+
+impl Default for Backoff {
+    fn default() -> Self {
+        Self {
+            attempts: 4,
+            base: Duration::from_secs(1),
+            cap: Duration::from_secs(30),
+        }
+    }
+}
+
+impl Backoff {
+    fn wait(&self, attempt: u32, retry_after: Option<u64>) -> Duration {
+        let wait = match retry_after {
+            Some(seconds) => Duration::from_secs(seconds),
+            None => self
+                .base
+                .saturating_mul(1u32 << attempt.saturating_sub(1).min(16)),
+        };
+        wait.min(self.cap)
+    }
+}
+
+/// The broker answering instead of the provider.
+struct Refused {
+    status: u16,
+    code: &'static str,
+    message: String,
+}
+
+fn refused(status: u16, code: &'static str, message: impl Into<String>) -> Refused {
+    Refused {
+        status,
+        code,
+        message: message.into(),
+    }
+}
+
+/// Serves model calls for admitted jobs through one adapter, one transport and one key.
+#[derive(Clone)]
+pub struct Relay {
+    adapter: Arc<dyn Adapter>,
+    transport: Arc<dyn Transport>,
+    key: ApiKey,
+    meter: Arc<Meter>,
+    sleep: Arc<dyn Sleep>,
+    backoff: Backoff,
+}
+
+impl Relay {
+    pub fn new(
+        adapter: Arc<dyn Adapter>,
+        transport: Arc<dyn Transport>,
+        key: ApiKey,
+        meter: Arc<Meter>,
+        sleep: Arc<dyn Sleep>,
+    ) -> Self {
+        Self {
+            adapter,
+            transport,
+            key,
+            meter,
+            sleep,
+            backoff: Backoff::default(),
+        }
+    }
+
+    pub fn with_backoff(mut self, backoff: Backoff) -> Self {
+        self.backoff = backoff;
+        self
+    }
+
+    /// Answers one call from the job whose admitted manifest is `manifest`. A refusal is a 402,
+    /// 403, 404, 413 or 400 in the protocol's error shape, never a 429 (ADR-0016).
+    pub fn handle(&self, manifest: &Manifest, request: Request) -> Response {
+        self.serve(manifest, &request).unwrap_or_else(|r| {
+            let body = self.adapter.error_body(r.status, &r.message);
+            Response {
+                status: r.status,
+                content_type: "application/json".into(),
+                body: Box::new(Cursor::new(body)),
+                reason: ReasonCode::new(r.code),
+            }
+        })
+    }
+
+    fn serve(&self, manifest: &Manifest, request: &Request) -> Result<Response, Refused> {
+        let path = request
+            .target
+            .split_once('?')
+            .map_or(request.target.as_str(), |(p, _)| p);
+        let route = self
+            .adapter
+            .route(path)
+            .filter(|_| request.method.eq_ignore_ascii_case("POST"))
+            .ok_or_else(|| {
+                refused(
+                    404,
+                    "model.route_refused",
+                    "the broker serves no model call at this path",
+                )
+            })?;
+        if request.body.len() > MAX_BODY {
+            return Err(refused(
+                413,
+                "model.too_large",
+                "the request is larger than the broker reads",
+            ));
+        }
+        let Ok(Value::Object(mut body)) = serde_json::from_slice::<Value>(&request.body) else {
+            return Err(refused(
+                400,
+                "model.bad_request",
+                "the request body is not a JSON object",
+            ));
+        };
+        if manifest.role == Role::Reader && declares_tools(&body) {
+            return Err(refused(
+                403,
+                "model.reader_tools",
+                "refused by the job's manifest: a reader may not send tool definitions",
+            ));
+        }
+        if route == Route::Generate {
+            let budget = manifest.budget.tokens;
+            if self.meter.spent(manifest.job) >= budget {
+                return Err(refused(
+                    402,
+                    "budget.spent",
+                    format!("this job's budget of {budget} tokens is spent"),
+                ));
+            }
+        }
+        strip_hosted(self.adapter.as_ref(), &mut body);
+        let upstream = Upstream {
+            target: request.target.clone(),
+            headers: self.headers(request),
+            body: serde_json::to_vec(&body)
+                .map_err(|_| refused(400, "model.bad_request", "the request cannot be written"))?,
+        };
+        self.deliver(manifest, route, &upstream)
+    }
+
+    fn headers(&self, request: &Request) -> Vec<(String, String)> {
+        let pass = self.adapter.passthrough();
+        let mut out: Vec<(String, String)> = request
+            .headers
+            .iter()
+            .map(|(n, v)| (n.to_ascii_lowercase(), v.clone()))
+            .filter(|(n, _)| pass.contains(&n.as_str()))
+            .collect();
+        for (name, value) in self.adapter.defaults() {
+            if header(&out, name).is_none() {
+                out.push(((*name).into(), (*value).into()));
+            }
+        }
+        let (name, prefix) = self.adapter.credential_header();
+        out.push((name.into(), format!("{prefix}{}", self.key.expose())));
+        out.push(("content-type".into(), "application/json".into()));
+        out
+    }
+
+    fn deliver(
+        &self,
+        manifest: &Manifest,
+        route: Route,
+        upstream: &Upstream,
+    ) -> Result<Response, Refused> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let retry_after = match self.transport.send(upstream) {
+                Ok(r) if !TRANSIENT.contains(&r.status) => {
+                    return Ok(self.finish(manifest, route, r));
+                }
+                Ok(r) => {
+                    let retry_after = header(&r.headers, "retry-after")
+                        .and_then(|v| v.trim().parse::<u64>().ok());
+                    if r.status == 429 {
+                        let mut body = Vec::new();
+                        // An unreadable body is treated as a rate limit, which is retried.
+                        let _ = r.body.take(MAX_ERROR_BODY).read_to_end(&mut body);
+                        if self.adapter.quota_exhausted(&body) {
+                            return Err(refused(
+                                402,
+                                "provider.quota_spent",
+                                "the model provider says this key's quota is spent",
+                            ));
+                        }
+                    }
+                    retry_after
+                }
+                Err(_) => None,
+            };
+            if attempt >= self.backoff.attempts {
+                return Err(refused(
+                    self.adapter.overloaded(),
+                    "provider.overloaded",
+                    "the model provider is busy or unreachable; try again",
+                ));
+            }
+            self.sleep.sleep(self.backoff.wait(attempt, retry_after));
+        }
+    }
+
+    fn finish(&self, manifest: &Manifest, route: Route, r: UpstreamResponse) -> Response {
+        let content_type = header(&r.headers, "content-type")
+            .unwrap_or("application/json")
+            .to_string();
+        let body: Box<dyn Read + Send> =
+            if route == Route::Generate && (200..300).contains(&r.status) {
+                Box::new(Metered::new(
+                    r.body,
+                    Scanner::new(&content_type),
+                    Arc::clone(&self.meter),
+                    manifest.job,
+                ))
+            } else {
+                r.body
+            };
+        Response {
+            status: r.status,
+            content_type,
+            body,
+            reason: None,
+        }
+    }
+}
+
+/// Whether a request defines any tool, of any kind, including MCP servers for the provider to call.
+fn declares_tools(body: &Map<String, Value>) -> bool {
+    ["tools", "mcp_servers"].iter().any(|k| match body.get(*k) {
+        None | Some(Value::Null) => false,
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(_) => true,
+    })
+}
+
+/// Removes every tool the provider would run, and whatever would make the request invalid without
+/// them, so the request stays one the provider accepts (ADR-0016, ADR-0004).
+fn strip_hosted(adapter: &dyn Adapter, body: &mut Map<String, Value>) {
+    body.remove("mcp_servers");
+    let mut removed: Vec<String> = Vec::new();
+    let mut left = 0;
+    if let Some(Value::Array(tools)) = body.get_mut("tools") {
+        tools.retain(|tool| {
+            let keep = adapter.harness_runs(tool);
+            if !keep {
+                removed.extend(
+                    ["type", "name"]
+                        .iter()
+                        .filter_map(|k| tool.get(*k).and_then(Value::as_str))
+                        .map(str::to_string),
+                );
+            }
+            keep
+        });
+        left = tools.len();
+    }
+    if left == 0 {
+        for key in ["tools", "tool_choice", "parallel_tool_calls"] {
+            body.remove(key);
+        }
+    } else {
+        let names_removed = body
+            .get("tool_choice")
+            .and_then(Value::as_object)
+            .is_some_and(|choice| {
+                ["type", "name"].iter().any(|k| {
+                    choice
+                        .get(*k)
+                        .and_then(Value::as_str)
+                        .is_some_and(|s| removed.iter().any(|r| r == s))
+                })
+            });
+        if names_removed {
+            body.remove("tool_choice");
+        }
+    }
+    adapter.scrub(body);
+}
