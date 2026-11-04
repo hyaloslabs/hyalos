@@ -11,9 +11,9 @@ use serde::{Serialize, Serializer};
 
 use crate::Timestamp;
 
-/// The longest token accepted. GitHub's installation tokens are about 40 characters; the room is for
-/// a format change, not for arbitrary text.
-pub const MAX_FORGE_TOKEN: usize = 255;
+/// The longest token accepted (ADR-0045). GitHub's installation tokens were 40 characters and are
+/// now about 400; the room is for further growth, not for arbitrary text, and still fits a header.
+pub const MAX_FORGE_TOKEN: usize = 4096;
 
 /// A token scoped to one job's repository and the forge permissions its actions need, and when the
 /// forge will stop accepting it.
@@ -80,10 +80,18 @@ mod tests {
         let t = ForgeToken::new("ghs_abc123", at).unwrap();
         assert_eq!(t.expose(), "ghs_abc123");
         assert!(!format!("{t:?}").contains("ghs_abc123"));
-        for bad in ["", "has space", "line\nbreak", "ünicode", &"a".repeat(256)] {
+        for bad in [
+            "",
+            "has space",
+            "line\nbreak",
+            "ünicode",
+            &"a".repeat(MAX_FORGE_TOKEN + 1),
+        ] {
             assert!(ForgeToken::new(bad, at).is_none(), "{bad:?}");
         }
-        assert!(ForgeToken::new(&"a".repeat(255), at).is_some());
+        // GitHub's installation tokens are now about 400 characters (ADR-0045).
+        assert!(ForgeToken::new(&format!("ghs_{}", "a".repeat(386)), at).is_some());
+        assert!(ForgeToken::new(&"a".repeat(MAX_FORGE_TOKEN), at).is_some());
     }
 
     #[test]
