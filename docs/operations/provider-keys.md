@@ -17,8 +17,9 @@ anthropic.key = sk-ant-...
 openai.key = sk-...
 
 # Optional: where to reach the provider. Leave it out for the provider's public API.
-# Until TLS is built (#159), only a server on this machine can be reached, such as a local
-# OpenAI-compatible model:
+# An https:// base can be any host; its certificate must chain to the Mozilla roots built into
+# Hyalos, and there is no setting to skip that check. A plain http:// base must be on this machine,
+# such as a local OpenAI-compatible model:
 # openai.base = http://127.0.0.1:11434
 ```
 

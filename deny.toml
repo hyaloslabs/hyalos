@@ -23,6 +23,11 @@ allow = [
     # ar_archive_writer, a build dependency of psm under stacker under cedar-policy-core (ADR-0008).
     # The exception only relaxes the license for use as part of LLVM-derived code; it is Apache-2.0.
     "Apache-2.0 WITH LLVM-exception",
+    # ring (Apache-2.0 AND ISC), rustls-webpki and untrusted, for the broker's TLS (ADR-0039).
+    "ISC",
+    # webpki-roots, the Mozilla root certificates the broker trusts (ADR-0039). The data is
+    # permissively licensed; it asks for nothing beyond keeping the notice.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 

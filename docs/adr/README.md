@@ -52,3 +52,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0036](0036-the-simulated-world-and-the-log-scan.md) | The simulated world and the log scan | Accepted |
 | [0037](0037-model-protocol-adapters-and-their-line-budget.md) | Model protocol adapters and their line budget | Accepted |
 | [0038](0038-model-calls-from-the-sandbox-and-the-provider-key-file.md) | Model calls from the sandbox, and the provider key file | Accepted |
+| [0039](0039-tls-to-model-providers.md) | TLS to model providers | Proposed |
