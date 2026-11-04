@@ -324,7 +324,7 @@ fn job(port: u16, seq: u64) -> Res<Job> {
 /// and output.
 fn sandboxed(socket: &Path, resolv: &Path, command: &[&str]) -> Res<(i32, String)> {
     let out = Command::new("docker")
-        .args(["run", "--rm", "--network", "none", "--read-only"])
+        .args(["run", "--rm", "--init", "--network", "none", "--read-only"])
         // The container substrate's flags (core/substrate/src/container.rs), so what passes here
         // fits in a job: the same 64 MiB /tmp, which holds $HOME and $CODEX_HOME.
         .args(["--tmpfs", "/tmp:rw,noexec,nosuid,size=64m"])
@@ -453,6 +453,34 @@ fn every_harness_in_the_image_makes_no_lookup_and_reaches_its_model_through_the_
     eprintln!("Codex with analytics on and no proxy: lookups {asked:?}");
     if !asked.iter().any(|n| n.contains("chatgpt.com")) {
         failures.push(format!("the DNS control saw no lookup\n{output}"));
+    }
+    // And for Claude Code: with its non-essential traffic allowed again, the call that setting
+    // prevents arrives on the channel as a request to Anthropic's host. The other three Claude
+    // settings stay set, so this shows this one setting takes effect.
+    let job_c = job(port, 11)?;
+    let (_, output) = sandboxed(
+        &job_c.socket,
+        &resolv,
+        &[
+            "env",
+            "-u",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+            "claude",
+            "-p",
+            "say ok",
+            "--tools",
+            "Bash",
+        ],
+    )?;
+    let control = not_model_calls(&job_c);
+    eprintln!("Claude Code with non-essential traffic on: other requests {control:?}");
+    if !control
+        .iter()
+        .any(|r| r.starts_with("CONNECT api.anthropic.com:"))
+    {
+        failures.push(format!(
+            "the Claude Code control's call was not seen\n{output}"
+        ));
     }
     let _ = std::fs::remove_file(&resolv);
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));

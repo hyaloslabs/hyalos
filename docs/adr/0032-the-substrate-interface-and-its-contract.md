@@ -1,6 +1,6 @@
 # ADR-0032: The substrate interface and its contract
 
-**Status:** Accepted
+**Status:** Accepted. [ADR-0041](0041-an-init-in-the-sandbox-and-the-image-tests-further-checks.md) adds `--init` to the container driver and an init check to the contract.
 
 ## Context
 

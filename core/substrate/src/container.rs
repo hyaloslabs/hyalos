@@ -104,6 +104,9 @@ impl Substrate for ContainerSubstrate {
         create
             .arg("create")
             .args(["--label", &format!("{LABEL}={}", spec.job)])
+            // A minimal init is PID 1 (ADR-0041): it reaps orphaned processes, which would
+            // otherwise count against the process limit, and passes signals on to the program.
+            .arg("--init")
             // No network of any kind, not even a filtered one.
             .args(["--network", "none"])
             .arg("--read-only")

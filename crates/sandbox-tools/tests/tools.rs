@@ -160,6 +160,35 @@ fn the_dns_log_answers_no_such_name_and_records_each_question() -> Res {
         assert!(n > 12);
     }
     assert_eq!(log.names(), ["api.anthropic.com", "statsig.anthropic.com"]);
+
+    // Over TCP too, as a resolver falls back to it: a two-byte length before each message, and
+    // more than one on a connection.
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let addr = listener.local_addr()?;
+    let serving = log.clone();
+    thread::spawn(move || serving.serve_tcp(listener));
+    let mut stream = TcpStream::connect(addr)?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+    for (id, name) in [(9, "ab.chatgpt.com"), (10, "sentry.io")] {
+        let q = query(id, name);
+        stream.write_all(&u16::try_from(q.len())?.to_be_bytes())?;
+        stream.write_all(&q)?;
+        let mut length = [0u8; 2];
+        stream.read_exact(&mut length)?;
+        let mut answer = vec![0u8; usize::from(u16::from_be_bytes(length))];
+        stream.read_exact(&mut answer)?;
+        assert_eq!(&answer[..2], &u16::to_be_bytes(id));
+        assert_eq!(answer[3] & 0x0f, 3, "no such name");
+    }
+    assert_eq!(
+        log.names(),
+        [
+            "api.anthropic.com",
+            "statsig.anthropic.com",
+            "ab.chatgpt.com",
+            "sentry.io"
+        ]
+    );
     assert_eq!(question(&[0; 5]), None);
     assert_eq!(
         question(&[0, 0, 0x81, 0x80, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1]),
