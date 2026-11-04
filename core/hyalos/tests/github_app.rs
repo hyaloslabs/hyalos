@@ -154,9 +154,8 @@ fn github(mode: Mode) -> Res<GitHub> {
                 });
             }
             let bearer = authorization.strip_prefix("Bearer ").unwrap_or("");
-            let as_app = checked_claims(bearer, &public).is_some_and(|c| {
-                c["iss"].as_str().and_then(|s| s.parse::<u64>().ok()) == Some(APP_ID)
-            });
+            let as_app =
+                checked_claims(bearer, &public).is_some_and(|c| c["iss"].as_u64() == Some(APP_ID));
             let (status, reply) = match (method.as_str(), path.as_str()) {
                 (_, _) if method != "DELETE" && !as_app => {
                     (401, json!({"message": "Bad credentials"}))
@@ -272,7 +271,7 @@ fn the_engine_mints_a_token_for_the_manifest_hands_it_to_the_broker_and_revokes_
         .strip_prefix("Bearer ")
         .ok_or("no bearer")?;
     let claims = checked_claims(jwt, &public_key()?).ok_or("the JWT does not verify")?;
-    assert_eq!(claims["iss"], APP_ID.to_string());
+    assert_eq!(claims["iss"].as_u64(), Some(APP_ID));
     let (iat, exp) = (
         claims["iat"].as_u64().ok_or("iat")?,
         claims["exp"].as_u64().ok_or("exp")?,

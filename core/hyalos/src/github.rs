@@ -140,7 +140,7 @@ impl fmt::Display for MintError {
             ),
             MintError::Refused { step, status } => {
                 write!(f, "GitHub refused to {step} (status {status})")?;
-                if *status == 401 {
+                if *status == 401 && *step != "revoke the token" {
                     f.write_str(": check app_id and that github-app.pem is this App's current key, and the clock")?;
                 }
                 Ok(())
@@ -279,7 +279,8 @@ impl GitHubApp {
         let claims = json!({
             "iat": now.saturating_sub(60),
             "exp": now + 540,
-            "iss": self.app_id.to_string(),
+            // The App's id as a number, as GitHub documents it for App-id JWTs.
+            "iss": self.app_id,
         });
         let signed = format!("{header}.{}", base64url(claims.to_string().as_bytes()));
         let mut signature = vec![0; self.key.public().modulus_len()];
