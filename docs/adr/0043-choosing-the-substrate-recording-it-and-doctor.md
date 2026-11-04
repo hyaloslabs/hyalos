@@ -1,6 +1,6 @@
 # ADR-0043: Choosing the substrate, recording it on the job, and `hyalos doctor`
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
