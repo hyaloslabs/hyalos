@@ -159,6 +159,7 @@ fn start(r: &mut Rig, m: &Manifest, socket: &Path) -> Res<Vec<ToEngine>> {
         role: m.role,
         manifest: key().sign(m)?.to_bytes()?,
         socket: socket.to_string_lossy().into_owned(),
+        forge_token: None,
     };
     Ok(r.broker
         .handle(message, r.clock.as_ref())?

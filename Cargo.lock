@@ -666,8 +666,11 @@ dependencies = [
  "hyalos-substrate",
  "hyalos-substrate-contract",
  "hyalos-types",
+ "ring",
  "rusqlite",
  "rustix",
+ "rustls-pki-types",
+ "serde_json",
  "zeroize",
 ]
 

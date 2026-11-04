@@ -123,12 +123,27 @@ fn clean(text: &str) -> bool {
 
 impl Transport for HttpTransport {
     fn send(&self, request: &Upstream) -> Result<UpstreamResponse, TransportError> {
+        self.request("POST", request)
+    }
+}
+
+impl HttpTransport {
+    /// Sends `request` with `method`, one of `GET`, `POST` and `DELETE`. Model calls are all `POST`;
+    /// the engine's calls to the forge's API need the others (ADR-0044).
+    pub fn request(
+        &self,
+        method: &str,
+        request: &Upstream,
+    ) -> Result<UpstreamResponse, TransportError> {
         let bad = TransportError("transport.bad_request");
-        if !request.target.starts_with('/') || !clean(&request.target) {
+        if !["GET", "POST", "DELETE"].contains(&method)
+            || !request.target.starts_with('/')
+            || !clean(&request.target)
+        {
             return Err(bad);
         }
         let mut head = format!(
-            "POST {} HTTP/1.1\r\nhost: {}\r\nconnection: close\r\naccept-encoding: identity\r\ncontent-length: {}\r\n",
+            "{method} {} HTTP/1.1\r\nhost: {}\r\nconnection: close\r\naccept-encoding: identity\r\ncontent-length: {}\r\n",
             request.target,
             self.authority,
             request.body.len()

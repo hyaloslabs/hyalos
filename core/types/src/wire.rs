@@ -18,10 +18,10 @@ use std::io::{self, Read, Write};
 use serde::de::{DeserializeOwned, Deserializer, Error as _};
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::{Answer, Digest, Gate, JobId, ManifestPublicKey, ReasonCode, Role, hex};
+use crate::{Answer, Digest, ForgeToken, Gate, JobId, ManifestPublicKey, ReasonCode, Role, hex};
 
 /// The version of this protocol. Both sides say theirs first and stop on a mismatch.
-pub const WIRE_VERSION: u32 = 2;
+pub const WIRE_VERSION: u32 = 3;
 
 /// The longest job socket path the engine makes and the broker binds (ADR-0038). A Unix socket
 /// path is limited to about 107 bytes; this leaves room.
@@ -45,13 +45,17 @@ pub enum ToBroker {
     /// and `role` is the role the credential for the job will have. `socket` is the absolute path,
     /// in a directory the engine made for this job alone, where the broker listens for the job's
     /// sandbox (ADR-0038). It comes over the channel, never on the broker's command line, because
-    /// knowing it is what lets a process reach the job's socket.
+    /// knowing it is what lets a process reach the job's socket. `forge_token` is the token the
+    /// engine minted for the job's repository and actions (ADR-0004, ADR-0044), absent when the
+    /// manifest needs no forge access; it is the only secret the engine sends.
     StartJob {
         job: JobId,
         role: Role,
         #[serde(with = "bytes_hex")]
         manifest: Vec<u8>,
         socket: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        forge_token: Option<ForgeToken>,
     },
     /// A job has ended, so a manifest for it is no longer admitted.
     EndJob { job: JobId },
@@ -228,7 +232,7 @@ mod tests {
                     manifest_key: key,
                 },
                 format!(
-                    r#"{{"kind":"hello","version":2,"manifest_key":"{}"}}"#,
+                    r#"{{"kind":"hello","version":3,"manifest_key":"{}"}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -238,8 +242,19 @@ mod tests {
                     role: Role::Actor,
                     manifest: vec![0x00, 0xab, 0xff],
                     socket: "/run/user/1000/hyalos-job-ab/broker.sock".into(),
+                    forge_token: None,
                 },
                 r#"{"kind":"start_job","job":3,"role":"actor","manifest":"00abff","socket":"/run/user/1000/hyalos-job-ab/broker.sock"}"#.to_string(),
+            ),
+            (
+                ToBroker::StartJob {
+                    job: JobId::from_seq(3),
+                    role: Role::Actor,
+                    manifest: vec![0x00],
+                    socket: "/s".into(),
+                    forge_token: ForgeToken::new("ghs_x", crate::Timestamp::from_millis(9)),
+                },
+                r#"{"kind":"start_job","job":3,"role":"actor","manifest":"00","socket":"/s","forge_token":{"token":"ghs_x","expires_at":9}}"#.to_string(),
             ),
             (
                 ToBroker::EndJob {
@@ -388,6 +403,7 @@ mod tests {
             role: Role::Actor,
             manifest: vec![0; bytes],
             socket: "/s".into(),
+            forge_token: None,
         };
         let size = |job: u64, bytes: usize| -> Res<usize> {
             Ok(serde_json::to_vec(&message(job, bytes))?.len())
@@ -424,6 +440,7 @@ mod tests {
             role: Role::Actor,
             manifest: vec![0; MAX_FRAME],
             socket: "/s".into(),
+            forge_token: None,
         };
         let mut out = Vec::new();
         assert_eq!(write_frame(&mut out, &big), Err(WireError::Unwritable));

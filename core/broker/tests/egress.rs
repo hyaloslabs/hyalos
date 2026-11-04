@@ -113,6 +113,7 @@ fn start(r: &mut Rig, m: &Manifest, socket: &Path) -> Res {
                 role: m.role,
                 manifest: key().sign(m)?.to_bytes()?,
                 socket: socket.to_string_lossy().into_owned(),
+                forge_token: None,
             },
             r.clock.as_ref(),
         )?
@@ -518,6 +519,7 @@ fn a_refusal_reaches_the_engine_unasked_over_the_channel() -> Res {
             role: m.role,
             manifest: key().sign(&m)?.to_bytes()?,
             socket: socket.to_string_lossy().into_owned(),
+            forge_token: None,
         },
     )?;
     assert_eq!(

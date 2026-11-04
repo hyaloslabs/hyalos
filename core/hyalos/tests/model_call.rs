@@ -178,6 +178,7 @@ fn no_provider_key_reaches_the_sandbox() -> Res {
         role: m.role,
         manifest: manifest_key.sign(&m)?.to_bytes()?,
         socket: job_dir.socket().to_string_lossy().into_owned(),
+        forge_token: None,
     })?;
     assert_eq!(broker.recv()?, Some(ToEngine::Admitted { job: m.job }));
 

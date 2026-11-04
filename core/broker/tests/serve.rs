@@ -7,7 +7,8 @@ use std::collections::BTreeSet;
 use hyalos_broker::{Broker, Exit, ServeError, serve};
 use hyalos_types::wire::{ToBroker, ToEngine, WIRE_VERSION, WireError, read_frame, write_frame};
 use hyalos_types::{
-    Budget, Clock, JobId, MANIFEST_VERSION, Manifest, ManifestKey, ReasonCode, Role, Timestamp,
+    Budget, Clock, ForgeToken, JobId, MANIFEST_VERSION, Manifest, ManifestKey, ReasonCode, Role,
+    Timestamp,
 };
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -48,6 +49,7 @@ fn start(key: &ManifestKey, m: &Manifest, role: Role) -> Res<ToBroker> {
         role,
         manifest: key.sign(m)?.to_bytes()?,
         socket: "/unused".into(),
+        forge_token: None,
     })
 }
 
@@ -165,6 +167,7 @@ fn every_check_of_admission_gives_its_own_code() -> Res {
         role: Role::Actor,
         manifest: key.sign(&for_nine)?.to_bytes()?,
         socket: "/unused".into(),
+        forge_token: None,
     };
     let mut wrong_version = key.sign(&live)?;
     wrong_version = hyalos_types::SignedManifest::from_parts(
@@ -193,6 +196,7 @@ fn every_check_of_admission_gives_its_own_code() -> Res {
                 role: Role::Actor,
                 manifest: wrong_version.to_bytes()?,
                 socket: "/unused".into(),
+                forge_token: None,
             },
             100,
             "manifest.unknown_version",
@@ -204,6 +208,7 @@ fn every_check_of_admission_gives_its_own_code() -> Res {
                 role: Role::Actor,
                 manifest: b"not json".to_vec(),
                 socket: "/unused".into(),
+                forge_token: None,
             },
             100,
             "manifest.malformed",
@@ -337,5 +342,54 @@ fn a_refused_job_can_be_started_again_with_a_manifest_that_is_good() -> Res {
             ToEngine::Admitted { job },
         ]
     );
+    Ok(())
+}
+
+#[test]
+fn the_forge_token_is_held_only_for_an_admitted_job_and_only_while_it_is_live() -> Res {
+    // ADR-0044: the engine hands the job's token over with its manifest; the broker keeps it for the
+    // job and forgets it when the job ends. A refused job leaves nothing behind.
+    let key = engine_key();
+    let now = Now(Cell::new(100));
+    let token = ForgeToken::new("ghs_job5", Timestamp::from_millis(5_000)).ok_or("token")?;
+    let with_token = |m: &Manifest, k: &ManifestKey| -> Res<ToBroker> {
+        let ToBroker::StartJob {
+            job,
+            role,
+            manifest,
+            socket,
+            ..
+        } = start(k, m, Role::Actor)?
+        else {
+            return Err("not a start".into());
+        };
+        Ok(ToBroker::StartJob {
+            job,
+            role,
+            manifest,
+            socket,
+            forge_token: Some(token.clone()),
+        })
+    };
+    let mut broker = Broker::new(key.public());
+    let m = manifest(5, Role::Actor, 10_000);
+    broker.handle(with_token(&m, &key)?, &now)?;
+    assert_eq!(broker.forge_token(m.job), Some(&token));
+    broker.handle(ToBroker::EndJob { job: m.job }, &now)?;
+    assert_eq!(broker.forge_token(m.job), None);
+
+    // Signed by someone else: refused, and the token is not kept.
+    let other = manifest(6, Role::Actor, 10_000);
+    let answers = broker.handle(with_token(&other, &ManifestKey::from_seed([9; 32]))?, &now)?;
+    assert!(matches!(
+        answers.as_deref(),
+        Some([ToEngine::Refused { .. }])
+    ));
+    assert_eq!(broker.forge_token(other.job), None);
+
+    // A manifest that needs no forge access comes with no token.
+    let plain = manifest(7, Role::Actor, 10_000);
+    broker.handle(start(&key, &plain, Role::Actor)?, &now)?;
+    assert_eq!(broker.forge_token(plain.job), None);
     Ok(())
 }

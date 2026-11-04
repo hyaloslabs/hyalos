@@ -435,6 +435,7 @@ pub fn job_with(port: u16, seq: u64, hosts: &[&str], egress: Egress) -> Res<Job>
             role: manifest.role,
             manifest: key.sign(&manifest)?.to_bytes()?,
             socket: broker_socket.to_string_lossy().into_owned(),
+            forge_token: None,
         },
         &Wall,
     )?;
