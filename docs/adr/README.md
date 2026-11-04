@@ -57,3 +57,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0041](0041-an-init-in-the-sandbox-and-the-image-tests-further-checks.md) | An init in the sandbox, and the image test's further checks | Accepted |
 | [0042](0042-the-egress-gate-and-the-allowlisting-proxy.md) | The egress gate and the allowlisting proxy | Accepted |
 | [0043](0043-choosing-the-substrate-recording-it-and-doctor.md) | Choosing the substrate, recording it on the job, and `hyalos doctor` | Accepted |
+| [0044](0044-minting-per-job-github-tokens-from-the-app.md) | Minting per-job GitHub tokens from the App | Proposed |

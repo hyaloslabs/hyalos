@@ -18,7 +18,9 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::Duration;
 
 use hyalos_types::wire::{ToBroker, ToEngine, WIRE_VERSION, WireError, read_frame, write_frame};
-use hyalos_types::{Clock, JobId, Manifest, ManifestPublicKey, ReasonCode, SignedManifest};
+use hyalos_types::{
+    Clock, ForgeToken, JobId, Manifest, ManifestPublicKey, ReasonCode, SignedManifest,
+};
 
 use crate::sandbox::{JobSocket, Sandboxes};
 use crate::{Admission, Credential, LiveJobs};
@@ -39,6 +41,9 @@ pub struct Broker {
     admission: Admission,
     jobs: Jobs,
     admitted: BTreeMap<JobId, Manifest>,
+    /// The forge token the engine minted for each admitted job that needs one (ADR-0044). The broker
+    /// holds no forge credential but these, and forgets each when its job ends.
+    forge_tokens: BTreeMap<JobId, ForgeToken>,
     /// With sandboxes, each admitted job gets a socket its sandbox calls models through (ADR-0038).
     sandboxes: Option<Sandboxes>,
     sockets: BTreeMap<JobId, JobSocket>,
@@ -53,6 +58,7 @@ impl Broker {
             admission: Admission::new(key),
             jobs: Jobs::default(),
             admitted: BTreeMap::new(),
+            forge_tokens: BTreeMap::new(),
             sandboxes: None,
             sockets: BTreeMap::new(),
             reports: None,
@@ -78,6 +84,11 @@ impl Broker {
         self.admitted.get(&job)
     }
 
+    /// The forge token handed over with a live job's manifest, if it needed one.
+    pub fn forge_token(&self, job: JobId) -> Option<&ForgeToken> {
+        self.forge_tokens.get(&job)
+    }
+
     /// Handles a message from the engine after `Hello`. `Ok(None)` means stop serving.
     pub fn handle(
         &mut self,
@@ -90,6 +101,7 @@ impl Broker {
             ToBroker::EndJob { job } => {
                 self.jobs.0.remove(&job);
                 self.admitted.remove(&job);
+                self.forge_tokens.remove(&job);
                 // Ends the socket first: calls still open are refused or cut off, and anything they
                 // settle later is not added back to a forgotten meter.
                 self.sockets.remove(&job);
@@ -103,6 +115,7 @@ impl Broker {
                 role,
                 manifest,
                 socket,
+                forge_token,
             } => {
                 let refuse = |reason: ReasonCode| Ok(Some(vec![ToEngine::Refused { job, reason }]));
                 // A job is started once. The first admission stands.
@@ -136,6 +149,9 @@ impl Broker {
                             }
                         }
                         self.admitted.insert(job, manifest);
+                        if let Some(token) = forge_token {
+                            self.forge_tokens.insert(job, token);
+                        }
                         Ok(Some(vec![ToEngine::Admitted { job }]))
                     }
                     Err(refusal) => {

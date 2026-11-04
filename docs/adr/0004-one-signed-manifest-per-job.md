@@ -1,6 +1,6 @@
 # ADR-0004: One signed manifest per job, enforced only by the broker
 
-**Status:** Accepted on November 1, 2026, after review against ADR-0002, 0005, 0006 and 0012. The clarifications from that review are folded in below.
+**Status:** Accepted on November 1, 2026, after review against ADR-0002, 0005, 0006 and 0012. The clarifications from that review are folded in below. [ADR-0044](0044-minting-per-job-github-tokens-from-the-app.md) builds minting GitHub tokens from the App.
 
 ## Context
 

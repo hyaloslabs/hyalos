@@ -2,7 +2,7 @@
 
 use std::process::ExitCode;
 
-use hyalos::{broker_cmd, doctor_cmd, hardening, init_cmd, log_cmd};
+use hyalos::{broker_cmd, doctor_cmd, github_cmd, hardening, init_cmd, log_cmd};
 
 fn main() -> ExitCode {
     // Before anything reads a key: a crash must not be able to write it to disk (ADR-0030).
@@ -18,12 +18,13 @@ fn main() -> ExitCode {
         }
         Some("init") => init_cmd::run(args.get(1..).unwrap_or_default()),
         Some("doctor") => doctor_cmd::run(args.get(1..).unwrap_or_default()),
+        Some("github") => github_cmd::run(args.get(1..).unwrap_or_default()),
         Some("log") => log_cmd::run(args.get(1..).unwrap_or_default()),
         // Started by the engine, never by hand; it refuses any other parent (ADR-0035).
         Some("broker") => broker_cmd::run(args.get(1..).unwrap_or_default()),
         Some(other) => {
             eprintln!(
-                "hyalos: unknown command {other}\nusage: hyalos [--version | init | doctor [--image <image>] | log verify|audit|backup|restore|compact|prune ...]"
+                "hyalos: unknown command {other}\nusage: hyalos [--version | init | doctor [--image <image>] | github check <owner/repo> | log verify|audit|backup|restore|compact|prune ...]"
             );
             ExitCode::from(2)
         }

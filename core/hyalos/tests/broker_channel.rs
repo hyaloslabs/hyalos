@@ -61,6 +61,7 @@ fn start(key: &ManifestKey, m: &Manifest) -> Res<ToBroker> {
         role: m.role,
         manifest: key.sign(m)?.to_bytes()?,
         socket: job_socket(m.job)?,
+        forge_token: None,
     })
 }
 

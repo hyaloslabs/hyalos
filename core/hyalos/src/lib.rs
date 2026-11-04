@@ -6,6 +6,8 @@ pub mod broker_cmd;
 pub mod channel;
 pub mod clock;
 pub mod doctor_cmd;
+pub mod github;
+pub mod github_cmd;
 pub mod hardening;
 pub mod init_cmd;
 pub mod keys;

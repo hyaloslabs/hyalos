@@ -19,6 +19,13 @@ hyalos-broker = { path = "../broker" }
 getrandom = "0.4"
 zeroize = "1"
 rustix = { version = "1.1.6", features = ["process", "net"] }
+# The GitHub App's JWT is RS256 (ADR-0044). ring is already in the build under rustls; the `rsa`
+# crate is not used because of its unfixed timing advisory (RUSTSEC-2023-0071).
+ring = "0.17.14"
+# Reads the App's PEM private key (PKCS#1 as GitHub generates it, or PKCS#8).
+rustls-pki-types = { version = "1.15.1", features = ["std"] }
+# The GitHub API's requests and answers are JSON.
+serde_json = "1"
 
 [dev-dependencies]
 # The fake substrate runs the end-to-end leak test's sandbox (S3.2). Never linked into the binary.
