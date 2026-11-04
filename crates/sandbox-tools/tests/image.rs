@@ -236,7 +236,16 @@ fn relay_one(client: UnixStream, broker: &Path, seen: &Mutex<Vec<String>>) -> Re
     Ok(())
 }
 
-/// Every request on the channel that was not a model call: a proxy request, or another path.
+/// The name in a `hyalos-dns-log: asked <name>` report, found anywhere in the line, so output the
+/// harness left without a newline cannot hide one.
+fn asked_name(line: &str) -> Option<&str> {
+    line.find("hyalos-dns-log: asked ")
+        .map(|at| line[at + "hyalos-dns-log: asked ".len()..].trim())
+}
+
+/// Every request on the channel that was not a model call: a proxy request, or another path. Only
+/// a connection's first request is seen, which is all there is: the broker answers one call per
+/// connection and closes it (ADR-0038).
 fn not_model_calls(job: &Job) -> Vec<String> {
     job.requests
         .lock()
@@ -316,10 +325,20 @@ fn job(port: u16, seq: u64) -> Res<Job> {
 fn sandboxed(socket: &Path, resolv: &Path, command: &[&str]) -> Res<(i32, String)> {
     let out = Command::new("docker")
         .args(["run", "--rm", "--network", "none", "--read-only"])
-        .args(["--tmpfs", "/tmp:rw,noexec,nosuid,size=256m"])
+        // The container substrate's flags (core/substrate/src/container.rs), so what passes here
+        // fits in a job: the same 64 MiB /tmp, which holds $HOME and $CODEX_HOME.
+        .args(["--tmpfs", "/tmp:rw,noexec,nosuid,size=64m"])
         .args(["--user", "65534:65534", "--cap-drop", "ALL"])
         .args(["--security-opt", "no-new-privileges"])
-        .args(["--memory", "2g", "--pids-limit", "512"])
+        .args(["--memory", "2147483648", "--memory-swap", "2147483648"])
+        .args([
+            "--pids-limit",
+            "512",
+            "--pull",
+            "never",
+            "--log-driver",
+            "none",
+        ])
         .arg("--mount")
         .arg(format!(
             "type=bind,src={},dst=/run/broker.sock",
@@ -386,10 +405,7 @@ fn every_harness_in_the_image_makes_no_lookup_and_reaches_its_model_through_the_
             c.clear();
         }
         let (code, output) = sandboxed(&job.socket, &resolv, command)?;
-        let asked: Vec<&str> = output
-            .lines()
-            .filter_map(|l| l.strip_prefix("hyalos-dns-log: asked "))
-            .collect();
+        let asked: Vec<&str> = output.lines().filter_map(asked_name).collect();
         let reached = calls
             .lock()
             .map(|c| c.iter().any(|p| p.starts_with(path)))
@@ -433,10 +449,7 @@ fn every_harness_in_the_image_makes_no_lookup_and_reaches_its_model_through_the_
         .chain(analytics)
         .collect();
     let (_, output) = sandboxed(&job_b.socket, &resolv, &unproxied)?;
-    let asked: Vec<&str> = output
-        .lines()
-        .filter_map(|l| l.strip_prefix("hyalos-dns-log: asked "))
-        .collect();
+    let asked: Vec<&str> = output.lines().filter_map(asked_name).collect();
     eprintln!("Codex with analytics on and no proxy: lookups {asked:?}");
     if !asked.iter().any(|n| n.contains("chatgpt.com")) {
         failures.push(format!("the DNS control saw no lookup\n{output}"));

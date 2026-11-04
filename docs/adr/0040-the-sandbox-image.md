@@ -42,7 +42,7 @@ Both base images are pinned by digest: `node:22-bookworm-slim` (Claude Code need
 Claude Code's `--tools` depends on the step, so whoever builds the job's command sets it, not the image.
 
 **The test checks two places, because the proxy hides lookups.** A harness that honors `HTTPS_PROXY` never resolves a name itself: its other traffic arrives on the broker channel as a proxy request. So `crates/sandbox-tools/tests/image.rs` checks both:
-- **DNS:** it runs each harness with the container substrate's isolation (no network, read-only root, an empty `/tmp`, user 65534, no capabilities) under `hyalos-dns-log`, a test-only program in the image's `test` target that answers DNS on the sandbox's loopback and lists every name asked;
+- **DNS:** it runs each harness with the container substrate's flags (no network, read-only root, the same 64 MiB `/tmp`, user 65534, no capabilities, the same memory and process limits) under `hyalos-dns-log`, a test-only program in the image's `test` target that answers DNS over UDP on the sandbox's loopback and lists every name asked;
 - **the channel:** it gives the sandbox a relay to the broker's socket that records the first line of every request.
 
 The broker is the real one, run in the test, with both providers pointed at a scripted model on loopback, so no key and no model is involved. Each harness must:
@@ -50,6 +50,8 @@ The broker is the real one, run in the test, with both providers pointed at a sc
 - reach its model through the broker;
 - make no lookup;
 - send nothing on the channel but model calls.
+
+What it cannot see: a lookup over TCP, and a connection to an IP literal, which `--network none` refuses in a job anyway. The recorder sees the first request of each connection, which is every request while the broker answers one call per connection.
 
 Two controls show the checks are not blind. With Codex's analytics turned back on, its tracking call arrives on the channel as `CONNECT ab.chatgpt.com:443`. With the proxy variables also cleared, it is a lookup the DNS log sees.
 
@@ -74,3 +76,8 @@ Not here:
 - **Result validation (S4.7, #84).**
 - **Running the image test under gVisor.**
 - **Images for other architectures.**
+- **The follow-ups in #166:**
+  - an init process as PID 1 for reaping and signals;
+  - TCP DNS in the log;
+  - a control for Claude Code's settings;
+  - exercising `skipWebFetchPreflight` once the proxy exists.

@@ -31,6 +31,10 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
     let code = run(&program, &args[1..]);
+    // A query sent just before the program ended may still be on its way.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    // On a line of its own, whatever the program wrote last.
+    eprintln!();
     for name in log.names() {
         eprintln!("hyalos-dns-log: asked {name}");
     }

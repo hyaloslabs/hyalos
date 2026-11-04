@@ -2,7 +2,8 @@ name: sandbox image
 
 # Builds the sandbox image and runs each harness in it under a DNS log and a record of the broker
 # channel (S2.9, ADR-0040). It runs when anything that goes into the image, or that the test drives,
-# changes: a pinned harness or SDK version, the image's settings, the sandbox tools, or the broker.
+# changes: a pinned harness or SDK version, the image's settings, the sandbox tools, the broker,
+# the substrate whose isolation the test copies, or the workspace's build settings.
 on:
   pull_request:
     paths:
@@ -10,7 +11,11 @@ on:
       - "crates/sandbox-tools/**"
       - "core/broker/**"
       - "core/types/**"
+      - "core/substrate/**"
+      - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
       - ".dockerignore"
       - ".github/workflows/sandbox-image.yml"
   push:
@@ -20,7 +25,11 @@ on:
       - "crates/sandbox-tools/**"
       - "core/broker/**"
       - "core/types/**"
+      - "core/substrate/**"
+      - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
       - ".dockerignore"
       - ".github/workflows/sandbox-image.yml"
 

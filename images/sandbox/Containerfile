@@ -9,7 +9,10 @@
 # ---- the sandbox's own programs, built from this workspace ------------------------------------
 FROM rust:1.99.1-slim-bookworm@sha256:ed2c95ca377d6571b124b05e75e01207973ded639dce7d5542eb7bcd797e32aa AS tools
 WORKDIR /src
-COPY . .
+COPY Cargo.toml Cargo.lock rust-toolchain.toml clippy.toml ./
+COPY .cargo .cargo
+COPY core core
+COPY crates crates
 RUN cargo build --release --locked -p hyalos-sandbox-tools
 
 # ---- the image jobs run in -------------------------------------------------------------------

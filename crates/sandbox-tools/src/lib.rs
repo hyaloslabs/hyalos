@@ -18,7 +18,7 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -38,6 +38,8 @@ pub const MAX_SUBMISSION: usize = 1024 * 1024;
 /// the process ends.
 pub fn forward(listener: TcpListener, socket: PathBuf) {
     let active = Arc::new(AtomicUsize::new(0));
+    // The first failure to reach the broker is said once, for whoever reads the sandbox's output.
+    let warned = Arc::new(AtomicBool::new(false));
     for stream in listener.incoming() {
         let Ok(tcp) = stream else {
             thread::sleep(Duration::from_millis(20));
@@ -47,14 +49,21 @@ pub fn forward(listener: TcpListener, socket: PathBuf) {
             active.fetch_sub(1, Ordering::SeqCst);
             continue;
         }
-        let (active, socket) = (Arc::clone(&active), socket.clone());
+        let (slot, socket, warned) = (Arc::clone(&active), socket.clone(), Arc::clone(&warned));
         let spawned = thread::Builder::new().spawn(move || {
-            let _ = relay(tcp, &socket);
-            active.fetch_sub(1, Ordering::SeqCst);
+            if let Err(e) = relay(tcp, &socket)
+                && !warned.swap(true, Ordering::SeqCst)
+            {
+                eprintln!(
+                    "hyalos-forward: cannot reach the broker at {}: {e}",
+                    socket.display()
+                );
+            }
+            slot.fetch_sub(1, Ordering::SeqCst);
         });
         if spawned.is_err() {
             // The closure, and the connection with it, is gone; give the slot back.
-            continue;
+            active.fetch_sub(1, Ordering::SeqCst);
         }
     }
 }
@@ -132,6 +141,7 @@ pub fn submit(forwarder: &str, body: &[u8]) -> io::Result<(u16, Vec<u8>)> {
     }
     let mut stream = TcpStream::connect(forwarder)?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     write!(
         stream,
         "POST /hyalos/submit HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
