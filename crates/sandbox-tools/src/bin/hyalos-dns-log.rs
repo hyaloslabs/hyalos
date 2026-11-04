@@ -1,9 +1,9 @@
 //! `hyalos-dns-log <program> [<args>...]`: for the image test only, never in the shipped image.
-//! Answers DNS on `127.0.0.1:53` with "no such name", runs the program, then prints every name that
+//! Answers DNS on `127.0.0.1:53`, over UDP and TCP, with "no such name", runs the program, then prints every name that
 //! was asked as one `hyalos-dns-log: asked <name>` line each on standard error, and exits as the
 //! program did.
 
-use std::net::UdpSocket;
+use std::net::{TcpListener, UdpSocket};
 use std::process::ExitCode;
 
 use hyalos_sandbox_tools::{DnsLog, run};
@@ -22,12 +22,18 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    let tcp = match TcpListener::bind(&addr) {
+        Ok(listener) => listener,
+        Err(e) => {
+            eprintln!("hyalos-dns-log: cannot listen on {addr} over TCP: {e}");
+            return ExitCode::from(1);
+        }
+    };
     let log = DnsLog::default();
-    let serving = log.clone();
-    if std::thread::Builder::new()
-        .spawn(move || serving.serve(socket))
-        .is_err()
-    {
+    let (udp_log, tcp_log) = (log.clone(), log.clone());
+    let udp = std::thread::Builder::new().spawn(move || udp_log.serve(socket));
+    let tcp = std::thread::Builder::new().spawn(move || tcp_log.serve_tcp(tcp));
+    if udp.is_err() || tcp.is_err() {
         return ExitCode::from(1);
     }
     let code = run(&program, &args[1..]);

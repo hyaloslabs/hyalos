@@ -5,7 +5,7 @@
 //!   harness and exits with its status.
 //! * `hyalos-submit` posts a job's typed result through the forwarder to the broker.
 //! * `hyalos-dns-log` is for the image test only and is not in the shipped image: it answers DNS on
-//!   loopback, records every name asked, and runs a program.
+//!   loopback over UDP and TCP, records every name asked, and runs a program.
 //!
 //! None of these is trusted: they run as the sandbox's user, next to the harness. The broker checks
 //! everything that arrives through them.
@@ -171,7 +171,7 @@ pub fn submit(forwarder: &str, body: &[u8]) -> io::Result<(u16, Vec<u8>)> {
     Ok((status, answer[split + 4..].to_vec()))
 }
 
-/// A DNS server on `socket` that answers every question "no such name" and records the name.
+/// A DNS server, over UDP and TCP, that answers every question "no such name" and records the name.
 #[derive(Debug, Clone, Default)]
 pub struct DnsLog {
     names: Arc<Mutex<Vec<String>>>,
@@ -185,19 +185,60 @@ impl DnsLog {
             let Ok((n, from)) = socket.recv_from(&mut buf) else {
                 continue;
             };
-            let Some((name, end)) = question(&buf[..n]) else {
+            if let Some(answer) = self.answer(&buf[..n]) {
+                let _ = socket.send_to(&answer, from);
+            }
+        }
+    }
+
+    /// Answers DNS over TCP on `listener` until the process ends: each message is a two-byte length
+    /// and a query, as a resolver sends when it falls back to TCP.
+    pub fn serve_tcp(&self, listener: TcpListener) {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else {
+                thread::sleep(Duration::from_millis(20));
                 continue;
             };
-            if let Ok(mut names) = self.names.lock() {
-                names.push(name);
-            }
-            let mut answer = Vec::with_capacity(end);
-            answer.extend_from_slice(&buf[..2]); // the id
-            // A response, recursion desired and available, "no such name"; one question, no answers.
-            answer.extend_from_slice(&[0x81, 0x83, 0, 1, 0, 0, 0, 0, 0, 0]);
-            answer.extend_from_slice(&buf[12..end]);
-            let _ = socket.send_to(&answer, from);
+            let log = self.clone();
+            let _ = thread::Builder::new().spawn(move || log.answer_stream(stream));
         }
+    }
+
+    fn answer_stream(&self, mut stream: TcpStream) {
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+        loop {
+            let mut length = [0u8; 2];
+            if stream.read_exact(&mut length).is_err() {
+                return;
+            }
+            let mut query = vec![0u8; usize::from(u16::from_be_bytes(length))];
+            if stream.read_exact(&mut query).is_err() {
+                return;
+            }
+            let Some(answer) = self.answer(&query) else {
+                return;
+            };
+            let Ok(n) = u16::try_from(answer.len()) else {
+                return;
+            };
+            if stream.write_all(&n.to_be_bytes()).is_err() || stream.write_all(&answer).is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Records the name `query` asks for and returns the "no such name" answer to it.
+    fn answer(&self, query: &[u8]) -> Option<Vec<u8>> {
+        let (name, end) = question(query)?;
+        if let Ok(mut names) = self.names.lock() {
+            names.push(name);
+        }
+        let mut answer = Vec::with_capacity(end);
+        answer.extend_from_slice(&query[..2]); // the id
+        // A response, recursion desired and available, "no such name"; one question, no answers.
+        answer.extend_from_slice(&[0x81, 0x83, 0, 1, 0, 0, 0, 0, 0, 0]);
+        answer.extend_from_slice(&query[12..end]);
+        Some(answer)
     }
 
     /// Every name asked so far, in order.
