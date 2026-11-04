@@ -1,0 +1,13 @@
+# The sandbox image builds from the repository root (images/sandbox/Containerfile). Only what the
+# build reads is sent, so no local file (.env, editor or agent settings) reaches even the build stage.
+*
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!.cargo
+!clippy.toml
+!core
+!crates
+!images/sandbox
+**/target
+**/node_modules

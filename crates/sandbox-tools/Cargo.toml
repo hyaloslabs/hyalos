@@ -1,0 +1,19 @@
+[package]
+name = "hyalos-sandbox-tools"
+description = "The programs inside the sandbox image: the forwarder to the broker's socket and the submit helper (ADR-0016, ADR-0040). They run in the sandbox, never in the engine or broker, so they are not part of the trusted core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Nothing outside the standard library: these run inside every sandbox.
+[dependencies]
+
+[dev-dependencies]
+# The image test runs the real broker in process against a scripted model (S2.9).
+hyalos-broker = { path = "../../core/broker" }
+hyalos-types = { path = "../../core/types" }
+serde_json = "1"

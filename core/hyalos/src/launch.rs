@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use hyalos_types::wire::{ToBroker, ToEngine, WIRE_VERSION, WireError, read_frame, write_frame};
+use hyalos_types::wire::{
+    MAX_SOCKET_PATH, ToBroker, ToEngine, WIRE_VERSION, WireError, read_frame, write_frame,
+};
 use hyalos_types::{ManifestKey, ManifestPublicKey};
 use std::os::unix::net::UnixStream;
 use zeroize::Zeroizing;
@@ -29,6 +31,9 @@ pub fn fresh_manifest_key() -> Result<ManifestKey, io::Error> {
     Ok(ManifestKey::from_seed(*seed))
 }
 
+/// The job's socket, in its directory.
+const SOCKET_NAME: &str = "broker.sock";
+
 /// A directory made for one job's broker socket (ADR-0038). Its name is drawn from the operating
 /// system, so only a process told the path can reach the socket in it; it can be entered but not
 /// listed by others (0711), because the sandbox runs as another user. Dropping it removes it.
@@ -38,12 +43,25 @@ pub struct JobDir {
 }
 
 impl JobDir {
-    /// Makes a fresh directory in `runtime_dir`, refusing one that exists.
+    /// Makes a fresh directory in `runtime_dir`, refusing one that exists, and refusing a runtime
+    /// directory whose path would make the job's socket longer than a socket path may be.
     pub fn create(runtime_dir: &Path) -> io::Result<Self> {
         let mut name = [0u8; 16];
         getrandom::fill(&mut name).map_err(|e| io::Error::other(e.to_string()))?;
         let hex: String = name.iter().map(|b| format!("{b:02x}")).collect();
         let path = runtime_dir.join(format!("hyalos-job-{hex}"));
+        let socket = path.join(SOCKET_NAME).as_os_str().len();
+        if socket > MAX_SOCKET_PATH {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "the runtime directory {} is too long for a job's socket: the socket's path \
+                     would be {socket} bytes, and a socket path may be at most {MAX_SOCKET_PATH}. \
+                     Use a shorter runtime directory.",
+                    runtime_dir.display()
+                ),
+            ));
+        }
         std::fs::DirBuilder::new().mode(0o711).create(&path)?;
         // The mode given is narrowed by the umask; set it exactly.
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o711))?;
@@ -56,7 +74,7 @@ impl JobDir {
 
     /// The socket the broker listens on for this job, and the sandbox's `broker_socket`.
     pub fn socket(&self) -> PathBuf {
-        self.path.join("broker.sock")
+        self.path.join(SOCKET_NAME)
     }
 }
 

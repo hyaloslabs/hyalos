@@ -1,0 +1,21 @@
+# Codex's settings in the sandbox (ADR-0016, ADR-0040). hyalos-forward copies this into $CODEX_HOME,
+# which must exist before Codex starts.
+
+# Model calls go to the forwarder; the broker adds the real key to the placeholder in OPENAI_API_KEY.
+model_provider = "hyalos"
+# The container is the boundary. Codex's own sandbox would block its commands from loopback, and so
+# from hyalos-submit.
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+# A provider-hosted tool runs outside the sandbox's network; the broker removes it anyway.
+web_search = "disabled"
+
+[analytics]
+# Without this Codex looks up ab.chatgpt.com at start and waits about 5 s for it.
+enabled = false
+
+[model_providers.hyalos]
+name = "hyalos"
+base_url = "http://127.0.0.1:8089/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"

@@ -1,0 +1,65 @@
+name: sandbox image
+
+# Builds the sandbox image and runs each harness in it under a DNS log and a record of the broker
+# channel (S2.9, ADR-0040). It runs when anything that goes into the image, or that the test drives,
+# changes: a pinned harness or SDK version, the image's settings, the sandbox tools, the broker,
+# the substrate whose isolation the test copies, or the workspace's build settings.
+on:
+  pull_request:
+    paths:
+      - "images/sandbox/**"
+      - "crates/sandbox-tools/**"
+      - "core/broker/**"
+      - "core/types/**"
+      - "core/substrate/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - ".dockerignore"
+      - ".github/workflows/sandbox-image.yml"
+  push:
+    branches: [main]
+    paths:
+      - "images/sandbox/**"
+      - "crates/sandbox-tools/**"
+      - "core/broker/**"
+      - "core/types/**"
+      - "core/substrate/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - ".dockerignore"
+      - ".github/workflows/sandbox-image.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  image:
+    name: sandbox image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      # Base images are pinned by digest in the Containerfile, harnesses by the lockfile.
+      - name: Build the image and its test target
+        run: |
+          docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox .
+          docker build -f images/sandbox/Containerfile --target test -t hyalos-sandbox:test .
+      - name: Each harness makes no lookup and no call but its model's
+        run: cargo test -p hyalos-sandbox-tools --locked --test image -- --nocapture
+        env:
+          HYALOS_REQUIRE_SANDBOX_IMAGE: "1"

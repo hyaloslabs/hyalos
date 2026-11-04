@@ -1,0 +1,63 @@
+# The sandbox image (ADR-0016, ADR-0040): the four pinned harnesses, the forwarder and the submit
+# helper. Build from the repository root:
+#
+#   docker build -f images/sandbox/Containerfile -t hyalos-sandbox .
+#
+# The `test` target adds what the image test needs (hyalos-dns-log and the SDK scripts); the default
+# target is the image jobs run in. Network is used while building, never while a job runs.
+
+# ---- the sandbox's own programs, built from this workspace ------------------------------------
+FROM rust:1.99.1-slim-bookworm@sha256:ed2c95ca377d6571b124b05e75e01207973ded639dce7d5542eb7bcd797e32aa AS tools
+WORKDIR /src
+COPY Cargo.toml Cargo.lock rust-toolchain.toml clippy.toml ./
+COPY .cargo .cargo
+COPY core core
+COPY crates crates
+RUN cargo build --release --locked -p hyalos-sandbox-tools
+
+# ---- the image jobs run in -------------------------------------------------------------------
+# Debian bookworm, the same C library the tools were built against.
+FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS sandbox
+
+# The harnesses and SDKs, pinned exactly with every dependency in the lockfile.
+WORKDIR /opt/hyalos/harness
+COPY images/sandbox/harness/package.json images/sandbox/harness/package-lock.json ./
+# npm installs the musl builds next to the glibc ones; this image is glibc, so they are dead weight.
+RUN npm ci --omit=dev --no-audit --no-fund \
+ && rm -rf node_modules/@anthropic-ai/*-musl \
+ && npm cache clean --force
+
+COPY --from=tools /src/target/release/hyalos-forward /src/target/release/hyalos-submit /usr/local/bin/
+COPY images/sandbox/etc/codex/config.toml /etc/hyalos/codex/config.toml
+COPY images/sandbox/etc/claude-code/managed-settings.json /etc/claude-code/managed-settings.json
+
+# Every setting ADR-0016 lists, so a harness started here makes no call but its model's.
+# The keys are placeholders: the broker drops them and adds the real one. $HOME and $CODEX_HOME
+# are on the sandbox's empty /tmp, and hyalos-forward makes them before the harness starts.
+ENV PATH=/opt/hyalos/harness/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    HOME=/tmp/home \
+    CODEX_HOME=/tmp/codex \
+    ANTHROPIC_BASE_URL=http://127.0.0.1:8089 \
+    ANTHROPIC_API_KEY=placeholder-not-a-key \
+    OPENAI_BASE_URL=http://127.0.0.1:8089/v1 \
+    OPENAI_API_KEY=placeholder-not-a-key \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    DISABLE_AUTOUPDATER=1 \
+    DISABLE_TELEMETRY=1 \
+    DISABLE_ERROR_REPORTING=1 \
+    OPENAI_AGENTS_DISABLE_TRACING=1 \
+    HTTPS_PROXY=http://127.0.0.1:8089 \
+    HTTP_PROXY=http://127.0.0.1:8089 \
+    https_proxy=http://127.0.0.1:8089 \
+    http_proxy=http://127.0.0.1:8089 \
+    NO_PROXY=127.0.0.1,localhost \
+    no_proxy=127.0.0.1,localhost
+
+WORKDIR /tmp
+# Substrates set the program as the entrypoint (ADR-0032), so jobs run `hyalos-forward <harness> ...`.
+ENTRYPOINT ["/usr/local/bin/hyalos-forward"]
+
+# ---- the image test's additions ----------------------------------------------------------------
+FROM sandbox AS test
+COPY --from=tools /src/target/release/hyalos-dns-log /usr/local/bin/
+COPY images/sandbox/test/ /opt/hyalos/harness/test/
