@@ -51,4 +51,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0035](0035-the-private-channel-between-engine-and-broker.md) | The private channel between the engine and the broker | Accepted |
 | [0036](0036-the-simulated-world-and-the-log-scan.md) | The simulated world and the log scan | Accepted |
 | [0037](0037-model-protocol-adapters-and-their-line-budget.md) | Model protocol adapters and their line budget | Accepted |
-| [0038](0038-model-calls-from-the-sandbox-and-the-provider-key-file.md) | Model calls from the sandbox, and the provider key file | Proposed |
+| [0038](0038-model-calls-from-the-sandbox-and-the-provider-key-file.md) | Model calls from the sandbox, and the provider key file | Accepted |

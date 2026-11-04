@@ -1,6 +1,6 @@
 # ADR-0038: Model calls from the sandbox, and the provider key file
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
