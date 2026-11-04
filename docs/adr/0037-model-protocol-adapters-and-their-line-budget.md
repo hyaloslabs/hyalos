@@ -1,6 +1,6 @@
 # ADR-0037: Model protocol adapters and their line budget
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
