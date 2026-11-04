@@ -1,6 +1,6 @@
 # ADR-0045: Forge tokens up to 4 KiB, and revoking a token the engine cannot use
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
