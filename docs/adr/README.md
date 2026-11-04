@@ -53,5 +53,5 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0037](0037-model-protocol-adapters-and-their-line-budget.md) | Model protocol adapters and their line budget | Accepted |
 | [0038](0038-model-calls-from-the-sandbox-and-the-provider-key-file.md) | Model calls from the sandbox, and the provider key file | Accepted |
 | [0039](0039-tls-to-model-providers.md) | TLS to model providers | Accepted |
-| [0040](0040-the-sandbox-image.md) | The sandbox image | Proposed |
+| [0040](0040-the-sandbox-image.md) | The sandbox image | Accepted |
 | [0041](0041-an-init-in-the-sandbox-and-the-image-tests-further-checks.md) | An init in the sandbox, and the image test's further checks | Proposed |

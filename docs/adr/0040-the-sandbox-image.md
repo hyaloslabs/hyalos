@@ -1,6 +1,6 @@
 # ADR-0040: The sandbox image
 
-**Status:** Proposed
+**Status:** Accepted. [ADR-0041](0041-an-init-in-the-sandbox-and-the-image-tests-further-checks.md) adds an init as PID 1, DNS over TCP in the DNS log and a control for Claude Code, and moves the `skipWebFetchPreflight` check to S3.5 (#20).
 
 ## Context
 
