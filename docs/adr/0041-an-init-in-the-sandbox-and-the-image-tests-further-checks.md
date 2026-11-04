@@ -1,6 +1,6 @@
 # ADR-0041: An init in the sandbox, and the image test's further checks
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
