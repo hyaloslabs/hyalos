@@ -1,6 +1,6 @@
 # ADR-0036: The simulated world and the log scan
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

@@ -49,4 +49,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0033](0033-the-shipped-policy-schema-baseline-and-proofs.md) | The shipped policy schema, baseline and proofs | Accepted |
 | [0034](0034-the-operator-policy-store-and-minting-within-policy.md) | The operator policy store and minting within policy | Accepted |
 | [0035](0035-the-private-channel-between-engine-and-broker.md) | The private channel between the engine and the broker | Accepted |
-| [0036](0036-the-simulated-world-and-the-log-scan.md) | The simulated world and the log scan | Proposed |
+| [0036](0036-the-simulated-world-and-the-log-scan.md) | The simulated world and the log scan | Accepted |
