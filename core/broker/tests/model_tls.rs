@@ -56,6 +56,33 @@ enum Seen {
     HandshakeFailed,
 }
 
+/// A connection that keeps every raw byte it reads, so a test can show what crossed the wire.
+struct Recorded {
+    tcp: TcpStream,
+    raw: Vec<u8>,
+}
+
+impl Read for Recorded {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.tcp.read(buf)?;
+        self.raw.extend_from_slice(&buf[..n]);
+        Ok(n)
+    }
+}
+
+impl Write for Recorded {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.tcp.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.tcp.flush()
+    }
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
 fn read_request(stream: impl Read) -> ServerRes<Seen> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -87,18 +114,24 @@ fn read_request(stream: impl Read) -> ServerRes<Seen> {
     })
 }
 
-type Served = thread::JoinHandle<ServerRes<Vec<Seen>>>;
+/// Each connection: what it was, and every raw byte the server received on it.
+type Connections = Vec<(Seen, Vec<u8>)>;
+type Served = thread::JoinHandle<ServerRes<Connections>>;
 
 /// A TLS server on loopback that answers each connection with the next of `responses`, and returns
 /// what each connection was. It returns the port.
 fn server(responses: Vec<Vec<u8>>) -> Result<(u16, Served), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
-    let handle = thread::spawn(move || -> ServerRes<Vec<Seen>> {
+    let handle = thread::spawn(move || -> ServerRes<Connections> {
         let config = server_config()?;
         let mut seen = Vec::new();
         for response in responses {
             let (tcp, _) = listener.accept()?;
+            let tcp = Recorded {
+                tcp,
+                raw: Vec::new(),
+            };
             let mut tls = StreamOwned::new(ServerConnection::new(Arc::clone(&config))?, tcp);
             let request = read_request(&mut tls)?;
             if matches!(request, Seen::Request { .. }) {
@@ -106,14 +139,19 @@ fn server(responses: Vec<Vec<u8>>) -> Result<(u16, Served), Box<dyn std::error::
                 tls.conn.send_close_notify();
                 tls.flush()?;
             }
-            seen.push(request);
+            if matches!(request, Seen::HandshakeFailed) {
+                // Whatever the client sends after failing, keep it too.
+                let mut rest = Vec::new();
+                let _ = tls.sock.read_to_end(&mut rest);
+            }
+            seen.push((request, std::mem::take(&mut tls.sock.raw)));
         }
         Ok(seen)
     });
     Ok((port, handle))
 }
 
-fn joined(server: Served) -> Result<Vec<Seen>, Box<dyn std::error::Error>> {
+fn joined(server: Served) -> Result<Connections, Box<dyn std::error::Error>> {
     Ok(server
         .join()
         .map_err(|_| "server panicked")?
@@ -213,11 +251,15 @@ fn a_provider_over_tls_streams_and_answers_like_a_local_one() -> Res {
     assert_eq!(meter.spent(job.job), 48);
 
     let seen = joined(server)?;
-    let Seen::Request { headers, body } = &seen[0] else {
+    let (Seen::Request { headers, body }, raw) = &seen[0] else {
         return Err(format!("{seen:?}").into());
     };
     assert!(headers.contains(&("authorization".into(), format!("Bearer {KEY}"))));
     assert!(headers.contains(&("host".into(), format!("localhost:{port}"))));
+    assert!(
+        !contains(raw, KEY.as_bytes()),
+        "the key crossed the wire only encrypted"
+    );
     assert!(
         !body.to_string().contains("web_search"),
         "hosted tools are removed over TLS too: {body}"
@@ -238,8 +280,11 @@ fn a_certificate_the_mozilla_roots_do_not_vouch_for_is_refused_before_the_key_is
         request(&json!({ "model": "m", "input": "hi" })),
     );
     assert_eq!(response.status, 502, "refused at once, not retried");
-    assert!(matches!(joined(server)?[..], [Seen::HandshakeFailed]));
-    Ok(())
+    assert_eq!(
+        response.reason.map(|c| c.as_str().to_string()),
+        Some("provider.tls_refused".into())
+    );
+    refused_without_the_key(server)
 }
 
 #[test]
@@ -255,9 +300,19 @@ fn a_certificate_for_another_name_is_refused() -> Res {
     };
     assert_eq!(
         transport.send(&upstream).err(),
-        Some(TransportError("transport.tls_refused"))
+        Some(TransportError::TLS_REFUSED)
     );
-    assert!(matches!(joined(server)?[..], [Seen::HandshakeFailed]));
+    refused_without_the_key(server)
+}
+
+/// The one connection failed its handshake, and the key is nowhere in what the server received.
+fn refused_without_the_key(server: Served) -> Res {
+    let seen = joined(server)?;
+    let [(Seen::HandshakeFailed, raw)] = &seen[..] else {
+        return Err(format!("{seen:?}").into());
+    };
+    assert!(!raw.is_empty(), "the server saw the client's hello");
+    assert!(!contains(raw, KEY.as_bytes()), "the key was sent");
     Ok(())
 }
 
@@ -268,7 +323,7 @@ fn a_server_that_is_not_there_is_unreachable_and_one_that_is_not_tls_is_refused(
         HttpTransport::with_roots_der(&format!("https://localhost:{port}"), &test_authority()?)?;
     let upstream = Upstream {
         target: "/v1/responses".into(),
-        headers: Vec::new(),
+        headers: vec![("authorization".into(), format!("Bearer {KEY}"))],
         body: b"{}".to_vec(),
     };
     assert_eq!(
@@ -279,17 +334,20 @@ fn a_server_that_is_not_there_is_unreachable_and_one_that_is_not_tls_is_refused(
     // A plain HTTP server answering a TLS hello.
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
-    let plain = thread::spawn(move || -> std::io::Result<()> {
+    let plain = thread::spawn(move || -> std::io::Result<Vec<u8>> {
         let (mut stream, _): (TcpStream, _) = listener.accept()?;
         stream.write_all(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n")?;
-        Ok(())
+        let mut received = Vec::new();
+        stream.read_to_end(&mut received)?;
+        Ok(received)
     });
     let transport =
         HttpTransport::with_roots_der(&format!("https://localhost:{port}"), &test_authority()?)?;
     assert_eq!(
         transport.send(&upstream).err(),
-        Some(TransportError("transport.tls_refused"))
+        Some(TransportError::TLS_REFUSED)
     );
-    plain.join().map_err(|_| "panicked")??;
+    let received = plain.join().map_err(|_| "panicked")??;
+    assert!(!received.is_empty() && !contains(&received, KEY.as_bytes()));
     Ok(())
 }

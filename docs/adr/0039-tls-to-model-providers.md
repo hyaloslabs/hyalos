@@ -14,12 +14,15 @@ The broker makes every model call with the provider's key ([ADR-0002](0002-one-b
 
 **Certificate checks cannot be turned off.** No setting in `provider.keys`, the environment or the command line touches TLS. An unknown name in the key file is refused, as before. `HttpTransport::new` always uses the compiled-in roots. `HttpTransport::with_roots_der` takes other roots, and exists so tests can trust their own test authority. Only code calls it; nothing read at run time reaches it. The handshake, including the certificate and name check, completes before the request is written, so the key is never sent to a server that fails it.
 
-**One transport, two schemes.** `HttpTransport` takes `https://host[:port]` (any host, port 443 by default) or `http://host[:port]` (loopback only, as in ADR-0037). Both share the same request writing, response reading, chunked decoding and timeouts. A failed handshake or certificate is `transport.tls_refused`, which the relay answers with 502 at once and does not retry, since retrying cannot fix a certificate. A host that cannot be reached is still `transport.unreachable` and is retried.
+**One transport, two schemes.** `HttpTransport` takes `https://host[:port]` (any host, port 443 by default) or `http://host[:port]` (loopback only, as in ADR-0037). Both share the same request writing, response reading, chunked decoding and timeouts. A TLS failure (the certificate, the name or the protocol) is `transport.tls_refused`, which the relay answers with 502 `provider.tls_refused` at once and does not retry, since retrying cannot fix a certificate. A host that cannot be reached, or a network failure during the handshake, is still `transport.unreachable` and is retried: nothing was sent. Connecting and the handshake each have 30 seconds; after the handshake the 300-second silence limit for a streaming response applies.
 
 **What it adds.**
-- Crates: `rustls`, `rustls-webpki`, `rustls-pki-types`, `ring`, `untrusted` and `webpki-roots`. `zeroize`, `subtle`, `once_cell` and `getrandom` were already in the build.
+- Crates:
+  - new: `rustls`, `rustls-webpki`, `rustls-pki-types`, `ring`, `untrusted`, `webpki-roots` and `once_cell`;
+  - second versions next to ones already in the build, which `cargo deny` reports as warnings: `getrandom` 0.2 (used by `ring`), and `windows-sys` 0.52 with its `windows-targets` crates (built only on Windows, which Hyalos does not support);
+  - `zeroize` and `subtle` were already in the build.
 - Licenses in `deny.toml`: `ring`, `rustls-webpki` and `untrusted` bring `ISC`; `webpki-roots` brings `CDLA-Permissive-2.0`, a permissive license for data.
-- The new code fits the existing 1,200-line budget for `core/broker/src/model`: it is at 1,009 lines.
+- The new code fits the existing 1,200-line budget for `core/broker/src/model`: it is at 1,035 lines.
 
 ## Consequences
 
@@ -27,6 +30,7 @@ The broker reaches `api.anthropic.com` and `api.openai.com` with the keys in `pr
 - a stream and a sized response pass through the relay as they do over plain HTTP;
 - the Mozilla roots refuse the test certificate before any request is sent;
 - a certificate for another name is refused;
-- a server that does not speak TLS is refused, and one that is not there is unreachable.
+- a server that does not speak TLS is refused, and one that is not there is unreachable;
+- in every refusal, the key is nowhere in the bytes the server received, and in a successful call it crossed the wire only encrypted.
 
 The roots age with the dependency, so `webpki-roots` must be kept current like any other security dependency. Revocation is not checked: rustls with these roots does no OCSP or CRL lookup, which matches common practice for API clients. Not here: HTTP/2, connection reuse between calls, and a proxy for the broker's own outbound traffic.

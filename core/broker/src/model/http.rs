@@ -16,6 +16,8 @@ use super::{Transport, TransportError, Upstream, UpstreamResponse};
 
 const MAX_HEAD: usize = 16 * 1024;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+/// The longest a connection or a TLS handshake may take.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The longest silence allowed while a response streams.
 const READ_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -102,6 +104,15 @@ impl HttpTransport {
     }
 }
 
+/// Connects to the first address of `authority` that answers within the connect timeout.
+fn connect(authority: &str) -> Option<TcpStream> {
+    use std::net::ToSocketAddrs;
+    authority
+        .to_socket_addrs()
+        .ok()?
+        .find_map(|addr| TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).ok())
+}
+
 /// A connection the request is written to and the response read from.
 trait Stream: Read + Write + Send {}
 impl<T: Read + Write + Send> Stream for T {}
@@ -131,21 +142,32 @@ impl Transport for HttpTransport {
         head.push_str("\r\n");
 
         let unreachable = |_| TransportError::UNREACHABLE;
-        let mut tcp = TcpStream::connect(&self.authority).map_err(unreachable)?;
+        let mut tcp = connect(&self.authority).ok_or(TransportError::UNREACHABLE)?;
         tcp.set_write_timeout(Some(WRITE_TIMEOUT))
             .map_err(unreachable)?;
-        tcp.set_read_timeout(Some(READ_TIMEOUT))
+        tcp.set_read_timeout(Some(CONNECT_TIMEOUT))
             .map_err(unreachable)?;
         let mut stream: Box<dyn Stream> = match &self.tls {
-            None => Box::new(tcp),
+            None => {
+                tcp.set_read_timeout(Some(READ_TIMEOUT))
+                    .map_err(unreachable)?;
+                Box::new(tcp)
+            }
             Some((config, name)) => {
-                let refused = TransportError("transport.tls_refused");
-                let mut tls =
-                    ClientConnection::new(Arc::clone(config), name.clone()).map_err(|_| refused)?;
+                let mut tls = ClientConnection::new(Arc::clone(config), name.clone())
+                    .map_err(|_| TransportError::TLS_REFUSED)?;
                 // The handshake completes, and the certificate is checked, before the key is sent.
+                // A TLS failure is refused; a network one sent nothing and may be tried again.
                 while tls.is_handshaking() {
-                    tls.complete_io(&mut tcp).map_err(|_| refused)?;
+                    tls.complete_io(&mut tcp).map_err(|e| {
+                        match e.get_ref().is_some_and(|inner| inner.is::<rustls::Error>()) {
+                            true => TransportError::TLS_REFUSED,
+                            false => TransportError::UNREACHABLE,
+                        }
+                    })?;
                 }
+                tcp.set_read_timeout(Some(READ_TIMEOUT))
+                    .map_err(unreachable)?;
                 Box::new(StreamOwned::new(tls, tcp))
             }
         };
