@@ -60,6 +60,6 @@ jobs:
           docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox .
           docker build -f images/sandbox/Containerfile --target test -t hyalos-sandbox:test .
       - name: Each harness makes no lookup and no call but its model's
-        run: cargo test -p hyalos-sandbox-tools --locked --test image -- --nocapture
+        run: cargo test -p hyalos-sandbox-tools --locked --test image --test egress -- --nocapture
         env:
           HYALOS_REQUIRE_SANDBOX_IMAGE: "1"

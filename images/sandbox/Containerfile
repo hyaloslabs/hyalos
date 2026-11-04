@@ -59,5 +59,15 @@ ENTRYPOINT ["/usr/local/bin/hyalos-forward"]
 
 # ---- the image test's additions ----------------------------------------------------------------
 FROM sandbox AS test
+# curl, for a harness's shell command in the egress test (ADR-0042). From the Debian snapshot the base
+# image was built from, so this stage installs the same version every time; the shipped image has none.
+# The image's proxy variables name the sandbox's forwarder, so apt is told to go direct.
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/20261027T000000Z\nSuites: bookworm\nComponents: main\n' \
+        > /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::http::Proxy=false -o Acquire::Retries=5 -o Acquire::Check-Valid-Until=false update \
+    && apt-get -o Acquire::http::Proxy=false -o Acquire::Retries=5 install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=tools /src/target/release/hyalos-dns-log /usr/local/bin/
 COPY images/sandbox/test/ /opt/hyalos/harness/test/
+# The test authority for allowed.hyalos.test; its key was discarded when it was made.
+COPY crates/sandbox-tools/tests/fixtures/tls/ca.pem /opt/hyalos/harness/test/ca.pem

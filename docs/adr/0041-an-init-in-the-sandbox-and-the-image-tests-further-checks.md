@@ -1,6 +1,6 @@
 # ADR-0041: An init in the sandbox, and the image test's further checks
 
-**Status:** Accepted
+**Status:** Accepted. The `skipWebFetchPreflight` check is in the egress test of [ADR-0042](0042-the-egress-gate-and-the-allowlisting-proxy.md).
 
 ## Context
 
