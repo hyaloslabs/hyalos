@@ -1,6 +1,6 @@
 # ADR-0052: Reading the job's issue from GitHub
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
