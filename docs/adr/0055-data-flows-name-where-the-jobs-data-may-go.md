@@ -1,6 +1,6 @@
 # ADR-0055: Data flows name where the job's data may go
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
