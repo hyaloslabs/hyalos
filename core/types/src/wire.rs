@@ -3,8 +3,10 @@
 //!
 //! **Only typed values cross.** A message is a closed set of variants whose fields are ids, enums,
 //! digests, short [`ReasonCode`]s and, from the engine only, a signed manifest. Nothing in what the
-//! broker sends the engine can hold model text or raw forge content: there is no string field that is
-//! not a reason code (lowercase letters, digits and `.`, `_`, `-`, at most 64 bytes), no map, no list
+//! broker sends the engine can hold model text or raw forge content. The one place forge-authored text
+//! crosses is a [`ForgeIssue`] (ADR-0047): fixed fields, each capped, every text in it a
+//! [`crate::ForgeText`] whose type says it is forge-authored. Apart from that there is no string field
+//! that is not a reason code (lowercase letters, digits and `.`, `_`, `-`, at most 64 bytes), no map
 //! and no `any`. A frame is refused whole if it has a field the type does not name, a variant it does
 //! not know, a value of the wrong type, or more bytes than the cap. Refusing says what kind of fault it
 //! was and nothing from inside the frame, since that content is the very thing that must not cross.
@@ -18,10 +20,12 @@ use std::io::{self, Read, Write};
 use serde::de::{DeserializeOwned, Deserializer, Error as _};
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::{Answer, Digest, ForgeToken, Gate, JobId, ManifestPublicKey, ReasonCode, Role, hex};
+use crate::{
+    Answer, Digest, ForgeIssue, ForgeToken, Gate, JobId, ManifestPublicKey, ReasonCode, Role, hex,
+};
 
 /// The version of this protocol. Both sides say theirs first and stop on a mismatch.
-pub const WIRE_VERSION: u32 = 3;
+pub const WIRE_VERSION: u32 = 4;
 
 /// The longest job socket path the engine makes and the broker binds (ADR-0038). A Unix socket
 /// path is limited to about 107 bytes; this leaves room.
@@ -57,6 +61,9 @@ pub enum ToBroker {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         forge_token: Option<ForgeToken>,
     },
+    /// Read issue `number` of the job's repository from the forge, with the job's forge token
+    /// (ADR-0047). The answer is `Issue`, or `Refused` when the read failed, which fails the job.
+    ReadIssue { job: JobId, number: u64 },
     /// A job has ended, so a manifest for it is no longer admitted.
     EndJob { job: JobId },
     /// Stop serving.
@@ -71,8 +78,11 @@ pub enum ToEngine {
     Ready { version: u32 },
     /// The job's manifest was admitted.
     Admitted { job: JobId },
-    /// The job's manifest was not admitted, and the code says why.
+    /// The job's manifest was not admitted, or something the broker did for it failed, and the code
+    /// says why. Either way the job has failed and the broker has forgotten it.
     Refused { job: JobId, reason: ReasonCode },
+    /// The issue asked for with `ReadIssue`, as typed forge-authored values (ADR-0047).
+    Issue { job: JobId, issue: ForgeIssue },
     /// A gate answered for a job. This is the one fact the broker reports that the engine records
     /// (`gate.answered`, ADR-0024): a verdict, the digest of what was asked, and a code.
     Gate {
@@ -232,7 +242,7 @@ mod tests {
                     manifest_key: key,
                 },
                 format!(
-                    r#"{{"kind":"hello","version":3,"manifest_key":"{}"}}"#,
+                    r#"{{"kind":"hello","version":4,"manifest_key":"{}"}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -257,6 +267,13 @@ mod tests {
                 r#"{"kind":"start_job","job":3,"role":"actor","manifest":"00","socket":"/s","forge_token":{"token":"ghs_x","expires_at":9}}"#.to_string(),
             ),
             (
+                ToBroker::ReadIssue {
+                    job: JobId::from_seq(3),
+                    number: 12,
+                },
+                r#"{"kind":"read_issue","job":3,"number":12}"#.to_string(),
+            ),
+            (
                 ToBroker::EndJob {
                     job: JobId::from_seq(3),
                 },
@@ -270,7 +287,17 @@ mod tests {
             write_frame(&mut bytes, &message)?;
             assert_eq!(read_frame::<_, ToBroker>(&mut &bytes[..])?, Some(message));
         }
+        let issue: ForgeIssue = serde_json::from_str(
+            r#"{"number":12,"state":"open","title":"t","body":"b","author":null,"labels":[]}"#,
+        )?;
         let to_engine = [
+            (
+                ToEngine::Issue {
+                    job: JobId::from_seq(3),
+                    issue,
+                },
+                r#"{"kind":"issue","job":3,"issue":{"number":12,"state":"open","title":"t","body":"b","author":null,"labels":[]}}"#.to_string(),
+            ),
             (
                 ToEngine::Ready { version: 1 },
                 r#"{"kind":"ready","version":1}"#.to_string(),
@@ -334,6 +361,17 @@ mod tests {
             // A variant the engine does not accept from the broker.
             format!(r#"{{"kind":"model_output","text":"{secret}"}}"#),
             format!(r#"{{"kind":"forge_content","body":"{page}"}}"#),
+            // An issue with a field the type does not have, or over its caps.
+            format!(
+                r#"{{"kind":"issue","job":3,"issue":{{"number":1,"state":"open","title":"t","body":"b","author":null,"labels":[],"note":"{secret}"}}}}"#
+            ),
+            format!(
+                r#"{{"kind":"issue","job":3,"issue":{{"number":1,"state":"open","title":"t","body":"{}","author":null,"labels":[]}}}}"#,
+                "ignore ".repeat(5_000)
+            ),
+            format!(
+                r#"{{"kind":"issue","job":3,"issue":{{"number":1,"state":"merged","title":"{secret}","body":"b","author":null,"labels":[]}}}}"#
+            ),
             // The wrong kind of value where an id, a digest or an enum goes.
             format!(r#"{{"kind":"admitted","job":"{secret}"}}"#),
             format!(

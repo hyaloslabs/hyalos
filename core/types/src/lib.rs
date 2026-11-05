@@ -10,6 +10,7 @@ pub mod hex;
 pub mod ids;
 pub mod manifest;
 pub mod origin;
+pub mod provenance;
 pub mod reason;
 pub mod schema;
 pub mod snapshot;
@@ -28,6 +29,7 @@ pub use manifest::{
     OpenError, Role, SignedManifest,
 };
 pub use origin::Origin;
+pub use provenance::{ForgeIssue, ForgeText, IssueState, Provenance, StepInputs};
 pub use reason::{Answer, ReasonCode};
 pub use schema::{Schema, Upcast, UpcastFn, Value};
 pub use snapshot::{ImageError, PolicyImage, STATE_VERSION, StateImage};

@@ -22,6 +22,7 @@ use hyalos_types::{
     Clock, ForgeToken, JobId, Manifest, ManifestPublicKey, ReasonCode, SignedManifest,
 };
 
+use crate::forge::Forge;
 use crate::sandbox::{JobSocket, Sandboxes};
 use crate::{Admission, Credential, LiveJobs};
 
@@ -49,6 +50,8 @@ pub struct Broker {
     sockets: BTreeMap<JobId, JobSocket>,
     /// Where facts the broker reports unprompted go: the egress gate's refusals (ADR-0042).
     reports: Option<Sender<ToEngine>>,
+    /// Where the broker reads forge content for a job (ADR-0047).
+    forge: Forge,
 }
 
 impl Broker {
@@ -62,6 +65,26 @@ impl Broker {
             sandboxes: None,
             sockets: BTreeMap::new(),
             reports: None,
+            forge: Forge::github(),
+        }
+    }
+
+    /// Reads forge content from `forge` instead of github.com. For tests; called only from code.
+    pub fn with_forge(mut self, forge: Forge) -> Self {
+        self.forge = forge;
+        self
+    }
+
+    /// Forgets a job: its manifest, its token, its socket and its meter.
+    fn end(&mut self, job: JobId) {
+        self.jobs.0.remove(&job);
+        self.admitted.remove(&job);
+        self.forge_tokens.remove(&job);
+        // Ends the socket first: calls still open are refused or cut off, and anything they settle
+        // later is not added back to a forgotten meter.
+        self.sockets.remove(&job);
+        if let Some(sandboxes) = &self.sandboxes {
+            sandboxes.models.meter().forget(job);
         }
     }
 
@@ -99,16 +122,37 @@ impl Broker {
             ToBroker::Hello { .. } => Err(ServeError::Order),
             ToBroker::Shutdown => Ok(None),
             ToBroker::EndJob { job } => {
-                self.jobs.0.remove(&job);
-                self.admitted.remove(&job);
-                self.forge_tokens.remove(&job);
-                // Ends the socket first: calls still open are refused or cut off, and anything they
-                // settle later is not added back to a forgotten meter.
-                self.sockets.remove(&job);
-                if let Some(sandboxes) = &self.sandboxes {
-                    sandboxes.models.meter().forget(job);
-                }
+                self.end(job);
                 Ok(Some(Vec::new()))
+            }
+            ToBroker::ReadIssue { job, number } => {
+                let Some(manifest) = self.admitted.get(&job) else {
+                    return Ok(Some(vec![ToEngine::Refused {
+                        job,
+                        reason: code("admission.not_live"),
+                    }]));
+                };
+                if clock.now() > manifest.deadline {
+                    self.end(job);
+                    return Ok(Some(vec![ToEngine::Refused {
+                        job,
+                        reason: code("admission.expired"),
+                    }]));
+                }
+                // Content that fails to read or parse fails this job, never the broker (ADR-0002).
+                match self
+                    .forge
+                    .read_issue(manifest, self.forge_tokens.get(&job), number)
+                {
+                    Ok(issue) => Ok(Some(vec![ToEngine::Issue { job, issue }])),
+                    Err(reason) => {
+                        self.end(job);
+                        Ok(Some(vec![ToEngine::Refused {
+                            job,
+                            reason: code(reason),
+                        }]))
+                    }
+                }
             }
             ToBroker::StartJob {
                 job,

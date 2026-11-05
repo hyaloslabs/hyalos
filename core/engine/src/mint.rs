@@ -1,4 +1,5 @@
-//! Minting a manifest only within policy (S3.13, ADR-0004, ADR-0008, ADR-0034).
+//! Minting a manifest only within policy (S3.13, ADR-0004, ADR-0008, ADR-0034), and only tainted when
+//! the step's role or inputs make it so (S3.14, ADR-0005, ADR-0047).
 //!
 //! The engine signs a manifest for a job only if the policy in force allows every capability the
 //! manifest asks for. Each action, tool, data flow and egress host in it is put to the policy as a
@@ -15,7 +16,8 @@ use std::fmt;
 
 use hyalos_policy::{Action, JobFacts, PolicyRequest, TargetFacts, codes};
 use hyalos_types::{
-    Answer, JobId, Manifest, ManifestError, ManifestKey, ReasonCode, SignedManifest, Timestamp,
+    Answer, JobId, Manifest, ManifestError, ManifestKey, ReasonCode, SignedManifest, StepInputs,
+    Timestamp,
 };
 
 use crate::engine::Engine;
@@ -42,6 +44,11 @@ pub mod mint_codes {
     /// The manifest's deadline is not in the future.
     pub fn expired() -> ReasonCode {
         code("mint.expired")
+    }
+
+    /// The step reads forge-authored content, or is an actor, and the manifest is not tainted.
+    pub fn taint_required() -> ReasonCode {
+        code("mint.taint_required")
     }
 }
 
@@ -88,12 +95,16 @@ fn is_repo_action(action: Action) -> bool {
 }
 
 impl Engine {
-    /// Signs `manifest` with `key` if its job is running, its deadline is after `now`, and the policy
-    /// in force allows every capability it asks for (ADR-0004, ADR-0008). Nothing is written to the
-    /// log: no event records a manifest yet, so this is a decision and a signature, not a change.
+    /// Signs `manifest` with `key` for a step that reads `inputs`, if its job is running, its deadline
+    /// is after `now`, it is tainted whenever the step's role or inputs taint it, and the policy in
+    /// force allows every capability it asks for (ADR-0004, ADR-0005, ADR-0008). Taint is derived, not
+    /// requested: an actor, or a step given forge-authored content, gets only a tainted manifest. A
+    /// tainted manifest for a step that does not need one is allowed, since it can do less. Nothing
+    /// is written to the log: no event records a manifest yet, so this is a decision and a signature.
     pub fn mint_manifest(
         &self,
         manifest: &Manifest,
+        inputs: &StepInputs,
         key: &ManifestKey,
         now: Timestamp,
     ) -> Result<SignedManifest, MintRefusal> {
@@ -103,6 +114,9 @@ impl Engine {
         }
         if manifest.deadline <= now {
             return Err(invalid(mint_codes::expired()));
+        }
+        if inputs.tainted(manifest.role) && !manifest.tainted {
+            return Err(invalid(mint_codes::taint_required()));
         }
         let asks = asks(manifest)?;
         let policies = self.policies().map_err(|_| MintRefusal::Held {

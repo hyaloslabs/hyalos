@@ -4,6 +4,7 @@
 
 mod admission;
 pub mod egress;
+pub mod forge;
 pub mod git;
 pub mod model;
 pub mod sandbox;
