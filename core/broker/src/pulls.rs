@@ -14,7 +14,7 @@ use hyalos_types::{ForgeToken, Manifest};
 use serde::Deserialize;
 
 use crate::content;
-use crate::egress::{ProxyRequest, Reports, inputs_digest, refused};
+use crate::egress::{Gates, ProxyRequest, Reports, inputs_digest, refused};
 use crate::forge::Forge;
 use crate::git::{read_body, ref_allowed, well_formed_ref};
 use crate::model::Response;
@@ -39,12 +39,6 @@ pub struct PullRequest {
     pub base: String,
     #[serde(default)]
     pub draft: bool,
-}
-
-/// Where one job's refusals are reported.
-pub(crate) struct Gates<'a> {
-    pub manifest: &'a Reports,
-    pub content: &'a Reports,
 }
 
 /// Reads `owner/name` from a `POST /forge/repos/{owner}/{name}/pulls`. `None` is not a call the

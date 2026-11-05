@@ -21,6 +21,8 @@ rustls = { version = "0.23.46", default-features = false, features = ["std", "ri
 webpki-roots = "1.0.11"
 # SHA-256 of a refused egress target, the digest its gate report carries (ADR-0042).
 sha2 = "0.11"
+# Inflates the objects of a push's pack for the content gate (ADR-0054). Pure Rust, forbids unsafe.
+miniz_oxide = "0.8.9"
 
 [dev-dependencies]
 # Hand-built signatures in tests, to show what the broker refuses.

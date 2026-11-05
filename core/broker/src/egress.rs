@@ -201,6 +201,16 @@ impl Reports {
 
     /// Reports this gate's `deny` for `inputs` once per job, up to [`MAX_REPORTS`].
     pub(crate) fn deny(&self, reason: &str, inputs: Digest, ended: &AtomicBool) {
+        self.report(Answer::Deny, reason, inputs, ended);
+    }
+
+    /// Reports that this gate could not answer for `inputs`, which holds the job (ADR-0020). Counted
+    /// with the denials.
+    pub(crate) fn unknown(&self, reason: &str, inputs: Digest, ended: &AtomicBool) {
+        self.report(Answer::Unknown, reason, inputs, ended);
+    }
+
+    fn report(&self, answer: Answer, reason: &str, inputs: Digest, ended: &AtomicBool) {
         // A refusal made as the job ends is not reported after its end.
         if ended.load(Ordering::SeqCst) {
             return;
@@ -225,7 +235,7 @@ impl Reports {
             job: self.job,
             gate: self.gate,
             inputs,
-            answer: Answer::Deny,
+            answer,
             reason,
         });
     }
@@ -239,6 +249,12 @@ fn code_of(text: &str) -> ReasonCode {
 /// the target as asked when it is not a host and port.
 pub fn inputs_digest(text: &str) -> Digest {
     Digest::from_bytes(Sha256::digest(text.as_bytes()).into())
+}
+
+/// Where one job's refusals on the forge are reported: the git proxy's and the forge API's.
+pub(crate) struct Gates<'a> {
+    pub manifest: &'a Reports,
+    pub content: &'a Reports,
 }
 
 /// A proxy request, as read from the harness.
