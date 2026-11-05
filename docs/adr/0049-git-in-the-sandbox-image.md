@@ -1,6 +1,6 @@
 # ADR-0049: Git in the sandbox image
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
