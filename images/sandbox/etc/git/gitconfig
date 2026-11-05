@@ -1,0 +1,28 @@
+# The sandbox's git configuration (ADR-0049). Git reaches the forge only through the broker's git
+# proxy on the job's socket (ADR-0046), which adds the job's token itself, so git holds no credential
+# and never asks for one.
+
+[credential]
+	# An empty value clears every helper: nothing stores or supplies a credential.
+	helper =
+[core]
+	askPass =
+[http "http://127.0.0.1:8089/"]
+	# The forwarder is the broker's socket, never a proxy's (NO_PROXY says the same to curl).
+	proxy =
+[protocol]
+	# Smart HTTP only: no ssh, no git://, no ext:: or file:// transports that could run a command or
+	# read outside the workspace.
+	allow = never
+[protocol "http"]
+	allow = always
+[protocol "https"]
+	allow = always
+[init]
+	defaultBranch = main
+[user]
+	# A job's commits are the job's; the forge records who pushed them from the token.
+	name = Hyalos
+	email = hyalos@users.noreply.hyalos.invalid
+[advice]
+	detachedHead = false
