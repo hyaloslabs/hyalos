@@ -65,3 +65,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0049](0049-git-in-the-sandbox-image.md) | Git in the sandbox image | Accepted |
 | [0050](0050-running-one-job-from-the-command-line.md) | Running one job from the command line | Accepted |
 | [0051](0051-provider-hosts-the-egress-gate-never-reaches.md) | Provider hosts the egress gate never reaches | Accepted |
+| [0052](0052-reading-the-jobs-issue-from-github.md) | Reading the job's issue from GitHub | Proposed |

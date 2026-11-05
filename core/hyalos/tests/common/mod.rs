@@ -21,6 +21,10 @@ pub const EXE: &str = env!("CARGO_BIN_EXE_hyalos");
 const PEM: &[u8] = include_bytes!("../fixtures/github-app-test.pem");
 const POLICY: &str = r#"permit (principal, action in [Action::"read", Action::"push", Action::"open_pr", Action::"request_host"], resource);"#;
 
+/// Issue 7 of the stand-in's `octo/repo`.
+pub const ISSUE_TITLE: &str = "Add a CHANGES file";
+pub const ISSUE_BODY: &str = "There is no CHANGES file. issue-body-marker-5b1e";
+
 pub fn dir(name: &str) -> Res<PathBuf> {
     // Short, so the job's socket path stays under the Unix limit.
     let dir = std::env::temp_dir().join(format!("hyrj-{}-{name}", std::process::id()));
@@ -181,7 +185,11 @@ fn serve(
         });
     }
     let tokens = issued.lock().map(|t| t.clone()).unwrap_or_default();
-    let bearer = authorization.strip_prefix("Bearer ").unwrap_or("");
+    // GitHub takes the scheme in any case; the broker's GraphQL call sends `bearer`.
+    let bearer = authorization
+        .split_once(' ')
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+        .map_or("", |(_, token)| token);
     let mut out = stream;
     let mut reply = |status: &str, json: &str| -> Res {
         write!(
@@ -228,6 +236,25 @@ fn serve(
                 "repositories": [{ "full_name": "octo/repo" }],
             });
             reply("201 Created", &answer.to_string())
+        }
+        // The issue query (ADR-0047): issue 7 of octo/repo exists, any other number does not.
+        ("POST", "/graphql") if tokens.iter().any(|t| t == bearer) => {
+            let asked: serde_json::Value = serde_json::from_slice(&body)?;
+            let vars = &asked["variables"];
+            let issue = if vars["owner"] == "octo" && vars["name"] == "repo" && vars["number"] == 7
+            {
+                serde_json::json!({
+                    "number": 7, "state": "OPEN", "title": ISSUE_TITLE, "body": ISSUE_BODY,
+                    "author": { "login": "someone" },
+                    "labels": { "totalCount": 1, "nodes": [{ "name": "docs" }] },
+                })
+            } else {
+                serde_json::Value::Null
+            };
+            reply(
+                "200 OK",
+                &serde_json::json!({ "data": { "repository": { "issue": issue } } }).to_string(),
+            )
         }
         ("POST", "/repos/octo/repo/pulls") if tokens.iter().any(|t| t == bearer) => reply(
             "201 Created",

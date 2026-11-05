@@ -1,6 +1,6 @@
 # ADR-0050: Running one job from the command line
 
-**Status:** Accepted
+**Status:** Accepted. [ADR-0052](0052-reading-the-jobs-issue-from-github.md) adds `--issue-number`, which reads the issue through the broker after admission and runs the step with forge-authored inputs.
 
 ## Context
 
