@@ -1,5 +1,6 @@
 //! The forwarder relays both ways and ends when the broker does; `prepare` makes the harness's
-//! directories; `submit` posts and reads the answer; the DNS log answers and records (ADR-0040).
+//! directories; `submit` and `hyalos-pr` post and read the answer; the DNS log answers and records
+//! (ADR-0040, ADR-0050).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
@@ -195,5 +196,52 @@ fn the_dns_log_answers_no_such_name_and_records_each_question() -> Res {
         None,
         "an answer"
     );
+    Ok(())
+}
+
+#[test]
+fn hyalos_pr_asks_the_broker_for_a_pull_request_in_its_fields() -> Res {
+    let d = dir("pr")?;
+    let socket = d.join("b.sock");
+    let seen = broker(
+        &socket,
+        "HTTP/1.1 201 Created\r\ncontent-length: 14\r\nconnection: close\r\n\r\n{\"number\": 5}\n",
+    )?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let addr = listener.local_addr()?.to_string();
+    thread::spawn(move || forward(listener, socket));
+    let body = d.join("body.md");
+    std::fs::write(&body, "Closes #3.\n\n\"quoted\" \\ back\ttab · ünï\u{1}\n")?;
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_hyalos-pr"))
+        .args(["octo/repo", "hyalos/job-4", "main", "Fix \"the\" parser"])
+        .arg(&body)
+        .env("HYALOS_FORWARDER", &addr)
+        .output()?;
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8(out.stdout)?, "{\"number\": 5}\n");
+    let seen = seen.join().map_err(|_| "broker panicked")?;
+    assert!(
+        seen.starts_with("POST /forge/repos/octo/repo/pulls HTTP/1.1\r\n"),
+        "{seen}"
+    );
+    // The stand-in keeps the header lines and then the body, which is one line of JSON.
+    let json = seen.rsplit("\r\n").next().ok_or("no body")?;
+    let sent: serde_json::Value = serde_json::from_str(json)?;
+    assert_eq!(
+        sent,
+        serde_json::json!({
+            "title": "Fix \"the\" parser",
+            "body": "Closes #3.\n\n\"quoted\" \\ back\ttab · ünï\u{1}\n",
+            "head": "hyalos/job-4",
+            "base": "main",
+        })
+    );
+    // A refusal is a failure, and a repository that is not owner/name is not sent at all.
+    let bad = std::process::Command::new(env!("CARGO_BIN_EXE_hyalos-pr"))
+        .args(["octo", "hyalos/job-4", "main", "t"])
+        .env("HYALOS_FORWARDER", &addr)
+        .output()?;
+    assert_eq!(bad.status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&d);
     Ok(())
 }

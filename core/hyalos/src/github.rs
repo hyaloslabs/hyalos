@@ -17,6 +17,7 @@ use std::path::Path;
 
 use hyalos_broker::model::{HttpTransport, Upstream};
 use hyalos_policy::Action;
+use hyalos_types::wire::ForgeBases;
 use hyalos_types::{ForgeToken, Manifest, Timestamp};
 use ring::rand::SystemRandom;
 use ring::signature::{RSA_PKCS1_SHA256, RsaKeyPair};
@@ -32,6 +33,8 @@ pub const GITHUB_APP_FILE: &str = "github.app";
 pub const GITHUB_KEY_FILE: &str = "github-app.pem";
 
 const DEFAULT_API: &str = "https://api.github.com";
+/// github.com's git host, which goes with [`DEFAULT_API`].
+const DEFAULT_GIT: &str = "https://github.com";
 /// A PEM private key is a few kilobytes; anything larger is not one.
 const KEY_LIMIT: u64 = 16 * 1024;
 /// GitHub's answers here are small; a larger one is refused rather than read.
@@ -163,15 +166,20 @@ pub struct AppSettings {
     /// The API's base, such as `https://api.github.com`, or a GitHub Enterprise Server's
     /// `https://github.example.com/api/v3`.
     pub api: String,
+    /// The git host jobs clone from and push to through the broker (ADR-0050), such as
+    /// `https://github.com`. Needed when `api` is not api.github.com, since it cannot be guessed.
+    pub git: String,
 }
 
 impl AppSettings {
-    /// One `name = value` per line; `#` starts a comment. `app_id` is required and `api` optional.
+    /// One `name = value` per line; `#` starts a comment. `app_id` is required; `api` and `git` are
+    /// optional, and `git` is required with any `api` but api.github.com.
     /// Anything else is refused by line number, and a token is refused by name: Hyalos never takes
     /// a personal access token (ADR-0004).
     pub fn parse(text: &str) -> Result<Self, MintError> {
         let mut app_id = None;
         let mut api = None;
+        let mut git = None;
         for (i, line) in text.lines().enumerate() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -185,6 +193,7 @@ impl AppSettings {
             let slot = match name {
                 "app_id" => &mut app_id,
                 "api" => &mut api,
+                "git" => &mut git,
                 n if n.contains("token") || n == "pat" => {
                     return Err(MintError::Settings(format!(
                         "line {} names a token; Hyalos mints its own per job from the App and never takes a personal access token (ADR-0004)",
@@ -202,7 +211,16 @@ impl AppSettings {
             .filter(|id| *id > 0)
             .ok_or_else(|| MintError::Settings("app_id must be the App's number".into()))?;
         let api = api.unwrap_or(DEFAULT_API).trim_end_matches('/').to_string();
-        Ok(Self { app_id, api })
+        let git = match git {
+            Some(git) => git.trim_end_matches('/').to_string(),
+            None if api == DEFAULT_API => DEFAULT_GIT.to_string(),
+            None => {
+                return Err(MintError::Settings(
+                    "git must name the git host when api is not api.github.com".into(),
+                ));
+            }
+        };
+        Ok(Self { app_id, api, git })
     }
 }
 
@@ -218,6 +236,7 @@ pub struct Minted {
 /// The App, ready to mint.
 pub struct GitHubApp {
     app_id: u64,
+    bases: ForgeBases,
     key: RsaKeyPair,
     transport: HttpTransport,
     /// The API's path under its host, empty for api.github.com.
@@ -264,11 +283,20 @@ impl GitHubApp {
             .map_err(|e| MintError::Settings(format!("api {:?}: {e}", settings.api)))?;
         Ok(Self {
             app_id: settings.app_id,
+            bases: ForgeBases {
+                api: settings.api.clone(),
+                git: settings.git.clone(),
+            },
             key,
             transport,
             prefix: prefix.to_string(),
             rng: SystemRandom::new(),
         })
+    }
+
+    /// Where the broker reaches this App's forge, for `Hello` (ADR-0050).
+    pub fn forge_bases(&self) -> ForgeBases {
+        self.bases.clone()
     }
 
     /// A JWT that says this is the App, valid from a minute ago (for clock drift) to nine minutes
@@ -619,13 +647,24 @@ mod tests {
             AppSettings::parse("# the App\napp_id = 12345\n").unwrap(),
             AppSettings {
                 app_id: 12345,
-                api: DEFAULT_API.into()
+                api: DEFAULT_API.into(),
+                git: DEFAULT_GIT.into(),
             }
         );
         assert_eq!(
-            AppSettings::parse("app_id=7\napi = https://ghe.example.com/api/v3/\n")
-                .unwrap()
-                .api,
+            AppSettings::parse(
+                "app_id=7\napi = https://ghe.example.com/api/v3\ngit = https://ghe.example.com/\n"
+            )
+            .unwrap()
+            .git,
+            "https://ghe.example.com"
+        );
+        assert_eq!(
+            AppSettings::parse(
+                "app_id=7\napi = https://ghe.example.com/api/v3/\ngit = https://ghe.example.com\n"
+            )
+            .unwrap()
+            .api,
             "https://ghe.example.com/api/v3"
         );
         for bad in [
@@ -635,6 +674,8 @@ mod tests {
             "app_id = 1\napp_id = 2",
             "app_id = 1\ninstallation = 3",
             "app_id 1",
+            // Another API's git host cannot be guessed.
+            "app_id = 1\napi = https://ghe.example.com/api/v3",
         ] {
             assert!(
                 matches!(AppSettings::parse(bad), Err(MintError::Settings(_))),

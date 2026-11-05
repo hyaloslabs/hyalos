@@ -67,6 +67,7 @@ fn apply(e: &mut Engine, n: u64, op: &Op) -> Res {
                 Event::JobStarted {
                     task: *task,
                     substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                    credentials: hyalos_types::CredentialTier::BrokerHeld,
                 },
             )?;
         }

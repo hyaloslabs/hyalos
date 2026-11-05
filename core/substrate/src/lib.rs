@@ -19,8 +19,9 @@ pub use spec::{
     StartError, Unavailable,
 };
 
-/// Something that can start sandboxes.
-pub trait Substrate {
+/// Something that can start sandboxes. It is `Send` so the engine can detect substrates on a thread
+/// with a timeout (ADR-0050).
+pub trait Substrate: Send {
     /// A short name for the driver, recorded with each job so the audit shows what ran it.
     fn name(&self) -> &'static str;
 
@@ -56,8 +57,8 @@ pub trait Substrate {
     fn existing(&self) -> Result<Vec<String>, Unavailable>;
 }
 
-/// One running sandbox.
-pub trait Sandbox {
+/// One running sandbox. It is `Send` so the engine can wait for it while it serves the broker.
+pub trait Sandbox: Send {
     /// An identifier for the sandbox, for logs and for [`Substrate::existing`].
     fn id(&self) -> &str;
 

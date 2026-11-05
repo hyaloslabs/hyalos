@@ -23,6 +23,7 @@ use hyalos_types::{
 };
 
 use crate::forge::Forge;
+use crate::git::Git;
 use crate::sandbox::{JobSocket, Sandboxes};
 use crate::{Admission, Credential, LiveJobs};
 
@@ -277,6 +278,7 @@ pub fn serve_with<R: Read, W: Write + Send>(
     let Some(ToBroker::Hello {
         version,
         manifest_key,
+        forge,
     }) = read_frame::<_, ToBroker>(input)?
     else {
         return Err(ServeError::Order);
@@ -309,11 +311,22 @@ pub fn serve_with<R: Read, W: Write + Send>(
                 }
             }
         });
+        // The forge the engine names in `Hello` (ADR-0050), github.com otherwise.
+        let sandboxes = sandboxes.map(|mut s| {
+            if let Some(bases) = &forge {
+                s.git = Git::with_base(&bases.git);
+                s.forge = Forge::with_base(&bases.api);
+            }
+            s
+        });
         let mut broker = match sandboxes {
             Some(sandboxes) => Broker::with_sandboxes(manifest_key, sandboxes),
             None => Broker::new(manifest_key),
         }
         .report_to(to_writer.clone());
+        if let Some(bases) = &forge {
+            broker = broker.with_forge(Forge::with_base(&bases.api));
+        }
         let served = (|| {
             while let Some(message) = read_frame::<_, ToBroker>(input)? {
                 match broker.handle(message, clock)? {

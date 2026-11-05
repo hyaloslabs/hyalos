@@ -149,6 +149,7 @@ pub fn run_job(seed: u64, dir: &Path) -> Res<Run> {
                 Event::JobStarted {
                     task,
                     substrate: substrate.recorded_as(),
+                    credentials: hyalos_types::CredentialTier::BrokerHeld,
                 },
             )?
             .seq,

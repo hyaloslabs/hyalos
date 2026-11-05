@@ -37,7 +37,7 @@ RUN npm ci --omit=dev --no-audit --no-fund \
  && rm -rf node_modules/@anthropic-ai/*-musl \
  && npm cache clean --force
 
-COPY --from=tools /src/target/release/hyalos-forward /src/target/release/hyalos-submit /usr/local/bin/
+COPY --from=tools /src/target/release/hyalos-forward /src/target/release/hyalos-submit /src/target/release/hyalos-pr /usr/local/bin/
 COPY images/sandbox/etc/codex/config.toml /etc/hyalos/codex/config.toml
 COPY images/sandbox/etc/claude-code/managed-settings.json /etc/claude-code/managed-settings.json
 

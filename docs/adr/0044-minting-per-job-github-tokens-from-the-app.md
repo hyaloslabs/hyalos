@@ -1,6 +1,6 @@
 # ADR-0044: Minting per-job GitHub tokens from the App
 
-**Status:** Accepted. [ADR-0045](0045-forge-tokens-up-to-4-kib.md) replaces the token's 255-character cap with 4,096 (GitHub's tokens are now about 400) and revokes any issued token the engine refuses.
+**Status:** Accepted. [ADR-0045](0045-forge-tokens-up-to-4-kib.md) replaces the token's 255-character cap with 4,096 (GitHub's tokens are now about 400) and revokes any issued token the engine refuses. [ADR-0050](0050-running-one-job-from-the-command-line.md) adds `git`, the git host, to `github.app` (required with any `api` but api.github.com), and `hyalos run` mints and revokes the token for each job.
 
 ## Context
 

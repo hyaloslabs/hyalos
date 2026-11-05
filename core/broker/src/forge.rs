@@ -47,7 +47,7 @@ impl Forge {
         Self::with_base(GITHUB_API)
     }
 
-    /// Another API host. For tests, which run one on loopback; called only from code.
+    /// Another API host: the one the engine names in `Hello` (ADR-0050), or a test's on loopback.
     pub fn with_base(base: &str) -> Self {
         Self {
             transport: HttpTransport::new(base).map_err(|e| e.0),

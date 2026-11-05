@@ -52,6 +52,7 @@ fn first_part(e: &mut Engine) -> Res {
         Event::JobStarted {
             task: TaskId::from_seq(1),
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            credentials: hyalos_types::CredentialTier::BrokerHeld,
         },
     )?;
     put(
@@ -75,6 +76,7 @@ fn first_part(e: &mut Engine) -> Res {
         Event::JobStarted {
             task: TaskId::from_seq(2),
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            credentials: hyalos_types::CredentialTier::BrokerHeld,
         },
     )?;
     let request = GateRequest {
@@ -110,6 +112,7 @@ fn second_part(e: &mut Engine) -> Res {
         Event::JobStarted {
             task: TaskId::from_seq(11),
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            credentials: hyalos_types::CredentialTier::BrokerHeld,
         },
     )?;
     Ok(())

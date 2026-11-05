@@ -88,6 +88,7 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
         Event::JobStarted {
             task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            credentials: hyalos_types::CredentialTier::BrokerHeld,
         },
     )?);
     submit(
@@ -117,7 +118,8 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
                 5,
                 Event::JobStarted {
                     task,
-                    substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded)
+                    substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                    credentials: hyalos_types::CredentialTier::BrokerHeld,
                 }
             ),
             Err(EngineError::Rule(RuleViolation::TaskNotOpen { .. }))
@@ -140,6 +142,7 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
         Event::JobStarted {
             task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            credentials: hyalos_types::CredentialTier::BrokerHeld,
         },
     )?);
     submit(
@@ -230,6 +233,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
         Event::JobStarted {
             task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            credentials: hyalos_types::CredentialTier::BrokerHeld,
         },
     )?);
     let before = (e.head()?, e.state().clone());
@@ -240,6 +244,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
             Event::JobStarted {
                 task: nobody,
                 substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                credentials: hyalos_types::CredentialTier::BrokerHeld,
             },
             "unknown task",
         ),
@@ -277,6 +282,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
             Event::JobStarted {
                 task,
                 substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                credentials: hyalos_types::CredentialTier::BrokerHeld,
             },
             "a second job while one is running",
         ),
@@ -353,6 +359,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
         Event::JobStarted {
             task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            credentials: hyalos_types::CredentialTier::BrokerHeld,
         },
         Event::TaskCompleted { task },
         Event::HoldOpened {
@@ -395,6 +402,7 @@ fn deleting_the_projection_and_replaying_gives_identical_state() -> Res {
             Event::JobStarted {
                 task: t1,
                 substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                credentials: hyalos_types::CredentialTier::BrokerHeld,
             },
         )?);
         submit(
@@ -462,6 +470,7 @@ fn a_validly_signed_log_with_an_illegal_event_is_refused_on_replay() -> Res {
         let job_on_nothing = Event::JobStarted {
             task: TaskId::from_seq(42),
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            credentials: hyalos_types::CredentialTier::BrokerHeld,
         };
         log.append(
             at(1),
@@ -552,6 +561,7 @@ fn random_event(rng: &mut SeededRng, state: &State, seq_next: u64) -> Event {
         2 => Event::JobStarted {
             task: task(rng),
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            credentials: hyalos_types::CredentialTier::BrokerHeld,
         },
         3 => {
             let ids: Vec<JobId> = state.jobs().keys().copied().collect();

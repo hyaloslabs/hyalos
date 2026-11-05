@@ -45,6 +45,7 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             Event::JobStarted {
                 task: TaskId::from_seq(3),
                 substrate: SubstrateName::unrecorded(),
+                credentials: hyalos_types::CredentialTier::Unrecorded,
             },
         ),
         (
@@ -214,6 +215,29 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
         Event::JobStarted {
             task: TaskId::from_seq(3),
             substrate: SubstrateName::new("container.podman").ok_or("substrate")?,
+            credentials: hyalos_types::CredentialTier::Unrecorded,
+        },
+    ));
+
+    // Version 7 added the credential tier to `job.started`, so the ten other kinds read as they did at
+    // version 6.
+    let at_6: Vec<_> = all
+        .iter()
+        .filter(|g| g.0 == 6 && g.1 != "job.started")
+        .cloned()
+        .collect();
+    for (_, kind, json, event) in at_6 {
+        all.push((7, kind, json, event));
+    }
+    all.push((
+        7,
+        "job.started",
+        r#"{"kind":"job.started","task":3,"substrate":"container.docker","credentials":"broker_held"}"#
+            .into(),
+        Event::JobStarted {
+            task: TaskId::from_seq(3),
+            substrate: SubstrateName::new("container.docker").ok_or("substrate")?,
+            credentials: hyalos_types::CredentialTier::BrokerHeld,
         },
     ));
     Ok(all)
@@ -304,6 +328,9 @@ fn started_v2(v: Value) -> Result<Value, String> {
     v.as_object_mut()
         .ok_or("not an object")?
         .insert("substrate".into(), json!("unrecorded"));
+    v.as_object_mut()
+        .ok_or("not an object")?
+        .insert("credentials".into(), json!("unrecorded"));
     Ok(v)
 }
 fn answered_v2(mut v: Value) -> Result<Value, String> {
@@ -385,6 +412,7 @@ fn a_kind_with_no_step_at_a_version_passes_through_unchanged() -> Res {
         Event::JobStarted {
             task: TaskId::from_seq(3),
             substrate: SubstrateName::unrecorded(),
+            credentials: hyalos_types::CredentialTier::Unrecorded,
         }
     );
     // A kind with no step anywhere is read as stored, at every older version.
@@ -461,7 +489,7 @@ fn what_an_upcast_leaves_wrong_is_still_refused() {
         decode(
             1,
             "task.completed",
-            r#"{"kind":"job.started","task":3,"substrate":"local"}"#
+            r#"{"kind":"job.started","task":3,"substrate":"local","credentials":"broker_held"}"#
         ),
         Err(EventError::KindMismatch { .. })
     ));
@@ -474,6 +502,9 @@ fn retag(mut v: Value) -> Result<Value, String> {
     v.as_object_mut()
         .ok_or("not an object")?
         .insert("substrate".into(), json!("local"));
+    v.as_object_mut()
+        .ok_or("not an object")?
+        .insert("credentials".into(), json!("broker_held"));
     Ok(v)
 }
 

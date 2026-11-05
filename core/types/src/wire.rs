@@ -25,7 +25,7 @@ use crate::{
 };
 
 /// The version of this protocol. Both sides say theirs first and stop on a mismatch.
-pub const WIRE_VERSION: u32 = 4;
+pub const WIRE_VERSION: u32 = 5;
 
 /// The longest job socket path the engine makes and the broker binds (ADR-0038). A Unix socket
 /// path is limited to about 107 bytes; this leaves room.
@@ -33,6 +33,15 @@ pub const MAX_SOCKET_PATH: usize = 100;
 
 /// The most bytes in one frame. A signed manifest is a few kilobytes; nothing here is larger.
 pub const MAX_FRAME: usize = 64 * 1024;
+
+/// Where the forge is: its REST and GraphQL API, and its git host. Each is `https://host[:port][/path]`,
+/// or `http://` on loopback only, which the broker's transport enforces whatever is sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgeBases {
+    pub api: String,
+    pub git: String,
+}
 
 /// What the engine says to the broker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +53,10 @@ pub enum ToBroker {
         version: u32,
         #[serde(with = "key_hex")]
         manifest_key: ManifestPublicKey,
+        /// Where the broker reaches the forge, from the operator's `github.app` (wire version 5,
+        /// ADR-0050). Absent, it is github.com.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        forge: Option<ForgeBases>,
     },
     /// A job has started. `manifest` is the signed manifest's envelope (`SignedManifest::to_bytes`),
     /// and `role` is the role the credential for the job will have. `socket` is the absolute path,
@@ -240,9 +253,24 @@ mod tests {
                 ToBroker::Hello {
                     version: WIRE_VERSION,
                     manifest_key: key,
+                    forge: None,
                 },
                 format!(
-                    r#"{{"kind":"hello","version":4,"manifest_key":"{}"}}"#,
+                    r#"{{"kind":"hello","version":5,"manifest_key":"{}"}}"#,
+                    "07".repeat(32)
+                ),
+            ),
+            (
+                ToBroker::Hello {
+                    version: WIRE_VERSION,
+                    manifest_key: key,
+                    forge: Some(ForgeBases {
+                        api: "https://api.github.com".into(),
+                        git: "https://github.com".into(),
+                    }),
+                },
+                format!(
+                    r#"{{"kind":"hello","version":5,"manifest_key":"{}","forge":{{"api":"https://api.github.com","git":"https://github.com"}}}}"#,
                     "07".repeat(32)
                 ),
             ),

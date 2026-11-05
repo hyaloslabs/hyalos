@@ -21,7 +21,10 @@ pub mod wire;
 
 pub use digest::Digest;
 pub use entropy::{Entropy, SeededRng};
-pub use event::{Event, EventError, Gate, HoldReason, JobOutcome, MAX_POLICY_DOCUMENT, Resolution};
+pub use event::{
+    CredentialTier, Event, EventError, Gate, HoldReason, JobOutcome, MAX_POLICY_DOCUMENT,
+    Resolution,
+};
 pub use forge::ForgeToken;
 pub use ids::{HoldId, JobId, TaskId};
 pub use manifest::{

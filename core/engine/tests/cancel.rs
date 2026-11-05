@@ -73,6 +73,7 @@ fn held_by_a_job(
         Event::JobStarted {
             task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            credentials: hyalos_types::CredentialTier::BrokerHeld,
         },
     )?);
     let request = GateRequest {
@@ -153,7 +154,8 @@ fn a_held_task_is_ended_by_a_recorded_decision_and_replay_agrees() -> Res {
         Origin::Engine,
         Event::JobStarted {
             task,
-            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded)
+            substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            credentials: hyalos_types::CredentialTier::BrokerHeld,
         }
     ))?));
     assert!(cancelled_status(rule(e.submit(

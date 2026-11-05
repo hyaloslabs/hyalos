@@ -1,6 +1,6 @@
 # ADR-0043: Choosing the substrate, recording it on the job, and `hyalos doctor`
 
-**Status:** Accepted
+**Status:** Accepted. `hyalos run` calls `detect` before each job, with a timeout, and records the chosen substrate on `job.started` ([ADR-0050](0050-running-one-job-from-the-command-line.md)); `Substrate` and `Sandbox` are now `Send`.
 
 ## Context
 

@@ -77,6 +77,7 @@ fn rig(name: &str) -> Result<Rig, Box<dyn std::error::Error>> {
                 Event::JobStarted {
                     task,
                     substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                    credentials: hyalos_types::CredentialTier::BrokerHeld,
                 },
             )?
             .seq,

@@ -503,6 +503,7 @@ fn a_refusal_reaches_the_engine_unasked_over_the_channel() -> Res {
         &ToBroker::Hello {
             version: WIRE_VERSION,
             manifest_key: key().public(),
+            forge: None,
         },
     )?;
     let mut from_broker = &engine;

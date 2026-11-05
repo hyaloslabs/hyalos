@@ -58,6 +58,7 @@ fn hello() -> ToBroker {
     ToBroker::Hello {
         version: WIRE_VERSION,
         manifest_key: engine_key().public(),
+        forge: None,
     }
 }
 
@@ -287,6 +288,7 @@ fn the_engine_must_say_hello_first_once_and_in_a_version_the_broker_speaks() -> 
     let newer = ToBroker::Hello {
         version: WIRE_VERSION + 1,
         manifest_key: engine_key().public(),
+        forge: None,
     };
     assert_eq!(
         run(&[newer], 100)?,

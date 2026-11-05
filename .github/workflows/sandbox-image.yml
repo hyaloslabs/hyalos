@@ -3,7 +3,8 @@ name: sandbox image
 # Builds the sandbox image and runs each harness in it under a DNS log and a record of the broker
 # channel (S2.9, ADR-0040). It runs when anything that goes into the image, or that the test drives,
 # changes: a pinned harness or SDK version, the image's settings, the sandbox tools, the broker,
-# the substrate whose isolation the test copies, or the workspace's build settings.
+# the substrate whose isolation the test copies, the engine and the `hyalos` command that run a job
+# end to end in it, or the workspace's build settings.
 on:
   pull_request:
     paths:
@@ -12,6 +13,9 @@ on:
       - "core/broker/**"
       - "core/types/**"
       - "core/substrate/**"
+      - "core/hyalos/**"
+      - "core/engine/**"
+      - "core/policy/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
@@ -26,6 +30,9 @@ on:
       - "core/broker/**"
       - "core/types/**"
       - "core/substrate/**"
+      - "core/hyalos/**"
+      - "core/engine/**"
+      - "core/policy/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
@@ -63,3 +70,9 @@ jobs:
         run: cargo test -p hyalos-sandbox-tools --locked --test image --test egress --test git -- --nocapture
         env:
           HYALOS_REQUIRE_SANDBOX_IMAGE: "1"
+      # S3.10 (ADR-0050): hyalos run with Codex in the image, and a dump of the sandbox for credentials.
+      - name: A job from the command line pushes, opens a pull request and leaks no credential
+        run: cargo test -p hyalos --locked --test run_image -- --nocapture
+        env:
+          HYALOS_REQUIRE_SANDBOX_IMAGE: "1"
+          HYALOS_REQUIRE_GIT: "1"
