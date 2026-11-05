@@ -1,6 +1,6 @@
 # ADR-0054: The content gate on what a push carries
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
