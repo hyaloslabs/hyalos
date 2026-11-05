@@ -526,6 +526,12 @@ fn what_github_answers_is_mapped_and_never_relayed() -> Res {
         ),
         (
             201,
+            r#"{"number":5,"html_url":"httpx://evil.example"}"#,
+            502,
+            "forge.malformed",
+        ),
+        (
+            201,
             r#"{"html_url":"https://github.com/octo/repo/pull/5"}"#,
             502,
             "forge.malformed",

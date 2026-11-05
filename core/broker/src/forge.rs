@@ -152,9 +152,11 @@ impl Forge {
         let created: serde_json::Value =
             serde_json::from_slice(&answer).map_err(|_| (502, "forge.malformed"))?;
         let number = created["number"].as_u64();
-        let url = created["html_url"]
-            .as_str()
-            .filter(|u| u.len() <= 512 && u.starts_with("http") && !u.contains(char::is_control));
+        let url = created["html_url"].as_str().filter(|u| {
+            u.len() <= 512
+                && (u.starts_with("https://") || u.starts_with("http://"))
+                && !u.contains(char::is_control)
+        });
         match (number, url) {
             (Some(number), Some(url)) => Ok((number, url.to_string())),
             _ => Err((502, "forge.malformed")),
