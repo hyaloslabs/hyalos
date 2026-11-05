@@ -42,12 +42,12 @@ The forge's answer is relayed as it streams, and is cut off when the job ends. I
 
 **The git host is github.com** (`Git::github`), over TLS to the compiled-in roots ([ADR-0039](0039-tls-to-model-providers.md)). A test can name another host from code (`Git::with_base`, plain HTTP only to loopback); nothing in configuration does. GitHub Enterprise Server's git host is not built.
 
-**A refusal is audited as the manifest gate's `deny`.** Refusals 2, 3 and 5 are 403s to the harness. They are also `ToEngine::Gate { gate: manifest, answer: deny, reason, inputs }` to the engine, the message and gate that ADR-0035 and [ADR-0009](0009-gates-answer-allow-deny-unknown.md) already define. As for egress ([ADR-0042](0042-the-egress-gate-and-the-allowlisting-proxy.md)), `inputs` is a SHA-256, never the name:
+**A refusal is audited as the manifest gate's `deny`.** Refusals 2 and 3, and each ref that step 5 refuses as outside the prefix or as a deletion, are 403s to the harness. They are also `ToEngine::Gate { gate: manifest, answer: deny, reason, inputs }` to the engine, the message and gate that ADR-0035 and [ADR-0009](0009-gates-answer-allow-deny-unknown.md) already define. As for egress ([ADR-0042](0042-the-egress-gate-and-the-allowlisting-proxy.md)), `inputs` is a SHA-256, never the name:
 - for a repository, of `owner/name` in lowercase;
 - for a ref, of the ref name;
 - for an action, of the service name.
 
-Each refused ref of a push is reported. Each distinct report goes once per job, at most 32, and then one more with `git.too_many_refusals`. This cap is separate from the egress gate's. Refusals 1 and 4 are not reported: the first is the job's end, as for egress, and the second is the engine's own omission. A request the gate allowed is not reported.
+Each refused ref of a push is reported. Each distinct report goes once per job, at most 32, and then one more with `git.too_many_refusals`. This cap is separate from the egress gate's. Refusals 1 and 4 are not reported: the first is the job's end, as for egress, and the second is the engine's own omission. Nor is a push that is signed, does not parse, or carries `content-encoding`: it is refused whole and names no ref to digest. A request the gate allowed is not reported.
 
 **The tests use the real git on both sides.** `core/broker/tests/git.rs` runs the `git` client through the broker's job socket to `git http-backend`, which serves bare repositories over loopback and answers only the job's token. The tests check that:
 - a job clones and pushes a branch inside its prefix;

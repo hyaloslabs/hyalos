@@ -549,6 +549,48 @@ mod tests {
     }
 
     #[test]
+    fn a_body_is_read_chunked_or_by_length_after_any_continue() {
+        let headers = |list: &'static [(&'static str, &'static str)]| {
+            move |n: &str| list.iter().find(|(k, _)| *k == n).map(|(_, v)| *v)
+        };
+        let mut client = Vec::new();
+        let mut input = std::io::Cursor::new(b"5\r\nhello\r\n0\r\n\r\n".to_vec());
+        let body = read_body(
+            headers(&[("transfer-encoding", "chunked"), ("expect", "100-continue")]),
+            &mut input,
+            &mut client,
+        );
+        assert_eq!(body.as_deref(), Ok(&b"hello"[..]));
+        assert_eq!(client, b"HTTP/1.1 100 Continue\r\n\r\n");
+
+        let mut client = Vec::new();
+        let mut input = std::io::Cursor::new(b"abc".to_vec());
+        let body = read_body(headers(&[("content-length", "3")]), &mut input, &mut client);
+        assert_eq!(body.as_deref(), Ok(&b"abc"[..]));
+        assert!(client.is_empty(), "no continue was asked for");
+
+        for bad in [
+            &[("transfer-encoding", "chunked"), ("content-length", "3")][..],
+            &[("transfer-encoding", "gzip")][..],
+            &[("content-length", "x")][..],
+        ] {
+            let list: &'static [(&str, &str)] = Box::leak(bad.to_vec().into_boxed_slice());
+            let body = read_body(
+                headers(list),
+                &mut std::io::Cursor::new(Vec::new()),
+                &mut Vec::new(),
+            );
+            assert_eq!(body, Err((400, "git.bad_request")), "{bad:?}");
+        }
+        let body = read_body(
+            headers(&[("content-length", "67108865")]),
+            &mut std::io::Cursor::new(Vec::new()),
+            &mut Vec::new(),
+        );
+        assert_eq!(body, Err((413, "git.too_large")));
+    }
+
+    #[test]
     fn basic_credentials_are_base64() {
         assert_eq!(base64(b""), "");
         assert_eq!(base64(b"f"), "Zg==");
