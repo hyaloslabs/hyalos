@@ -1,6 +1,6 @@
 # ADR-0050: Running one job from the command line
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
