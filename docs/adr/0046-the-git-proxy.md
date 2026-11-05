@@ -1,6 +1,6 @@
 # ADR-0046: The git proxy
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
