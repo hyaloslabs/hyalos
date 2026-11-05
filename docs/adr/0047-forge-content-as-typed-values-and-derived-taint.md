@@ -1,6 +1,6 @@
 # ADR-0047: Forge content as typed values, and taint derived from the step
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
