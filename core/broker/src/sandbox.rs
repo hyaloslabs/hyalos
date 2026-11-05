@@ -17,10 +17,11 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use hyalos_types::wire::ToEngine;
-use hyalos_types::{Clock, Manifest};
+use hyalos_types::{Clock, ForgeToken, Gate, Manifest};
 use std::sync::mpsc::Sender;
 
 use crate::egress::{self, Egress, ProxyRequest, Reports};
+use crate::git::{self, Git};
 use crate::model::{
     Adapter, Anthropic, ApiKey, HttpTransport, MAX_BODY, Meter, OpenAi, Relay, Request, Response,
     Sleep, refusal,
@@ -227,12 +228,13 @@ impl Models {
     }
 }
 
-/// What the broker needs to serve sandboxes: the relays, how to reach allowed hosts, and a clock its
-/// threads can share.
+/// What the broker needs to serve sandboxes: the relays, how to reach allowed hosts and the forge's git
+/// host, and a clock its threads can share.
 #[derive(Clone)]
 pub struct Sandboxes {
     pub models: Arc<Models>,
     pub egress: Egress,
+    pub git: Git,
     pub clock: Arc<dyn Clock + Send + Sync>,
 }
 
@@ -253,11 +255,13 @@ pub(crate) struct JobSocket {
 }
 
 impl JobSocket {
-    /// Listens at `path` for the job `manifest` is for. The path must be absolute, short, and not
-    /// exist; its directory is the engine's, made for this job. Egress refusals go to `reports`.
+    /// Listens at `path` for the job `manifest` is for, whose git calls carry `forge_token`. The path
+    /// must be absolute, short, and not exist; its directory is the engine's, made for this job.
+    /// Egress and git refusals go to `reports`.
     pub(crate) fn open(
         path: &Path,
         manifest: Manifest,
+        forge_token: Option<ForgeToken>,
         sandboxes: Sandboxes,
         reports: Option<Sender<ToEngine>>,
     ) -> io::Result<Self> {
@@ -274,8 +278,11 @@ impl JobSocket {
         })();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
-        let reports = Arc::new(Reports::new(manifest.job, reports));
-        let manifest = Arc::new(manifest);
+        let reports = Arc::new(JobReports {
+            egress: Reports::new(manifest.job, reports.clone()),
+            manifest: Reports::for_gate(manifest.job, Gate::Manifest, git::TOO_MANY, reports),
+        });
+        let manifest = Arc::new((manifest, forge_token));
         let thread = ready.and_then(|()| {
             std::thread::Builder::new().spawn(move || {
                 let active = Arc::new(AtomicUsize::new(0));
@@ -335,13 +342,21 @@ impl Drop for JobSocket {
     }
 }
 
+/// Where one job's gate refusals are reported.
+#[derive(Debug)]
+struct JobReports {
+    egress: Reports,
+    manifest: Reports,
+}
+
 fn connection(
     stream: &UnixStream,
-    manifest: &Manifest,
+    job: &(Manifest, Option<ForgeToken>),
     sandboxes: &Sandboxes,
     ended: &Arc<AtomicBool>,
-    reports: &Reports,
+    reports: &JobReports,
 ) -> io::Result<()> {
+    let (manifest, forge_token) = job;
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     let mut reader = BufReader::new(stream);
@@ -367,7 +382,7 @@ fn connection(
                 stream,
                 manifest,
                 &sandboxes.egress,
-                reports,
+                &reports.egress,
                 ended,
             )?
         };
@@ -375,6 +390,30 @@ fn connection(
             Some(response) => write_response(&mut &*stream, response),
             None => Ok(()),
         };
+    }
+    // A git call, for the git proxy (ADR-0046).
+    if head.target.starts_with(git::PREFIX) {
+        let mut response = if ended.load(Ordering::SeqCst) {
+            egress::refused(403, "admission.ended")
+        } else if sandboxes.clock.now() > manifest.deadline {
+            egress::refused(403, "admission.expired")
+        } else {
+            git::answer(
+                &head,
+                &mut reader,
+                &mut &*stream,
+                manifest,
+                forge_token.as_ref(),
+                &sandboxes.git,
+                &reports.manifest,
+                ended,
+            )
+        };
+        response.body = Box::new(UntilEnded {
+            inner: response.body,
+            ended: Arc::clone(ended),
+        });
+        return write_response(&mut &*stream, response);
     }
     let response = match read_body(head, &mut reader) {
         // A call read after the job ended never reaches a provider.

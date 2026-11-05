@@ -403,6 +403,7 @@ pub fn job_with(port: u16, seq: u64, hosts: &[&str], egress: Egress) -> Res<Job>
         Sandboxes {
             models: Arc::new(Models::from_providers(&providers, Arc::new(ThreadSleep))),
             egress,
+            git: hyalos_broker::git::Git::github(),
             clock: Arc::new(Wall),
         },
     )

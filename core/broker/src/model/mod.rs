@@ -18,6 +18,7 @@ mod usage;
 
 pub use anthropic::Anthropic;
 pub use http::HttpTransport;
+pub(crate) use http::dechunk;
 pub use openai::OpenAi;
 pub use relay::{Backoff, Relay, Sleep, ThreadSleep};
 pub use usage::Meter;

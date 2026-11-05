@@ -136,6 +136,7 @@ impl Broker {
                             match JobSocket::open(
                                 Path::new(&socket),
                                 manifest.clone(),
+                                forge_token.clone(),
                                 sandboxes.clone(),
                                 self.reports.clone(),
                             ) {

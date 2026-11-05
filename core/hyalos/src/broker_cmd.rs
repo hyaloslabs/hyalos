@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use hyalos_broker::egress::Egress;
+use hyalos_broker::git::Git;
 use hyalos_broker::model::ThreadSleep;
 use hyalos_broker::sandbox::{Models, Providers, Sandboxes};
 use hyalos_broker::{Exit, serve_with};
@@ -43,6 +44,7 @@ pub fn run(args: &[String]) -> ExitCode {
     let sandboxes = Sandboxes {
         models: Arc::new(Models::from_providers(&providers, Arc::new(ThreadSleep))),
         egress: Egress::public(),
+        git: Git::github(),
         clock: Arc::new(SystemClock),
     };
     drop(providers);

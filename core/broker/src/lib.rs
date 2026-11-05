@@ -1,9 +1,10 @@
-//! Manifest enforcement, model protocols, forge and egress proxy, and parsing of untrusted input.
+//! Manifest enforcement, model protocols, the git and egress proxies, and parsing of untrusted input.
 //!
 //! Layout rule (ADR-0017): this crate depends on no workspace crate except hyalos-types.
 
 mod admission;
 pub mod egress;
+pub mod git;
 pub mod model;
 pub mod sandbox;
 mod serve;

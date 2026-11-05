@@ -254,6 +254,16 @@ fn read_response(
     })
 }
 
+/// A chunked transfer-encoded body read from `inner`, decoded as it is read. Git sends a large request
+/// body chunked (ADR-0046).
+pub(crate) fn dechunk<R: BufRead>(inner: R) -> impl Read {
+    Chunked {
+        inner,
+        left: 0,
+        done: false,
+    }
+}
+
 /// A chunked transfer-encoded body, decoded as it is read.
 struct Chunked<R> {
     inner: R,

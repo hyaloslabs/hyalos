@@ -136,21 +136,37 @@ impl Egress {
 #[derive(Debug)]
 pub struct Reports {
     job: JobId,
+    gate: Gate,
+    /// The reason the report after the last one carries.
+    too_many: &'static str,
     to: Option<Sender<ToEngine>>,
     seen: Mutex<(BTreeSet<Digest>, bool)>,
 }
 
 impl Reports {
+    /// The egress gate's reports.
     pub fn new(job: JobId, to: Option<Sender<ToEngine>>) -> Self {
+        Self::for_gate(job, Gate::Egress, "egress.too_many_refusals", to)
+    }
+
+    /// Another gate's reports, capped the same way: after [`MAX_REPORTS`], one with `too_many`.
+    pub fn for_gate(
+        job: JobId,
+        gate: Gate,
+        too_many: &'static str,
+        to: Option<Sender<ToEngine>>,
+    ) -> Self {
         Self {
             job,
+            gate,
+            too_many,
             to,
             seen: Mutex::new((BTreeSet::new(), false)),
         }
     }
 
-    /// Reports the egress gate's `deny` for `inputs` once per job, up to [`MAX_REPORTS`].
-    fn deny(&self, reason: &str, inputs: Digest, ended: &AtomicBool) {
+    /// Reports this gate's `deny` for `inputs` once per job, up to [`MAX_REPORTS`].
+    pub(crate) fn deny(&self, reason: &str, inputs: Digest, ended: &AtomicBool) {
         // A refusal made as the job ends is not reported after its end.
         if ended.load(Ordering::SeqCst) {
             return;
@@ -169,11 +185,11 @@ impl Reports {
             code
         } else {
             *capped = true;
-            code_of("egress.too_many_refusals")
+            code_of(self.too_many)
         };
         let _ = to.send(ToEngine::Gate {
             job: self.job,
-            gate: Gate::Egress,
+            gate: self.gate,
             inputs,
             answer: Answer::Deny,
             reason,
