@@ -134,6 +134,7 @@ fn rig(openai: bool) -> Res<Rig> {
         Sandboxes {
             models: Arc::new(models),
             egress: hyalos_broker::egress::Egress::public(),
+            git: hyalos_broker::git::Git::github(),
             clock: clock.clone(),
         },
     );

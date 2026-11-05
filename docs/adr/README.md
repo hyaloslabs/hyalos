@@ -59,3 +59,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0043](0043-choosing-the-substrate-recording-it-and-doctor.md) | Choosing the substrate, recording it on the job, and `hyalos doctor` | Accepted |
 | [0044](0044-minting-per-job-github-tokens-from-the-app.md) | Minting per-job GitHub tokens from the App | Accepted |
 | [0045](0045-forge-tokens-up-to-4-kib.md) | Forge tokens up to 4 KiB, and revoking a token the engine cannot use | Accepted |
+| [0046](0046-the-git-proxy.md) | The git proxy | Proposed |

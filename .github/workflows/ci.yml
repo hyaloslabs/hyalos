@@ -35,10 +35,12 @@ jobs:
       # The container driver's contract runs against Docker here (ADR-0032), and a missing runtime fails.
       - name: Pull the substrate contract's image
         run: docker pull ubuntu:24.04
+      # The git proxy's test runs the real git client and git http-backend (ADR-0046); missing git fails.
       - name: Test
         run: cargo test --workspace --locked
         env:
           HYALOS_REQUIRE_CONTAINER: "1"
+          HYALOS_REQUIRE_GIT: "1"
       - name: Crate layout (ADR-0017)
         run: cargo xtask layout
       - name: Trusted-core size (ADR-0017)

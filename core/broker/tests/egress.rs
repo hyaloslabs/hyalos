@@ -82,6 +82,7 @@ fn sandboxes(egress: Egress, clock: Arc<Shared>) -> Sandboxes {
             Arc::new(Meter::default()),
         )),
         egress,
+        git: hyalos_broker::git::Git::github(),
         clock,
     }
 }
