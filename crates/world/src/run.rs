@@ -27,7 +27,7 @@ const OPERATOR: &str = r#"
     permit (principal, action == Action::"use_tool", resource)
       when { ["Bash", "Edit", "Read"].contains(resource.name) };
     permit (principal, action == Action::"data_flow", resource)
-      when { resource.name == "repo->model" };
+      when { resource.name == "job->model" };
     permit (principal, action == Action::"request_host", resource)
       when { ["github.com", "api.github.com"].contains(resource.name) };
 "#;
@@ -170,7 +170,7 @@ pub fn run_job(seed: u64, dir: &Path) -> Res<Run> {
         actions: names(&["open_pr", "push", "read"]),
         egress_hosts: names(&["api.github.com", "github.com"]),
         tools: names(&["Bash", "Edit", "Read"]),
-        data_flows: names(&["repo->model"]),
+        data_flows: names(&["job->model"]),
         budget: Budget {
             tokens: TOKEN_BUDGET,
         },

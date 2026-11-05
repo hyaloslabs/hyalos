@@ -23,7 +23,7 @@ use hyalos_types::wire::{ToBroker, ToEngine};
 use hyalos_types::{
     Answer, Budget, Clock, CredentialTier, Digest, Event, ForgeIssue, ForgeToken, HoldReason,
     JobId, JobOutcome, MANIFEST_VERSION, Manifest, Origin, Provenance, ReasonCode, Role, Stakes,
-    StepInputs, Timestamp,
+    StepInputs, Timestamp, flow,
 };
 
 use crate::clock::SystemClock;
@@ -500,7 +500,13 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
         actions: ["read", "push", "open_pr"].map(String::from).into(),
         egress_hosts: request.egress_hosts.clone(),
         tools: BTreeSet::new(),
-        data_flows: BTreeSet::new(),
+        // Its data goes to the model and the forge, and to the web only if it may reach a host
+        // (ADR-0055).
+        data_flows: [flow::MODEL, flow::FORGE]
+            .into_iter()
+            .chain((!request.egress_hosts.is_empty()).then_some(flow::WEB))
+            .map(String::from)
+            .collect(),
         budget: Budget {
             tokens: request.budget_tokens,
         },

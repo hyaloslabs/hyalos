@@ -29,7 +29,7 @@ pub use forge::ForgeToken;
 pub use ids::{HoldId, JobId, TaskId};
 pub use manifest::{
     Approval, Budget, MANIFEST_VERSION, Manifest, ManifestError, ManifestKey, ManifestPublicKey,
-    OpenError, Role, SignedManifest,
+    OpenError, Role, SignedManifest, flow,
 };
 pub use origin::Origin;
 pub use provenance::{ForgeIssue, ForgeText, IssueState, Provenance, StepInputs};

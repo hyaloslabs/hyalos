@@ -471,7 +471,7 @@ pub fn job_spec(port: u16, seq: u64, spec: Spec<'_>) -> Res<Job> {
         actions: actions.iter().map(|a| a.to_string()).collect(),
         egress_hosts: hosts.iter().map(|h| h.to_string()).collect(),
         tools: BTreeSet::new(),
-        data_flows: BTreeSet::new(),
+        data_flows: hyalos_types::flow::ALL.map(String::from).into(),
         budget: Budget { tokens: 10_000_000 },
         deadline: Timestamp::from_millis(deadline),
         approval: None,

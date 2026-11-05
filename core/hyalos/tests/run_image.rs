@@ -308,6 +308,9 @@ fn codex_in_the_sandbox_pushes_a_branch_and_opens_a_pull_request() -> Res {
             "Add a CHANGES file.",
         ])
         .args(["--image", IMAGE, "--harness", "codex", "--minutes", "5"])
+        // A listed host declares the job's web flow, so the unlisted one curl asks for is the egress
+        // gate's refusal (ADR-0055).
+        .args(["--allow-host", "listed.example"])
         .env("HYALOS_CONFIG_DIR", &world.config)
         .env("HYALOS_DATA_DIR", &world.data)
         .env("HYALOS_RUNTIME_DIR", &world.runtime)
