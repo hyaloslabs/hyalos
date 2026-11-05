@@ -61,4 +61,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0045](0045-forge-tokens-up-to-4-kib.md) | Forge tokens up to 4 KiB, and revoking a token the engine cannot use | Accepted |
 | [0046](0046-the-git-proxy.md) | The git proxy | Accepted |
 | [0047](0047-forge-content-as-typed-values-and-derived-taint.md) | Forge content as typed values, and taint derived from the step | Accepted |
-| [0048](0048-opening-a-pull-request-and-the-content-gate-on-its-text.md) | Opening a pull request, and the content gate on its text | Proposed |
+| [0048](0048-opening-a-pull-request-and-the-content-gate-on-its-text.md) | Opening a pull request, and the content gate on its text | Accepted |

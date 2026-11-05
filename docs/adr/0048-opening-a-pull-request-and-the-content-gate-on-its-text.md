@@ -1,6 +1,6 @@
 # ADR-0048: Opening a pull request, and the content gate on its text
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
