@@ -175,7 +175,12 @@ pub fn run_job(seed: u64, dir: &Path) -> Res<Run> {
         deadline,
         approval: None,
     };
-    let signed = engine.mint_manifest(&manifest, &manifest_key, clock.now())?;
+    let signed = engine.mint_manifest(
+        &manifest,
+        &hyalos_types::StepInputs::default(),
+        &manifest_key,
+        clock.now(),
+    )?;
     let admission = Admission::new(manifest_key.public());
     let credential = Credential {
         job,

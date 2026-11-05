@@ -9,7 +9,7 @@ use hyalos_log::{Head, Log, LogKey};
 use hyalos_policy::{LoadError, codes};
 use hyalos_types::{
     Budget, Digest, Event, JobId, JobOutcome, MAX_POLICY_DOCUMENT, Manifest, ManifestKey, Origin,
-    ReasonCode, Resolution, Role, SubstrateName, Timestamp,
+    ReasonCode, Resolution, Role, StepInputs, SubstrateName, Timestamp,
 };
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -85,7 +85,8 @@ fn manifest(job: JobId) -> Manifest {
         version: 1,
         job,
         role: Role::Actor,
-        tainted: false,
+        // An actor reads its repository, so it is always tainted (ADR-0005).
+        tainted: true,
         repo: "hyaloslabs/hyalos".into(),
         branch_prefix: "hyalos/".into(),
         actions: set(&["open_pr", "push"]),
@@ -269,7 +270,12 @@ fn compaction_keeps_the_policy_in_force() -> Res {
     // And it still mints from the policy it started from.
     assert!(
         reopened
-            .mint_manifest(&manifest(job), &manifest_key(), at(30))
+            .mint_manifest(
+                &manifest(job),
+                &StepInputs::default(),
+                &manifest_key(),
+                at(30)
+            )
             .is_ok()
     );
     Ok(())
@@ -281,7 +287,12 @@ fn compaction_keeps_the_policy_in_force() -> Res {
 fn a_manifest_within_policy_is_minted_signed_and_opens_with_the_public_key() -> Res {
     let (mut e, job, _) = running("mint")?;
     e.approve_policy(at(10), OPERATOR, Decider::Human, why())?;
-    let signed = e.mint_manifest(&manifest(job), &manifest_key(), at(20))?;
+    let signed = e.mint_manifest(
+        &manifest(job),
+        &StepInputs::default(),
+        &manifest_key(),
+        at(20),
+    )?;
     assert_eq!(signed.open(&manifest_key().public())?, manifest(job));
     // Another key does not open it.
     assert!(
@@ -340,7 +351,7 @@ fn a_job_request_outside_policy_is_denied_naming_what_was_refused() -> Res {
     for (what, change, ask) in cases {
         let mut m = manifest(job);
         change(&mut m);
-        match refusal(e.mint_manifest(&m, &key, at(20)))? {
+        match refusal(e.mint_manifest(&m, &StepInputs::default(), &key, at(20)))? {
             MintRefusal::Denied { ask: got, reason } => {
                 assert!(
                     got == ask || got.starts_with(ask) || ask.starts_with(&got),
@@ -358,7 +369,12 @@ fn a_job_request_outside_policy_is_denied_naming_what_was_refused() -> Res {
 fn with_no_operator_policy_nothing_is_minted_that_asks_for_anything() -> Res {
     let (e, job, _) = running("nopolicy")?;
     assert!(matches!(
-        refusal(e.mint_manifest(&manifest(job), &manifest_key(), at(20)))?,
+        refusal(e.mint_manifest(
+            &manifest(job),
+            &StepInputs::default(),
+            &manifest_key(),
+            at(20)
+        ))?,
         MintRefusal::Denied { .. }
     ));
     // A manifest that asks for nothing is not asking for anything outside policy.
@@ -367,7 +383,10 @@ fn with_no_operator_policy_nothing_is_minted_that_asks_for_anything() -> Res {
     empty.tools.clear();
     empty.egress_hosts.clear();
     empty.data_flows.clear();
-    assert!(e.mint_manifest(&empty, &manifest_key(), at(20)).is_ok());
+    assert!(
+        e.mint_manifest(&empty, &StepInputs::default(), &manifest_key(), at(20))
+            .is_ok()
+    );
     Ok(())
 }
 
@@ -394,7 +413,7 @@ fn the_baseline_holds_whatever_the_operator_permits() -> Res {
             head_sha: "0123456789abcdef0123456789abcdef01234567".into(),
             event: 5,
         });
-        match refusal(e.mint_manifest(&m, &manifest_key(), at(20)))? {
+        match refusal(e.mint_manifest(&m, &StepInputs::default(), &manifest_key(), at(20)))? {
             MintRefusal::Denied { reason, .. } => assert_eq!(reason, codes::denied(), "{action}"),
             other => return Err(format!("{action}: {other:?}").into()),
         }
@@ -404,13 +423,18 @@ fn the_baseline_holds_whatever_the_operator_permits() -> Res {
     tainted.tainted = true;
     tainted.actions = set(&["merge"]);
     assert!(matches!(
-        refusal(e.mint_manifest(&tainted, &manifest_key(), at(20)))?,
+        refusal(e.mint_manifest(&tainted, &StepInputs::default(), &manifest_key(), at(20)))?,
         MintRefusal::Denied { .. }
     ));
     // Under a permit-all, an ordinary manifest is minted.
     assert!(
-        e.mint_manifest(&manifest(job), &manifest_key(), at(20))
-            .is_ok()
+        e.mint_manifest(
+            &manifest(job),
+            &StepInputs::default(),
+            &manifest_key(),
+            at(20)
+        )
+        .is_ok()
     );
     Ok(())
 }
@@ -429,7 +453,7 @@ fn a_manifest_the_engine_does_not_mint_is_refused_whatever_policy_says() -> Res 
         let mut m = manifest(job);
         m.actions = set(&[action]);
         assert_eq!(
-            refusal(e.mint_manifest(&m, &key, at(20)))?,
+            refusal(e.mint_manifest(&m, &StepInputs::default(), &key, at(20)))?,
             MintRefusal::Invalid {
                 reason: mint_codes::unknown_action()
             },
@@ -439,7 +463,7 @@ fn a_manifest_the_engine_does_not_mint_is_refused_whatever_policy_says() -> Res 
     // A job that never started, and one that ended.
     let other = manifest(JobId::from_seq(999));
     assert_eq!(
-        refusal(e.mint_manifest(&other, &key, at(20)))?,
+        refusal(e.mint_manifest(&other, &StepInputs::default(), &key, at(20)))?,
         MintRefusal::Invalid {
             reason: mint_codes::job_not_running()
         }
@@ -453,7 +477,7 @@ fn a_manifest_the_engine_does_not_mint_is_refused_whatever_policy_says() -> Res 
         },
     )?;
     assert_eq!(
-        refusal(e.mint_manifest(&manifest(job), &key, at(40)))?,
+        refusal(e.mint_manifest(&manifest(job), &StepInputs::default(), &key, at(40)))?,
         MintRefusal::Invalid {
             reason: mint_codes::job_not_running()
         }
@@ -467,10 +491,13 @@ fn a_deadline_that_is_not_in_the_future_is_refused() -> Res {
     e.approve_policy(at(10), OPERATOR, Decider::Human, why())?;
     let mut m = manifest(job);
     m.deadline = at(100);
-    assert!(e.mint_manifest(&m, &manifest_key(), at(99)).is_ok());
+    assert!(
+        e.mint_manifest(&m, &StepInputs::default(), &manifest_key(), at(99))
+            .is_ok()
+    );
     for now in [100, 101, 5_000] {
         assert_eq!(
-            refusal(e.mint_manifest(&m, &manifest_key(), at(now)))?,
+            refusal(e.mint_manifest(&m, &StepInputs::default(), &manifest_key(), at(now)))?,
             MintRefusal::Invalid {
                 reason: mint_codes::expired()
             },
@@ -492,7 +519,7 @@ fn a_policy_that_errors_holds_the_request_and_never_allows_it() -> Res {
     )?;
     let mut m = manifest(job);
     m.budget.tokens = 2;
-    match refusal(e.mint_manifest(&m, &manifest_key(), at(20)))? {
+    match refusal(e.mint_manifest(&m, &StepInputs::default(), &manifest_key(), at(20)))? {
         MintRefusal::Held { reason, .. } => assert_eq!(reason, codes::error()),
         other => return Err(format!("expected a hold, got {other:?}").into()),
     }
@@ -538,7 +565,12 @@ fn a_stored_policy_that_no_longer_validates_holds_requests_until_it_is_replaced(
     let unavailable = e.policies().err().ok_or("the stale policy loaded")?;
     assert_eq!(unavailable.since, Some(3));
     assert!(unavailable.to_string().contains("held until a replacement"));
-    match refusal(e.mint_manifest(&manifest(job), &manifest_key(), at(20)))? {
+    match refusal(e.mint_manifest(
+        &manifest(job),
+        &StepInputs::default(),
+        &manifest_key(),
+        at(20),
+    ))? {
         MintRefusal::Held { reason, .. } => assert_eq!(reason, codes::invalid()),
         other => return Err(format!("expected a hold, got {other:?}").into()),
     }
@@ -549,14 +581,19 @@ fn a_stored_policy_that_no_longer_validates_holds_requests_until_it_is_replaced(
     nothing.egress_hosts.clear();
     nothing.data_flows.clear();
     assert!(matches!(
-        refusal(e.mint_manifest(&nothing, &manifest_key(), at(20)))?,
+        refusal(e.mint_manifest(&nothing, &StepInputs::default(), &manifest_key(), at(20)))?,
         MintRefusal::Held { .. }
     ));
     // A stale approval is replaced by approving a valid one, and then minting works.
     e.approve_policy(at(21), OPERATOR, Decider::Human, why())?;
     assert!(
-        e.mint_manifest(&manifest(job), &manifest_key(), at(22))
-            .is_ok()
+        e.mint_manifest(
+            &manifest(job),
+            &StepInputs::default(),
+            &manifest_key(),
+            at(22)
+        )
+        .is_ok()
     );
     Ok(())
 }
@@ -567,11 +604,123 @@ fn minting_writes_nothing_to_the_log() -> Res {
     e.approve_policy(at(10), OPERATOR, Decider::Human, why())?;
     let before = e.head()?;
     let state = e.state().clone();
-    e.mint_manifest(&manifest(job), &manifest_key(), at(20))?;
+    e.mint_manifest(
+        &manifest(job),
+        &StepInputs::default(),
+        &manifest_key(),
+        at(20),
+    )?;
     let mut denied = manifest(job);
     denied.tools.insert("Curl".into());
-    refusal(e.mint_manifest(&denied, &manifest_key(), at(20)))?;
+    refusal(e.mint_manifest(&denied, &StepInputs::default(), &manifest_key(), at(20)))?;
     assert_eq!(e.head()?, before);
     assert_eq!(e.state(), &state);
+    Ok(())
+}
+
+/// S3.14 (ADR-0005, ADR-0047): taint is derived from the step, never requested.
+#[test]
+fn an_actor_or_a_step_given_forge_content_is_minted_only_tainted() -> Res {
+    let (mut e, job, _) = running("derived-taint")?;
+    e.approve_policy(at(10), OPERATOR, Decider::Human, why())?;
+    let required = |result| -> Res {
+        match refusal(result)? {
+            MintRefusal::Invalid { reason } => {
+                assert_eq!(reason.as_str(), "mint.taint_required");
+                Ok(())
+            }
+            other => Err(format!("{other:?}").into()),
+        }
+    };
+    let issue = hyalos_types::Provenance::ForgeAuthored;
+    // An actor reads its repository, so whatever it is given its manifest must be tainted.
+    let mut clean = manifest(job);
+    clean.tainted = false;
+    required(e.mint_manifest(&clean, &StepInputs::default(), &manifest_key(), at(20)))?;
+    required(e.mint_manifest(&clean, &StepInputs::of([issue]), &manifest_key(), at(20)))?;
+    // A reader or planner given issue text, or model output derived from it, must be tainted too.
+    for role in [Role::Reader, Role::Planner, Role::Deterministic] {
+        let mut m = manifest(job);
+        m.role = role;
+        m.tainted = false;
+        for read in [issue, hyalos_types::Provenance::ModelFromTainted] {
+            required(e.mint_manifest(&m, &StepInputs::of([read]), &manifest_key(), at(20)))?;
+        }
+        // Given only the operator's values, it may run clean.
+        let operator = StepInputs::of([hyalos_types::Provenance::Operator]);
+        assert!(
+            e.mint_manifest(&m, &operator, &manifest_key(), at(20))
+                .is_ok(),
+            "{role:?}"
+        );
+        // And tainted, it is minted whatever it reads: it can only do less.
+        m.tainted = true;
+        assert!(
+            e.mint_manifest(&m, &operator, &manifest_key(), at(20))
+                .is_ok(),
+            "{role:?}"
+        );
+    }
+    assert!(
+        e.mint_manifest(
+            &manifest(job),
+            &StepInputs::of([issue]),
+            &manifest_key(),
+            at(20)
+        )
+        .is_ok()
+    );
+    Ok(())
+}
+
+/// S3.14: under an operator policy that permits everything, a tainted manifest still cannot merge or
+/// use a subscription token (the baseline, ADR-0033). Pushing outside the branch prefix is refused for
+/// every manifest by the git proxy (ADR-0046, `core/broker/tests/git.rs`, whose job is tainted).
+#[test]
+fn a_tainted_manifest_cannot_merge_even_when_the_operator_permits_everything() -> Res {
+    let (mut e, job, _) = running("tainted-limits")?;
+    e.approve_policy(
+        at(10),
+        "permit (principal, action, resource);",
+        Decider::Human,
+        why(),
+    )?;
+    let mut m = manifest(job);
+    m.actions = set(&["merge", "read"]);
+    m.approval = Some(hyalos_types::Approval {
+        head_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+        event: 5,
+    });
+    match refusal(e.mint_manifest(&m, &StepInputs::default(), &manifest_key(), at(20)))? {
+        MintRefusal::Denied { ask, .. } => assert_eq!(ask, "merge"),
+        other => return Err(format!("{other:?}").into()),
+    }
+    // Every policy question minting asks of a tainted job says so, so the baseline's taint rules see it.
+    let policies = e.policies()?;
+    let mut request = hyalos_policy::PolicyRequest {
+        action: hyalos_policy::Action::Read,
+        job: hyalos_policy::JobFacts {
+            tainted: true,
+            repo: m.repo.clone(),
+            budget_tokens: m.budget.tokens,
+        },
+        target: hyalos_policy::TargetFacts {
+            repo: m.repo.clone(),
+            name: String::new(),
+            in_branch_prefix: true,
+            protected: false,
+        },
+        approved: true,
+        subscription_token: true,
+    };
+    assert_eq!(
+        policies.judge_request(&request).answer,
+        hyalos_types::Answer::Deny
+    );
+    request.job.tainted = false;
+    assert_eq!(
+        policies.judge_request(&request).answer,
+        hyalos_types::Answer::Allow
+    );
     Ok(())
 }

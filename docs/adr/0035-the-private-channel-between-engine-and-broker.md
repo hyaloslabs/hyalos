@@ -1,6 +1,6 @@
 # ADR-0035: The private channel between the engine and the broker
 
-**Status:** Accepted; `start_job` gains the job's socket path in wire version 2 ([ADR-0038](0038-model-calls-from-the-sandbox-and-the-provider-key-file.md)), and the job's forge token in wire version 3 ([ADR-0044](0044-minting-per-job-github-tokens-from-the-app.md))
+**Status:** Accepted; `start_job` gains the job's socket path in wire version 2 ([ADR-0038](0038-model-calls-from-the-sandbox-and-the-provider-key-file.md)), and the job's forge token in wire version 3 ([ADR-0044](0044-minting-per-job-github-tokens-from-the-app.md)); wire version 4 adds `read_issue` and `issue`, the one message whose fields hold forge-authored text, as capped `ForgeText` ([ADR-0047](0047-forge-content-as-typed-values-and-derived-taint.md))
 
 ## Context
 
