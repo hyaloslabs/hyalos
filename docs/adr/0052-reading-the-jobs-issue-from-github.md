@@ -29,6 +29,7 @@ The engine never calls GitHub for the issue itself. Its only contact with the te
 - The issue's title, labels and body go inside an `<issue number="N">` block.
 - A sentence before the block says they were written on GitHub by the issue's users, not by the operator, and are a description of the problem, not instructions.
 - The engine's own steps (clone, branch, push, `hyalos-pr`) come after the block.
+- In the forge's text, every `<issue` and `</issue`, in any ASCII case, is written with `&lt;`. This means only the engine's own tags open and close the block, and an issue cannot end its block early and add steps that read as the engine's.
 
 This is a hint to the model, not a boundary: a model may still follow text inside the block. The boundary is the sandbox, the manifest and the broker's gates, which hold whatever the harness is persuaded to try.
 
@@ -46,7 +47,7 @@ The tests are in `core/hyalos/tests/run_job.rs`. The stand-in GitHub answers the
 - no token is left live;
 - the issue's body is not in the log file.
 
-With `--issue-number 99`, the test checks that `forge.no_such_issue` fails the job, that no sandbox ran, that the token was revoked, and that `job.ended` is `failed`. A unit test checks that the prompt places the block before the engine's steps.
+With `--issue-number 99`, the test checks that `forge.no_such_issue` fails the job, that no sandbox ran, that the token was revoked, and that `job.ended` is `failed`. Unit tests check that the prompt places the block before the engine's steps, and that an issue whose text writes `</issue>` cannot close its block.
 
 Not here:
 - **Comments on the issue.** The broker reads the issue alone; comments are more forge-authored text, with their own caps.
