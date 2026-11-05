@@ -43,7 +43,8 @@ pub fn run(args: &[String]) -> ExitCode {
     };
     let sandboxes = Sandboxes {
         models: Arc::new(Models::from_providers(&providers, Arc::new(ThreadSleep))),
-        egress: Egress::public(),
+        // The providers' own hosts are never egress destinations (ADR-0051).
+        egress: Egress::public().refusing_bases(providers.bases()),
         git: Git::github(),
         forge: hyalos_broker::forge::Forge::github(),
         clock: Arc::new(SystemClock),

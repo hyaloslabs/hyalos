@@ -19,7 +19,7 @@ pub type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 pub const EXE: &str = env!("CARGO_BIN_EXE_hyalos");
 const PEM: &[u8] = include_bytes!("../fixtures/github-app-test.pem");
-const POLICY: &str = r#"permit (principal, action in [Action::"read", Action::"push", Action::"open_pr"], resource);"#;
+const POLICY: &str = r#"permit (principal, action in [Action::"read", Action::"push", Action::"open_pr", Action::"request_host"], resource);"#;
 
 pub fn dir(name: &str) -> Res<PathBuf> {
     // Short, so the job's socket path stays under the Unix limit.
@@ -372,11 +372,12 @@ impl World {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
             Ok(())
         };
-        // A model the harness never calls here; the key is still the broker's to hold.
+        // A model the harness never calls here; the key is still the broker's to hold. Its base is a
+        // name, so the egress gate has a provider host to refuse (ADR-0051).
         private(
             world.config.join("provider.keys"),
             format!(
-                "openai.key = {}\nopenai.base = http://127.0.0.1:9\n",
+                "openai.key = {}\nopenai.base = http://localhost:9\n",
                 world.provider_key
             )
             .as_bytes(),

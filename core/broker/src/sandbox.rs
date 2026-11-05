@@ -137,6 +137,16 @@ impl Providers {
     }
 }
 
+impl Providers {
+    /// The bases the providers are reached at, whose hosts the egress gate never reaches (ADR-0051).
+    pub fn bases(&self) -> impl Iterator<Item = &str> {
+        [&self.anthropic, &self.openai]
+            .into_iter()
+            .flatten()
+            .map(|p| p.base.as_str())
+    }
+}
+
 /// The relays for each protocol, and the meter they share. A protocol with no usable provider holds
 /// the reason instead, and its calls are refused with it.
 pub struct Models {
