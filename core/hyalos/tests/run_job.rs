@@ -24,7 +24,10 @@ use hyalos_types::{Answer, CredentialTier, Event, Gate, JobOutcome, SubstrateNam
 
 mod common;
 
-use common::{GitHub, Res, World, contains, dir, git, have_git, ok, ok_cli, repository};
+use common::{
+    GitHub, ISSUE_BODY, ISSUE_TITLE, Res, World, contains, dir, git, have_git, ok, ok_cli,
+    repository,
+};
 
 const IMAGE: &str = "harness";
 
@@ -42,6 +45,7 @@ fn request(harness: Harness) -> Request {
     Request {
         repo: "octo/repo".into(),
         issue: "Add a CHANGES file.".into(),
+        issue_number: None,
         base: "main".into(),
         image: IMAGE.into(),
         harness,
@@ -199,6 +203,86 @@ fn a_job_pushes_its_branch_opens_a_pull_request_and_records_its_gates() -> Res {
     assert!(verified.contains("ok"), "{verified}");
     let _ = std::fs::remove_dir_all(&repos);
     let _ = std::fs::remove_dir_all(&home);
+    Ok(())
+}
+
+/// `--issue-number`: the broker reads the issue with the job's token, and its text reaches the
+/// harness set apart as the forge's users' (ADR-0052). A number with no issue fails the job before any
+/// sandbox starts, and the token is still revoked.
+#[test]
+fn an_issue_read_from_github_reaches_the_harness_as_forge_text() -> Res {
+    let repos = dir("irepos")?;
+    let gh = GitHub::start(&repos, false)?;
+    let world = World::new("issue", Some(&gh))?;
+    let prompt_file = world.root.join("prompt");
+    let mut asked = request(Harness::Command(vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        format!("printf '%s' \"$0\" > {}", prompt_file.display()),
+    ]));
+    asked.issue = String::new();
+    asked.issue_number = Some(7);
+    let mut said = Vec::new();
+    let summary = run_job(
+        &asked,
+        world.setup(local_detect(), Duration::from_secs(10)),
+        &mut said,
+    )?;
+    let said = String::from_utf8_lossy(&said).into_owned();
+    assert!(summary.ok(), "{said}");
+    assert!(
+        said.contains("issue #7 read through the broker (Open, "),
+        "{said}"
+    );
+    let prompt = std::fs::read_to_string(&prompt_file)?;
+    assert!(
+        prompt.contains("written on GitHub by its users"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains(&format!(
+            "<issue number=\"7\">\nTitle: {ISSUE_TITLE}\nLabels: docs\n\n{ISSUE_BODY}\n</issue>"
+        )),
+        "{prompt}"
+    );
+    // The engine never asked GitHub itself: the one GraphQL call carried the job's token.
+    let seen = gh.seen();
+    let reads: Vec<_> = seen.iter().filter(|s| s.path == "/graphql").collect();
+    assert_eq!(reads.len(), 1, "{seen:?}");
+    assert!(
+        reads[0].authorization.starts_with("bearer ghs_"),
+        "{seen:?}"
+    );
+    assert!(gh.issued().is_empty(), "no token is left live");
+    // The forge's text is not in the log: the task records a digest of the request.
+    let raw = std::fs::read(world.data.join("events.db"))?;
+    assert!(!contains(&raw, b"issue-body-marker-5b1e"));
+
+    // No such issue: the job fails, no sandbox runs, the token is revoked.
+    let _ = std::fs::remove_file(&prompt_file);
+    asked.issue_number = Some(99);
+    let mut said = Vec::new();
+    let summary = run_job(
+        &asked,
+        world.setup(local_detect(), Duration::from_secs(10)),
+        &mut said,
+    )?;
+    let said = String::from_utf8_lossy(&said).into_owned();
+    assert_eq!(summary.outcome, JobOutcome::Failed, "{said}");
+    assert_eq!(summary.revoked, Ok(()), "{said}");
+    assert!(
+        said.contains("issue #99 could not be read (forge.no_such_issue)"),
+        "{said}"
+    );
+    assert!(!said.contains("sandbox"), "{said}");
+    assert!(!prompt_file.exists());
+    assert!(gh.issued().is_empty(), "no token is left live");
+    let events = world.events()?;
+    assert!(events.contains(&Event::JobEnded {
+        job: summary.job,
+        outcome: JobOutcome::Failed
+    }));
+    let _ = std::fs::remove_dir_all(&repos);
     Ok(())
 }
 

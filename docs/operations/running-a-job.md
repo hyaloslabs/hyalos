@@ -23,6 +23,7 @@ hyalos run --repo octo/repo --issue "The parser drops the last line of a file wi
 ```
 
 - `--issue-file <file>` reads the issue text from a file.
+- `--issue-number <n>` works on issue `n` of `--repo` instead. The broker reads it from GitHub with the job's token, and the harness is told that its text was written by the issue's users, not by you ([ADR-0052](../adr/0052-reading-the-jobs-issue-from-github.md)). If it cannot be read (no such issue, or GitHub refuses), the job fails before a sandbox starts and the token is revoked.
 - `--base <branch>` is where the pull request goes (default `main`).
 - `--harness claude-code` runs Claude Code instead of Codex.
 - `--minutes` is the deadline (default 30); `--budget-tokens` the model budget (default 200,000).
