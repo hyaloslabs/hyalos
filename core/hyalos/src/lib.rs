@@ -10,6 +10,7 @@ pub mod github;
 pub mod github_cmd;
 pub mod hardening;
 pub mod init_cmd;
+pub mod interrupt;
 pub mod keys;
 pub mod launch;
 pub mod log_cmd;

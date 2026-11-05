@@ -476,6 +476,7 @@ fn a_manifest_the_engine_does_not_mint_is_refused_whatever_policy_says() -> Res 
         Event::JobEnded {
             job,
             outcome: JobOutcome::Succeeded,
+            reason: why(),
         },
     )?;
     assert_eq!(

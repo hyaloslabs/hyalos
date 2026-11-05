@@ -584,6 +584,7 @@ fn log_with_release(name: &str, stakes: Stakes, release: Event) -> Res<PathBuf> 
         &Event::JobEnded {
             job,
             outcome: JobOutcome::Held,
+            reason: ReasonCode::unavailable(),
         },
     )?;
     raw_event(
@@ -779,6 +780,7 @@ fn a_hold_ends_its_job_and_releasing_the_hold_does_not_bring_the_job_back() -> R
         Event::JobEnded {
             job: h.job,
             outcome: JobOutcome::Succeeded,
+            reason: ReasonCode::unavailable(),
         },
     );
     assert!(matches!(
@@ -862,6 +864,7 @@ fn a_gate_that_reports_after_the_jobs_deadline_can_neither_hold_nor_allow() -> R
         Event::JobEnded {
             job,
             outcome: JobOutcome::DeadlineExceeded,
+            reason: ReasonCode::unavailable(),
         },
     )?;
     let before = w.snapshot()?;

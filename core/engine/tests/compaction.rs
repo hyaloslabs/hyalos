@@ -78,6 +78,7 @@ fn apply(e: &mut Engine, n: u64, op: &Op) -> Res {
                 Event::JobEnded {
                     job: *job,
                     outcome: *outcome,
+                    reason: why(),
                 },
             )?;
         }

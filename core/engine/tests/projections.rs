@@ -97,6 +97,7 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
         Event::JobEnded {
             job,
             outcome: JobOutcome::Held,
+            reason: why(),
         },
     )?;
     let hold = HoldId::from_seq(submit(
@@ -151,6 +152,7 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
         Event::JobEnded {
             job: job2,
             outcome: JobOutcome::Succeeded,
+            reason: why(),
         },
     )?;
     submit(&mut e, 9, Event::TaskCompleted { task })?;
@@ -253,6 +255,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
             Event::JobEnded {
                 job: JobId::from_seq(99),
                 outcome: JobOutcome::Failed,
+                reason: why(),
             },
             "unknown job",
         ),
@@ -308,6 +311,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
         Event::JobEnded {
             job,
             outcome: JobOutcome::Succeeded,
+            reason: why(),
         },
     )?;
     assert!(matches!(
@@ -316,7 +320,8 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
             Origin::Engine,
             Event::JobEnded {
                 job,
-                outcome: JobOutcome::Failed
+                outcome: JobOutcome::Failed,
+                reason: why(),
             }
         ),
         Err(EngineError::Rule(RuleViolation::JobNotRunning(_)))
@@ -411,6 +416,7 @@ fn deleting_the_projection_and_replaying_gives_identical_state() -> Res {
             Event::JobEnded {
                 job: j,
                 outcome: JobOutcome::DeadlineExceeded,
+                reason: why(),
             },
         )?;
         submit(
@@ -573,6 +579,7 @@ fn random_event(rng: &mut SeededRng, state: &State, seq_next: u64) -> Event {
             Event::JobEnded {
                 job,
                 outcome: outcome[pick(rng, outcome.len())],
+                reason: why(),
             }
         }
         4 => Event::HoldOpened {

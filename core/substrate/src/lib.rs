@@ -6,6 +6,9 @@
 //!
 //! Layout rule (ADR-0017): this crate depends only on hyalos-types.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use hyalos_types::SubstrateName;
 
 mod choose;
@@ -70,4 +73,25 @@ pub trait Sandbox: Send {
     /// Ends the sandbox now, without waiting for it to agree. A later [`Sandbox::wait`] returns
     /// [`Ending::Stopped`]. Stopping one that already ended does nothing.
     fn stop(&mut self);
+
+    /// A handle that stops the sandbox from another thread while [`Sandbox::wait`] runs on this one
+    /// (ADR-0053). `wait` sees it within its polling interval and ends the sandbox as
+    /// [`Sandbox::stop`] would, returning [`Ending::Stopped`]; a handle used before `wait` is called
+    /// stops the sandbox as soon as it is.
+    fn stop_handle(&self) -> StopHandle;
+}
+
+/// Asks a sandbox to stop, from any thread. Cloning it gives another handle on the same sandbox.
+#[derive(Debug, Clone, Default)]
+pub struct StopHandle(Arc<AtomicBool>);
+
+impl StopHandle {
+    pub fn stop(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether [`StopHandle::stop`] has been called on this handle or a clone of it.
+    pub fn is_stopped(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
 }

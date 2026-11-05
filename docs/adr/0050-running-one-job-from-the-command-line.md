@@ -1,6 +1,6 @@
 # ADR-0050: Running one job from the command line
 
-**Status:** Accepted. [ADR-0052](0052-reading-the-jobs-issue-from-github.md) adds `--issue-number`, which reads the issue through the broker after admission and runs the step with forge-authored inputs.
+**Status:** Accepted. [ADR-0052](0052-reading-the-jobs-issue-from-github.md) adds `--issue-number`, which reads the issue through the broker after admission and runs the step with forge-authored inputs. [ADR-0053](0053-an-interrupted-run-ends-its-job.md) builds what "An interrupted run is not cleaned up" left out: the first Ctrl-C or `SIGTERM` ends the job and revokes its token, the broker runs in its own process group, and `job.ended` records a reason.
 
 ## Context
 

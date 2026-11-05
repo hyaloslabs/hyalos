@@ -10,8 +10,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use hyalos_substrate::{
-    Ending, Isolation, OUTPUT_LIMIT, Outcome, Sandbox, SandboxSpec, StartError, Substrate,
-    Unavailable,
+    Ending, Isolation, OUTPUT_LIMIT, Outcome, Sandbox, SandboxSpec, StartError, StopHandle,
+    Substrate, Unavailable,
 };
 
 /// Runs sandboxes as child processes of the engine with an empty environment. Only the image named
@@ -83,6 +83,7 @@ impl Substrate for LocalProcessSubstrate {
             stderr,
             deadline_at: Instant::now() + spec.deadline,
             stopped: false,
+            stop_asked: StopHandle::default(),
             outcome: None,
         }))
     }
@@ -117,6 +118,7 @@ struct LocalSandbox {
     stderr: Option<JoinHandle<Vec<u8>>>,
     deadline_at: Instant,
     stopped: bool,
+    stop_asked: StopHandle,
     outcome: Option<Outcome>,
 }
 
@@ -152,6 +154,10 @@ impl Sandbox for LocalSandbox {
                 Ok(Some(status)) => break Some(status),
                 Ok(None) => {}
                 Err(_) => break None,
+            }
+            if !self.stopped && self.stop_asked.is_stopped() {
+                self.stopped = true;
+                self.kill();
             }
             if !self.stopped && !deadline_hit && Instant::now() >= self.deadline_at {
                 deadline_hit = true;
@@ -191,6 +197,10 @@ impl Sandbox for LocalSandbox {
             self.stopped = true;
             self.kill();
         }
+    }
+
+    fn stop_handle(&self) -> StopHandle {
+        self.stop_asked.clone()
     }
 }
 

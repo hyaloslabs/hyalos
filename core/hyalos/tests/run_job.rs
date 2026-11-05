@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use hyalos::run_cmd::{Harness, Request, Summary, run_job};
 use hyalos_substrate::{Substrate, choose};
 use hyalos_substrate_contract::LocalProcessSubstrate;
-use hyalos_types::{Answer, CredentialTier, Event, Gate, JobOutcome, SubstrateName};
+use hyalos_types::{Answer, CredentialTier, Event, Gate, JobOutcome, ReasonCode, SubstrateName};
 
 mod common;
 
@@ -179,7 +179,8 @@ fn a_job_pushes_its_branch_opens_a_pull_request_and_records_its_gates() -> Res {
     );
     assert!(events.contains(&Event::JobEnded {
         job: summary.job,
-        outcome: JobOutcome::Succeeded
+        outcome: JobOutcome::Succeeded,
+        reason: ReasonCode::new("harness.finished").ok_or("code")?,
     }));
     assert!(said.contains("recorded as event"), "{said}");
 
@@ -278,9 +279,11 @@ fn an_issue_read_from_github_reaches_the_harness_as_forge_text() -> Res {
     assert!(!prompt_file.exists());
     assert!(gh.issued().is_empty(), "no token is left live");
     let events = world.events()?;
+    // The job's end carries the broker's own code.
     assert!(events.contains(&Event::JobEnded {
         job: summary.job,
-        outcome: JobOutcome::Failed
+        outcome: JobOutcome::Failed,
+        reason: ReasonCode::new("forge.no_such_issue").ok_or("code")?,
     }));
     let _ = std::fs::remove_dir_all(&repos);
     Ok(())

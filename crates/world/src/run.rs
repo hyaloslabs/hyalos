@@ -308,10 +308,20 @@ pub fn run_job(seed: u64, dir: &Path) -> Res<Run> {
     };
     drop(sandbox);
     if outcome != JobOutcome::Held {
+        // The codes `hyalos run` records for the same endings (ADR-0053).
+        let why = match outcome {
+            JobOutcome::Succeeded => "harness.finished",
+            JobOutcome::DeadlineExceeded => "job.deadline",
+            JobOutcome::Failed | JobOutcome::Held => "sandbox.failed",
+        };
         engine.submit(
             clock.now(),
             Origin::Engine,
-            Event::JobEnded { job, outcome },
+            Event::JobEnded {
+                job,
+                outcome,
+                reason: ReasonCode::new(why).ok_or("reason")?,
+            },
         )?;
     }
     if outcome == JobOutcome::Succeeded {

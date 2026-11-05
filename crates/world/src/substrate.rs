@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 
 use hyalos_sim::FakeClock;
 use hyalos_substrate::{
-    Ending, Isolation, Outcome, Sandbox, SandboxSpec, StartError, Substrate, Unavailable,
+    Ending, Isolation, Outcome, Sandbox, SandboxSpec, StartError, StopHandle, Substrate,
+    Unavailable,
 };
 use hyalos_types::SeededRng;
 
@@ -81,6 +82,7 @@ impl Substrate for SeededSubstrate {
             ending,
             live: self.live.clone(),
             done: false,
+            stop_asked: StopHandle::default(),
         }))
     }
 
@@ -94,6 +96,7 @@ struct SeededSandbox {
     ending: Ending,
     live: Arc<Mutex<Vec<String>>>,
     done: bool,
+    stop_asked: StopHandle,
 }
 
 impl SeededSandbox {
@@ -111,7 +114,7 @@ impl Sandbox for SeededSandbox {
     }
 
     fn wait(&mut self) -> Outcome {
-        let ending = if self.done {
+        let ending = if self.done || self.stop_asked.is_stopped() {
             Ending::Stopped
         } else {
             self.ending
@@ -126,6 +129,10 @@ impl Sandbox for SeededSandbox {
 
     fn stop(&mut self) {
         self.remove();
+    }
+
+    fn stop_handle(&self) -> StopHandle {
+        self.stop_asked.clone()
     }
 }
 

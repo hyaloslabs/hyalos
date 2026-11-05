@@ -573,12 +573,14 @@ impl Engine {
                 let head = self.submit_all(
                     at,
                     &[
-                        (origin, answered(Answer::Unknown, reason)),
+                        (origin, answered(Answer::Unknown, reason.clone())),
                         (
                             Origin::Engine,
+                            // The job ends for the reason the gate held it.
                             Event::JobEnded {
                                 job,
                                 outcome: hyalos_types::JobOutcome::Held,
+                                reason,
                             },
                         ),
                         (
