@@ -705,9 +705,11 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
         outcome.stdout_text(),
         String::from_utf8_lossy(&outcome.stderr)
     );
-    // An interrupt that came as the sandbox ended still decides how the job is recorded.
-    if interruption.is_none() {
-        interruption = interrupted(&interrupt, job, out);
+    // A harness that had finished before the stop took effect did its work: the job succeeded. (The
+    // sandbox is in a process group of its own, so the operator's Ctrl-C never reached it.) An
+    // interrupt that comes after the sandbox ended changes nothing: what follows is the cleanup.
+    if outcome.ending == Ending::Exited(0) {
+        interruption = None;
     }
 
     // 7. End the job in the broker, revoke the token, and record how it ended.

@@ -53,7 +53,7 @@ The container driver kills a stopping or overdue sandbox again each second until
 | `forge.issue_unread` | the issue could not be read and the broker gave no code |
 | `run.interrupted` | the operator interrupted the run |
 
-When the broker refuses (at admission, reading the issue, or during the job), its own code is recorded, such as `forge.no_such_issue`. A job that holds ends with the gate's reason, in the same write as the hold ([ADR-0020](0020-gate-answers-timeouts-and-holds.md)). An interrupt outranks every other reason except a hold. A sandbox that dies from the same Ctrl-C is still recorded as interrupted.
+When the broker refuses (at admission, reading the issue, or during the job), its own code is recorded, such as `forge.no_such_issue`. A job that holds ends with the gate's reason, in the same write as the hold ([ADR-0020](0020-gate-answers-timeouts-and-holds.md)). An interrupt outranks every other reason except a hold, and one thing more: a harness that exited 0 before the stop took effect did its work, so that job is recorded as `succeeded` (`harness.finished`). An interrupt that comes after the sandbox has ended changes nothing, since all that is left is the cleanup the run does anyway.
 
 **A failed revoke is reported as at any end.** It uses the same message, `REVOKING THE FORGE TOKEN FAILED`, says what to do, and makes the run exit 1.
 
