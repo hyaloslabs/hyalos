@@ -392,6 +392,50 @@ pub fn job(port: u16, seq: u64) -> Res<Job> {
 
 /// A job whose manifest allows `hosts`, reached through `egress`.
 pub fn job_with(port: u16, seq: u64, hosts: &[&str], egress: Egress) -> Res<Job> {
+    job_spec(
+        port,
+        seq,
+        Spec {
+            hosts,
+            egress,
+            ..Spec::default()
+        },
+    )
+}
+
+/// What a test job's manifest and broker are given, beyond the scripted model.
+pub struct Spec<'a> {
+    pub hosts: &'a [&'a str],
+    pub egress: Egress,
+    pub git: hyalos_broker::git::Git,
+    pub repo: &'a str,
+    pub actions: &'a [&'a str],
+    pub forge_token: Option<&'a str>,
+}
+
+impl Default for Spec<'_> {
+    fn default() -> Self {
+        Self {
+            hosts: &[],
+            egress: Egress::public(),
+            git: hyalos_broker::git::Git::github(),
+            repo: "hyaloslabs/hyalos",
+            actions: &[],
+            forge_token: None,
+        }
+    }
+}
+
+/// A job as `spec` says.
+pub fn job_spec(port: u16, seq: u64, spec: Spec<'_>) -> Res<Job> {
+    let Spec {
+        hosts,
+        egress,
+        git,
+        repo,
+        actions,
+        forge_token,
+    } = spec;
     let providers = Providers::parse(&format!(
         "anthropic.key = sk-image-test\nanthropic.base = http://127.0.0.1:{port}\n\
          openai.key = sk-image-test\nopenai.base = http://127.0.0.1:{port}\n"
@@ -403,7 +447,7 @@ pub fn job_with(port: u16, seq: u64, hosts: &[&str], egress: Egress) -> Res<Job>
         Sandboxes {
             models: Arc::new(Models::from_providers(&providers, Arc::new(ThreadSleep))),
             egress,
-            git: hyalos_broker::git::Git::github(),
+            git,
             forge: hyalos_broker::forge::Forge::github(),
             clock: Arc::new(Wall),
         },
@@ -421,10 +465,10 @@ pub fn job_with(port: u16, seq: u64, hosts: &[&str], egress: Egress) -> Res<Job>
         job: JobId::from_seq(seq),
         role: Role::Actor,
         tainted: false,
-        repo: "hyaloslabs/hyalos".into(),
+        repo: repo.into(),
         branch_prefix: "hyalos/".into(),
         pr_base: None,
-        actions: BTreeSet::new(),
+        actions: actions.iter().map(|a| a.to_string()).collect(),
         egress_hosts: hosts.iter().map(|h| h.to_string()).collect(),
         tools: BTreeSet::new(),
         data_flows: BTreeSet::new(),
@@ -438,7 +482,12 @@ pub fn job_with(port: u16, seq: u64, hosts: &[&str], egress: Egress) -> Res<Job>
             role: manifest.role,
             manifest: key.sign(&manifest)?.to_bytes()?,
             socket: broker_socket.to_string_lossy().into_owned(),
-            forge_token: None,
+            forge_token: forge_token
+                .map(|t| {
+                    hyalos_types::ForgeToken::new(t, Timestamp::from_millis(deadline))
+                        .ok_or("token")
+                })
+                .transpose()?,
         },
         &Wall,
     )?;

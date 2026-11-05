@@ -1,6 +1,6 @@
 # ADR-0040: The sandbox image
 
-**Status:** Accepted. [ADR-0041](0041-an-init-in-the-sandbox-and-the-image-tests-further-checks.md) adds an init as PID 1, DNS over TCP in the DNS log and a control for Claude Code, and moves the `skipWebFetchPreflight` check to S3.5 (#20). Since [ADR-0042](0042-the-egress-gate-and-the-allowlisting-proxy.md) the broker passes proxy requests to allowed hosts, and the image's `test` target has curl and a test authority.
+**Status:** Accepted. [ADR-0041](0041-an-init-in-the-sandbox-and-the-image-tests-further-checks.md) adds an init as PID 1, DNS over TCP in the DNS log and a control for Claude Code, and moves the `skipWebFetchPreflight` check to S3.5 (#20). Since [ADR-0042](0042-the-egress-gate-and-the-allowlisting-proxy.md) the broker passes proxy requests to allowed hosts, and the image's `test` target has curl and a test authority. [ADR-0049](0049-git-in-the-sandbox-image.md) adds git and its settings, installed from a snapshot of all three of the base image's suites.
 
 ## Context
 

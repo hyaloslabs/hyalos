@@ -19,6 +19,16 @@ RUN cargo build --release --locked -p hyalos-sandbox-tools
 # Debian bookworm, the same C library the tools were built against.
 FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS sandbox
 
+# git, for the git proxy (ADR-0046, ADR-0049). From one Debian snapshot of the three suites the base
+# image uses, so every build installs the same versions and they match the base image's packages
+# (perl-base, for one, comes from bookworm-security). The proxy variables are set below, after this.
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/20261027T000000Z\nSuites: bookworm bookworm-updates\nComponents: main\n\nTypes: deb\nURIs: http://snapshot.debian.org/archive/debian-security/20261027T000000Z\nSuites: bookworm-security\nComponents: main\n' \
+        > /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=5 -o Acquire::Check-Valid-Until=false update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+COPY images/sandbox/etc/git/gitconfig /etc/gitconfig
+
 # The harnesses and SDKs, pinned exactly with every dependency in the lockfile.
 WORKDIR /opt/hyalos/harness
 COPY images/sandbox/harness/package.json images/sandbox/harness/package-lock.json ./
@@ -51,7 +61,9 @@ ENV PATH=/opt/hyalos/harness/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/u
     https_proxy=http://127.0.0.1:8089 \
     http_proxy=http://127.0.0.1:8089 \
     NO_PROXY=127.0.0.1,localhost \
-    no_proxy=127.0.0.1,localhost
+    no_proxy=127.0.0.1,localhost \
+    GIT_TERMINAL_PROMPT=0 \
+    GIT_ASKPASS=
 
 WORKDIR /tmp
 # Substrates set the program as the entrypoint (ADR-0032), so jobs run `hyalos-forward <harness> ...`.
@@ -62,9 +74,8 @@ FROM sandbox AS test
 # curl, for a harness's shell command in the egress test (ADR-0042). From the Debian snapshot the base
 # image was built from, so this stage installs the same version every time; the shipped image has none.
 # The image's proxy variables name the sandbox's forwarder, so apt is told to go direct.
-RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/20261027T000000Z\nSuites: bookworm\nComponents: main\n' \
-        > /etc/apt/sources.list.d/debian.sources \
-    && apt-get -o Acquire::http::Proxy=false -o Acquire::Retries=5 -o Acquire::Check-Valid-Until=false update \
+# The snapshot source is the sandbox stage's.
+RUN apt-get -o Acquire::http::Proxy=false -o Acquire::Retries=5 -o Acquire::Check-Valid-Until=false update \
     && apt-get -o Acquire::http::Proxy=false -o Acquire::Retries=5 install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=tools /src/target/release/hyalos-dns-log /usr/local/bin/
