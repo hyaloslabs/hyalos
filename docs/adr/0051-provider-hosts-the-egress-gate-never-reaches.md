@@ -1,6 +1,6 @@
 # ADR-0051: Provider hosts the egress gate never reaches
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
