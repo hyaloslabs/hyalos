@@ -1,6 +1,6 @@
 # ADR-0053: An interrupted run ends its job
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
