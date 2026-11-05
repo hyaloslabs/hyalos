@@ -30,6 +30,8 @@ pub const PREFIX: &str = "/git/";
 pub const MAX_GIT_BODY: usize = 64 * 1024 * 1024;
 /// Reports one job's git refusals may make. After this many, one more says the rest were not made.
 pub const TOO_MANY: &str = "git.too_many_refusals";
+/// Held while a push's pack is checked (ADR-0054).
+static CHECKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// The forge's git host when none is given: github.com.
 pub const GITHUB: &str = "https://github.com";
 
@@ -409,7 +411,12 @@ pub(crate) fn answer<R: BufRead, W: Write>(
             }
             let mut checked = secrets.to_vec();
             checked.push(token.expose());
-            if let Err((unknown, code, digest)) = content_gate(&push, &checked) {
+            // One push is inflated at a time, so the broker holds at most one `MAX_INFLATED`.
+            let gated = {
+                let _one = CHECKING.lock().unwrap_or_else(|p| p.into_inner());
+                content_gate(&push, &checked)
+            };
+            if let Err((unknown, code, digest)) = gated {
                 if unknown {
                     gates.content.unknown(code, digest, ended);
                 } else {

@@ -41,7 +41,7 @@ Git normally sends a thin pack. In a thin pack, an edit to a file the forge alre
 
 A credential the broker holds cannot leave in a commit, a file, a file name or a push option, whether it is sent whole or built by a delta. A commit message cannot hide text from the person reviewing it. A pack built to defeat the reader holds the job for a person instead of slipping past.
 
-The cost is that every push is read in full. That means inflating and resolving up to 256 MiB, held in memory while the push is checked, for one connection of the job's 16. The cap fails closed: a push that inflates past it holds the job rather than going through.
+The cost is that every push is read in full: up to 256 MiB is inflated, resolved and held in memory while the push is checked. The broker checks one push at a time, so it never holds more than one such inflation, while other pushes wait with their bodies (64 MiB each, as before). The cap fails closed: a push that inflates past it holds the job rather than going through.
 
 The gate is a byte check, and it cannot catch:
 - a credential the job has encoded, split across files or paraphrased;
