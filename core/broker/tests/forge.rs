@@ -43,6 +43,7 @@ fn manifest(job: u64, actions: &[&str]) -> Manifest {
         tainted: true,
         repo: "octo/repo".into(),
         branch_prefix: "hyalos/".into(),
+        pr_base: None,
         actions: actions.iter().map(|a| a.to_string()).collect(),
         egress_hosts: BTreeSet::new(),
         tools: BTreeSet::new(),

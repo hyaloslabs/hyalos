@@ -299,6 +299,7 @@ fn manifest(job: u64, actions: &[&str]) -> Manifest {
         tainted: true,
         repo: "octo/repo".into(),
         branch_prefix: "hyalos/".into(),
+        pr_base: None,
         actions: actions.iter().map(|a| a.to_string()).collect(),
         egress_hosts: BTreeSet::new(),
         tools: BTreeSet::new(),
@@ -380,6 +381,7 @@ fn start(w: &World, m: &Manifest, token: Option<&str>) -> Res<Job> {
         )),
         egress: Egress::public(),
         git: Git::with_base(&format!("http://127.0.0.1:{}", w.server.port)),
+        forge: hyalos_broker::forge::Forge::github(),
         clock: clock.clone(),
     };
     let mut broker = Broker::with_sandboxes(key().public(), sandboxes).report_to(to);

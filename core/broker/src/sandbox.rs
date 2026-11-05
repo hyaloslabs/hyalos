@@ -21,11 +21,13 @@ use hyalos_types::{Clock, ForgeToken, Gate, Manifest};
 use std::sync::mpsc::Sender;
 
 use crate::egress::{self, Egress, ProxyRequest, Reports};
+use crate::forge::Forge;
 use crate::git::{self, Git};
 use crate::model::{
     Adapter, Anthropic, ApiKey, HttpTransport, MAX_BODY, Meter, OpenAi, Relay, Request, Response,
     Sleep, refusal,
 };
+use crate::pulls::{self, Gates};
 
 pub use hyalos_types::wire::MAX_SOCKET_PATH;
 /// Calls one job may have open at once. Another connection is closed unanswered.
@@ -192,6 +194,15 @@ impl Models {
         &self.meter
     }
 
+    /// The provider keys, which outbound text must never hold (ADR-0048).
+    pub(crate) fn keys(&self) -> Vec<&str> {
+        [&self.anthropic, &self.openai]
+            .into_iter()
+            .filter_map(|r| r.as_ref().ok())
+            .map(|r| r.key().expose())
+            .collect()
+    }
+
     /// Answers one call for the job whose admitted manifest is `manifest`.
     pub fn answer(&self, manifest: &Manifest, request: Request, clock: &dyn Clock) -> Response {
         let path = request.target.split('?').next().unwrap_or_default();
@@ -235,6 +246,8 @@ pub struct Sandboxes {
     pub models: Arc<Models>,
     pub egress: Egress,
     pub git: Git,
+    /// The forge's API, for the pull requests jobs open (ADR-0048).
+    pub forge: Forge,
     pub clock: Arc<dyn Clock + Send + Sync>,
 }
 
@@ -280,7 +293,18 @@ impl JobSocket {
         let stopped = Arc::clone(&stop);
         let reports = Arc::new(JobReports {
             egress: Reports::new(manifest.job, reports.clone()),
-            manifest: Reports::for_gate(manifest.job, Gate::Manifest, git::TOO_MANY, reports),
+            manifest: Reports::for_gate(
+                manifest.job,
+                Gate::Manifest,
+                git::TOO_MANY,
+                reports.clone(),
+            ),
+            content: Reports::for_gate(
+                manifest.job,
+                Gate::Content,
+                "content.too_many_refusals",
+                reports,
+            ),
         });
         let manifest = Arc::new((manifest, forge_token));
         let thread = ready.and_then(|()| {
@@ -346,7 +370,9 @@ impl Drop for JobSocket {
 #[derive(Debug)]
 struct JobReports {
     egress: Reports,
+    /// The git proxy's and the forge API's refusals (ADR-0046, ADR-0048).
     manifest: Reports,
+    content: Reports,
 }
 
 fn connection(
@@ -390,6 +416,30 @@ fn connection(
             Some(response) => write_response(&mut &*stream, response),
             None => Ok(()),
         };
+    }
+    // A forge call: a pull request (ADR-0048).
+    if head.target.starts_with(pulls::PREFIX) {
+        let response = if ended.load(Ordering::SeqCst) {
+            egress::refused(403, "admission.ended")
+        } else if sandboxes.clock.now() > manifest.deadline {
+            egress::refused(403, "admission.expired")
+        } else {
+            pulls::answer(
+                &head,
+                &mut reader,
+                &mut &*stream,
+                manifest,
+                forge_token.as_ref(),
+                &sandboxes.forge,
+                &sandboxes.models.keys(),
+                Gates {
+                    manifest: &reports.manifest,
+                    content: &reports.content,
+                },
+                ended,
+            )
+        };
+        return write_response(&mut &*stream, response);
     }
     // A git call, for the git proxy (ADR-0046).
     if head.target.starts_with(git::PREFIX) {

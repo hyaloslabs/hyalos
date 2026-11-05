@@ -210,7 +210,7 @@ pub fn ref_allowed(manifest: &Manifest, refname: &str) -> bool {
 }
 
 /// The rules of `git check-ref-format`, kept to printable ASCII.
-fn well_formed_ref(name: &str) -> bool {
+pub(crate) fn well_formed_ref(name: &str) -> bool {
     !name.is_empty()
         && name != "@"
         && !name.contains("..")
@@ -272,7 +272,7 @@ pub(crate) fn answer<R: BufRead, W: Write>(
         if route.service == Service::ReceivePack && header("content-encoding").is_some() {
             return refused(415, "git.bad_request");
         }
-        let body = match read_body(header, reader, client) {
+        let body = match read_body(header, reader, client, MAX_GIT_BODY) {
             Ok(body) => body,
             Err((status, code)) => return refused(status, code),
         };
@@ -352,10 +352,11 @@ pub(crate) fn answer<R: BufRead, W: Write>(
 
 /// Reads a git request's body, by `content-length` or chunked as git sends a large one, after
 /// answering `100 Continue` if the harness waits for it.
-fn read_body<'h, R: BufRead, W: Write>(
+pub(crate) fn read_body<'h, R: BufRead, W: Write>(
     header: impl Fn(&str) -> Option<&'h str>,
     reader: &mut R,
     client: &mut W,
+    max: usize,
 ) -> Result<Vec<u8>, (u16, &'static str)> {
     let bad = (400, "git.bad_request");
     let chunked = match (header("transfer-encoding"), header("content-length")) {
@@ -373,10 +374,10 @@ fn read_body<'h, R: BufRead, W: Write>(
     let mut body = Vec::new();
     if chunked {
         dechunk(reader)
-            .take(MAX_GIT_BODY as u64 + 1)
+            .take(max as u64 + 1)
             .read_to_end(&mut body)
             .map_err(|_| bad)?;
-        if body.len() > MAX_GIT_BODY {
+        if body.len() > max {
             return Err(too_large);
         }
     } else {
@@ -385,7 +386,7 @@ fn read_body<'h, R: BufRead, W: Write>(
             .transpose()
             .map_err(|_| bad)?
             .unwrap_or(0);
-        if length > MAX_GIT_BODY {
+        if length > max {
             return Err(too_large);
         }
         body.resize(length, 0);
@@ -426,6 +427,7 @@ mod tests {
             tainted: true,
             repo: "octo/repo".into(),
             branch_prefix: prefix.into(),
+            pr_base: None,
             actions: Default::default(),
             egress_hosts: Default::default(),
             tools: Default::default(),
@@ -559,13 +561,19 @@ mod tests {
             headers(&[("transfer-encoding", "chunked"), ("expect", "100-continue")]),
             &mut input,
             &mut client,
+            MAX_GIT_BODY,
         );
         assert_eq!(body.as_deref(), Ok(&b"hello"[..]));
         assert_eq!(client, b"HTTP/1.1 100 Continue\r\n\r\n");
 
         let mut client = Vec::new();
         let mut input = std::io::Cursor::new(b"abc".to_vec());
-        let body = read_body(headers(&[("content-length", "3")]), &mut input, &mut client);
+        let body = read_body(
+            headers(&[("content-length", "3")]),
+            &mut input,
+            &mut client,
+            MAX_GIT_BODY,
+        );
         assert_eq!(body.as_deref(), Ok(&b"abc"[..]));
         assert!(client.is_empty(), "no continue was asked for");
 
@@ -579,6 +587,7 @@ mod tests {
                 headers(list),
                 &mut std::io::Cursor::new(Vec::new()),
                 &mut Vec::new(),
+                MAX_GIT_BODY,
             );
             assert_eq!(body, Err((400, "git.bad_request")), "{bad:?}");
         }
@@ -586,6 +595,7 @@ mod tests {
             headers(&[("content-length", "67108865")]),
             &mut std::io::Cursor::new(Vec::new()),
             &mut Vec::new(),
+            MAX_GIT_BODY,
         );
         assert_eq!(body, Err((413, "git.too_large")));
     }

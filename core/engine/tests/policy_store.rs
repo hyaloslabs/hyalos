@@ -89,6 +89,7 @@ fn manifest(job: JobId) -> Manifest {
         tainted: true,
         repo: "hyaloslabs/hyalos".into(),
         branch_prefix: "hyalos/".into(),
+        pr_base: None,
         actions: set(&["open_pr", "push"]),
         egress_hosts: set(&["api.github.com", "github.com"]),
         tools: set(&["Bash", "Edit", "Read"]),

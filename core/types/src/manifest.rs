@@ -77,6 +77,10 @@ pub struct Manifest {
     pub tainted: bool,
     pub repo: String,
     pub branch_prefix: String,
+    /// The branch a pull request the job opens may target (ADR-0048). Absent, the job opens none. It
+    /// is left out of the signed bytes when absent, so a manifest without it signs as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_base: Option<String>,
     pub actions: BTreeSet<String>,
     pub egress_hosts: BTreeSet<String>,
     pub tools: BTreeSet<String>,

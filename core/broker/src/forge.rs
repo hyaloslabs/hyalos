@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 
 use crate::model::{HttpTransport, Upstream};
+use crate::pulls::PullRequest;
 
 /// GitHub's API, where its GraphQL endpoint is `/graphql`.
 pub const GITHUB_API: &str = "https://api.github.com";
@@ -97,6 +98,69 @@ impl Forge {
             .read_to_end(&mut answer)
             .map_err(|_| "forge.unreadable")?;
         parse_issue(&answer)
+    }
+}
+
+impl Forge {
+    /// Opens `pull` on the manifest's repository with `token`, once the broker has checked it
+    /// (`pulls::answer`). `Ok` is the pull request's number and page; `Err` is the status and code
+    /// the harness is answered with.
+    pub(crate) fn open_pull(
+        &self,
+        manifest: &Manifest,
+        token: &ForgeToken,
+        pull: &PullRequest,
+    ) -> Result<(u64, String), (u16, &'static str)> {
+        let transport = self.transport.as_ref().map_err(|code| (502, *code))?;
+        let body = serde_json::json!({
+            "title": pull.title,
+            "body": pull.body.as_deref().unwrap_or_default(),
+            "head": pull.head,
+            "base": pull.base,
+            "draft": pull.draft,
+            // Nobody but the job's own branch writes to its head.
+            "maintainer_can_modify": false,
+        });
+        let request = Upstream {
+            target: format!("/repos/{}/pulls", manifest.repo),
+            headers: vec![
+                ("authorization".into(), format!("Bearer {}", token.expose())),
+                ("accept".into(), "application/vnd.github+json".into()),
+                ("x-github-api-version".into(), "2022-11-28".into()),
+                ("content-type".into(), "application/json".into()),
+                ("user-agent".into(), "hyalos".into()),
+            ],
+            body: serde_json::to_vec(&body).map_err(|_| (400, "forge.bad_request"))?,
+        };
+        let response = transport
+            .request("POST", &request)
+            .map_err(|e| (502, e.0))?;
+        match response.status {
+            201 => {}
+            401 | 403 => return Err((403, "forge.upstream_refused")),
+            404 => return Err((404, "forge.upstream_not_found")),
+            // Invalid, or a pull request for this head already exists.
+            422 => return Err((422, "forge.pull_rejected")),
+            _ => return Err((502, "forge.upstream_status")),
+        }
+        let mut answer = Vec::new();
+        response
+            .body
+            .take(MAX_RESPONSE as u64 + 1)
+            .read_to_end(&mut answer)
+            .map_err(|_| (502, "forge.unreadable"))?;
+        let created: serde_json::Value =
+            serde_json::from_slice(&answer).map_err(|_| (502, "forge.malformed"))?;
+        let number = created["number"].as_u64();
+        let url = created["html_url"].as_str().filter(|u| {
+            u.len() <= 512
+                && (u.starts_with("https://") || u.starts_with("http://"))
+                && !u.contains(char::is_control)
+        });
+        match (number, url) {
+            (Some(number), Some(url)) => Ok((number, url.to_string())),
+            _ => Err((502, "forge.malformed")),
+        }
     }
 }
 
