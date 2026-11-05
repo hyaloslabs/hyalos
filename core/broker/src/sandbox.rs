@@ -20,14 +20,14 @@ use hyalos_types::wire::ToEngine;
 use hyalos_types::{Clock, ForgeToken, Gate, Manifest};
 use std::sync::mpsc::Sender;
 
-use crate::egress::{self, Egress, ProxyRequest, Reports};
+use crate::egress::{self, Egress, Gates, ProxyRequest, Reports};
 use crate::forge::Forge;
 use crate::git::{self, Git};
 use crate::model::{
     Adapter, Anthropic, ApiKey, HttpTransport, MAX_BODY, Meter, OpenAi, Relay, Request, Response,
     Sleep, refusal,
 };
-use crate::pulls::{self, Gates};
+use crate::pulls;
 
 pub use hyalos_types::wire::MAX_SOCKET_PATH;
 /// Calls one job may have open at once. Another connection is closed unanswered.
@@ -465,7 +465,11 @@ fn connection(
                 manifest,
                 forge_token.as_ref(),
                 &sandboxes.git,
-                &reports.manifest,
+                &sandboxes.models.keys(),
+                Gates {
+                    manifest: &reports.manifest,
+                    content: &reports.content,
+                },
                 ended,
             )
         };

@@ -670,7 +670,15 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
     };
     let mut state = Reported::default();
     let mut interruption = None;
+    let mut stopping_held = false;
     let outcome = loop {
+        // A gate that could not answer ended the job held (ADR-0020): the sandbox has nothing more to
+        // do, so it is stopped, and the loop goes on until the waiter says it has ended.
+        if state.held && !stopping_held {
+            stopping_held = true;
+            let _ = writeln!(out, "job {}: held; stopping the sandbox", job.seq());
+            stop.stop();
+        }
         // An interrupt stops the sandbox; the loop then goes on until the waiter says it has ended.
         if interruption.is_none() {
             interruption = interrupted(&interrupt, job, out);
@@ -980,8 +988,9 @@ impl Reported {
             } if reported == job => {
                 let at = ended.clock.now();
                 let recorded = if answer == Answer::Unknown {
-                    // Never sent by today's broker; if it is, the job holds as ADR-0020 says, and
-                    // only a human can release it.
+                    // A gate that could not answer, such as the content gate on a push it could
+                    // not read (ADR-0054): the job holds as ADR-0020 says, and only a human can
+                    // release it.
                     let request = GateRequest {
                         gate,
                         inputs,

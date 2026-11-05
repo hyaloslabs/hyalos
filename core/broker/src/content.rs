@@ -8,7 +8,7 @@
 //! is a byte check, not a judge of intent.
 
 /// Credentials shorter than this are not looked for: they would match ordinary text.
-const MIN_SECRET: usize = 12;
+pub(crate) const MIN_SECRET: usize = 12;
 
 /// Checks `text` against the credentials in `secrets`. `Err` is the reason code it is refused with.
 pub fn check(text: &str, secrets: &[&str]) -> Result<(), &'static str> {

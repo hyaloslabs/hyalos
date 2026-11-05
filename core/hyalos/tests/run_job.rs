@@ -453,6 +453,69 @@ fn call(port: u16, head: &str, body: &[u8]) -> Res<(String, String)> {
     Ok((status, body))
 }
 
+/// A push the broker cannot read is the content gate's unknown (ADR-0054): the job ends held, the
+/// sandbox is stopped, and the token is still revoked.
+#[test]
+fn a_push_the_content_gate_cannot_read_holds_the_job() -> Res {
+    if !have_git()? {
+        eprintln!("skipped: no git");
+        return Ok(());
+    }
+    let repos = dir("hrepos")?;
+    let home = dir("hhome")?;
+    repository(&repos, &home)?;
+    let gh = GitHub::start(&repos, false)?;
+    let world = World::new("held", Some(&gh))?;
+    let out = world.root.join("out");
+    std::fs::create_dir(&out)?;
+    let Harness::Command(mut command) = this_harness(&world, &out)? else {
+        return Err("harness".into());
+    };
+    command.push("mode:bad_pack".into());
+    let began = Instant::now();
+    let mut said = Vec::new();
+    let summary = run_job(
+        &request(Harness::Command(command)),
+        world.setup(local_detect(), Duration::from_secs(10)),
+        &mut said,
+    )?;
+    let said = String::from_utf8_lossy(&said).into_owned();
+    assert_eq!(summary.outcome, JobOutcome::Held, "{said}");
+    assert_eq!(summary.revoked, Ok(()), "{said}");
+    assert!(
+        began.elapsed() < Duration::from_secs(60),
+        "the sandbox was not stopped: {said}"
+    );
+    assert!(said.contains("held; stopping the sandbox"), "{said}");
+    assert!(gh.issued().is_empty(), "no token is left live");
+    let code = ReasonCode::new("content.pack_unreadable").ok_or("code")?;
+    let events = world.events()?;
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::HoldOpened {
+                gate: Gate::Content,
+                ..
+            }
+        )),
+        "{events:?}"
+    );
+    assert!(events.contains(&Event::JobEnded {
+        job: summary.job,
+        outcome: JobOutcome::Held,
+        reason: code,
+    }));
+    assert!(
+        !gh.seen()
+            .iter()
+            .any(|s| s.path.ends_with("/git-receive-pack")),
+        "the push reached the forge"
+    );
+    let _ = std::fs::remove_dir_all(&repos);
+    let _ = std::fs::remove_dir_all(&home);
+    Ok(())
+}
+
 #[test]
 fn harness_entry() -> Res {
     let arg =
@@ -469,6 +532,34 @@ fn harness_entry() -> Res {
         .ok_or("no job socket")?;
     let port = forwarder(&socket)?;
     let remote = remote.replace("127.0.0.1:8089", &format!("127.0.0.1:{port}"));
+
+    // A push of a pack that is not one, then a wait far longer than the test: the job is held and
+    // the sandbox stopped.
+    if arg("mode:").is_some_and(|m| m == Path::new("bad_pack")) {
+        let path = remote
+            .split_once(&format!("127.0.0.1:{port}"))
+            .map(|(_, p)| p.to_string())
+            .ok_or("remote")?;
+        let command = format!(
+            "{} {} refs/heads/{branch}\0report-status\n",
+            "0".repeat(40),
+            "b".repeat(40)
+        );
+        let mut body = format!("{:04x}{command}0000", command.len() + 4).into_bytes();
+        body.extend(b"PACK\0\0\0\x02\0\0\0\x01not zlib at all");
+        let (status, _) = call(
+            port,
+            &format!(
+                "POST {path}/git-receive-pack HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/x-git-receive-pack-request\r\n"
+            ),
+            &body,
+        )?;
+        if !status.contains(" 403 ") {
+            return Err(format!("the content gate let it through: {status}").into());
+        }
+        std::thread::sleep(Duration::from_secs(120));
+        return Ok(());
+    }
 
     // Clone, commit and push the job's branch, through the broker.
     let home = out.join("home");

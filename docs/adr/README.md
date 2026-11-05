@@ -67,3 +67,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0051](0051-provider-hosts-the-egress-gate-never-reaches.md) | Provider hosts the egress gate never reaches | Accepted |
 | [0052](0052-reading-the-jobs-issue-from-github.md) | Reading the job's issue from GitHub | Accepted |
 | [0053](0053-an-interrupted-run-ends-its-job.md) | An interrupted run ends its job | Accepted |
+| [0054](0054-the-content-gate-on-what-a-push-carries.md) | The content gate on what a push carries | Proposed |

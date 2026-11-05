@@ -1,7 +1,10 @@
 //! The git proxy (S3.3, ADR-0046): the real `git` client clones and pushes through a job's socket to
 //! a real git server (`git http-backend`) that accepts only the job's forge token. A push outside the
 //! manifest's repository or branch prefix, a tag, a deletion or a push the actions do not allow is
-//! refused before anything reaches the server, and reported as the manifest gate's `deny`.
+//! refused before anything reaches the server, and reported as the manifest gate's `deny`. What a push
+//! carries goes through the content gate (ADR-0054): a credential in a file, an edit or a push option,
+//! or hidden text in a commit message, is the content gate's `deny`, and a pack the broker cannot read
+//! is its `unknown`.
 
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -13,6 +16,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use sha2::{Digest as _, Sha256};
 
 use hyalos_broker::Broker;
 use hyalos_broker::egress::{Egress, inputs_digest};
@@ -432,6 +437,30 @@ impl Job {
     }
 }
 
+impl Job {
+    /// Every gate report so far, as (gate, answer, reason, inputs).
+    fn reports(&self) -> Vec<(Gate, Answer, String, Digest)> {
+        std::thread::sleep(Duration::from_millis(50));
+        self.reports
+            .try_iter()
+            .filter_map(|m| match m {
+                ToEngine::Gate {
+                    gate,
+                    answer,
+                    reason,
+                    inputs,
+                    ..
+                } => Some((gate, answer, reason.as_str().to_string(), inputs)),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn sha256(bytes: &[u8]) -> Digest {
+    Digest::from_bytes(Sha256::digest(bytes).into())
+}
+
 fn denial(reason: &str, input: &str) -> (String, Digest) {
     (reason.to_string(), inputs_digest(input))
 }
@@ -662,5 +691,183 @@ fn a_push_needs_the_push_action_and_any_call_needs_a_token() -> Res {
         before,
         "a call without a token reached the server"
     );
+    Ok(())
+}
+
+#[test]
+fn what_a_push_carries_is_content_gated_after_its_deltas_are_resolved() -> Res {
+    if !have_git()? {
+        return Ok(());
+    }
+    let w = world("content")?;
+    ok(git(
+        &w.home,
+        &w.root.join("octo/repo.git"),
+        &["config", "receive.advertisePushOptions", "true"],
+    )?)?;
+    let job = start(&w, &manifest(6, &["read", "push"]), Some(TOKEN))?;
+    let work = w.home.join("work");
+    ok(git(
+        &w.home,
+        &w.home,
+        &[
+            "clone",
+            "-q",
+            &job.url("octo/repo"),
+            &work.to_string_lossy(),
+        ],
+    )?)?;
+    let commit_and_push = |file: &str, text: &str, branch: &str| -> Res<Output> {
+        std::fs::write(work.join(file), text)?;
+        ok(git(&w.home, &work, &["add", file])?)?;
+        ok(git(&w.home, &work, &["commit", "-q", "-m", branch])?)?;
+        git(
+            &w.home,
+            &work,
+            &[
+                "push",
+                "-q",
+                "origin",
+                &format!("HEAD:refs/heads/hyalos/{branch}"),
+            ],
+        )
+    };
+    // A file large enough that git sends any later edit of it as a delta.
+    let lines: String = (0..400)
+        .map(|i| format!("line {i} of the notes\n"))
+        .collect();
+    ok(commit_and_push("NOTES", &lines, "base")?)?;
+    assert_eq!(job.reports(), vec![]);
+    let pushes = w.calls("/git-receive-pack");
+
+    // An edit that adds the token. Thin, the push would carry only the new line, as a delta against
+    // the server's copy; the broker asked for no thin packs, so it carries the whole file.
+    let leaked = format!("{lines}token = {TOKEN}\n");
+    let out = commit_and_push("NOTES", &leaked, "leak")?;
+    assert!(!out.status.success(), "a push with the token went through");
+    assert_eq!(
+        job.reports(),
+        vec![(
+            Gate::Content,
+            Answer::Deny,
+            "content.credential".into(),
+            sha256(leaked.as_bytes())
+        )]
+    );
+    assert_eq!(w.rev("octo/repo.git", "refs/heads/hyalos/leak"), None);
+    assert_eq!(
+        w.calls("/git-receive-pack"),
+        pushes,
+        "it reached the server"
+    );
+
+    // An ordinary edit of the same file passes, its delta resolved against a base in the pack.
+    ok(git(&w.home, &work, &["reset", "-q", "--hard", "HEAD~1"])?)?;
+    ok(commit_and_push(
+        "NOTES",
+        &format!("{lines}one more line\n"),
+        "edit",
+    )?)?;
+    assert!(w.rev("octo/repo.git", "refs/heads/hyalos/edit").is_some());
+    assert_eq!(job.reports(), vec![]);
+
+    // A commit message that hides text from its reader.
+    ok(git(
+        &w.home,
+        &work,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "looks fine\u{202e}txt.exe",
+        ],
+    )?)?;
+    let commit = git(&w.home, &work, &["cat-file", "commit", "HEAD"])?.stdout;
+    let out = git(
+        &w.home,
+        &work,
+        &["push", "-q", "origin", "HEAD:refs/heads/hyalos/msg"],
+    )?;
+    assert!(!out.status.success());
+    assert_eq!(
+        job.reports(),
+        vec![(
+            Gate::Content,
+            Answer::Deny,
+            "content.hidden_text".into(),
+            sha256(&commit)
+        )]
+    );
+
+    // A push option, which the forge reads, holding the token.
+    ok(git(&w.home, &work, &["reset", "-q", "--hard", "HEAD~1"])?)?;
+    let option = format!("note {TOKEN}");
+    let out = git(
+        &w.home,
+        &work,
+        &[
+            "push",
+            "-q",
+            "-o",
+            &option,
+            "origin",
+            "HEAD:refs/heads/hyalos/opt",
+        ],
+    )?;
+    assert!(!out.status.success());
+    assert_eq!(
+        job.reports(),
+        vec![(
+            Gate::Content,
+            Answer::Deny,
+            "content.credential".into(),
+            inputs_digest(&option)
+        )]
+    );
+    assert_eq!(w.rev("octo/repo.git", "refs/heads/hyalos/opt"), None);
+    Ok(())
+}
+
+#[test]
+fn a_pack_the_broker_cannot_read_is_the_content_gates_unknown() -> Res {
+    if !have_git()? {
+        return Ok(());
+    }
+    let w = world("unread")?;
+    let job = start(&w, &manifest(7, &["read", "push"]), Some(TOKEN))?;
+    let pushes = w.calls("/git-receive-pack");
+    let command = format!(
+        "{} {} refs/heads/hyalos/raw\0report-status\n",
+        w.main,
+        "b".repeat(40)
+    );
+    let pack = b"PACK\0\0\0\x02\0\0\0\x01not zlib at all".to_vec();
+    let mut body = format!("{:04x}{command}0000", command.len() + 4).into_bytes();
+    body.extend(&pack);
+    let mut tcp = TcpStream::connect(("127.0.0.1", job.port))?;
+    tcp.write_all(
+        format!(
+            "POST /git/octo/repo.git/git-receive-pack HTTP/1.1\r\nhost: x\r\n\
+             content-type: application/x-git-receive-pack-request\r\n\
+             content-length: {}\r\n\r\n",
+            body.len()
+        )
+        .as_bytes(),
+    )?;
+    tcp.write_all(&body)?;
+    let mut status = String::new();
+    BufReader::new(tcp).read_line(&mut status)?;
+    assert!(status.starts_with("HTTP/1.1 403"), "{status}");
+    assert_eq!(
+        job.reports(),
+        vec![(
+            Gate::Content,
+            Answer::Unknown,
+            "content.pack_unreadable".into(),
+            sha256(&pack)
+        )]
+    );
+    assert_eq!(w.calls("/git-receive-pack"), pushes);
     Ok(())
 }

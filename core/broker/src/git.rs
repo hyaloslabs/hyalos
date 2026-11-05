@@ -7,14 +7,22 @@
 //! reads the ref updates it asks for and refuses the whole push if any is outside the manifest's branch
 //! prefix, is not a branch, or deletes one. A refusal is a 403 to the harness and the manifest gate's
 //! `deny` to the engine, carrying the SHA-256 of the repository or ref asked for, never the name.
+//!
+//! A push that passes those rules goes through the content gate (ADR-0054): its push options, and
+//! every object in its pack once inflated (`pack::check`). So that every delta's base is in the pack,
+//! the broker adds `no-thin` to the forge's push advertisement.
 
 use std::io::{BufRead, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use hyalos_types::{ForgeToken, Manifest};
 
-use crate::egress::{ProxyRequest, Reports, inputs_digest, refused};
+use crate::content;
+use crate::egress::{Gates, ProxyRequest, inputs_digest, refused};
 use crate::model::{HttpTransport, Response, Upstream, dechunk};
+use crate::pack::{self, Finding};
+use hyalos_types::Digest;
+use sha2::{Digest as _, Sha256};
 
 /// Where git requests arrive on a job's socket.
 pub const PREFIX: &str = "/git/";
@@ -136,26 +144,55 @@ impl Command {
     }
 }
 
+/// A push's body, as read: its ref updates, its push options and its pack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Push<'a> {
+    pub commands: Vec<Command>,
+    /// Sent only when the push asked for `push-options`; the forge reads them.
+    pub options: Vec<&'a str>,
+    pub pack: &'a [u8],
+}
+
 /// Reads the ref updates at the start of a push's body: pkt-lines up to the first flush. `Err` is the
 /// reason the push is refused.
 pub fn commands(body: &[u8]) -> Result<Vec<Command>, &'static str> {
+    read_push(body).map(|push| push.commands)
+}
+
+/// One pkt-line at `at`: `Some` with its contents, or `None` for a flush. `at` moves past it.
+fn pkt_line<'a>(body: &'a [u8], at: &mut usize) -> Result<Option<&'a [u8]>, &'static str> {
+    let bad = "git.bad_request";
+    let size = body.get(*at..*at + 4).ok_or(bad)?;
+    let size = std::str::from_utf8(size).map_err(|_| bad)?;
+    let size = usize::from_str_radix(size, 16).map_err(|_| bad)?;
+    if size == 0 {
+        *at += 4;
+        return Ok(None);
+    }
+    if size < 4 {
+        return Err(bad);
+    }
+    let line = body.get(*at + 4..*at + size).ok_or(bad)?;
+    *at += size;
+    Ok(Some(line))
+}
+
+/// Reads a push's body: its ref updates up to the first flush, then its push options up to the next
+/// if it asked for them, then its pack.
+pub fn read_push(body: &[u8]) -> Result<Push<'_>, &'static str> {
     let bad = "git.bad_request";
     let mut at = 0;
     let mut out = Vec::new();
-    loop {
-        let size = body.get(at..at + 4).ok_or(bad)?;
-        let size = std::str::from_utf8(size).map_err(|_| bad)?;
-        let size = usize::from_str_radix(size, 16).map_err(|_| bad)?;
-        if size == 0 {
-            return Ok(out);
-        }
-        if size < 4 {
-            return Err(bad);
-        }
-        let line = body.get(at + 4..at + size).ok_or(bad)?;
-        at += size;
+    let mut options = false;
+    while let Some(line) = pkt_line(body, &mut at)? {
         // Capabilities follow the first command, after a NUL.
-        let line = line.split(|b| *b == 0).next().unwrap_or_default();
+        let mut parts = line.splitn(2, |b| *b == 0);
+        let line = parts.next().unwrap_or_default();
+        if let Some(capabilities) = parts.next() {
+            options |= capabilities
+                .split(|b| b.is_ascii_whitespace())
+                .any(|c| c == b"push-options");
+        }
         let line = std::str::from_utf8(line).map_err(|_| bad)?;
         let line = line.strip_suffix('\n').unwrap_or(line);
         if line.starts_with("push-cert") {
@@ -181,6 +218,76 @@ pub fn commands(body: &[u8]) -> Result<Vec<Command>, &'static str> {
             new: new.into(),
             refname: refname.into(),
         });
+    }
+    let mut pushed = Vec::new();
+    if options {
+        while let Some(line) = pkt_line(body, &mut at)? {
+            let line = std::str::from_utf8(line).map_err(|_| bad)?;
+            pushed.push(line.strip_suffix('\n').unwrap_or(line));
+        }
+    }
+    Ok(Push {
+        commands: out,
+        options: pushed,
+        pack: &body[at..],
+    })
+}
+
+/// Adds `no-thin` to a push's ref advertisement, so the job's git sends a pack whose deltas all have
+/// their base in it (ADR-0054). `None` is an advertisement without a capability list.
+pub fn no_thin(advertisement: &[u8]) -> Option<Vec<u8>> {
+    let mut at = 0;
+    while at < advertisement.len() {
+        let start = at;
+        let line = match pkt_line(advertisement, &mut at).ok()? {
+            None => continue,
+            Some(line) => line,
+        };
+        let Some(nul) = line.iter().position(|b| *b == 0) else {
+            continue;
+        };
+        let capabilities = &line[nul + 1..];
+        let (capabilities, newline) = match capabilities.strip_suffix(b"\n") {
+            Some(c) => (c, &b"\n"[..]),
+            None => (capabilities, &b""[..]),
+        };
+        if capabilities.split(|b| *b == b' ').any(|c| c == b"no-thin") {
+            return Some(advertisement.to_vec());
+        }
+        let mut changed = line[..=nul].to_vec();
+        changed.extend_from_slice(capabilities);
+        if !capabilities.is_empty() {
+            changed.push(b' ');
+        }
+        changed.extend_from_slice(b"no-thin");
+        changed.extend_from_slice(newline);
+        let mut out = advertisement[..start].to_vec();
+        out.extend_from_slice(format!("{:04x}", changed.len() + 4).as_bytes());
+        out.extend_from_slice(&changed);
+        out.extend_from_slice(&advertisement[at..]);
+        return Some(out);
+    }
+    None
+}
+
+/// The content gate on a push that the manifest's rules allow: `Err` is the answer, the reason and
+/// what the report's digest is of.
+fn content_gate(push: &Push<'_>, secrets: &[&str]) -> Result<(), (bool, &'static str, Digest)> {
+    for option in &push.options {
+        if let Err(code) = content::check(option, secrets) {
+            return Err((false, code, inputs_digest(option)));
+        }
+    }
+    // Object ids are 20 bytes, or 32 in a SHA-256 repository: the commands say which.
+    let id_len = push.commands.first().map_or(20, |c| c.new.len() / 2);
+    match pack::check(push.pack, id_len, secrets) {
+        Ok(()) => Ok(()),
+        Err(Finding::Refused(code, digest)) => Err((false, code, Digest::from_bytes(digest))),
+        Err(Finding::Unchecked(code)) => Err((
+            true,
+            code,
+            Digest::from_bytes(Sha256::digest(push.pack).into()),
+        )),
     }
 }
 
@@ -226,7 +333,8 @@ pub(crate) fn well_formed_ref(name: &str) -> bool {
 
 /// Answers one git request for the job whose admitted manifest is `manifest` and whose forge token is
 /// `token`. `reader` holds the rest of the request; a `100 Continue` is written to `client` if asked.
-/// Refusals go to `reports`, the manifest gate's.
+/// `secrets` are the provider keys the content gate looks for, with the token. Refusals go to
+/// `gates`: the manifest gate's, or the content gate's for what a push carries.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn answer<R: BufRead, W: Write>(
     request: &ProxyRequest,
@@ -235,9 +343,11 @@ pub(crate) fn answer<R: BufRead, W: Write>(
     manifest: &Manifest,
     token: Option<&ForgeToken>,
     git: &Git,
-    reports: &Reports,
+    secrets: &[&str],
+    gates: Gates<'_>,
     ended: &AtomicBool,
 ) -> Response {
+    let reports = gates.manifest;
     let deny = |code: &'static str, inputs: &str| {
         reports.deny(code, inputs_digest(inputs), ended);
         refused(403, code)
@@ -277,13 +387,13 @@ pub(crate) fn answer<R: BufRead, W: Write>(
             Err((status, code)) => return refused(status, code),
         };
         if route.service == Service::ReceivePack {
-            let commands = match commands(&body) {
-                Ok(commands) => commands,
+            let push = match read_push(&body) {
+                Ok(push) => push,
                 Err(code) => return refused(400, code),
             };
             // Every refused ref is reported; one is enough to refuse the push.
             let mut refusal = None;
-            for command in &commands {
+            for command in &push.commands {
                 let code = if !ref_allowed(manifest, &command.refname) {
                     "git.ref_not_allowed"
                 } else if command.deletes() {
@@ -295,6 +405,16 @@ pub(crate) fn answer<R: BufRead, W: Write>(
                 refusal.get_or_insert(code);
             }
             if let Some(code) = refusal {
+                return refused(403, code);
+            }
+            let mut checked = secrets.to_vec();
+            checked.push(token.expose());
+            if let Err((unknown, code, digest)) = content_gate(&push, &checked) {
+                if unknown {
+                    gates.content.unknown(code, digest, ended);
+                } else {
+                    gates.content.deny(code, digest, ended);
+                }
                 return refused(403, code);
             }
         }
@@ -336,6 +456,25 @@ pub(crate) fn answer<R: BufRead, W: Write>(
         // The forge's challenge is not passed on: the harness holds no credential to answer with.
         Ok(r) if r.status == 401 || r.status == 403 => refused(403, "git.upstream_refused"),
         Ok(r) if r.status == 404 => refused(404, "git.upstream_not_found"),
+        Ok(mut r) if route.advertisement && route.service == Service::ReceivePack => {
+            let mut advertisement = Vec::new();
+            let read = (&mut r.body)
+                .take(MAX_GIT_BODY as u64 + 1)
+                .read_to_end(&mut advertisement);
+            let changed = read
+                .ok()
+                .filter(|_| r.status == 200 && advertisement.len() <= MAX_GIT_BODY)
+                .and_then(|_| no_thin(&advertisement));
+            match changed {
+                Some(changed) => Response {
+                    status: 200,
+                    content_type: "application/x-git-receive-pack-advertisement".into(),
+                    body: Box::new(std::io::Cursor::new(changed)),
+                    reason: None,
+                },
+                None => refused(502, "git.bad_advertisement"),
+            }
+        }
         Ok(r) => Response {
             status: r.status,
             content_type: r
@@ -517,6 +656,78 @@ mod tests {
             commands(pkt("push-cert\0report-status\n").as_bytes()),
             Err("git.push_cert")
         );
+    }
+
+    #[test]
+    fn push_options_and_the_pack_follow_the_commands() {
+        let (a, b) = ("a".repeat(40), "b".repeat(40));
+        let body = format!(
+            "{}0000{}{}0000PACK..",
+            pkt(&format!(
+                "{a} {b} refs/heads/hyalos/x\0report-status push-options\n"
+            )),
+            pkt("ci.skip\n"),
+            pkt("note=hello"),
+        );
+        let push = read_push(body.as_bytes()).unwrap();
+        assert_eq!(push.commands.len(), 1);
+        assert_eq!(push.options, vec!["ci.skip", "note=hello"]);
+        assert_eq!(push.pack, b"PACK..");
+        // Without the capability, what follows the flush is the pack.
+        let body = format!(
+            "{}0000PACK",
+            pkt(&format!("{a} {b} refs/heads/hyalos/x\0report-status\n"))
+        );
+        let push = read_push(body.as_bytes()).unwrap();
+        assert!(push.options.is_empty());
+        assert_eq!(push.pack, b"PACK");
+        let unended = format!(
+            "{}0000{}",
+            pkt(&format!("{a} {b} refs/heads/x\0push-options\n")),
+            pkt("x")
+        );
+        assert_eq!(read_push(unended.as_bytes()), Err("git.bad_request"));
+    }
+
+    #[test]
+    fn a_push_advertisement_gains_no_thin() {
+        let a = "a".repeat(40);
+        let advert = |first: &str| {
+            format!(
+                "{}0000{}{}0000",
+                pkt("# service=git-receive-pack\n"),
+                pkt(first),
+                pkt(&format!("{a} refs/heads/dev\n")),
+            )
+        };
+        let changed =
+            no_thin(advert(&format!("{a} refs/heads/main\0report-status ofs-delta\n")).as_bytes());
+        assert_eq!(
+            changed.as_deref(),
+            Some(
+                advert(&format!(
+                    "{a} refs/heads/main\0report-status ofs-delta no-thin\n"
+                ))
+                .as_bytes()
+            )
+        );
+        // An empty repository advertises its capabilities on a placeholder.
+        let zero = "0".repeat(40);
+        let changed = no_thin(advert(&format!("{zero} capabilities^{{}}\0ofs-delta")).as_bytes());
+        assert_eq!(
+            changed.as_deref(),
+            Some(advert(&format!("{zero} capabilities^{{}}\0ofs-delta no-thin")).as_bytes())
+        );
+        let already = advert(&format!("{a} refs/heads/main\0no-thin\n"));
+        assert_eq!(
+            no_thin(already.as_bytes()).as_deref(),
+            Some(already.as_bytes())
+        );
+        assert_eq!(
+            no_thin(format!("{}0000", pkt("# service=git-receive-pack\n")).as_bytes()),
+            None
+        );
+        assert_eq!(no_thin(b"zzzz"), None);
     }
 
     #[test]
