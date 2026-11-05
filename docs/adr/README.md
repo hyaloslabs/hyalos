@@ -60,4 +60,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0044](0044-minting-per-job-github-tokens-from-the-app.md) | Minting per-job GitHub tokens from the App | Accepted |
 | [0045](0045-forge-tokens-up-to-4-kib.md) | Forge tokens up to 4 KiB, and revoking a token the engine cannot use | Accepted |
 | [0046](0046-the-git-proxy.md) | The git proxy | Accepted |
-| [0047](0047-forge-content-as-typed-values-and-derived-taint.md) | Forge content as typed values, and taint derived from the step | Proposed |
+| [0047](0047-forge-content-as-typed-values-and-derived-taint.md) | Forge content as typed values, and taint derived from the step | Accepted |
