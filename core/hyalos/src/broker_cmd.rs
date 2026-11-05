@@ -45,6 +45,7 @@ pub fn run(args: &[String]) -> ExitCode {
         models: Arc::new(Models::from_providers(&providers, Arc::new(ThreadSleep))),
         egress: Egress::public(),
         git: Git::github(),
+        forge: hyalos_broker::forge::Forge::github(),
         clock: Arc::new(SystemClock),
     };
     drop(providers);

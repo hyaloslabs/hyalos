@@ -57,6 +57,7 @@ fn manifest(job: u64, hosts: &[&str]) -> Manifest {
         tainted: false,
         repo: "hyaloslabs/hyalos".into(),
         branch_prefix: "hyalos/".into(),
+        pr_base: None,
         actions: BTreeSet::new(),
         egress_hosts: hosts.iter().map(|h| h.to_string()).collect(),
         tools: BTreeSet::new(),
@@ -83,6 +84,7 @@ fn sandboxes(egress: Egress, clock: Arc<Shared>) -> Sandboxes {
         )),
         egress,
         git: hyalos_broker::git::Git::github(),
+        forge: hyalos_broker::forge::Forge::github(),
         clock,
     }
 }

@@ -22,6 +22,7 @@ fn manifest() -> Manifest {
         tainted: true,
         repo: "hyaloslabs/hyalos".into(),
         branch_prefix: "hyalos/".into(),
+        pr_base: None,
         // Given out of order and with a repeat: the document sorts and dedupes.
         actions: set(&["push", "open_pr", "push"]),
         egress_hosts: set(&["github.com", "api.github.com"]),
@@ -74,6 +75,23 @@ fn a_pinned_envelope_opens_and_gives_back_the_manifest() -> Res {
     let again = SignedManifest::from_bytes(&signed.to_bytes()?)?;
     assert_eq!(again, signed);
     assert_eq!(again.open(&key().public())?, manifest());
+    Ok(())
+}
+
+#[test]
+fn a_pull_request_base_is_signed_when_present_and_absent_otherwise() -> Res {
+    // Absent, it is left out, so the pinned bytes above are those of a manifest that opens none.
+    assert!(!PINNED_PAYLOAD.contains("pr_base"));
+    let mut with = manifest();
+    with.pr_base = Some("main".into());
+    let signed = key().sign(&with)?;
+    let payload = String::from_utf8(signed.payload().to_vec())?;
+    assert!(
+        payload.contains(r#""branch_prefix":"hyalos/","pr_base":"main","actions""#),
+        "{payload}"
+    );
+    assert_eq!(signed.open(&key().public())?, with);
+    assert_ne!(signed, key().sign(&manifest())?);
     Ok(())
 }
 

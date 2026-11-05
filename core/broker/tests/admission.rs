@@ -41,6 +41,7 @@ fn manifest(role: Role) -> Manifest {
         tainted: false,
         repo: "hyaloslabs/hyalos".into(),
         branch_prefix: "hyalos/".into(),
+        pr_base: None,
         actions: BTreeSet::new(),
         egress_hosts: BTreeSet::new(),
         tools: BTreeSet::new(),

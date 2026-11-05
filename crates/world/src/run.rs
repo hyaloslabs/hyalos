@@ -165,6 +165,7 @@ pub fn run_job(seed: u64, dir: &Path) -> Res<Run> {
         tainted: true,
         repo: "sim/repo".into(),
         branch_prefix: "hyalos/".into(),
+        pr_base: None,
         actions: names(&["open_pr", "push", "read"]),
         egress_hosts: names(&["api.github.com", "github.com"]),
         tools: names(&["Bash", "Edit", "Read"]),

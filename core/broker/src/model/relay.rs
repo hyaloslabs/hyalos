@@ -95,6 +95,11 @@ pub struct Relay {
 }
 
 impl Relay {
+    /// The provider key, for the content gate to look for in outbound text (ADR-0048).
+    pub(crate) fn key(&self) -> &ApiKey {
+        &self.key
+    }
+
     pub fn new(
         adapter: Arc<dyn Adapter>,
         transport: Arc<dyn Transport>,

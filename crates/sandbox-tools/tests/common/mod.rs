@@ -404,6 +404,7 @@ pub fn job_with(port: u16, seq: u64, hosts: &[&str], egress: Egress) -> Res<Job>
             models: Arc::new(Models::from_providers(&providers, Arc::new(ThreadSleep))),
             egress,
             git: hyalos_broker::git::Git::github(),
+            forge: hyalos_broker::forge::Forge::github(),
             clock: Arc::new(Wall),
         },
     )
@@ -422,6 +423,7 @@ pub fn job_with(port: u16, seq: u64, hosts: &[&str], egress: Egress) -> Res<Job>
         tainted: false,
         repo: "hyaloslabs/hyalos".into(),
         branch_prefix: "hyalos/".into(),
+        pr_base: None,
         actions: BTreeSet::new(),
         egress_hosts: hosts.iter().map(|h| h.to_string()).collect(),
         tools: BTreeSet::new(),
