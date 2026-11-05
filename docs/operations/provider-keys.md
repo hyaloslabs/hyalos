@@ -23,6 +23,8 @@ openai.key = sk-...
 # openai.base = http://127.0.0.1:11434
 ```
 
+A job can never reach a base's host, or any name under it, through the egress proxy, even if its manifest lists it ([ADR-0051](../adr/0051-provider-hosts-the-egress-gate-never-reaches.md)). The same holds for `api.anthropic.com` and `api.openai.com`. Model calls reach the provider only through the broker, with the broker's key.
+
 Then make it yours alone:
 
 ```

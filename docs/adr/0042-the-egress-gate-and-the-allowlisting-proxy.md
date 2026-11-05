@@ -1,6 +1,6 @@
 # ADR-0042: The egress gate and the allowlisting proxy
 
-**Status:** Accepted
+**Status:** Accepted. [ADR-0051](0051-provider-hosts-the-egress-gate-never-reaches.md) also refuses every name under the two provider API hosts and the hosts of the provider bases in `provider.keys`, listed or not, with its own reason `egress.provider_host`.
 
 ## Context
 

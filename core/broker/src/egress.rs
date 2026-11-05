@@ -29,7 +29,8 @@ pub const TLS_PORT: u16 = 443;
 pub const HTTP_PORT: u16 = 80;
 /// Model providers' API hosts, never reached through the proxy even when a manifest lists them: a
 /// prompt-injected harness could use one with an attacker's own key (ADR-0016). Model calls go
-/// through the relay, with the broker's key.
+/// through the relay, with the broker's key. Every name under one is refused too, and so are the hosts
+/// of the bases the broker's providers are reached at ([`Egress::refusing_bases`], ADR-0051).
 pub const NEVER: [&str; 2] = ["api.anthropic.com", "api.openai.com"];
 /// Refusals reported for one job. After this many distinct ones, one more says the rest were not.
 pub const MAX_REPORTS: usize = 32;
@@ -98,10 +99,12 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
         || a >= 240)
 }
 
-/// How the broker reaches allowed hosts.
+/// How the broker reaches allowed hosts, and which provider hosts it never reaches.
 #[derive(Clone)]
 pub struct Egress {
     resolver: Arc<dyn Resolve>,
+    /// [`NEVER`] and the hosts of the providers' bases, in the form [`host_name`] gives.
+    providers: BTreeSet<String>,
 }
 
 impl std::fmt::Debug for Egress {
@@ -119,16 +122,47 @@ impl Default for Egress {
 impl Egress {
     /// Through [`PublicResolver`].
     pub fn public() -> Self {
-        Self {
-            resolver: Arc::new(PublicResolver),
-        }
+        Self::with_resolver(Arc::new(PublicResolver))
     }
 
     /// Through another resolver. For tests, which reach a server on loopback under a made-up name;
     /// called only from code.
     pub fn with_resolver(resolver: Arc<dyn Resolve>) -> Self {
-        Self { resolver }
+        Self {
+            resolver,
+            providers: NEVER.iter().map(|h| h.to_string()).collect(),
+        }
     }
+
+    /// Also refuses the host of each provider base, such as an operator's gateway in `anthropic.base`,
+    /// and every name under it. A base whose host is an address adds nothing: an address is never a
+    /// destination. This only ever refuses more.
+    pub fn refusing_bases<'a>(mut self, bases: impl IntoIterator<Item = &'a str>) -> Self {
+        self.providers
+            .extend(bases.into_iter().filter_map(base_host));
+        self
+    }
+
+    /// Whether `host` (as [`host_name`] gives it) is a provider's API host or a name under one.
+    pub fn is_provider_host(&self, host: &str) -> bool {
+        self.providers.iter().any(|p| {
+            host.strip_suffix(p.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.ends_with('.'))
+        })
+    }
+}
+
+/// The host of a provider base such as `https://host[:port]`, in the form [`host_name`] gives, or
+/// `None` when it has no host name (an address, or not a base at all).
+pub fn base_host(base: &str) -> Option<String> {
+    let (_, rest) = base.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, a)| a);
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if port.bytes().all(|b| b.is_ascii_digit()) => host,
+        _ => authority,
+    };
+    host_name(host).ok()
 }
 
 /// The refusals one job has reported, so a harness asking again and again fills neither the
@@ -285,13 +319,13 @@ pub fn host_name(text: &str) -> Result<String, &'static str> {
     Ok(host)
 }
 
-/// Whether the manifest lets the job reach `host`. A provider's API host never is ([`NEVER`]).
-pub fn allowed(manifest: &Manifest, host: &str) -> bool {
-    !NEVER.contains(&host)
-        && manifest
-            .egress_hosts
-            .iter()
-            .any(|h| host_name(h).is_ok_and(|h| h == host))
+/// Whether the manifest lists `host`. A listed provider host is still refused
+/// ([`Egress::is_provider_host`]).
+pub fn listed(manifest: &Manifest, host: &str) -> bool {
+    manifest
+        .egress_hosts
+        .iter()
+        .any(|h| host_name(h).is_ok_and(|h| h == host))
 }
 
 /// A refusal the broker writes itself, as plain text naming its code.
@@ -328,7 +362,12 @@ pub fn proxy(
         return Ok(Some(refused(400, "egress.bad_request")));
     }
     let inputs = inputs_digest(&format!("{}:{}", to.host, to.port));
-    if !allowed(manifest, &to.host) {
+    // Listed or not, a provider's host is never reached through the proxy (ADR-0016, ADR-0051).
+    if egress.is_provider_host(&to.host) {
+        reports.deny("egress.provider_host", inputs, ended);
+        return Ok(Some(refused(403, "egress.provider_host")));
+    }
+    if !listed(manifest, &to.host) {
         reports.deny("egress.host_not_allowed", inputs, ended);
         return Ok(Some(refused(403, "egress.host_not_allowed")));
     }
@@ -530,6 +569,47 @@ mod tests {
     use super::*;
     use std::net::TcpListener;
     use std::time::Instant;
+
+    #[test]
+    fn a_base_gives_its_host_name() {
+        for (base, host) in [
+            ("https://api.anthropic.com", Some("api.anthropic.com")),
+            ("https://LLM.Corp.Example:8443/", Some("llm.corp.example")),
+            ("https://gw.example./v1", Some("gw.example")),
+            ("http://localhost:9", Some("localhost")),
+            ("http://127.0.0.1:9", None),
+            ("https://[::1]:443", None),
+            ("gw.example", None),
+        ] {
+            assert_eq!(base_host(base).as_deref(), host, "{base}");
+        }
+    }
+
+    #[test]
+    fn a_provider_host_and_every_name_under_it_are_refused() {
+        let egress = Egress::public().refusing_bases(["https://llm.corp.example:8443"]);
+        for host in [
+            "api.anthropic.com",
+            "api.openai.com",
+            "eu.api.openai.com",
+            "a.b.api.anthropic.com",
+            "llm.corp.example",
+            "x.llm.corp.example",
+        ] {
+            assert!(egress.is_provider_host(host), "{host}");
+        }
+        for host in [
+            "anthropic.com",
+            "docs.anthropic.com",
+            "notapi.openai.com",
+            "api.openai.com.evil.example",
+            "corp.example",
+            "xllm.corp.example",
+        ] {
+            assert!(!egress.is_provider_host(host), "{host}");
+        }
+        assert!(!Egress::public().is_provider_host("llm.corp.example"));
+    }
 
     /// A host that accepts and never reads cannot hold a write: it gives up when the job ends.
     #[test]

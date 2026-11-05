@@ -81,8 +81,11 @@ fn a_job_pushes_its_branch_opens_a_pull_request_and_records_its_gates() -> Res {
     std::fs::create_dir(&out)?;
 
     let mut said = Vec::new();
+    // The manifest lists the provider base's host, which the egress gate refuses all the same.
+    let mut asked = request(this_harness(&world, &out)?);
+    asked.egress_hosts.insert("localhost".into());
     let summary = run_job(
-        &request(this_harness(&world, &out)?),
+        &asked,
         world.setup(local_detect(), Duration::from_secs(10)),
         &mut said,
     )?;
@@ -165,7 +168,11 @@ fn a_job_pushes_its_branch_opens_a_pull_request_and_records_its_gates() -> Res {
             _ => None,
         })
         .collect();
-    assert_eq!(refusals, ["egress.host_not_allowed"], "{said}");
+    assert_eq!(
+        refusals,
+        ["egress.host_not_allowed", "egress.provider_host"],
+        "{said}"
+    );
     assert!(events.contains(&Event::JobEnded {
         job: summary.job,
         outcome: JobOutcome::Succeeded
@@ -409,6 +416,15 @@ fn harness_entry() -> Res {
     )?;
     if !status.contains(" 403 ") {
         return Err(format!("the egress gate let it through: {status}").into());
+    }
+    // The provider base's host, listed by the manifest: refused all the same (ADR-0051).
+    let (status, _) = call(
+        port,
+        "CONNECT localhost:443 HTTP/1.1\r\nhost: localhost:443\r\n",
+        b"",
+    )?;
+    if !status.contains(" 403 ") {
+        return Err(format!("the egress gate let a provider host through: {status}").into());
     }
 
     // What a scan of the sandbox would read: its environment and its memory.

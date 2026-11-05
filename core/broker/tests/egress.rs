@@ -366,7 +366,7 @@ fn anything_else_is_refused_with_403_and_reported_once() -> Res {
         // Listed or not, a provider's API host is never reached through the proxy (ADR-0016).
         (
             "CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n",
-            "egress.host_not_allowed",
+            "egress.provider_host",
             "api.anthropic.com:443",
         ),
         // Listed or not, an address is never a destination.
@@ -415,6 +415,64 @@ fn anything_else_is_refused_with_403_and_reported_once() -> Res {
     let (status, answer) = ask(&socket, "CONNECT allowed.test:443 HTTP/1.1\r\n\r\n")?;
     assert_eq!(status, 403);
     assert!(answer.contains("admission.expired"), "{answer}");
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// A provider base's host and a provider's subdomain are refused even when the manifest lists them
+/// and they resolve to a public address; a name beside them that is listed is reached (ADR-0051).
+#[test]
+fn provider_hosts_are_refused_even_when_listed() -> Res {
+    let echo = echo()?;
+    let names = [
+        "llm.corp.test",
+        "x.llm.corp.test",
+        "eu.api.openai.com",
+        "docs.anthropic.com",
+    ]
+    .into_iter()
+    .map(|n| (n.to_string(), echo))
+    .collect();
+    let egress = Egress::with_resolver(Arc::new(Fixed(names)))
+        .refusing_bases(["https://LLM.corp.test:8443", "http://127.0.0.1:9"]);
+    let mut r = rig(egress);
+    let dir = job_dir("prov")?;
+    let socket = dir.join("broker.sock");
+    let listed = [
+        "llm.corp.test",
+        "x.llm.corp.test",
+        "eu.api.openai.com",
+        "docs.anthropic.com",
+    ];
+    start(&mut r, &manifest(7, &listed), &socket)?;
+    for host in &listed[..3] {
+        let (status, answer) = ask(&socket, &format!("CONNECT {host}.:443 HTTP/1.1\r\n\r\n"))?;
+        assert_eq!(status, 403, "{host}: {answer}");
+        assert!(answer.contains("egress.provider_host"), "{answer}");
+        assert_eq!(
+            denials(&r.reports),
+            vec![(
+                "egress.provider_host".to_string(),
+                inputs_digest(&format!("{host}:443"))
+            )],
+            "{host}"
+        );
+    }
+    // Plain HTTP is refused the same way.
+    let (status, answer) = ask(
+        &socket,
+        "GET http://LLM.corp.test/v1/messages HTTP/1.1\r\n\r\n",
+    )?;
+    assert_eq!(status, 403, "{answer}");
+    assert!(answer.contains("egress.provider_host"), "{answer}");
+    // A provider's other names, such as its documentation, are reached when listed.
+    let mut stream = UnixStream::connect(&socket)?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.write_all(b"CONNECT docs.anthropic.com:443 HTTP/1.1\r\n\r\n")?;
+    let mut established = [0u8; 39];
+    stream.read_exact(&mut established)?;
+    assert_eq!(&established, b"HTTP/1.1 200 Connection established\r\n\r\n");
+    drop(stream);
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
