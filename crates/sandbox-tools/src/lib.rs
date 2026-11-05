@@ -133,18 +133,24 @@ fn code(status: ExitStatus) -> i32 {
 /// Posts `body` to the broker's submit endpoint through the forwarder at `forwarder`, and returns the
 /// status and the body of the answer.
 pub fn submit(forwarder: &str, body: &[u8]) -> io::Result<(u16, Vec<u8>)> {
+    post(forwarder, "/hyalos/submit", body)
+}
+
+/// Posts a JSON `body` to `path` on the broker through the forwarder at `forwarder`, and returns the
+/// status and the body of the answer.
+pub fn post(forwarder: &str, path: &str, body: &[u8]) -> io::Result<(u16, Vec<u8>)> {
     if body.len() > MAX_SUBMISSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("a result is at most {MAX_SUBMISSION} bytes"),
+            format!("a request is at most {MAX_SUBMISSION} bytes"),
         ));
     }
     let mut stream = TcpStream::connect(forwarder)?;
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_read_timeout(Some(Duration::from_secs(60)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     write!(
         stream,
-        "POST /hyalos/submit HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        "POST {path} HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;
@@ -169,6 +175,25 @@ pub fn submit(forwarder: &str, body: &[u8]) -> io::Result<(u16, Vec<u8>)> {
         .and_then(|s| s.parse::<u16>().ok())
         .ok_or_else(bad)?;
     Ok((status, answer[split + 4..].to_vec()))
+}
+
+/// `text` as a JSON string, quotes included.
+pub fn json_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// A DNS server, over UDP and TCP, that answers every question "no such name" and records the name.

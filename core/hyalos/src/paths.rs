@@ -5,6 +5,9 @@
 //! * config directory, holding `engine.pub`: `$HYALOS_CONFIG_DIR`, else `$XDG_CONFIG_HOME/hyalos`, else
 //!   `~/.config/hyalos`
 //!
+//! * runtime directory, holding the broker's channel and each job's socket: `$HYALOS_RUNTIME_DIR`,
+//!   else `$XDG_RUNTIME_DIR/hyalos`, else `run` in the data directory (ADR-0050)
+//!
 //! An override must be an absolute path. A relative XDG value is ignored, as the XDG specification says.
 
 use std::path::{Path, PathBuf};
@@ -31,6 +34,33 @@ pub fn engine_public_key(env: Env<'_>) -> Result<PathBuf, String> {
 /// `provider.keys` in the config directory.
 pub fn provider_keys(env: Env<'_>) -> Result<PathBuf, String> {
     Ok(config_dir(env)?.join(PROVIDER_KEYS_FILE))
+}
+
+/// Where the broker's channel and the job sockets go. Kept short, since a socket's path is limited.
+pub fn runtime_dir(env: Env<'_>) -> Result<PathBuf, String> {
+    if let Some(path) = env("HYALOS_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+        return if Path::new(&path).is_absolute() {
+            Ok(PathBuf::from(path))
+        } else {
+            Err(format!(
+                "HYALOS_RUNTIME_DIR must be an absolute path, not {path:?}"
+            ))
+        };
+    }
+    match env("XDG_RUNTIME_DIR").filter(|v| Path::new(v).is_absolute()) {
+        Some(xdg) => Ok(PathBuf::from(xdg).join("hyalos")),
+        None => Ok(data_dir(env)?.join("run")),
+    }
+}
+
+/// Makes `dir` and its parents if they are missing, `dir` itself owner-only.
+pub fn make_private_dir(dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(|e| format!("cannot make {}: {e}", dir.display()))
 }
 
 pub fn data_dir(env: Env<'_>) -> Result<PathBuf, String> {

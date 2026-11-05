@@ -15,17 +15,18 @@ use crate::{
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
-/// What this build reads: version 6, and versions 1 to 5 upcast to it (ADR-0023, ADR-0025, ADR-0027,
-/// ADR-0029, ADR-0034, ADR-0043).
+/// What this build reads: version 7, and versions 1 to 6 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// ADR-0029, ADR-0034, ADR-0043, ADR-0050).
 ///
 /// Version 2 added the stakes of a hold and the reason for resolving one. A version 1 hold is given the
 /// most cautious stakes, so only a human can release it; a version 1 resolution is given an explicit
 /// "unrecorded" reason. Version 3 added `archive.pruned` and changed no payload. Every other kind is the
 /// same in all versions. Version 4 added `task.cancelled` and `hold.refused` and changed no payload.
 /// Version 5 added `policy.approved` and changed no payload. Version 6 added the substrate to
-/// `job.started`; an older one reads as `unrecorded`.
+/// `job.started`; an older one reads as `unrecorded`. Version 7 added the credential tier to
+/// `job.started`; an older one reads as `unrecorded` too.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -43,6 +44,11 @@ pub static SCHEMA: Schema = Schema {
             kind: "job.started",
             from: 5,
             step: job_started_v5,
+        },
+        Upcast {
+            kind: "job.started",
+            from: 6,
+            step: job_started_v6,
         },
     ],
 };
@@ -69,6 +75,22 @@ fn hold_resolved_v1(payload: Value) -> Result<Value, String> {
 
 fn job_started_v5(payload: Value) -> Result<Value, String> {
     insert(payload, "substrate", Value::String("unrecorded".into()))
+}
+
+fn job_started_v6(payload: Value) -> Result<Value, String> {
+    insert(payload, "credentials", Value::String("unrecorded".into()))
+}
+
+/// Where a job's credentials are held, which bounds what a compromised sandbox could take
+/// (ADR-0016, ADR-0050). In v1 every key and token is held by the broker and none enters the sandbox.
+/// A credential inside the sandbox would be its own, weaker tier, recorded as such if it is ever built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialTier {
+    /// The broker holds the provider key and the forge token and adds them to requests itself.
+    BrokerHeld,
+    /// A `job.started` written before schema version 7, which did not say.
+    Unrecorded,
 }
 
 /// How a job ended.
@@ -123,11 +145,13 @@ pub enum Event {
     TaskCreated { request: Digest },
     #[serde(rename = "task.completed")]
     TaskCompleted { task: TaskId },
-    /// A job started on `task`, in a sandbox from the substrate named (ADR-0011, ADR-0043).
+    /// A job started on `task`, in a sandbox from the substrate named, with its credentials held
+    /// where `credentials` says (ADR-0011, ADR-0043, ADR-0050).
     #[serde(rename = "job.started")]
     JobStarted {
         task: TaskId,
         substrate: SubstrateName,
+        credentials: CredentialTier,
     },
     #[serde(rename = "job.ended")]
     JobEnded { job: JobId, outcome: JobOutcome },
@@ -364,8 +388,10 @@ mod tests {
                 Event::JobStarted {
                     task: TaskId::from_seq(3),
                     substrate: SubstrateName::new("container.podman").unwrap(),
+                    credentials: crate::CredentialTier::BrokerHeld,
                 },
-                r#"{"kind":"job.started","task":3,"substrate":"container.podman"}"#.to_string(),
+                r#"{"kind":"job.started","task":3,"substrate":"container.podman","credentials":"broker_held"}"#
+                    .to_string(),
             ),
             (
                 Event::JobEnded {
@@ -486,7 +512,7 @@ mod tests {
 
     #[test]
     fn a_wrong_kind_column_is_refused() {
-        let json = r#"{"kind":"job.started","task":3,"substrate":"container.docker"}"#;
+        let json = r#"{"kind":"job.started","task":3,"substrate":"container.docker","credentials":"broker_held"}"#;
         let err = Event::decode("task.completed", SCHEMA_VERSION, json.as_bytes()).unwrap_err();
         assert!(matches!(err, EventError::KindMismatch { .. }), "{err}");
     }
@@ -517,9 +543,12 @@ mod tests {
     #[test]
     fn unknown_fields_kinds_and_versions_are_refused() {
         let bad = [
-            r#"{"kind":"job.started","task":3,"substrate":"local","extra":1}"#,
-            // Since version 6 a job names its substrate; only an older event may leave it out.
+            r#"{"kind":"job.started","task":3,"substrate":"local","credentials":"broker_held","extra":1}"#,
+            // Since version 6 a job names its substrate, and since 7 its credential tier; only an
+            // older event may leave them out.
             r#"{"kind":"job.started","task":3}"#,
+            r#"{"kind":"job.started","task":3,"substrate":"local"}"#,
+            r#"{"kind":"job.started","task":3,"substrate":"local","credentials":"in_sandbox"}"#,
             r#"{"kind":"job.started","task":3,"substrate":"/usr/bin/podman"}"#,
             r#"{"kind":"job.vanished","task":3}"#,
             r#"{"kind":"job.started"}"#,

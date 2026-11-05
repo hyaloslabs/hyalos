@@ -296,6 +296,7 @@ fn the_issue_crosses_the_channel_and_is_checked_again_on_the_engine_side() -> Re
         &ToBroker::Hello {
             version: WIRE_VERSION,
             manifest_key: key().public(),
+            forge: None,
         },
     )?;
     assert!(matches!(

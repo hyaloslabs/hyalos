@@ -10,10 +10,12 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use hyalos_types::wire::{
-    MAX_SOCKET_PATH, ToBroker, ToEngine, WIRE_VERSION, WireError, read_frame, write_frame,
+    ForgeBases, MAX_SOCKET_PATH, ToBroker, ToEngine, WIRE_VERSION, WireError, read_frame,
+    write_frame,
 };
 use hyalos_types::{ManifestKey, ManifestPublicKey};
 use std::os::unix::net::UnixStream;
@@ -118,11 +120,26 @@ impl From<WireError> for LaunchError {
     }
 }
 
+/// What the broker said, or that it said nothing yet.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Incoming {
+    Message(ToEngine),
+    /// The broker closed the channel.
+    Closed,
+    /// Nothing arrived in the time given. The channel is still open.
+    Nothing,
+}
+
 /// A running broker and the channel to it. Dropping it stops the broker.
+///
+/// After the handshake one thread reads the channel and hands each frame over, so the engine can wait
+/// for a report from the broker and for something else at once, and a job can be quiet for longer
+/// than [`IO_TIMEOUT`] without the broker being taken for hung (ADR-0050).
 #[derive(Debug)]
 pub struct BrokerProcess {
     child: Child,
     stream: Option<UnixStream>,
+    incoming: Option<Receiver<Result<Option<ToEngine>, WireError>>>,
     refused: Vec<Option<Peer>>,
 }
 
@@ -134,7 +151,7 @@ impl BrokerProcess {
         key: &ManifestPublicKey,
         wait: Duration,
     ) -> Result<Self, LaunchError> {
-        Self::launch_with(exe, runtime_dir, key, None, wait)
+        Self::launch_configured(exe, runtime_dir, key, None, None, wait)
     }
 
     /// Starts `exe` as the broker, which reads the provider key file at `provider_keys` itself, so
@@ -145,6 +162,19 @@ impl BrokerProcess {
         runtime_dir: &Path,
         key: &ManifestPublicKey,
         provider_keys: Option<&Path>,
+        wait: Duration,
+    ) -> Result<Self, LaunchError> {
+        Self::launch_configured(exe, runtime_dir, key, provider_keys, None, wait)
+    }
+
+    /// As [`launch_with`](Self::launch_with), and tells the broker in `Hello` where the forge is
+    /// (ADR-0050); `None` is github.com.
+    pub fn launch_configured(
+        exe: &Path,
+        runtime_dir: &Path,
+        key: &ManifestPublicKey,
+        provider_keys: Option<&Path>,
+        forge: Option<ForgeBases>,
         wait: Duration,
     ) -> Result<Self, LaunchError> {
         let listener = Listener::bind(runtime_dir)?;
@@ -158,18 +188,20 @@ impl BrokerProcess {
             .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::null());
-        Self::start(command, listener, key, wait)
+        Self::start_with(command, listener, key, forge, wait)
     }
 
-    /// Starts this very executable as the broker, with the provider key file at `provider_keys`.
+    /// Starts this very executable as the broker, with the provider key file at `provider_keys` and
+    /// the forge at `forge`.
     pub fn launch_self(
         runtime_dir: &Path,
         key: &ManifestPublicKey,
         provider_keys: Option<&Path>,
+        forge: Option<ForgeBases>,
         wait: Duration,
     ) -> Result<Self, LaunchError> {
         let exe = std::env::current_exe().map_err(|e| LaunchError::Spawn(e.kind()))?;
-        Self::launch_with(&exe, runtime_dir, key, provider_keys, wait)
+        Self::launch_configured(&exe, runtime_dir, key, provider_keys, forge, wait)
     }
 
     /// Runs `command` as the broker, accepts its connection on `listener` and says hello. Anything
@@ -177,9 +209,20 @@ impl BrokerProcess {
     /// with an empty environment and no standard streams; this is split from it so a test can stand in
     /// for the broker.
     pub fn start(
+        command: Command,
+        listener: Listener,
+        key: &ManifestPublicKey,
+        wait: Duration,
+    ) -> Result<Self, LaunchError> {
+        Self::start_with(command, listener, key, None, wait)
+    }
+
+    /// As [`start`](Self::start), naming the forge in `Hello`.
+    pub fn start_with(
         mut command: Command,
         mut listener: Listener,
         key: &ManifestPublicKey,
+        forge: Option<ForgeBases>,
         wait: Duration,
     ) -> Result<Self, LaunchError> {
         let mut child = command.spawn().map_err(|e| LaunchError::Spawn(e.kind()))?;
@@ -197,13 +240,44 @@ impl BrokerProcess {
         let mut broker = Self {
             child,
             stream: Some(stream),
+            incoming: None,
             refused,
         };
-        broker.handshake(key)?;
+        broker.handshake(key, forge)?;
+        broker.start_reading()?;
         Ok(broker)
     }
 
-    fn handshake(&mut self, key: &ManifestPublicKey) -> Result<(), LaunchError> {
+    /// Hands reading to a thread of its own, which reads frames until the channel ends or a frame is
+    /// bad, and passes each one on. It reads with no timeout: how long the broker may be quiet is for
+    /// whoever waits on [`poll`](Self::poll) to say.
+    fn start_reading(&mut self) -> Result<(), LaunchError> {
+        let stream = self.stream.as_ref().ok_or(WireError::Truncated)?;
+        let mut reader = stream
+            .try_clone()
+            .map_err(|e| LaunchError::Wire(WireError::Io(e.kind())))?;
+        reader
+            .set_read_timeout(None)
+            .map_err(|e| LaunchError::Wire(WireError::Io(e.kind())))?;
+        let (to_engine, incoming) = mpsc::channel();
+        std::thread::spawn(move || {
+            loop {
+                let frame = read_frame::<_, ToEngine>(&mut reader);
+                let last = !matches!(frame, Ok(Some(_)));
+                if to_engine.send(frame).is_err() || last {
+                    return;
+                }
+            }
+        });
+        self.incoming = Some(incoming);
+        Ok(())
+    }
+
+    fn handshake(
+        &mut self,
+        key: &ManifestPublicKey,
+        forge: Option<ForgeBases>,
+    ) -> Result<(), LaunchError> {
         let stream = self.stream.as_ref().ok_or(WireError::Truncated)?;
         stream
             .set_read_timeout(Some(IO_TIMEOUT))
@@ -212,6 +286,7 @@ impl BrokerProcess {
         self.send(&ToBroker::Hello {
             version: WIRE_VERSION,
             manifest_key: *key,
+            forge,
         })?;
         match self.recv()? {
             Some(ToEngine::Ready { version }) if version == WIRE_VERSION => Ok(()),
@@ -250,14 +325,46 @@ impl BrokerProcess {
     /// engine does not go on talking to a broker that has sent it something else. `Ok(None)` is the
     /// broker closing the channel.
     pub fn recv(&mut self) -> Result<Option<ToEngine>, WireError> {
-        let Some(stream) = self.stream.as_mut() else {
-            return Err(WireError::Truncated);
-        };
-        let result = read_frame::<_, ToEngine>(stream);
-        if !matches!(result, Ok(Some(_))) {
-            self.close();
+        match self.poll(IO_TIMEOUT)? {
+            Incoming::Message(message) => Ok(Some(message)),
+            Incoming::Closed => Ok(None),
+            // The broker did not answer in time: it is treated as hung.
+            Incoming::Nothing => {
+                self.close();
+                Err(WireError::Io(io::ErrorKind::TimedOut))
+            }
         }
-        result
+    }
+
+    /// Waits up to `wait` for the broker's next message. Unlike [`recv`](Self::recv), silence is not
+    /// an error and leaves the channel open; anything else that is not a message closes it, as there.
+    pub fn poll(&mut self, wait: Duration) -> Result<Incoming, WireError> {
+        if self.stream.is_none() {
+            return Err(WireError::Truncated);
+        }
+        let result = match &self.incoming {
+            // Before the reader starts: the handshake reads here itself, under the channel's timeout.
+            None => match self.stream.as_mut() {
+                Some(stream) => read_frame::<_, ToEngine>(stream),
+                None => Err(WireError::Truncated),
+            },
+            Some(incoming) => match incoming.recv_timeout(wait) {
+                Ok(frame) => frame,
+                Err(RecvTimeoutError::Timeout) => return Ok(Incoming::Nothing),
+                Err(RecvTimeoutError::Disconnected) => Err(WireError::Truncated),
+            },
+        };
+        match result {
+            Ok(Some(message)) => Ok(Incoming::Message(message)),
+            Ok(None) => {
+                self.close();
+                Ok(Incoming::Closed)
+            }
+            Err(e) => {
+                self.close();
+                Err(e)
+            }
+        }
     }
 
     /// Whether the channel is still open.

@@ -70,6 +70,7 @@ fn running(name: &str) -> Res<(Engine, JobId, PathBuf)> {
             Event::JobStarted {
                 task: hyalos_types::TaskId::from_seq(task),
                 substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                credentials: hyalos_types::CredentialTier::BrokerHeld,
             },
         )?
         .seq;
@@ -542,6 +543,7 @@ fn a_stored_policy_that_no_longer_validates_holds_requests_until_it_is_replaced(
             Event::JobStarted {
                 task: hyalos_types::TaskId::from_seq(1),
                 substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                credentials: hyalos_types::CredentialTier::BrokerHeld,
             },
             Event::PolicyApproved {
                 document: "permit (principal, action, resource) when { principal.admin };".into(),

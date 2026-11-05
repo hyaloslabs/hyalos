@@ -206,7 +206,10 @@ fn github(mode: Mode) -> Res<GitHub> {
 }
 
 fn app(gh: &GitHub) -> Res<GitHubApp> {
-    let settings = AppSettings::parse(&format!("app_id = {APP_ID}\napi = {}\n", gh.api()))?;
+    let settings = AppSettings::parse(&format!(
+        "app_id = {APP_ID}\napi = {0}\ngit = {0}\n",
+        gh.api()
+    ))?;
     Ok(GitHubApp::new(&settings, KEY)?)
 }
 
@@ -395,7 +398,11 @@ fn a_grant_wider_than_asked_is_revoked_and_never_used() -> Res {
 #[test]
 fn a_key_that_is_not_the_apps_is_refused_by_github() -> Res {
     let gh = github(Mode::Exact)?;
-    let settings = AppSettings::parse(&format!("app_id = {}\napi = {}\n", APP_ID + 1, gh.api()))?;
+    let settings = AppSettings::parse(&format!(
+        "app_id = {}\napi = {1}\ngit = {1}\n",
+        APP_ID + 1,
+        gh.api()
+    ))?;
     let err = GitHubApp::new(&settings, KEY)?
         .mint(&manifest(1, &["read"]), SystemClock.now())
         .err()
@@ -412,7 +419,7 @@ fn config(name: &str, gh: &GitHub, key_mode: u32) -> Res<PathBuf> {
     let config = dir(name)?;
     std::fs::write(
         config.join("github.app"),
-        format!("app_id = {APP_ID}\napi = {}\n", gh.api()),
+        format!("app_id = {APP_ID}\napi = {0}\ngit = {0}\n", gh.api()),
     )?;
     let key = config.join("github-app.pem");
     std::fs::write(&key, KEY)?;

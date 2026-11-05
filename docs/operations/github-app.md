@@ -39,8 +39,10 @@ Create `~/.config/hyalos/github.app`:
 # The App's number, from its settings page.
 app_id = 123456
 
-# Optional: GitHub Enterprise Server's API. Leave it out for github.com.
+# Optional: GitHub Enterprise Server's API and git host. Leave both out for github.com.
+# Jobs clone and push through the broker to the git host, so with any other api it is required.
 # api = https://github.example.com/api/v3
+# git = https://github.example.com
 ```
 
 It holds no secret. A line that names a token is refused: there is no setting for one.

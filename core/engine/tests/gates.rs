@@ -93,6 +93,7 @@ fn rig(name: &str) -> Result<Rig, Box<dyn std::error::Error>> {
                 Event::JobStarted {
                     task,
                     substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                    credentials: hyalos_types::CredentialTier::BrokerHeld,
                 },
             )?
             .seq,
@@ -235,7 +236,8 @@ fn a_held_task_is_released_by_resolving_its_one_hold() -> Res {
             Origin::Engine,
             Event::JobStarted {
                 task: r.task,
-                substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded)
+                substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                credentials: hyalos_types::CredentialTier::BrokerHeld,
             }
         ),
         Err(EngineError::Rule(RuleViolation::TaskNotOpen { .. }))
@@ -248,6 +250,7 @@ fn a_held_task_is_released_by_resolving_its_one_hold() -> Res {
         Event::JobStarted {
             task: r.task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            credentials: hyalos_types::CredentialTier::BrokerHeld,
         },
     )?;
     Ok(())
@@ -414,6 +417,7 @@ fn prefix() -> Vec<Event> {
         Event::JobStarted {
             task: TaskId::from_seq(1),
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+            credentials: hyalos_types::CredentialTier::BrokerHeld,
         },
     ]
 }
@@ -609,6 +613,7 @@ fn random_gate_outcomes_never_let_unknown_through() -> Res {
                                 task: r.task,
                                 substrate: SubstrateName::new("test")
                                     .unwrap_or_else(SubstrateName::unrecorded),
+                                credentials: hyalos_types::CredentialTier::BrokerHeld,
                             },
                         )?
                         .seq,
