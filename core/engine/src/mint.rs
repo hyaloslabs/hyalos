@@ -36,6 +36,11 @@ pub mod mint_codes {
         code("mint.unknown_action")
     }
 
+    /// The manifest declares a data flow this build does not know (ADR-0055).
+    pub fn unknown_flow() -> ReasonCode {
+        code("mint.unknown_flow")
+    }
+
     /// The manifest's job is not a running job.
     pub fn job_not_running() -> ReasonCode {
         code("mint.job_not_running")
@@ -188,6 +193,11 @@ fn asks(manifest: &Manifest) -> Result<Vec<(String, PolicyRequest)>, MintRefusal
         asks.push((format!("use_tool:{tool}"), request(Action::UseTool, tool)));
     }
     for flow in &manifest.data_flows {
+        if !hyalos_types::flow::known(flow) {
+            return Err(MintRefusal::Invalid {
+                reason: mint_codes::unknown_flow(),
+            });
+        }
         asks.push((format!("data_flow:{flow}"), request(Action::DataFlow, flow)));
     }
     for host in &manifest.egress_hosts {

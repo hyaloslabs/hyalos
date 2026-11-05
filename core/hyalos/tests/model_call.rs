@@ -95,7 +95,7 @@ fn manifest(job: u64) -> Manifest {
         actions: BTreeSet::new(),
         egress_hosts: BTreeSet::new(),
         tools: BTreeSet::new(),
-        data_flows: BTreeSet::new(),
+        data_flows: hyalos_types::flow::ALL.map(String::from).into(),
         budget: Budget { tokens: 10_000 },
         deadline: Timestamp::from_millis(u64::MAX / 2),
         approval: None,

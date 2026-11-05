@@ -17,7 +17,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use hyalos_types::wire::ToEngine;
-use hyalos_types::{Clock, ForgeToken, Gate, Manifest};
+use hyalos_types::{Clock, ForgeToken, Gate, Manifest, flow};
 use std::sync::mpsc::Sender;
 
 use crate::egress::{self, Egress, Gates, ProxyRequest, Reports};
@@ -385,6 +385,28 @@ struct JobReports {
     content: Reports,
 }
 
+/// Why a call to a sink the manifest declares no flow to is refused (ADR-0055).
+pub const FLOW_REFUSED: &str = "flow.not_declared";
+
+/// The flow a call would carry the job's data along, if it carries any: a model call, a write to the
+/// forge (a push, or anything under `/forge/`), or a request to a web host. A fetch through the git
+/// proxy sends nothing of the job's, and a path the broker does not serve goes nowhere.
+fn sink(head: &ProxyRequest) -> Option<&'static str> {
+    if head.method == "CONNECT" || !head.target.starts_with('/') {
+        return Some(flow::WEB);
+    }
+    if head.target.starts_with(pulls::PREFIX) {
+        return Some(flow::FORGE);
+    }
+    if head.target.starts_with(git::PREFIX) {
+        return git::route(&head.method, &head.target)
+            .filter(|r| r.service == git::Service::ReceivePack)
+            .map(|_| flow::FORGE);
+    }
+    let path = head.target.split('?').next().unwrap_or_default();
+    (path.starts_with("/v1/messages") || path.starts_with("/v1/responses")).then_some(flow::MODEL)
+}
+
 fn connection(
     stream: &UnixStream,
     job: &(Manifest, Option<ForgeToken>),
@@ -405,6 +427,29 @@ fn connection(
             );
         }
     };
+    // Data may go only where the manifest's flows say (ADR-0055).
+    let live = !ended.load(Ordering::SeqCst) && sandboxes.clock.now() <= manifest.deadline;
+    if let Some(sink) = sink(&head).filter(|s| live && !manifest.data_flows.contains(*s)) {
+        reports
+            .manifest
+            .deny(FLOW_REFUSED, egress::inputs_digest(sink), ended);
+        let response = if sink == flow::MODEL {
+            let adapter: &dyn Adapter = if head.target.starts_with("/v1/messages") {
+                &Anthropic
+            } else {
+                &OpenAi
+            };
+            refusal(
+                adapter,
+                403,
+                FLOW_REFUSED,
+                "flow.not_declared: the job's manifest declares no data flow to a model",
+            )
+        } else {
+            egress::refused(403, FLOW_REFUSED)
+        };
+        return write_response(&mut &*stream, response);
+    }
     // Anything but a model call is a proxy request, for the egress gate (ADR-0042).
     if head.method == "CONNECT" || !head.target.starts_with('/') {
         let response = if ended.load(Ordering::SeqCst) {

@@ -20,7 +20,7 @@ pub type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 pub const EXE: &str = env!("CARGO_BIN_EXE_hyalos");
 const PEM: &[u8] = include_bytes!("../fixtures/github-app-test.pem");
-const POLICY: &str = r#"permit (principal, action in [Action::"read", Action::"push", Action::"open_pr", Action::"request_host"], resource);"#;
+const POLICY: &str = r#"permit (principal, action in [Action::"read", Action::"push", Action::"open_pr", Action::"request_host", Action::"data_flow"], resource);"#;
 
 /// Issue 7 of the stand-in's `octo/repo`.
 pub const ISSUE_TITLE: &str = "Add a CHANGES file";

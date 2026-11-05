@@ -84,11 +84,31 @@ pub struct Manifest {
     pub actions: BTreeSet<String>,
     pub egress_hosts: BTreeSet<String>,
     pub tools: BTreeSet<String>,
+    /// Where the job's data may go, from [`flow`].
     pub data_flows: BTreeSet<String>,
     pub budget: Budget,
     /// The last moment this manifest is valid. A job whose deadline passes ends (ADR-0004).
     pub deadline: Timestamp,
     pub approval: Option<Approval>,
+}
+
+/// The data flows a manifest may declare (ADR-0055). A flow names where the job's data may go: the
+/// broker sees what leaves the sandbox, never which of what the sandbox read it came from, so every
+/// flow's source is the job. The broker refuses a call to a sink whose flow is not declared.
+pub mod flow {
+    /// Model calls on the job's socket.
+    pub const MODEL: &str = "job->model";
+    /// Writes to the forge: a push through the git proxy, a pull request.
+    pub const FORGE: &str = "job->forge";
+    /// Requests to web hosts through the egress gate.
+    pub const WEB: &str = "job->web";
+    /// Every flow there is.
+    pub const ALL: [&str; 3] = [MODEL, FORGE, WEB];
+
+    /// Whether `name` is a flow this build knows.
+    pub fn known(name: &str) -> bool {
+        ALL.contains(&name)
+    }
 }
 
 /// Why bytes are not a manifest this build can use.

@@ -44,7 +44,7 @@ const OPERATOR: &str = r#"
     permit (principal, action == Action::"use_tool", resource)
       when { ["Bash", "Edit", "Read"].contains(resource.name) };
     permit (principal, action == Action::"data_flow", resource)
-      when { resource.name == "repo->model" };
+      when { resource.name == "job->model" };
     permit (principal, action == Action::"request_host", resource)
       when { ["github.com", "api.github.com"].contains(resource.name) };
 "#;
@@ -94,7 +94,7 @@ fn manifest(job: JobId) -> Manifest {
         actions: set(&["open_pr", "push"]),
         egress_hosts: set(&["api.github.com", "github.com"]),
         tools: set(&["Bash", "Edit", "Read"]),
-        data_flows: set(&["repo->model"]),
+        data_flows: set(&["job->model"]),
         budget: Budget { tokens: 200_000 },
         deadline: Timestamp::from_millis(10_000_000),
         approval: None,
@@ -328,9 +328,9 @@ fn a_job_request_outside_policy_is_denied_naming_what_was_refused() -> Res {
         (
             "a flow not in policy",
             Box::new(|m| {
-                m.data_flows.insert("repo->world".into());
+                m.data_flows.insert("job->web".into());
             }),
-            "data_flow:repo->world",
+            "data_flow:job->web",
         ),
         (
             "a budget past the cap",
@@ -460,6 +460,18 @@ fn a_manifest_the_engine_does_not_mint_is_refused_whatever_policy_says() -> Res 
                 reason: mint_codes::unknown_action()
             },
             "{action:?}"
+        );
+    }
+    // A data flow is one this build knows (ADR-0055), whatever the policy permits.
+    for name in ["repo->model", "job->world", "", "JOB->MODEL"] {
+        let mut m = manifest(job);
+        m.data_flows.insert(name.into());
+        assert_eq!(
+            refusal(e.mint_manifest(&m, &StepInputs::default(), &key, at(20)))?,
+            MintRefusal::Invalid {
+                reason: mint_codes::unknown_flow()
+            },
+            "{name:?}"
         );
     }
     // A job that never started, and one that ended.

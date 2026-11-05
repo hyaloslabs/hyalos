@@ -1,6 +1,7 @@
 //! Each admitted job's sandbox reaches models through a socket of its own (S3.2, ADR-0038): calls
 //! go through the relay under the job's manifest, the key is the broker's, a call past the deadline
-//! is a 403, a spent budget a 402, and the socket and the job's meter go when the job ends.
+//! is a 403, a spent budget a 402, and the socket and the job's meter go when the job ends. A call to a
+//! sink the manifest declares no data flow to is refused and reported (ADR-0055).
 
 use std::collections::{BTreeSet, VecDeque};
 use std::io::{BufReader, Cursor, Read, Write};
@@ -12,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hyalos_broker::Broker;
+use hyalos_broker::egress::inputs_digest;
 use hyalos_broker::model::{
     Anthropic, ApiKey, Meter, OpenAi, Relay, Request, Response, Sleep, Transport, TransportError,
     Upstream, UpstreamResponse,
@@ -21,7 +23,8 @@ use hyalos_broker::sandbox::{
 };
 use hyalos_types::wire::{ToBroker, ToEngine};
 use hyalos_types::{
-    Budget, Clock, JobId, MANIFEST_VERSION, Manifest, ManifestKey, ReasonCode, Role, Timestamp,
+    Answer, Budget, Clock, Gate, JobId, MANIFEST_VERSION, Manifest, ManifestKey, ReasonCode, Role,
+    Timestamp, flow,
 };
 use serde_json::{Value, json};
 
@@ -85,7 +88,7 @@ fn manifest(job: u64, role: Role, tokens: u64, deadline: u64) -> Manifest {
         actions: BTreeSet::new(),
         egress_hosts: BTreeSet::new(),
         tools: BTreeSet::new(),
-        data_flows: BTreeSet::new(),
+        data_flows: hyalos_types::flow::ALL.map(String::from).into(),
         budget: Budget { tokens },
         deadline: Timestamp::from_millis(deadline),
         approval: None,
@@ -519,5 +522,91 @@ fn the_key_file_names_providers_and_never_echoes_a_value() -> Res {
         Some("transport.not_loopback".into())
     );
     r.broker.handle(ToBroker::Shutdown, r.clock.as_ref())?;
+    Ok(())
+}
+
+/// Sends `request` as it is and returns the whole answer.
+fn raw(socket: &Path, request: &str) -> Res<String> {
+    let mut stream = UnixStream::connect(socket)?;
+    stream.write_all(request.as_bytes())?;
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer)?;
+    Ok(answer)
+}
+
+#[test]
+fn data_goes_only_where_the_manifest_declares_a_flow() -> Res {
+    let mut r = rig(true)?;
+    let (to, reports) = std::sync::mpsc::channel();
+    r.broker = r.broker.report_to(to);
+    let denials = || {
+        std::thread::sleep(Duration::from_millis(50));
+        reports
+            .try_iter()
+            .filter_map(|m| match m {
+                ToEngine::Gate {
+                    gate: Gate::Manifest,
+                    answer: Answer::Deny,
+                    reason,
+                    inputs,
+                    ..
+                } => Some((reason.as_str().to_string(), inputs)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let refused = |sink: &str| ("flow.not_declared".to_string(), inputs_digest(sink));
+
+    // No flow to a model: a model call is refused in the provider's shape and never sent.
+    let dir = job_dir("flows-a")?;
+    let socket = dir.join("broker.sock");
+    let mut m = manifest(20, Role::Actor, 1_000, 10_000);
+    m.data_flows.remove(flow::MODEL);
+    start(&mut r, &m, &socket)?;
+    let (status, body) = call(&socket, "/v1/messages", &messages(), &[])?;
+    assert_eq!(status, 403);
+    assert_eq!(body["error"]["type"], "permission_error");
+    let (status, body) = call(&socket, "/v1/responses", &json!({ "input": "x" }), &[])?;
+    assert_eq!(status, 403);
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .ok_or("message")?
+            .contains("flow.not_declared"),
+        "{body}"
+    );
+    assert!(r.provider.sent.lock().map_err(|_| "lock")?.is_empty());
+    // Reported once for the flow, however many calls it refused.
+    assert_eq!(denials(), vec![refused(flow::MODEL)]);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Only a flow to a model: a push, a pull request and a web request are refused; a fetch carries
+    // nothing of the job's and goes on to the git proxy, which wants a token.
+    let dir = job_dir("flows-b")?;
+    let socket = dir.join("broker.sock");
+    let mut m = manifest(21, Role::Actor, 1_000, 10_000);
+    m.data_flows = [flow::MODEL.to_string()].into();
+    m.actions = ["read".to_string()].into();
+    start(&mut r, &m, &socket)?;
+    for request in [
+        "GET /git/hyaloslabs/hyalos.git/info/refs?service=git-receive-pack HTTP/1.1\r\nhost: x\r\n\r\n",
+        "POST /git/hyaloslabs/hyalos.git/git-receive-pack HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\n",
+        "POST /forge/repos/hyaloslabs/hyalos/pulls HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\n",
+        "CONNECT example.com:443 HTTP/1.1\r\nhost: example.com:443\r\n\r\n",
+        "GET http://example.com/ HTTP/1.1\r\nhost: example.com\r\n\r\n",
+    ] {
+        let answer = raw(&socket, request)?;
+        assert!(answer.starts_with("HTTP/1.1 403"), "{request}: {answer}");
+        assert!(answer.contains("flow.not_declared"), "{request}: {answer}");
+    }
+    assert_eq!(denials(), vec![refused(flow::FORGE), refused(flow::WEB)]);
+    let fetch = raw(
+        &socket,
+        "GET /git/hyaloslabs/hyalos.git/info/refs?service=git-upload-pack HTTP/1.1\r\nhost: x\r\n\r\n",
+    )?;
+    assert!(fetch.contains("git.no_token"), "{fetch}");
+    assert_eq!(call(&socket, "/v1/messages", &messages(), &[])?.0, 200);
+    assert_eq!(denials(), vec![]);
+    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
