@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use hyalos::channel::{ChannelError, Listener, connect_to_engine};
 use hyalos::clock::SystemClock;
-use hyalos::launch::{BrokerProcess, LaunchError, fresh_manifest_key};
+use hyalos::launch::{BrokerProcess, Incoming, LaunchError, fresh_manifest_key};
 use hyalos_types::wire::{ToBroker, ToEngine, WIRE_VERSION, WireError, read_frame, write_frame};
 use hyalos_types::{
     Budget, Clock, JobId, MANIFEST_VERSION, Manifest, ManifestKey, ReasonCode, Role, Timestamp,
@@ -495,5 +495,28 @@ fn a_broker_that_speaks_another_protocol_is_not_used() -> Res {
         .stderr(std::process::Stdio::null());
     let result = BrokerProcess::start(command, listener, &key.public(), WAIT);
     assert!(matches!(result, Err(LaunchError::Handshake)), "{result:?}");
+    Ok(())
+}
+
+#[test]
+fn a_quiet_broker_is_waited_for_and_one_that_ends_is_reported_closed() -> Res {
+    let d = dir("poll")?;
+    let key = fresh_manifest_key()?;
+    let mut broker = BrokerProcess::launch(Path::new(EXE), &d, &key.public(), WAIT)?;
+    // Silence is not an error: the channel stays open, as a job's quiet minutes need (ADR-0050).
+    assert_eq!(broker.poll(Duration::from_millis(200))?, Incoming::Nothing);
+    assert!(broker.is_open());
+    // The broker still answers after the wait.
+    let good = manifest(5, in_an_hour());
+    broker.send(&start(&key, &good)?)?;
+    assert_eq!(
+        broker.poll(WAIT)?,
+        Incoming::Message(ToEngine::Admitted { job: good.job })
+    );
+    // A broker that stops is reported as closed, and the channel closes with it.
+    broker.send(&ToBroker::Shutdown)?;
+    assert_eq!(broker.poll(WAIT)?, Incoming::Closed);
+    assert!(!broker.is_open());
+    let _ = std::fs::remove_dir_all(&d);
     Ok(())
 }

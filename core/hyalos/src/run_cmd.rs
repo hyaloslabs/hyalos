@@ -12,12 +12,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::mpsc;
+use std::sync::mpsc::{self, TryRecvError};
 use std::time::Duration;
 
 use hyalos_engine::{Engine, Ruling};
 use hyalos_policy::{GateRequest, Outcome as GateOutcome};
-use hyalos_substrate::{Choice, Ending, HOST_OS, SandboxSpec, Unsupported, detect};
+use hyalos_substrate::{Choice, Ending, HOST_OS, Outcome, SandboxSpec, Unsupported, detect};
 use hyalos_types::wire::{ToBroker, ToEngine};
 use hyalos_types::{
     Answer, Budget, Clock, CredentialTier, Digest, Event, ForgeToken, HoldReason, JobId,
@@ -433,17 +433,23 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
     std::thread::spawn(move || {
         let _ = done_tx.send(sandbox.wait());
     });
+    // A waiter that stopped without an answer counts as a sandbox the runtime lost, so the job still
+    // ends and its token is still revoked.
+    let lost = || Outcome {
+        ending: Ending::Lost,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    };
     let mut state = Reported::default();
     let outcome = loop {
-        if let Ok(outcome) = done.try_recv() {
-            break outcome;
+        match done.try_recv() {
+            Ok(outcome) => break outcome,
+            Err(TryRecvError::Disconnected) => break lost(),
+            Err(TryRecvError::Empty) => {}
         }
         if state.broker_gone {
             // Nothing more can be reported; the job's socket is gone, so the sandbox ends soon.
-            match done.recv() {
-                Ok(outcome) => break outcome,
-                Err(_) => return Err("the sandbox's waiter stopped".into()),
-            }
+            break done.recv().unwrap_or_else(|_| lost());
         }
         state.take(&mut broker, POLL, &mut ended, out);
     };

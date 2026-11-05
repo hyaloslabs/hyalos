@@ -124,6 +124,7 @@ Not built, or accepted as is:
 - **The issue comes from the command line, not from GitHub.** Reading issue `#N` through `read_issue` is the next step, and it makes the step's inputs forge-authored.
 - **A refusal from the broker does not stop the sandbox.** The broker has already closed the job's socket, so the harness can reach nothing and ends on its own or at its deadline.
 - **One job per command.** There is no daemon, no queue and no retry.
+- **An interrupted run is not cleaned up.** Ctrl-C ends the command before it revokes the token or records `job.ended`; the token expires within the hour and the broker, its child, gets the same signal. Handling signals belongs to the long-running engine.
 - **The Claude Code harness is wired, but only Codex is driven end to end** by the image test.
 - **The engine's last events are written in order, not in one transaction.** A crash between them leaves a job that never ended in the log, which a later run does not repair.
 
