@@ -11,6 +11,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use hyalos::interrupt::Interrupt;
 use hyalos::run_cmd::{Detect, Setup};
 use hyalos_log::Log;
 use hyalos_types::Event;
@@ -429,6 +430,11 @@ impl World {
     }
 
     pub fn setup(&self, detect: Detect, timeout: Duration) -> Setup {
+        self.setup_with(detect, timeout, Interrupt::none())
+    }
+
+    /// As [`World::setup`], with the run taking signals through `interrupt` (ADR-0053).
+    pub fn setup_with(&self, detect: Detect, timeout: Duration, interrupt: Interrupt) -> Setup {
         Setup {
             config_dir: self.config.clone(),
             log: self.data.join("events.db"),
@@ -436,6 +442,7 @@ impl World {
             broker_exe: PathBuf::from(EXE),
             detect,
             detect_timeout: timeout,
+            interrupt,
         }
     }
 

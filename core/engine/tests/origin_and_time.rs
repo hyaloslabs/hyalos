@@ -102,6 +102,7 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
             Event::JobEnded {
                 job,
                 outcome: JobOutcome::Succeeded,
+                reason: why(),
             }
         }
         "gate.answered" => {
@@ -271,6 +272,7 @@ fn unknown_batch(job: JobId, task: TaskId, ended: Origin, opened: Origin) -> Vec
             Event::JobEnded {
                 job,
                 outcome: JobOutcome::Held,
+                reason: why(),
             },
         ),
         (

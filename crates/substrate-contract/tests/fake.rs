@@ -26,7 +26,7 @@ fn the_fake_passes_the_behavioural_contract_and_says_what_it_skipped() -> Res {
     let _ = std::fs::remove_dir_all(&cleanup);
     println!("{}", report.summary());
     assert!(report.is_clean(), "{}", report.summary());
-    assert_eq!(report.passed.len(), 11);
+    assert_eq!(report.passed.len(), 12);
     assert_eq!(report.skipped.len(), 7);
     Ok(())
 }

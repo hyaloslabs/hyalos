@@ -15,10 +15,10 @@ use crate::{
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
-/// What this build reads: version 7, and versions 1 to 6 upcast to it (ADR-0023, ADR-0025, ADR-0027,
-/// ADR-0029, ADR-0034, ADR-0043, ADR-0050).
+/// What this build reads: version 8, and versions 1 to 7 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053).
 ///
 /// Version 2 added the stakes of a hold and the reason for resolving one. A version 1 hold is given the
 /// most cautious stakes, so only a human can release it; a version 1 resolution is given an explicit
@@ -26,7 +26,8 @@ pub const SCHEMA_VERSION: u32 = 7;
 /// same in all versions. Version 4 added `task.cancelled` and `hold.refused` and changed no payload.
 /// Version 5 added `policy.approved` and changed no payload. Version 6 added the substrate to
 /// `job.started`; an older one reads as `unrecorded`. Version 7 added the credential tier to
-/// `job.started`; an older one reads as `unrecorded` too.
+/// `job.started`; an older one reads as `unrecorded` too. Version 8 added the reason to `job.ended`;
+/// an older one reads as `legacy.unrecorded`.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -49,6 +50,11 @@ pub static SCHEMA: Schema = Schema {
             kind: "job.started",
             from: 6,
             step: job_started_v6,
+        },
+        Upcast {
+            kind: "job.ended",
+            from: 7,
+            step: job_ended_v7,
         },
     ],
 };
@@ -79,6 +85,10 @@ fn job_started_v5(payload: Value) -> Result<Value, String> {
 
 fn job_started_v6(payload: Value) -> Result<Value, String> {
     insert(payload, "credentials", Value::String("unrecorded".into()))
+}
+
+fn job_ended_v7(payload: Value) -> Result<Value, String> {
+    insert(payload, "reason", Value::String("legacy.unrecorded".into()))
 }
 
 /// Where a job's credentials are held, which bounds what a compromised sandbox could take
@@ -153,8 +163,14 @@ pub enum Event {
         substrate: SubstrateName,
         credentials: CredentialTier,
     },
+    /// A job ended, how, and why in a short code: the harness finished, the deadline passed, the
+    /// broker refused, the operator interrupted the run (ADR-0053).
     #[serde(rename = "job.ended")]
-    JobEnded { job: JobId, outcome: JobOutcome },
+    JobEnded {
+        job: JobId,
+        outcome: JobOutcome,
+        reason: ReasonCode,
+    },
     /// A gate answered a request made by a running job. `inputs` is the digest of what it was asked.
     /// An `unknown` answer is always followed, in the same write, by the job ending held and the hold
     /// opening (ADR-0020).
@@ -397,8 +413,10 @@ mod tests {
                 Event::JobEnded {
                     job: JobId::from_seq(4),
                     outcome: JobOutcome::DeadlineExceeded,
+                    reason: ReasonCode::new("job.deadline").unwrap(),
                 },
-                r#"{"kind":"job.ended","job":4,"outcome":"deadline_exceeded"}"#.to_string(),
+                r#"{"kind":"job.ended","job":4,"outcome":"deadline_exceeded","reason":"job.deadline"}"#
+                    .to_string(),
             ),
             (
                 Event::GateAnswered {
@@ -553,7 +571,10 @@ mod tests {
             r#"{"kind":"job.vanished","task":3}"#,
             r#"{"kind":"job.started"}"#,
             r#"{"kind":"job.started","task":"3"}"#,
-            r#"{"kind":"job.ended","job":4,"outcome":"exploded"}"#,
+            r#"{"kind":"job.ended","job":4,"outcome":"exploded","reason":"x"}"#,
+            // Since version 8 a job's end says why.
+            r#"{"kind":"job.ended","job":4,"outcome":"failed"}"#,
+            r#"{"kind":"job.ended","job":4,"outcome":"failed","reason":"Not A Code"}"#,
             r#"{"task":3}"#,
             "not json",
             "",

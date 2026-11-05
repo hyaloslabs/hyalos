@@ -239,6 +239,34 @@ fn stop(s: &dyn Substrate, c: &Ctx) -> Result<(), String> {
     Ok(())
 }
 
+/// A handle stops a sandbox that another thread is waiting on (ADR-0053), which is how the engine
+/// stops one when the operator interrupts a run.
+fn stop_while_waited_on(s: &dyn Substrate, c: &Ctx) -> Result<(), String> {
+    let mut sandbox = s.start(&c.sh("sleep 60")).map_err(|e| e.to_string())?;
+    let handle = sandbox.stop_handle();
+    let began = Instant::now();
+    let waiter = std::thread::spawn(move || sandbox.wait());
+    std::thread::sleep(Duration::from_millis(300));
+    handle.stop();
+    let out = waiter.join().map_err(|_| "the waiting thread panicked")?;
+    if out.ending != Ending::Stopped || began.elapsed() > Duration::from_secs(20) {
+        return Err(format!("{:?} after {:?}", out.ending, began.elapsed()));
+    }
+    // A handle used before anyone waits stops the sandbox once they do.
+    let mut early = s.start(&c.sh("sleep 60")).map_err(|e| e.to_string())?;
+    early.stop_handle().stop();
+    let began = Instant::now();
+    let out = early.wait();
+    if out.ending != Ending::Stopped || began.elapsed() > Duration::from_secs(20) {
+        return Err(format!(
+            "stopped early: {:?} after {:?}",
+            out.ending,
+            began.elapsed()
+        ));
+    }
+    Ok(())
+}
+
 fn cleans_up(s: &dyn Substrate, c: &Ctx) -> Result<(), String> {
     let before = s.existing().map_err(|e| e.to_string())?;
     let mut ended = s.start(&c.sh("exit 0")).map_err(|e| e.to_string())?;
@@ -447,6 +475,10 @@ const BEHAVIOUR: &[(&str, Check)] = &[
     ("arguments are never read by a shell", no_shell),
     ("a sandbox is killed at its deadline", deadline),
     ("a sandbox can be stopped, and stopping is idempotent", stop),
+    (
+        "a sandbox can be stopped from another thread while it is waited on",
+        stop_while_waited_on,
+    ),
     (
         "nothing is left after a sandbox ends or is dropped",
         cleans_up,

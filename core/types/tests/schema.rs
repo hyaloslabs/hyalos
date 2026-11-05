@@ -52,9 +52,11 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             1,
             "job.ended",
             r#"{"kind":"job.ended","job":4,"outcome":"deadline_exceeded"}"#.into(),
+            // Before version 8 a job's end did not say why; it reads as unrecorded.
             Event::JobEnded {
                 job: JobId::from_seq(4),
                 outcome: JobOutcome::DeadlineExceeded,
+                reason: ReasonCode::new("legacy.unrecorded").ok_or("reason")?,
             },
         ),
         (
@@ -238,6 +240,26 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             task: TaskId::from_seq(3),
             substrate: SubstrateName::new("container.docker").ok_or("substrate")?,
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+        },
+    ));
+
+    // Version 8 added the reason to `job.ended`, so the ten other kinds read as they did at version 7.
+    let at_7: Vec<_> = all
+        .iter()
+        .filter(|g| g.0 == 7 && g.1 != "job.ended")
+        .cloned()
+        .collect();
+    for (_, kind, json, event) in at_7 {
+        all.push((8, kind, json, event));
+    }
+    all.push((
+        8,
+        "job.ended",
+        r#"{"kind":"job.ended","job":4,"outcome":"failed","reason":"run.interrupted"}"#.into(),
+        Event::JobEnded {
+            job: JobId::from_seq(4),
+            outcome: JobOutcome::Failed,
+            reason: ReasonCode::new("run.interrupted").ok_or("reason")?,
         },
     ));
     Ok(all)

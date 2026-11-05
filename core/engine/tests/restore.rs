@@ -62,6 +62,7 @@ fn busy(path: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
         Event::JobEnded {
             job,
             outcome: JobOutcome::Succeeded,
+            reason: why(),
         },
     )?;
     step(&mut e, Event::TaskCompleted { task: done })?;

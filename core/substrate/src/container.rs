@@ -10,6 +10,7 @@
 //! Commands are run directly, never through a shell, and a spec is validated before anything is run.
 
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -17,13 +18,18 @@ use std::time::{Duration, Instant};
 use hyalos_types::SubstrateName;
 
 use crate::spec::{BROKER_SOCKET_IN_SANDBOX, OUTPUT_LIMIT};
-use crate::{Ending, Isolation, Outcome, Sandbox, SandboxSpec, StartError, Substrate, Unavailable};
+use crate::{
+    Ending, Isolation, Outcome, Sandbox, SandboxSpec, StartError, StopHandle, Substrate,
+    Unavailable,
+};
 
 /// The user the sandbox runs as: `nobody`, which owns nothing on the host.
 const SANDBOX_USER: &str = "65534:65534";
 
 /// How often a waiting driver looks at the clock and the process.
 const POLL: Duration = Duration::from_millis(10);
+/// How long a sandbox that was killed may take to end before it is killed again.
+const KILL_AGAIN: Duration = Duration::from_secs(1);
 
 /// The label that marks a container as one of ours, for listing and for cleaning up after a crash.
 const LABEL: &str = "hyalos.job";
@@ -244,6 +250,9 @@ impl Substrate for ContainerSubstrate {
 
         let spawned = Command::new(&self.runtime)
             .args(["start", "--attach", &id])
+            // Its own process group, so the operator's Ctrl-C reaches the engine and not the runtime;
+            // the engine stops the sandbox itself (ADR-0053).
+            .process_group(0)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -265,6 +274,7 @@ impl Substrate for ContainerSubstrate {
             stderr,
             deadline_at: Instant::now() + spec.deadline,
             stopped: false,
+            stop_asked: StopHandle::default(),
             outcome: None,
         }))
     }
@@ -316,6 +326,8 @@ struct ContainerSandbox {
     stderr: Option<JoinHandle<Vec<u8>>>,
     deadline_at: Instant,
     stopped: bool,
+    /// Set from another thread to stop the sandbox while `wait` runs.
+    stop_asked: StopHandle,
     /// Set once the sandbox has ended and been removed.
     outcome: Option<Outcome>,
 }
@@ -353,6 +365,9 @@ impl Sandbox for ContainerSandbox {
         }
         let mut deadline_hit = false;
         let mut lost = false;
+        // When the sandbox was last killed. A kill sent while the runtime is still starting the
+        // container can be lost, so a sandbox that should be ending is killed again each second.
+        let mut killed: Option<Instant> = None;
         loop {
             match self.child.try_wait() {
                 Ok(Some(_)) => break,
@@ -362,9 +377,16 @@ impl Sandbox for ContainerSandbox {
                     break;
                 }
             }
+            if self.stop_asked.is_stopped() {
+                self.stopped = true;
+            }
             if !deadline_hit && !self.stopped && Instant::now() >= self.deadline_at {
                 deadline_hit = true;
+            }
+            let ending = self.stopped || deadline_hit;
+            if ending && killed.is_none_or(|at| at.elapsed() >= KILL_AGAIN) {
                 self.kill();
+                killed = Some(Instant::now());
             }
             std::thread::sleep(POLL);
         }
@@ -395,6 +417,10 @@ impl Sandbox for ContainerSandbox {
             self.stopped = true;
             self.kill();
         }
+    }
+
+    fn stop_handle(&self) -> StopHandle {
+        self.stop_asked.clone()
     }
 }
 

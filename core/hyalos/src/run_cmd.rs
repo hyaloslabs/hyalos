@@ -22,13 +22,14 @@ use hyalos_substrate::{Choice, Ending, HOST_OS, Outcome, SandboxSpec, Unsupporte
 use hyalos_types::wire::{ToBroker, ToEngine};
 use hyalos_types::{
     Answer, Budget, Clock, CredentialTier, Digest, Event, ForgeIssue, ForgeToken, HoldReason,
-    JobId, JobOutcome, MANIFEST_VERSION, Manifest, Origin, Provenance, Role, Stakes, StepInputs,
-    Timestamp,
+    JobId, JobOutcome, MANIFEST_VERSION, Manifest, Origin, Provenance, ReasonCode, Role, Stakes,
+    StepInputs, Timestamp,
 };
 
 use crate::clock::SystemClock;
 use crate::doctor_cmd::{self, DEFAULT_IMAGE};
 use crate::github::GitHubApp;
+use crate::interrupt::{self, Interrupt};
 use crate::keys;
 use crate::launch::{BrokerProcess, Incoming, JobDir, fresh_manifest_key};
 use crate::paths::{self, Env};
@@ -119,6 +120,8 @@ pub struct Setup {
     pub broker_exe: PathBuf,
     pub detect: Detect,
     pub detect_timeout: Duration,
+    /// Whether the operator has interrupted the run (ADR-0053). [`Interrupt::none`] in most tests.
+    pub interrupt: Interrupt,
 }
 
 /// How the job went.
@@ -172,7 +175,19 @@ fn setup(env: Env<'_>) -> Result<Setup, String> {
             .map_err(|e| format!("cannot find this executable: {e}"))?,
         detect: Box::new(detect),
         detect_timeout: DETECT_TIMEOUT,
+        // From here the first Ctrl-C or SIGTERM ends the job cleanly, and a second exits at once.
+        interrupt: Interrupt::on_signals(again)
+            .map_err(|e| format!("cannot take Ctrl-C and SIGTERM: {e}"))?,
     })
+}
+
+/// A second signal: stop at once, and say what that leaves undone (ADR-0053).
+fn again(signal: i32) {
+    eprintln!(
+        "hyalos: interrupted again ({}), so stopping now without finishing. The job's GitHub token          may still be live: revoke it on GitHub (the App's installation tokens expire within an          hour); see docs/operations/github-app.md. The log does not record how the job ended, and          its sandbox may still be running until its deadline",
+        interrupt::name(signal).unwrap_or("a signal")
+    );
+    std::process::exit(130);
 }
 
 pub fn parse(args: &[String]) -> Result<Request, String> {
@@ -331,6 +346,75 @@ impl Stamps {
     }
 }
 
+/// The codes `job.ended` records for why a job ended (ADR-0053). A refusal by the broker is recorded
+/// with the broker's own code instead.
+pub mod why {
+    /// The harness exited 0.
+    pub const FINISHED: &str = "harness.finished";
+    /// The manifest's deadline passed and the sandbox was killed.
+    pub const DEADLINE: &str = "job.deadline";
+    /// The sandbox ended any other way: a non-zero exit, stopped, or lost by its runtime.
+    pub const SANDBOX_FAILED: &str = "sandbox.failed";
+    pub const SANDBOX_NOT_STARTED: &str = "sandbox.not_started";
+    /// The broker closed its channel while the job ran.
+    pub const BROKER_STOPPED: &str = "broker.stopped";
+    pub const BROKER_NOT_STARTED: &str = "broker.not_started";
+    pub const NO_MANIFEST: &str = "manifest.refused";
+    pub const NO_TOKEN: &str = "forge.no_token";
+    /// The issue could not be read, and the broker gave no code of its own.
+    pub const ISSUE_UNREAD: &str = "forge.issue_unread";
+    /// The operator interrupted the run (`SIGINT` or `SIGTERM`).
+    pub const INTERRUPTED: &str = "run.interrupted";
+
+    pub const ALL: [&str; 10] = [
+        FINISHED,
+        DEADLINE,
+        SANDBOX_FAILED,
+        SANDBOX_NOT_STARTED,
+        BROKER_STOPPED,
+        BROKER_NOT_STARTED,
+        NO_MANIFEST,
+        NO_TOKEN,
+        ISSUE_UNREAD,
+        INTERRUPTED,
+    ];
+}
+
+/// One of the [`why`] codes. A test checks every one is a valid code.
+fn code(text: &str) -> ReasonCode {
+    ReasonCode::new(text).unwrap_or_else(ReasonCode::unavailable)
+}
+
+/// Why a step failed: the code `job.ended` records, and the words the operator reads.
+struct Failure {
+    reason: ReasonCode,
+    why: String,
+}
+
+impl Failure {
+    fn new(reason: &str, why: impl Into<String>) -> Self {
+        Self {
+            reason: code(reason),
+            why: why.into(),
+        }
+    }
+}
+
+/// The failure an interrupt is, once one has come. It also tells the operator what happens now.
+fn interrupted(interrupt: &Interrupt, job: JobId, out: &mut dyn Write) -> Option<Failure> {
+    let signal = interrupt.signal()?;
+    let _ = writeln!(
+        out,
+        "job {}: interrupted ({signal}): ending the job and revoking its token. Interrupt again to \
+         stop at once, which can leave the token live",
+        job.seq()
+    );
+    Some(Failure::new(
+        why::INTERRUPTED,
+        format!("interrupted ({signal})"),
+    ))
+}
+
 /// Runs one job and writes what happens to `out`. `Err` is a refusal before anything ran; once the
 /// job is recorded, how it ended is in the [`Summary`] and in the log.
 pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<Summary, String> {
@@ -342,8 +426,14 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
         broker_exe,
         detect,
         detect_timeout,
+        interrupt,
     } = setup;
-    let substrate = choose(&request.image, detect, detect_timeout)?;
+    let before_recorded = |interrupt: &Interrupt| {
+        interrupt.signal().map(|signal| {
+            format!("interrupted ({signal}) before the job was recorded, so nothing was written")
+        })
+    };
+    let substrate = choose(&request.image, detect, detect_timeout, &interrupt)?;
     let chosen_name = substrate.chosen_name().ok_or("no substrate was chosen")?;
     let driver = substrate.chosen.ok_or("no substrate was chosen")?;
     let _ = writeln!(out, "substrate: {chosen_name}");
@@ -360,6 +450,9 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
     let key = keys::load(&config_dir.join(paths::ENGINE_KEY_FILE)).map_err(|e| e.to_string())?;
     let mut engine = Engine::open(&log, key).map_err(|e| e.to_string())?;
     let mut clock = Stamps(SystemClock.now());
+    if let Some(refusal) = before_recorded(&interrupt) {
+        return Err(refusal);
+    }
 
     // 3. The task and the job, with where it runs and where its credentials are.
     let digest = request_digest(request);
@@ -388,6 +481,9 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
         clock: &mut clock,
         job,
     };
+    if let Some(failure) = interrupted(&interrupt, job, out) {
+        return ended.failed(out, failure);
+    }
 
     // 4. The manifest, within policy; then the token, for that one repository.
     let branch = format!("hyalos/job-{}", job.seq());
@@ -413,7 +509,10 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
     };
     let manifest_key = match fresh_manifest_key() {
         Ok(key) => key,
-        Err(e) => return ended.failed(out, &format!("no manifest key: {e}")),
+        Err(e) => {
+            let failure = Failure::new(why::NO_MANIFEST, format!("no manifest key: {e}"));
+            return ended.failed(out, failure);
+        }
     };
     // The issue is the operator's text or the forge's users'; an actor runs tainted whatever it reads
     // (ADR-0005, ADR-0047).
@@ -427,16 +526,29 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
         .mint_manifest(&manifest, &inputs, &manifest_key, now)
     {
         Ok(signed) => signed,
-        Err(e) => return ended.failed(out, &format!("no manifest: {e}")),
+        Err(e) => {
+            let failure = Failure::new(why::NO_MANIFEST, format!("no manifest: {e}"));
+            return ended.failed(out, failure);
+        }
     };
     let token = match app.mint(&manifest, now) {
         Ok(Some(minted)) => minted.token,
-        Ok(None) => return ended.failed(out, "no forge token: the job asks for no forge action"),
-        Err(e) => return ended.failed(out, &format!("no forge token: {e}")),
+        Ok(None) => {
+            let failure = Failure::new(
+                why::NO_TOKEN,
+                "no forge token: the job asks for no forge action",
+            );
+            return ended.failed(out, failure);
+        }
+        Err(e) => {
+            let failure = Failure::new(why::NO_TOKEN, format!("no forge token: {e}"));
+            return ended.failed(out, failure);
+        }
     };
     let _ = writeln!(out, "job {}: token minted for {}", job.seq(), request.repo);
 
-    // 5. The broker and the job's socket. From here every way out revokes the token.
+    // 5. The broker and the job's socket. From here every way out revokes the token, and a failed
+    // revoke is reported the same way whatever ended the job.
     let revoke = |out: &mut dyn Write| -> Result<(), String> {
         let revoked = app.revoke(&token).map_err(|e| e.to_string());
         let _ = match &revoked {
@@ -450,6 +562,21 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
         };
         revoked
     };
+    // Ends the job in the broker and stops it, removes the job's socket, and revokes the token.
+    let end_in_broker =
+        |mut broker: BrokerProcess, job_dir: JobDir, out: &mut dyn Write| -> Result<(), String> {
+            if broker.is_open() {
+                let _ = broker.send(&ToBroker::EndJob { job });
+                let _ = broker.send(&ToBroker::Shutdown);
+            }
+            drop(broker);
+            drop(job_dir);
+            revoke(out)
+        };
+    if let Some(failure) = interrupted(&interrupt, job, out) {
+        let revoked = revoke(out);
+        return ended.with(out, JobOutcome::Failed, failure, revoked);
+    }
     let prepared = start_broker(
         &runtime_dir,
         &broker_exe,
@@ -462,9 +589,9 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
     );
     let (mut broker, job_dir) = match prepared {
         Ok(ready) => ready,
-        Err(e) => {
+        Err(failure) => {
             let revoked = revoke(out);
-            return ended.with(out, JobOutcome::Failed, &e, revoked);
+            return ended.with(out, JobOutcome::Failed, failure, revoked);
         }
     };
     let _ = writeln!(out, "job {}: admitted by the broker", job.seq());
@@ -485,13 +612,9 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
                 );
                 Some(issue)
             }
-            Err(e) => {
-                let _ = broker.send(&ToBroker::EndJob { job });
-                let _ = broker.send(&ToBroker::Shutdown);
-                drop(broker);
-                drop(job_dir);
-                let revoked = revoke(out);
-                return ended.with(out, JobOutcome::Failed, &e, revoked);
+            Err(failure) => {
+                let revoked = end_in_broker(broker, job_dir, out);
+                return ended.with(out, JobOutcome::Failed, failure, revoked);
             }
         },
     };
@@ -499,6 +622,10 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
         Some(issue) => Task::Forge(issue),
         None => Task::Operator(&request.issue),
     };
+    if let Some(failure) = interrupted(&interrupt, job, out) {
+        let revoked = end_in_broker(broker, job_dir, out);
+        return ended.with(out, JobOutcome::Failed, failure, revoked);
+    }
 
     // 6. The sandbox, and the broker's reports while it runs.
     let mut spec = SandboxSpec::new(
@@ -520,17 +647,16 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
     let mut sandbox = match driver.start(&spec) {
         Ok(sandbox) => sandbox,
         Err(e) => {
-            let _ = broker.send(&ToBroker::EndJob { job });
-            let revoked = revoke(out);
-            return ended.with(
-                out,
-                JobOutcome::Failed,
-                &format!("the sandbox did not start: {e}"),
-                revoked,
+            let revoked = end_in_broker(broker, job_dir, out);
+            let failure = Failure::new(
+                why::SANDBOX_NOT_STARTED,
+                format!("the sandbox did not start: {e}"),
             );
+            return ended.with(out, JobOutcome::Failed, failure, revoked);
         }
     };
     let _ = writeln!(out, "job {}: sandbox {} running", job.seq(), sandbox.id());
+    let stop = sandbox.stop_handle();
     let (done_tx, done) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = done_tx.send(sandbox.wait());
@@ -543,7 +669,15 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
         stderr: Vec::new(),
     };
     let mut state = Reported::default();
+    let mut interruption = None;
     let outcome = loop {
+        // An interrupt stops the sandbox; the loop then goes on until the waiter says it has ended.
+        if interruption.is_none() {
+            interruption = interrupted(&interrupt, job, out);
+            if interruption.is_some() {
+                stop.stop();
+            }
+        }
         match done.try_recv() {
             Ok(outcome) => break outcome,
             Err(TryRecvError::Disconnected) => break lost(),
@@ -551,6 +685,12 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
         }
         if state.broker_gone {
             // Nothing more can be reported; the job's socket is gone, so the sandbox ends soon.
+            if interruption.is_none() {
+                interruption = interrupted(&interrupt, job, out);
+            }
+            if interruption.is_some() {
+                stop.stop();
+            }
             break done.recv().unwrap_or_else(|_| lost());
         }
         state.take(&mut broker, POLL, &mut ended, out);
@@ -565,15 +705,13 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
         outcome.stdout_text(),
         String::from_utf8_lossy(&outcome.stderr)
     );
+    // An interrupt that came as the sandbox ended still decides how the job is recorded.
+    if interruption.is_none() {
+        interruption = interrupted(&interrupt, job, out);
+    }
 
     // 7. End the job in the broker, revoke the token, and record how it ended.
-    if !state.broker_gone {
-        let _ = broker.send(&ToBroker::EndJob { job });
-        let _ = broker.send(&ToBroker::Shutdown);
-    }
-    drop(broker);
-    drop(job_dir);
-    let revoked = revoke(out);
+    let revoked = end_in_broker(broker, job_dir, out);
     if state.held {
         let _ = writeln!(out, "job {}: held; see the open hold in the log", job.seq());
         return Ok(Summary {
@@ -582,38 +720,73 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
             revoked,
         });
     }
-    let (result, why) = match (&state.refused, outcome.ending) {
-        (Some(reason), _) => (JobOutcome::Failed, format!("the broker refused ({reason})")),
-        (None, _) if state.broker_gone => (JobOutcome::Failed, "the broker stopped".into()),
-        (None, Ending::Exited(0)) => (JobOutcome::Succeeded, "the harness finished".into()),
-        (None, Ending::DeadlineExceeded) => (
-            JobOutcome::DeadlineExceeded,
-            "the deadline passed".to_string(),
+    let (result, failure) = match (interruption, &state.refused, outcome.ending) {
+        (Some(failure), _, _) => (JobOutcome::Failed, failure),
+        (None, Some(reason), _) => (
+            JobOutcome::Failed,
+            Failure {
+                reason: reason.clone(),
+                why: format!("the broker refused ({reason})"),
+            },
         ),
-        (None, ending) => (JobOutcome::Failed, format!("the sandbox ended {ending:?}")),
+        (None, None, _) if state.broker_gone => (
+            JobOutcome::Failed,
+            Failure::new(why::BROKER_STOPPED, "the broker stopped"),
+        ),
+        (None, None, Ending::Exited(0)) => (
+            JobOutcome::Succeeded,
+            Failure::new(why::FINISHED, "the harness finished"),
+        ),
+        (None, None, Ending::DeadlineExceeded) => (
+            JobOutcome::DeadlineExceeded,
+            Failure::new(why::DEADLINE, "the deadline passed"),
+        ),
+        (None, None, ending) => (
+            JobOutcome::Failed,
+            Failure::new(why::SANDBOX_FAILED, format!("the sandbox ended {ending:?}")),
+        ),
     };
-    ended.with(out, result, &why, revoked)
+    ended.with(out, result, failure, revoked)
 }
 
 /// Runs `detect` with a timeout, and refuses a host that cannot run a job with what the operator
-/// needs to know.
-fn choose(image: &str, detect: Detect, timeout: Duration) -> Result<Choice, String> {
+/// needs to know. An interrupt while it runs refuses too.
+fn choose(
+    image: &str,
+    detect: Detect,
+    timeout: Duration,
+    interrupt: &Interrupt,
+) -> Result<Choice, String> {
     let (tx, rx) = mpsc::channel();
     let image_owned = image.to_string();
     std::thread::spawn(move || {
         let _ = tx.send(detect(&image_owned));
     });
-    let detected = match rx.recv_timeout(timeout) {
-        Ok(detected) => detected,
-        Err(_) => {
-            return Err(format!(
-                "finding a substrate took longer than {} s, so a container runtime is not answering \
-                 and no job was started. Check that `podman info` or `docker info` returns, then run \
-                 hyalos doctor",
-                timeout.as_secs()
-            ));
+    let interrupted = |signal: &str| {
+        format!("interrupted ({signal}) while finding a substrate, so no job was started")
+    };
+    let mut waited = Duration::ZERO;
+    let detected = loop {
+        if let Some(signal) = interrupt.signal() {
+            return Err(interrupted(signal));
+        }
+        match rx.recv_timeout(POLL) {
+            Ok(detected) => break detected,
+            Err(mpsc::RecvTimeoutError::Timeout) if waited < timeout => waited += POLL,
+            Err(_) => {
+                return Err(format!(
+                    "finding a substrate took longer than {} s, so a container runtime is not \
+                     answering and no job was started. Check that `podman info` or `docker info` \
+                     returns, then run hyalos doctor",
+                    timeout.as_secs()
+                ));
+            }
         }
     };
+    // A runtime the same Ctrl-C reached may have failed its check; say why it was.
+    if let Some(signal) = interrupt.signal() {
+        return Err(interrupted(signal));
+    }
     match detected {
         Err(unsupported) => Err(unsupported.to_string()),
         Ok(choice) if choice.chosen.is_none() => {
@@ -637,9 +810,10 @@ fn start_broker(
     job: JobId,
     manifest: &Result<Vec<u8>, String>,
     token: &ForgeToken,
-) -> Result<(BrokerProcess, JobDir), String> {
-    let manifest = manifest.clone()?;
-    paths::make_private_dir(runtime_dir)?;
+) -> Result<(BrokerProcess, JobDir), Failure> {
+    let not_started = |text: String| Failure::new(why::BROKER_NOT_STARTED, text);
+    let manifest = manifest.clone().map_err(not_started)?;
+    paths::make_private_dir(runtime_dir).map_err(not_started)?;
     let mut broker = BrokerProcess::launch_configured(
         broker_exe,
         runtime_dir,
@@ -648,8 +822,9 @@ fn start_broker(
         Some(app.forge_bases()),
         BROKER_WAIT,
     )
-    .map_err(|e| format!("the broker did not start: {e}"))?;
-    let job_dir = JobDir::create(runtime_dir).map_err(|e| format!("no job directory: {e}"))?;
+    .map_err(|e| not_started(format!("the broker did not start: {e}")))?;
+    let job_dir =
+        JobDir::create(runtime_dir).map_err(|e| not_started(format!("no job directory: {e}")))?;
     broker
         .send(&ToBroker::StartJob {
             job,
@@ -658,39 +833,42 @@ fn start_broker(
             socket: job_dir.socket().to_string_lossy().into_owned(),
             forge_token: Some(token.clone()),
         })
-        .map_err(|e| format!("the broker did not take the job: {e}"))?;
+        .map_err(|e| not_started(format!("the broker did not take the job: {e}")))?;
     match broker.recv() {
         Ok(Some(ToEngine::Admitted { job: admitted })) if admitted == job => Ok((broker, job_dir)),
-        Ok(Some(ToEngine::Refused { reason, .. })) => {
-            Err(format!("the broker refused the job ({reason})"))
-        }
-        Ok(other) => Err(format!("the broker answered {other:?}")),
-        Err(e) => Err(format!("the broker did not answer: {e}")),
+        Ok(Some(ToEngine::Refused { reason, .. })) => Err(Failure {
+            why: format!("the broker refused the job ({reason})"),
+            reason,
+        }),
+        Ok(other) => Err(not_started(format!("the broker answered {other:?}"))),
+        Err(e) => Err(not_started(format!("the broker did not answer: {e}"))),
     }
 }
 
 /// Asks the broker for issue `number` of the job's repository. `Err` says why there is none: the
 /// broker's refusal (it has ended the job), or a broker that did not answer.
-fn read_issue(broker: &mut BrokerProcess, job: JobId, number: u64) -> Result<ForgeIssue, String> {
+fn read_issue(broker: &mut BrokerProcess, job: JobId, number: u64) -> Result<ForgeIssue, Failure> {
+    let unread = |text: String| Failure::new(why::ISSUE_UNREAD, text);
     broker
         .send(&ToBroker::ReadIssue { job, number })
-        .map_err(|e| format!("the broker did not take the issue read: {e}"))?;
+        .map_err(|e| unread(format!("the broker did not take the issue read: {e}")))?;
     match broker.recv() {
         Ok(Some(ToEngine::Issue { job: read, issue })) if read == job => {
             if issue.number() == number {
                 Ok(issue)
             } else {
-                Err(format!(
+                Err(unread(format!(
                     "the forge answered issue #{} for #{number}",
                     issue.number()
-                ))
+                )))
             }
         }
-        Ok(Some(ToEngine::Refused { reason, .. })) => {
-            Err(format!("issue #{number} could not be read ({reason})"))
-        }
-        Ok(other) => Err(format!("the broker answered {other:?}")),
-        Err(e) => Err(format!("the broker did not answer: {e}")),
+        Ok(Some(ToEngine::Refused { reason, .. })) => Err(Failure {
+            why: format!("issue #{number} could not be read ({reason})"),
+            reason,
+        }),
+        Ok(other) => Err(unread(format!("the broker answered {other:?}"))),
+        Err(e) => Err(unread(format!("the broker did not answer: {e}"))),
     }
 }
 
@@ -718,33 +896,38 @@ struct Ended<'a> {
 
 impl Ended<'_> {
     /// Ends the job failed before a token existed.
-    fn failed(&mut self, out: &mut dyn Write, why: &str) -> Result<Summary, String> {
-        self.with(out, JobOutcome::Failed, why, Ok(()))
+    fn failed(&mut self, out: &mut dyn Write, failure: Failure) -> Result<Summary, String> {
+        self.with(out, JobOutcome::Failed, failure, Ok(()))
     }
 
     fn with(
         &mut self,
         out: &mut dyn Write,
         outcome: JobOutcome,
-        why: &str,
+        failure: Failure,
         revoked: Result<(), String>,
     ) -> Result<Summary, String> {
         let job = self.job;
+        let Failure { reason, why } = failure;
         let recorded = self.engine.submit(
             self.clock.now(),
             Origin::Engine,
-            Event::JobEnded { job, outcome },
+            Event::JobEnded {
+                job,
+                outcome,
+                reason: reason.clone(),
+            },
         );
         match &recorded {
             Ok(head) => writeln!(
                 out,
-                "job {}: {outcome:?}: {why} (event {})",
+                "job {}: {outcome:?} ({reason}): {why} (event {})",
                 job.seq(),
                 head.seq
             ),
             Err(e) => writeln!(
                 out,
-                "job {}: {outcome:?}: {why}; recording that failed: {e}",
+                "job {}: {outcome:?} ({reason}): {why}; recording that failed: {e}",
                 job.seq()
             ),
         }
@@ -761,7 +944,7 @@ impl Ended<'_> {
 /// What the broker has said about the job.
 #[derive(Default)]
 struct Reported {
-    refused: Option<String>,
+    refused: Option<ReasonCode>,
     held: bool,
     broker_gone: bool,
 }
@@ -857,7 +1040,7 @@ impl Reported {
                     "job {}: the broker ended the job ({reason})",
                     job.seq()
                 );
-                self.refused = Some(reason.to_string());
+                self.refused = Some(reason);
             }
             other => {
                 let _ = writeln!(out, "job {}: ignored from the broker: {other:?}", job.seq());
@@ -910,6 +1093,21 @@ mod tests {
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn every_reason_a_job_ends_with_is_a_distinct_code() {
+        for text in why::ALL {
+            assert_eq!(
+                ReasonCode::new(text).as_ref().map(ReasonCode::as_str),
+                Some(text)
+            );
+            assert_eq!(code(text).as_str(), text);
+        }
+        assert_eq!(
+            why::ALL.iter().collect::<BTreeSet<_>>().len(),
+            why::ALL.len()
+        );
     }
 
     #[test]

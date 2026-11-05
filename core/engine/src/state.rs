@@ -431,6 +431,7 @@ impl State {
                     Event::JobEnded {
                         job,
                         outcome: JobOutcome::Held,
+                        ..
                     },
                 ) if *job == p.job => None,
                 (
@@ -640,7 +641,7 @@ impl State {
                     });
                 }
             }
-            Event::JobEnded { job, outcome } => {
+            Event::JobEnded { job, outcome, .. } => {
                 if let Some(j) = self.jobs.get_mut(job) {
                     j.ended = Some((at, *outcome));
                 }

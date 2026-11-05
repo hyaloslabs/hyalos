@@ -8,6 +8,7 @@
 use std::fmt;
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -187,7 +188,11 @@ impl BrokerProcess {
             // Nothing from the engine's environment, and no way in or out but the channel.
             .env_clear()
             .stdin(Stdio::null())
-            .stdout(Stdio::null());
+            .stdout(Stdio::null())
+            // Its own process group, so the operator's Ctrl-C at a terminal reaches the engine and
+            // not the broker, and the engine can still end the job in it (ADR-0053). It stops on
+            // `shutdown` or when the engine's end of the channel closes.
+            .process_group(0);
         Self::start_with(command, listener, key, forge, wait)
     }
 

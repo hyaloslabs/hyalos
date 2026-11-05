@@ -80,10 +80,9 @@ fn answered(mut v: Value) -> Result<Value, String> {
     Ok(v)
 }
 
-/// Version 1 called the request `digest`, the job's task `task_id`, and did not record a reason or a
-/// substrate.
-/// A version 1 hold had no stakes. Everything else is unchanged, so `job.ended`, `task.completed` and
-/// `hold.resolved` need no step.
+/// Version 1 called the request `digest`, the job's task `task_id`, and did not record a reason (for
+/// a gate's answer or a job's end) or a substrate. A version 1 hold had no stakes. Everything else is
+/// unchanged, so `task.completed` and `hold.resolved` need no step.
 fn opened(v: Value) -> Result<Value, String> {
     // The one change that really happened between the real versions 1 and 2 (ADR-0025): use the real
     // step, so this test cannot drift from what the build does.
@@ -92,9 +91,19 @@ fn opened(v: Value) -> Result<Value, String> {
         .map_err(|e| e.to_string())
 }
 
+fn ended(v: Value) -> Result<Value, String> {
+    // The real step: today's job.ended says why (ADR-0053).
+    SCHEMA.upcast("job.ended", 7, v).map_err(|e| e.to_string())
+}
+
 static V2: Schema = Schema {
     current: 2,
     steps: &[
+        Upcast {
+            kind: "job.ended",
+            from: 1,
+            step: ended,
+        },
         Upcast {
             kind: "task.created",
             from: 1,
@@ -221,6 +230,7 @@ fn reference_state(path: &Path) -> Res<hyalos_engine::State> {
         Event::JobEnded {
             job: JobId::from_seq(2),
             outcome: JobOutcome::Succeeded,
+            reason: legacy.clone(),
         },
     )?;
     go(
@@ -248,7 +258,7 @@ fn reference_state(path: &Path) -> Res<hyalos_engine::State> {
                     gate: Gate::Content,
                     inputs: d(8),
                     answer: Answer::Unknown,
-                    reason: legacy,
+                    reason: legacy.clone(),
                 },
             ),
             (
@@ -256,6 +266,7 @@ fn reference_state(path: &Path) -> Res<hyalos_engine::State> {
                 Event::JobEnded {
                     job: JobId::from_seq(7),
                     outcome: JobOutcome::Held,
+                    reason: legacy,
                 },
             ),
             (

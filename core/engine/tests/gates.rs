@@ -266,6 +266,7 @@ fn a_gate_for_a_job_that_is_not_running_is_refused() -> Res {
         Event::JobEnded {
             job: r.job,
             outcome: JobOutcome::Succeeded,
+            reason: why(),
         },
     )?;
     let before = r.engine.head()?;
@@ -331,6 +332,7 @@ fn an_unknown_answer_cannot_be_written_on_its_own() -> Res {
     let ended = Event::JobEnded {
         job: r.job,
         outcome: JobOutcome::Held,
+        reason: why(),
     };
     assert!(matches!(
         r.engine
@@ -362,6 +364,7 @@ fn a_batch_that_breaks_a_rule_part_way_writes_nothing() -> Res {
             Event::JobEnded {
                 job: r.job,
                 outcome: JobOutcome::Held,
+                reason: why(),
             },
         ),
         // The hold names different inputs from the answer, so it is not the hold that was owed.
@@ -428,6 +431,7 @@ fn replay_refuses_a_log_where_unknown_did_not_hold() -> Res {
     let ended = Event::JobEnded {
         job: JobId::from_seq(2),
         outcome: JobOutcome::Held,
+        reason: why(),
     };
     let hold = |inputs| Event::HoldOpened {
         task,
@@ -453,6 +457,7 @@ fn replay_refuses_a_log_where_unknown_did_not_hold() -> Res {
                 Event::JobEnded {
                     job: JobId::from_seq(2),
                     outcome: JobOutcome::Succeeded,
+                    reason: why(),
                 },
             ],
         ),
@@ -501,6 +506,7 @@ fn replay_refuses_a_log_that_ends_before_the_hold_opened() -> Res {
         events.push(Event::JobEnded {
             job: JobId::from_seq(2),
             outcome: JobOutcome::Held,
+            reason: why(),
         });
         events.truncate(2 + cut);
         write_raw(&path, &events)?;
@@ -527,6 +533,7 @@ fn a_complete_hand_written_hold_replays() -> Res {
     events.push(Event::JobEnded {
         job: JobId::from_seq(2),
         outcome: JobOutcome::Held,
+        reason: why(),
     });
     events.push(Event::HoldOpened {
         task: TaskId::from_seq(1),

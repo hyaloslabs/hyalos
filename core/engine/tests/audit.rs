@@ -61,6 +61,7 @@ fn first_part(e: &mut Engine) -> Res {
         Event::JobEnded {
             job: JobId::from_seq(3),
             outcome: JobOutcome::Succeeded,
+            reason: why(),
         },
     )?;
     put(
