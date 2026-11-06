@@ -91,6 +91,9 @@ jobs:
       # ADR-0058: the image's harnesses in a Firecracker microVM, reaching the broker over vsock.
       - name: Install Firecracker, the guest kernel and the init
         run: .github/scripts/install-firecracker.sh "$RUNNER_TEMP/microvm"
+      # The test's readiness check boots a VM from the contract's image before the sandbox image's.
+      - name: Pull the substrate contract's image
+        run: docker pull ubuntu:24.04
       - name: The image's harnesses reach the broker from a microVM
         run: cargo test -p hyalos-substrate-contract --locked --test microvm -- --nocapture
         env:
