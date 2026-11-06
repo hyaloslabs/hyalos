@@ -73,4 +73,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0057](0057-recording-a-jobs-attestation.md) | Recording a job's attestation | Accepted |
 | [0058](0058-the-firecracker-microvm-substrate.md) | The Firecracker microVM substrate | Accepted |
 | [0059](0059-tainted-text-cannot-reach-an-actor-prompt-by-type.md) | Tainted text cannot reach an actor's prompt, by type | Accepted |
-| [0060](0060-the-workflow-document-and-the-check-at-install.md) | The workflow document, and the check at install | Proposed |
+| [0060](0060-the-workflow-document-and-the-check-at-install.md) | The workflow document, and the check at install | Accepted |

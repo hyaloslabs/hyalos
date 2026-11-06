@@ -1,6 +1,6 @@
 # ADR-0060: The workflow document, and the check at install
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
