@@ -37,5 +37,5 @@ pub use reason::{Answer, ReasonCode};
 pub use schema::{Schema, Upcast, UpcastFn, Value};
 pub use snapshot::{ImageError, PolicyImage, STATE_VERSION, StateImage};
 pub use stakes::{Sensitive, Stakes, Tier, Touches};
-pub use substrate::SubstrateName;
+pub use substrate::{Attestation, SubstrateName};
 pub use time::{Clock, Timestamp};

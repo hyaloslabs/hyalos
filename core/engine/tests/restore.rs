@@ -55,6 +55,7 @@ fn busy(path: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
             task: done,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?);
     step(
@@ -74,6 +75,7 @@ fn busy(path: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
             task: held,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?);
     let request = GateRequest {
@@ -108,6 +110,7 @@ fn busy(path: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
             task: held,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?);
     e.rule_gate(

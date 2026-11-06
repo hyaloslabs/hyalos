@@ -436,7 +436,9 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
     let substrate = choose(&request.image, detect, detect_timeout, &interrupt)?;
     let chosen_name = substrate.chosen_name().ok_or("no substrate was chosen")?;
     let driver = substrate.chosen.ok_or("no substrate was chosen")?;
+    let attestation = driver.attestation();
     let _ = writeln!(out, "substrate: {chosen_name}");
+    let _ = writeln!(out, "attestation: {}", attestation_text(&attestation));
 
     // 2. Everything else the job needs, still before anything is written.
     let app = GitHubApp::load(&config_dir).map_err(|e| e.to_string())?;
@@ -471,6 +473,7 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
                 task: hyalos_types::TaskId::from_seq(task.seq),
                 substrate: chosen_name,
                 credentials: CredentialTier::BrokerHeld,
+                attestation,
             },
         )
         .map_err(|e| e.to_string())?;
@@ -1064,6 +1067,14 @@ impl Reported {
             }
         }
         true
+    }
+}
+
+/// How a job's attestation reads in the run's output and `hyalos doctor` (ADR-0057).
+pub fn attestation_text(attestation: &hyalos_types::Attestation) -> String {
+    match attestation {
+        hyalos_types::Attestation::None(reason) => format!("none ({reason})"),
+        hyalos_types::Attestation::Unrecorded => "unrecorded".to_string(),
     }
 }
 

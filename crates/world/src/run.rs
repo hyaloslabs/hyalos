@@ -150,6 +150,7 @@ pub fn run_job(seed: u64, dir: &Path) -> Res<Run> {
                     task,
                     substrate: substrate.recorded_as(),
                     credentials: hyalos_types::CredentialTier::BrokerHeld,
+                    attestation: substrate.attestation(),
                 },
             )?
             .seq,

@@ -50,6 +50,10 @@ impl Substrate for SeededSubstrate {
         Isolation::Container
     }
 
+    fn attestation(&self) -> hyalos_types::Attestation {
+        hyalos_types::Attestation::no_hardware_root()
+    }
+
     fn available(&self) -> Result<(), Unavailable> {
         Ok(())
     }

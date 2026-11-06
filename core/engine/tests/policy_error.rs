@@ -78,6 +78,7 @@ fn rig(name: &str) -> Result<Rig, Box<dyn std::error::Error>> {
                     task,
                     substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
                     credentials: hyalos_types::CredentialTier::BrokerHeld,
+                    attestation: hyalos_types::Attestation::no_hardware_root(),
                 },
             )?
             .seq,

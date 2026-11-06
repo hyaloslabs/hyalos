@@ -94,6 +94,7 @@ fn rig(name: &str) -> Result<Rig, Box<dyn std::error::Error>> {
                     task,
                     substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
                     credentials: hyalos_types::CredentialTier::BrokerHeld,
+                    attestation: hyalos_types::Attestation::no_hardware_root(),
                 },
             )?
             .seq,
@@ -238,6 +239,7 @@ fn a_held_task_is_released_by_resolving_its_one_hold() -> Res {
                 task: r.task,
                 substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
                 credentials: hyalos_types::CredentialTier::BrokerHeld,
+                attestation: hyalos_types::Attestation::no_hardware_root(),
             }
         ),
         Err(EngineError::Rule(RuleViolation::TaskNotOpen { .. }))
@@ -251,6 +253,7 @@ fn a_held_task_is_released_by_resolving_its_one_hold() -> Res {
             task: r.task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?;
     Ok(())
@@ -421,6 +424,7 @@ fn prefix() -> Vec<Event> {
             task: TaskId::from_seq(1),
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     ]
 }
@@ -621,6 +625,7 @@ fn random_gate_outcomes_never_let_unknown_through() -> Res {
                                 substrate: SubstrateName::new("test")
                                     .unwrap_or_else(SubstrateName::unrecorded),
                                 credentials: hyalos_types::CredentialTier::BrokerHeld,
+                                attestation: hyalos_types::Attestation::no_hardware_root(),
                             },
                         )?
                         .seq,

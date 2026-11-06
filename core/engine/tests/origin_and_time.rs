@@ -86,6 +86,7 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
                 task,
                 substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
                 credentials: hyalos_types::CredentialTier::BrokerHeld,
+                attestation: hyalos_types::Attestation::no_hardware_root(),
             }
         }
         "job.ended" => {
@@ -97,6 +98,7 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
                     task,
                     substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
                     credentials: hyalos_types::CredentialTier::BrokerHeld,
+                    attestation: hyalos_types::Attestation::no_hardware_root(),
                 },
             )?);
             Event::JobEnded {
@@ -114,6 +116,7 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
                     task,
                     substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
                     credentials: hyalos_types::CredentialTier::BrokerHeld,
+                    attestation: hyalos_types::Attestation::no_hardware_root(),
                 },
             )?);
             Event::GateAnswered {
@@ -133,6 +136,7 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
                     task,
                     substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
                     credentials: hyalos_types::CredentialTier::BrokerHeld,
+                    attestation: hyalos_types::Attestation::no_hardware_root(),
                 },
             )?);
             let Ruling::Held(hold) = e.rule_gate(
@@ -299,6 +303,7 @@ fn a_hold_and_the_job_ending_that_goes_with_it_cannot_come_from_the_broker() -> 
             task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?);
     let before = (e.head()?, e.state().clone());
@@ -344,6 +349,7 @@ fn a_gate_hold_is_recorded_with_the_gates_origin_and_the_engines_consequences() 
             task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?);
     e.rule_gate(
@@ -432,6 +438,7 @@ fn time_is_enforced_for_batches_and_gates_and_nothing_is_half_written() -> Res {
             task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?);
     let before = (e.head()?, e.state().clone());

@@ -38,7 +38,7 @@ hyalos run --repo octo/repo --issue "The parser drops the last line of a file wi
 - `--minutes` is the deadline (default 30); `--budget-tokens` the model budget (default 200,000).
 - `--allow-host <host>` lets the job reach a web host through the egress gate, if policy allows it.
 
-The command prints each step: the substrate, the job's id, each gate answer the broker reports and the event it was recorded as, the harness's output, the revoke, and how the job ended, with the reason code `job.ended` records. It exits 0 only if the job succeeded and its token was revoked.
+The command prints each step: the substrate and its attestation (none of today's substrates can show evidence beyond the engine's word, [ADR-0057](../adr/0057-recording-a-jobs-attestation.md)), the job's id, each gate answer the broker reports and the event it was recorded as, the harness's output, the revoke, and how the job ended, with the reason code `job.ended` records. It exits 0 only if the job succeeded and its token was revoked.
 
 **Stopping a run.** Press Ctrl-C (or send the command `SIGTERM`) once. The run stops the sandbox, ends the job in the broker, revokes the token, records the job as `failed` with the reason `run.interrupted`, and exits 1 ([ADR-0053](../adr/0053-an-interrupted-run-ends-its-job.md)). That takes a moment; only if you cannot wait, press Ctrl-C again. The command then exits at once and says what it left undone: the token may stay valid until it expires, within an hour (revoke it as under `REVOKING THE FORGE TOKEN FAILED` below), the log does not say how the job ended, and the sandbox may run until its deadline.
 
