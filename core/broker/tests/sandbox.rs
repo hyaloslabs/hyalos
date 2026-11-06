@@ -610,3 +610,58 @@ fn data_goes_only_where_the_manifest_declares_a_flow() -> Res {
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
+
+#[test]
+fn a_readers_call_with_tools_is_refused_and_reported_by_the_role_gate() -> Res {
+    let mut r = rig(true)?;
+    let (to, reports) = std::sync::mpsc::channel();
+    r.broker = r.broker.report_to(to);
+    let dir = job_dir("reader-tools")?;
+    let socket = dir.join("broker.sock");
+    start(&mut r, &manifest(30, Role::Reader, 1_000, 10_000), &socket)?;
+    let mut with_tools = messages();
+    with_tools["tools"] = json!([{ "name": "bash", "input_schema": { "type": "object" } }]);
+    for _ in 0..2 {
+        let (status, body) = call(&socket, "/v1/messages", &with_tools, &[])?;
+        assert_eq!(status, 403);
+        assert_eq!(body["error"]["type"], "permission_error");
+    }
+    let (status, _) = call(
+        &socket,
+        "/v1/responses",
+        &json!({ "input": "x", "tools": [{ "type": "function", "name": "f" }] }),
+        &[],
+    )?;
+    assert_eq!(status, 403);
+    assert!(r.provider.sent.lock().map_err(|_| "lock")?.is_empty());
+    // A reader with no tools still reaches the provider, and is not reported.
+    let (status, _) = call(&socket, "/v1/messages", &messages(), &[])?;
+    assert_eq!(status, 200);
+    std::thread::sleep(Duration::from_millis(50));
+    let reported: Vec<_> = reports
+        .try_iter()
+        .map(|m| match m {
+            ToEngine::Gate {
+                job,
+                gate,
+                answer,
+                reason,
+                inputs,
+            } => (job.seq(), gate, answer, reason.as_str().to_string(), inputs),
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect();
+    // Once for each path, however many calls it refused.
+    let deny = |path: &str| {
+        (
+            30,
+            Gate::Role,
+            Answer::Deny,
+            "model.reader_tools".to_string(),
+            inputs_digest(path),
+        )
+    };
+    assert_eq!(reported, vec![deny("/v1/messages"), deny("/v1/responses")]);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}

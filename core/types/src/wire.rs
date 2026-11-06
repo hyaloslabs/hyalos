@@ -20,12 +20,13 @@ use std::io::{self, Read, Write};
 use serde::de::{DeserializeOwned, Deserializer, Error as _};
 use serde::{Deserialize, Serialize, Serializer};
 
+use crate::workflow::{Output, TypedValue};
 use crate::{
     Answer, Digest, ForgeIssue, ForgeToken, Gate, JobId, ManifestPublicKey, ReasonCode, Role, hex,
 };
 
 /// The version of this protocol. Both sides say theirs first and stop on a mismatch.
-pub const WIRE_VERSION: u32 = 5;
+pub const WIRE_VERSION: u32 = 6;
 
 /// The longest job socket path the engine makes and the broker binds (ADR-0038). A Unix socket
 /// path is limited to about 107 bytes; this leaves room.
@@ -41,6 +42,38 @@ pub const MAX_FRAME: usize = 64 * 1024;
 pub struct ForgeBases {
     pub api: String,
     pub git: String,
+}
+
+/// The protocol a reader's model call speaks (ADR-0037).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Protocol {
+    Anthropic,
+    #[serde(rename = "openai")]
+    OpenAi,
+}
+
+/// The longest model name a reader call names, in bytes.
+pub const MAX_MODEL_NAME: usize = 128;
+/// The most pieces of context a reader call carries.
+pub const MAX_CONTEXT: usize = 16;
+
+/// A reader step for the broker to run (ADR-0005, ADR-0061): which model, the step's instructions,
+/// the operator's context (text, and the earlier typed values the engine rendered), the issue to read
+/// if the step reads one, and the typed fields it returns. The engine sends it; the broker reads the
+/// issue, makes the call with no tools and checks the answer, so the issue's text never leaves the
+/// broker on this path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReaderCall {
+    pub protocol: Protocol,
+    pub model: String,
+    pub instructions: String,
+    #[serde(default)]
+    pub context: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<u64>,
+    pub output: Output,
 }
 
 /// What the engine says to the broker.
@@ -77,6 +110,9 @@ pub enum ToBroker {
     /// Read issue `number` of the job's repository from the forge, with the job's forge token
     /// (ADR-0047). The answer is `Issue`, or `Refused` when the read failed, which fails the job.
     ReadIssue { job: JobId, number: u64 },
+    /// Run a reader step for the job (wire version 6, ADR-0061). The answer is `Values`, or `Refused`
+    /// when anything about it failed, which fails the job.
+    Read { job: JobId, call: ReaderCall },
     /// A job has ended, so a manifest for it is no longer admitted.
     EndJob { job: JobId },
     /// Stop serving.
@@ -96,6 +132,9 @@ pub enum ToEngine {
     Refused { job: JobId, reason: ReasonCode },
     /// The issue asked for with `ReadIssue`, as typed forge-authored values (ADR-0047).
     Issue { job: JobId, issue: ForgeIssue },
+    /// A reader step's answer: one typed value per field of its output, in the output's order. No
+    /// text: a choice is its option's index (ADR-0061).
+    Values { job: JobId, values: Vec<TypedValue> },
     /// A gate answered for a job. This is the one fact the broker reports that the engine records
     /// (`gate.answered`, ADR-0024): a verdict, the digest of what was asked, and a code.
     Gate {
@@ -256,7 +295,7 @@ mod tests {
                     forge: None,
                 },
                 format!(
-                    r#"{{"kind":"hello","version":5,"manifest_key":"{}"}}"#,
+                    r#"{{"kind":"hello","version":6,"manifest_key":"{}"}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -270,7 +309,7 @@ mod tests {
                     }),
                 },
                 format!(
-                    r#"{{"kind":"hello","version":5,"manifest_key":"{}","forge":{{"api":"https://api.github.com","git":"https://github.com"}}}}"#,
+                    r#"{{"kind":"hello","version":6,"manifest_key":"{}","forge":{{"api":"https://api.github.com","git":"https://github.com"}}}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -302,6 +341,26 @@ mod tests {
                 r#"{"kind":"read_issue","job":3,"number":12}"#.to_string(),
             ),
             (
+                ToBroker::Read {
+                    job: JobId::from_seq(3),
+                    call: ReaderCall {
+                        protocol: Protocol::OpenAi,
+                        model: "gpt-x".into(),
+                        instructions: "Classify.".into(),
+                        context: vec![],
+                        issue: Some(12),
+                        output: std::collections::BTreeMap::from([
+                            ("bug".into(), crate::workflow::Field::Bool),
+                            (
+                                "kind".into(),
+                                crate::workflow::Field::Choice(vec!["a".into(), "b".into()]),
+                            ),
+                        ]),
+                    },
+                },
+                r#"{"kind":"read","job":3,"call":{"protocol":"openai","model":"gpt-x","instructions":"Classify.","context":[],"issue":12,"output":{"bug":"bool","kind":{"choice":["a","b"]}}}}"#.to_string(),
+            ),
+            (
                 ToBroker::EndJob {
                     job: JobId::from_seq(3),
                 },
@@ -325,6 +384,13 @@ mod tests {
                     issue,
                 },
                 r#"{"kind":"issue","job":3,"issue":{"number":12,"state":"open","title":"t","body":"b","author":null,"labels":[]}}"#.to_string(),
+            ),
+            (
+                ToEngine::Values {
+                    job: JobId::from_seq(3),
+                    values: vec![TypedValue::Bool(true), TypedValue::Choice(1), TypedValue::Integer(-4)],
+                },
+                r#"{"kind":"values","job":3,"values":[{"bool":true},{"choice":1},{"integer":-4}]}"#.to_string(),
             ),
             (
                 ToEngine::Ready { version: 1 },

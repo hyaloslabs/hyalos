@@ -24,6 +24,7 @@ use hyalos_types::{
 
 use crate::forge::Forge;
 use crate::git::Git;
+use crate::reader;
 use crate::sandbox::{JobSocket, Sandboxes};
 use crate::{Admission, Credential, LiveJobs};
 
@@ -146,6 +147,34 @@ impl Broker {
                     .read_issue(manifest, self.forge_tokens.get(&job), number)
                 {
                     Ok(issue) => Ok(Some(vec![ToEngine::Issue { job, issue }])),
+                    Err(reason) => {
+                        self.end(job);
+                        Ok(Some(vec![ToEngine::Refused {
+                            job,
+                            reason: code(reason),
+                        }]))
+                    }
+                }
+            }
+            ToBroker::Read { job, call } => {
+                let Some(manifest) = self.admitted.get(&job) else {
+                    return Ok(Some(vec![ToEngine::Refused {
+                        job,
+                        reason: code("admission.not_live"),
+                    }]));
+                };
+                let result = match &self.sandboxes {
+                    None => Err("model.no_provider"),
+                    Some(sandboxes) => {
+                        let (forge, token) = (&self.forge, self.forge_tokens.get(&job));
+                        reader::run(manifest, &call, &sandboxes.models, clock, |number| {
+                            forge.read_issue(manifest, token, number)
+                        })
+                    }
+                };
+                // A reader that fails fails its job, never the broker (ADR-0002, ADR-0061).
+                match result {
+                    Ok(values) => Ok(Some(vec![ToEngine::Values { job, values }])),
                     Err(reason) => {
                         self.end(job);
                         Ok(Some(vec![ToEngine::Refused {

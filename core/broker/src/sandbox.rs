@@ -17,7 +17,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use hyalos_types::wire::ToEngine;
-use hyalos_types::{Clock, ForgeToken, Gate, Manifest, flow};
+use hyalos_types::{Clock, ForgeToken, Gate, Manifest, ReasonCode, flow};
 use std::sync::mpsc::Sender;
 
 use crate::egress::{self, Egress, Gates, ProxyRequest, Reports};
@@ -313,8 +313,9 @@ impl JobSocket {
                 manifest.job,
                 Gate::Content,
                 "content.too_many_refusals",
-                reports,
+                reports.clone(),
             ),
+            role: Reports::for_gate(manifest.job, Gate::Role, "role.too_many_refusals", reports),
         });
         let manifest = Arc::new((manifest, forge_token));
         let thread = ready.and_then(|()| {
@@ -383,7 +384,12 @@ struct JobReports {
     /// The git proxy's and the forge API's refusals (ADR-0046, ADR-0048).
     manifest: Reports,
     content: Reports,
+    /// The role's refusals: a reader's call with tools (ADR-0061).
+    role: Reports,
 }
+
+/// Why a reader's call that defines a tool is refused (ADR-0037, ADR-0061).
+pub const READER_TOOLS: &str = "model.reader_tools";
 
 /// Why a call to a sink the manifest declares no flow to is refused (ADR-0055).
 pub const FLOW_REFUSED: &str = "flow.not_declared";
@@ -540,9 +546,21 @@ fn connection(
             )
         }
         Ok(request) => {
+            let path = request
+                .target
+                .split('?')
+                .next()
+                .unwrap_or_default()
+                .to_string();
             let mut response = sandboxes
                 .models
                 .answer(manifest, request, sandboxes.clock.as_ref());
+            // A reader that defines a tool is refused, and the refusal is recorded (ADR-0061).
+            if response.reason.as_ref().map(ReasonCode::as_str) == Some(READER_TOOLS) {
+                reports
+                    .role
+                    .deny(READER_TOOLS, egress::inputs_digest(&path), ended);
+            }
             // A stream is cut off when the job ends.
             response.body = Box::new(UntilEnded {
                 inner: response.body,
