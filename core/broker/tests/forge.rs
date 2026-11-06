@@ -14,8 +14,8 @@ use hyalos_broker::Broker;
 use hyalos_broker::forge::{Forge, MAX_DEPTH, MAX_RESPONSE, parse_issue};
 use hyalos_types::wire::{ToBroker, ToEngine, WIRE_VERSION, read_frame, write_frame};
 use hyalos_types::{
-    Budget, Clock, ForgeToken, IssueState, JobId, MANIFEST_VERSION, Manifest, ManifestKey,
-    Provenance, Role, Timestamp,
+    Budget, Clock, ForgeText, ForgeToken, IssueState, JobId, MANIFEST_VERSION, Manifest,
+    ManifestKey, Provenance, Role, Timestamp,
 };
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -227,11 +227,14 @@ fn an_issue_reaches_the_engine_as_typed_forge_authored_values() -> Res {
     };
     assert_eq!(*job, JobId::from_seq(1));
     assert_eq!((issue.number(), issue.state()), (7, IssueState::Open));
-    assert_eq!(issue.body().as_str(), INJECTION);
-    assert_eq!(issue.title().as_str(), "Fix the parser");
-    assert_eq!(issue.author().map(|a| a.as_str()), Some("stranger"));
-    let labels: Vec<&str> = issue.labels().iter().map(|l| l.as_str()).collect();
-    assert_eq!(labels, ["bug", "good first issue"]);
+    // Forge text cannot be read as a string outside `hyalos-types` (ADR-0059); it can be compared.
+    assert_eq!(issue.body(), &ForgeText::new(INJECTION));
+    assert_eq!(issue.title(), &ForgeText::new("Fix the parser"));
+    assert_eq!(issue.author(), Some(&ForgeText::new("stranger")));
+    assert_eq!(
+        issue.labels(),
+        [ForgeText::new("bug"), ForgeText::new("good first issue")]
+    );
     // Every text is forge-authored by type, and none of it is shown by Debug.
     assert_eq!(issue.provenance(), Provenance::ForgeAuthored);
     assert!(
@@ -328,7 +331,7 @@ fn the_issue_crosses_the_channel_and_is_checked_again_on_the_engine_side() -> Re
     let Some(ToEngine::Issue { issue, .. }) = read_frame::<_, ToEngine>(&mut from)? else {
         return Err("no issue".into());
     };
-    assert_eq!(issue.body().as_str(), INJECTION);
+    assert_eq!(issue.body(), &ForgeText::new(INJECTION));
     write_frame(&mut to, &ToBroker::Shutdown)?;
     served.join().map_err(|_| "broker thread")??;
     Ok(())
