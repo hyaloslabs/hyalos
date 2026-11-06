@@ -19,6 +19,7 @@ pub mod stakes;
 pub mod substrate;
 pub mod time;
 pub mod wire;
+pub mod workflow;
 
 pub use digest::Digest;
 pub use entropy::{Entropy, SeededRng};
@@ -45,3 +46,4 @@ pub use snapshot::{ImageError, PolicyImage, STATE_VERSION, StateImage};
 pub use stakes::{Sensitive, Stakes, Tier, Touches};
 pub use substrate::{Attestation, SubstrateName};
 pub use time::{Clock, Timestamp};
+pub use workflow::{Checked, Workflow, WorkflowError};
