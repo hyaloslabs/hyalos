@@ -1,6 +1,6 @@
 # ADR-0058: The Firecracker microVM substrate
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
