@@ -7,7 +7,9 @@ use std::fmt;
 
 use hyalos_types::SubstrateName;
 
-use crate::{ContainerSubstrate, Isolation, Substrate, Unavailable};
+use crate::{
+    ContainerSubstrate, Isolation, MicroVmConfig, MicroVmSubstrate, Substrate, Unavailable,
+};
 
 /// The operating system this build runs on, as `std::env::consts::OS` names it.
 pub const HOST_OS: &str = std::env::consts::OS;
@@ -92,12 +94,22 @@ pub fn choose(
 /// [`choose`] on this host among the drivers this build has: gVisor under Podman, then under Docker
 /// (ADR-0056), then Podman, then Docker.
 pub fn detect(image: &str) -> Result<Choice, Unsupported> {
-    let drivers = ContainerSubstrate::gvisor_candidates()
+    detect_with(image, None)
+}
+
+/// [`detect`], with the microVM driver under Podman and Docker first when the operator has set one
+/// up (ADR-0058).
+pub fn detect_with(image: &str, microvm: Option<MicroVmConfig>) -> Result<Choice, Unsupported> {
+    let microvm = microvm
+        .map(|c| MicroVmSubstrate::candidates(&c))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| Box::new(d) as Box<dyn Substrate>);
+    let containers = ContainerSubstrate::gvisor_candidates()
         .into_iter()
         .chain(ContainerSubstrate::candidates())
-        .map(|d| Box::new(d) as Box<dyn Substrate>)
-        .collect();
-    choose(HOST_OS, drivers, image)
+        .map(|d| Box::new(d) as Box<dyn Substrate>);
+    choose(HOST_OS, microvm.chain(containers).collect(), image)
 }
 
 #[cfg(test)]

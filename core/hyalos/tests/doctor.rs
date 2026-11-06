@@ -41,6 +41,10 @@ fn doctor(path: &Path, args: &[&str]) -> Res<Output> {
         .args(args)
         .env_clear()
         .env("PATH", path)
+        // Its own directories, where `microvm.conf` would be (ADR-0058).
+        .env("HYALOS_CONFIG_DIR", path.join("config"))
+        .env("HYALOS_DATA_DIR", path.join("data"))
+        .env("HYALOS_RUNTIME_DIR", path.join("run"))
         .output()?)
 }
 
@@ -69,6 +73,9 @@ fn a_podman_without_an_init_is_not_chosen_and_doctor_says_what_to_install() -> R
     assert!(t.contains("substrate container.docker: ready"), "{t}");
     assert!(t.contains("chosen: container.docker"), "{t}");
     assert!(t.contains("spend cap: set a spend limit"), "{t}");
+    // Without `microvm.conf` no microVM is asked, and doctor says how to set one up.
+    assert!(!t.contains("microvm.firecracker"), "{t}");
+    assert!(t.contains("microvm: not set up"), "{t}");
     // The probe is started the way a job's sandbox is: under an init, with no network, never pulling.
     let runs = std::fs::read_to_string(d.join("docker.runs"))?;
     for flag in [
@@ -111,6 +118,34 @@ fn with_no_runtime_installed_doctor_fails() -> Res {
     assert_eq!(out.status.code(), Some(1), "{t}");
     assert!(t.contains("cannot run podman"), "{t}");
     assert!(t.contains("cannot run docker"), "{t}");
+    Ok(())
+}
+
+/// With `microvm.conf` the microVM driver is asked first, under each runtime, and one that cannot
+/// boot is reported and not chosen; a container is chosen instead.
+#[test]
+fn a_microvm_that_cannot_boot_is_reported_and_not_chosen() -> Res {
+    let d = dir("microvm")?;
+    runtime(&d, "docker", true, true)?;
+    std::fs::create_dir_all(d.join("config"))?;
+    std::fs::write(
+        d.join("config/microvm.conf"),
+        "firecracker = /nonexistent/firecracker\nkernel = /nonexistent/vmlinux\ninit = /nonexistent/init\n",
+    )?;
+    let out = doctor(&d, &["--image", "sandbox:1"])?;
+    let t = text(&out);
+    assert_eq!(out.status.code(), Some(0), "{t}");
+    assert!(
+        t.contains("substrate microvm.firecracker: not available: the kernel /nonexistent/vmlinux is not there"),
+        "{t}"
+    );
+    assert!(t.contains("chosen: container.docker"), "{t}");
+    assert!(!t.contains("microvm: not set up"), "{t}");
+    // A file that is not three absolute paths is refused, not ignored.
+    std::fs::write(d.join("config/microvm.conf"), "kernel = vmlinux\n")?;
+    let out = doctor(&d, &[])?;
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out));
+    assert!(text(&out).contains("microvm.conf"), "{}", text(&out));
     Ok(())
 }
 
