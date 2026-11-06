@@ -68,6 +68,7 @@ fn apply(e: &mut Engine, n: u64, op: &Op) -> Res {
                     task: *task,
                     substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
                     credentials: hyalos_types::CredentialTier::BrokerHeld,
+                    attestation: hyalos_types::Attestation::no_hardware_root(),
                 },
             )?;
         }

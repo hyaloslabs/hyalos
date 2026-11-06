@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use hyalos_types::SubstrateName;
+use hyalos_types::{Attestation, SubstrateName};
 
 mod choose;
 mod container;
@@ -36,6 +36,11 @@ pub trait Substrate: Send {
 
     /// How strong the boundary is, so the engine can prefer the best one the host has.
     fn isolation(&self) -> Isolation;
+
+    /// What a job on this driver records as attestation on `job.started` (ADR-0011, ADR-0057):
+    /// evidence an auditor can check without trusting the engine, or why there is none. Every
+    /// driver says so itself, so a new one cannot claim nothing by leaving it out.
+    fn attestation(&self) -> Attestation;
 
     /// Whether this driver can run on this host now, and if not why not. Probing must not start a
     /// sandbox.

@@ -147,17 +147,24 @@ fn a_job_pushes_its_branch_opens_a_pull_request_and_records_its_gates() -> Res {
             Event::JobStarted {
                 substrate,
                 credentials,
+                attestation,
                 ..
-            } => Some((substrate.clone(), *credentials)),
+            } => Some((substrate.clone(), *credentials, attestation.clone())),
             _ => None,
         })
         .ok_or("no job.started")?;
+    // The driver's own attestation, which for every driver today is none, and why (ADR-0057).
     assert_eq!(
         started,
         (
             SubstrateName::new("local-process").ok_or("name")?,
-            CredentialTier::BrokerHeld
+            CredentialTier::BrokerHeld,
+            hyalos_types::Attestation::no_hardware_root(),
         )
+    );
+    assert!(
+        said.contains("attestation: none (attestation.no_hardware_root)"),
+        "{said}"
     );
     let refusals: Vec<_> = events
         .iter()

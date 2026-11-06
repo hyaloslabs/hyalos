@@ -2,8 +2,8 @@
 
 use hyalos_types::event::{SCHEMA, SCHEMA_VERSION};
 use hyalos_types::{
-    Answer, Digest, Event, EventError, Gate, HoldId, HoldReason, JobId, JobOutcome, ReasonCode,
-    Resolution, Schema, Sensitive, Stakes, SubstrateName, TaskId, Upcast,
+    Answer, Attestation, Digest, Event, EventError, Gate, HoldId, HoldReason, JobId, JobOutcome,
+    ReasonCode, Resolution, Schema, Sensitive, Stakes, SubstrateName, TaskId, Upcast,
 };
 use serde_json::{Value, json};
 
@@ -46,6 +46,7 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
                 task: TaskId::from_seq(3),
                 substrate: SubstrateName::unrecorded(),
                 credentials: hyalos_types::CredentialTier::Unrecorded,
+                attestation: Attestation::Unrecorded,
             },
         ),
         (
@@ -218,6 +219,7 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             task: TaskId::from_seq(3),
             substrate: SubstrateName::new("container.podman").ok_or("substrate")?,
             credentials: hyalos_types::CredentialTier::Unrecorded,
+            attestation: Attestation::Unrecorded,
         },
     ));
 
@@ -240,6 +242,7 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             task: TaskId::from_seq(3),
             substrate: SubstrateName::new("container.docker").ok_or("substrate")?,
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: Attestation::Unrecorded,
         },
     ));
 
@@ -260,6 +263,29 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             job: JobId::from_seq(4),
             outcome: JobOutcome::Failed,
             reason: ReasonCode::new("run.interrupted").ok_or("reason")?,
+        },
+    ));
+
+    // Version 9 added the attestation to `job.started`, so the ten other kinds read as they did at
+    // version 8.
+    let at_8: Vec<_> = all
+        .iter()
+        .filter(|g| g.0 == 8 && g.1 != "job.started")
+        .cloned()
+        .collect();
+    for (_, kind, json, event) in at_8 {
+        all.push((9, kind, json, event));
+    }
+    all.push((
+        9,
+        "job.started",
+        r#"{"kind":"job.started","task":3,"substrate":"gvisor.docker","credentials":"broker_held","attestation":{"none":"attestation.no_hardware_root"}}"#
+            .into(),
+        Event::JobStarted {
+            task: TaskId::from_seq(3),
+            substrate: SubstrateName::new("gvisor.docker").ok_or("substrate")?,
+            credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: Attestation::no_hardware_root(),
         },
     ));
     Ok(all)
@@ -353,6 +379,9 @@ fn started_v2(v: Value) -> Result<Value, String> {
     v.as_object_mut()
         .ok_or("not an object")?
         .insert("credentials".into(), json!("unrecorded"));
+    v.as_object_mut()
+        .ok_or("not an object")?
+        .insert("attestation".into(), json!("unrecorded"));
     Ok(v)
 }
 fn answered_v2(mut v: Value) -> Result<Value, String> {
@@ -435,6 +464,7 @@ fn a_kind_with_no_step_at_a_version_passes_through_unchanged() -> Res {
             task: TaskId::from_seq(3),
             substrate: SubstrateName::unrecorded(),
             credentials: hyalos_types::CredentialTier::Unrecorded,
+            attestation: Attestation::Unrecorded,
         }
     );
     // A kind with no step anywhere is read as stored, at every older version.
@@ -511,7 +541,7 @@ fn what_an_upcast_leaves_wrong_is_still_refused() {
         decode(
             1,
             "task.completed",
-            r#"{"kind":"job.started","task":3,"substrate":"local","credentials":"broker_held"}"#
+            r#"{"kind":"job.started","task":3,"substrate":"local","credentials":"broker_held","attestation":"unrecorded"}"#
         ),
         Err(EventError::KindMismatch { .. })
     ));
@@ -527,6 +557,9 @@ fn retag(mut v: Value) -> Result<Value, String> {
     v.as_object_mut()
         .ok_or("not an object")?
         .insert("credentials".into(), json!("broker_held"));
+    v.as_object_mut()
+        .ok_or("not an object")?
+        .insert("attestation".into(), json!("unrecorded"));
     Ok(v)
 }
 

@@ -53,6 +53,7 @@ fn first_part(e: &mut Engine) -> Res {
             task: TaskId::from_seq(1),
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?;
     put(
@@ -78,6 +79,7 @@ fn first_part(e: &mut Engine) -> Res {
             task: TaskId::from_seq(2),
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?;
     let request = GateRequest {
@@ -114,6 +116,7 @@ fn second_part(e: &mut Engine) -> Res {
             task: TaskId::from_seq(11),
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?;
     Ok(())

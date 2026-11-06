@@ -64,12 +64,14 @@ fn created(v: Value) -> Result<Value, String> {
 }
 
 fn started(v: Value) -> Result<Value, String> {
-    // Today's job.started also names its substrate and credential tier (ADR-0043, ADR-0050); a
+    // Today's job.started also names its substrate, credential tier and attestation (ADR-0043,
+    // ADR-0050, ADR-0057); a
     // version 1 one did not.
     let mut v = rename(v, "task_id", "task")?;
     let object = v.as_object_mut().ok_or("not an object")?;
     object.insert("substrate".into(), Value::String("unrecorded".into()));
     object.insert("credentials".into(), Value::String("unrecorded".into()));
+    object.insert("attestation".into(), Value::String("unrecorded".into()));
     Ok(v)
 }
 
@@ -213,6 +215,7 @@ fn reference_state(path: &Path) -> Res<hyalos_engine::State> {
             task: TaskId::from_seq(1),
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?;
     go(
@@ -246,6 +249,7 @@ fn reference_state(path: &Path) -> Res<hyalos_engine::State> {
             task: TaskId::from_seq(6),
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?;
     e.submit_all(
@@ -334,6 +338,7 @@ fn new_events_are_written_at_the_new_version_and_the_mixed_log_keeps_working() -
                 task: TaskId::from_seq(12),
                 substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
                 credentials: hyalos_types::CredentialTier::BrokerHeld,
+                attestation: hyalos_types::Attestation::no_hardware_root(),
             },
         )],
     )?;

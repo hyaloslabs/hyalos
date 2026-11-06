@@ -89,6 +89,7 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
             task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?);
     submit(
@@ -121,6 +122,7 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
                     task,
                     substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
                     credentials: hyalos_types::CredentialTier::BrokerHeld,
+                    attestation: hyalos_types::Attestation::no_hardware_root(),
                 }
             ),
             Err(EngineError::Rule(RuleViolation::TaskNotOpen { .. }))
@@ -144,6 +146,7 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
             task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?);
     submit(
@@ -236,6 +239,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
             task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?);
     let before = (e.head()?, e.state().clone());
@@ -247,6 +251,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
                 task: nobody,
                 substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
                 credentials: hyalos_types::CredentialTier::BrokerHeld,
+                attestation: hyalos_types::Attestation::no_hardware_root(),
             },
             "unknown task",
         ),
@@ -286,6 +291,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
                 task,
                 substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
                 credentials: hyalos_types::CredentialTier::BrokerHeld,
+                attestation: hyalos_types::Attestation::no_hardware_root(),
             },
             "a second job while one is running",
         ),
@@ -365,6 +371,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
             task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
         Event::TaskCompleted { task },
         Event::HoldOpened {
@@ -408,6 +415,7 @@ fn deleting_the_projection_and_replaying_gives_identical_state() -> Res {
                 task: t1,
                 substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
                 credentials: hyalos_types::CredentialTier::BrokerHeld,
+                attestation: hyalos_types::Attestation::no_hardware_root(),
             },
         )?);
         submit(
@@ -477,6 +485,7 @@ fn a_validly_signed_log_with_an_illegal_event_is_refused_on_replay() -> Res {
             task: TaskId::from_seq(42),
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         };
         log.append(
             at(1),
@@ -568,6 +577,7 @@ fn random_event(rng: &mut SeededRng, state: &State, seq_next: u64) -> Event {
             task: task(rng),
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
         3 => {
             let ids: Vec<JobId> = state.jobs().keys().copied().collect();

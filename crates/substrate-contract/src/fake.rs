@@ -42,6 +42,11 @@ impl Substrate for LocalProcessSubstrate {
         Isolation::Container
     }
 
+    /// None: it runs programs on the host, with nothing to attest.
+    fn attestation(&self) -> hyalos_types::Attestation {
+        hyalos_types::Attestation::no_hardware_root()
+    }
+
     fn available(&self) -> Result<(), Unavailable> {
         Ok(())
     }
