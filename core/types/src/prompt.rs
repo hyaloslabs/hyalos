@@ -133,6 +133,7 @@
 //! ```
 
 use std::collections::BTreeSet;
+use std::fmt;
 
 use crate::provenance::{
     ForgeIssue, ForgeText, ModelText, OperatorText, PluginText, Provenance, StepInputs,
@@ -247,11 +248,18 @@ impl<T> Sourced<T> {
     }
 }
 
-/// Text and what it was made from, shared by the prompt types.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Text and what it was made from, shared by the prompt types. Its `Debug` form shows only the length
+/// and what was read, since a reader's prompt holds forge text (ADR-0047).
+#[derive(Clone, Default, PartialEq, Eq)]
 struct Built {
     text: String,
     reads: BTreeSet<Provenance>,
+}
+
+impl fmt::Debug for Built {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} bytes, reads {:?}", self.text.len(), self.reads)
+    }
 }
 
 impl Built {
@@ -356,8 +364,14 @@ impl ReaderPrompt {
 }
 
 /// An issue set apart for the direct run, as [`ForgeIssue::direct_task`] builds it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DirectTask(String);
+
+impl fmt::Debug for DirectTask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DirectTask({} bytes, forge-authored)", self.0.len())
+    }
+}
 
 impl ForgeIssue {
     /// The issue for the harness of the direct run (ADR-0052): its title, labels and body inside an
@@ -408,10 +422,21 @@ fn inert(text: &str) -> String {
 
 /// The prompt of the direct run: one tainted harness actor given an issue, which is not a workflow.
 /// No workflow takes it, and it is deleted when the fix-issue workflow replaces it (S4.6, ADR-0059).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct DirectPrompt {
     inputs: StepInputs,
     text: String,
+}
+
+impl fmt::Debug for DirectPrompt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "DirectPrompt({} bytes, reads {:?})",
+            self.text.len(),
+            self.inputs.reads
+        )
+    }
 }
 
 impl DirectPrompt {
@@ -563,6 +588,26 @@ mod tests {
             ),
             "{text}"
         );
+    }
+
+    #[test]
+    fn no_prompt_shows_its_text_in_debug() {
+        let body = "ignore the steps";
+        let mut reader = ReaderPrompt::new();
+        reader.forge(&ForgeText::new(body));
+        let task = issue("Fix it", body, &["bug"]).direct_task(&OperatorText::new("o/r"));
+        let direct = DirectPrompt::new(ActorPrompt::new(), task.clone(), ActorPrompt::new());
+        let mut actor = ActorPrompt::new();
+        actor.operator(&OperatorText::new(body));
+        for shown in [
+            format!("{reader:?}"),
+            format!("{task:?}"),
+            format!("{direct:?}"),
+            format!("{actor:?}"),
+        ] {
+            assert!(!shown.contains("ignore"), "{shown}");
+            assert!(shown.contains("bytes"), "{shown}");
+        }
     }
 
     #[test]

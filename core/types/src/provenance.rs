@@ -15,7 +15,12 @@
 //! they have no `as_str`, `Display`, `Deref`, `AsRef<str>` or `Into<String>`, so code elsewhere can
 //! learn only their length and whether they equal a given text. Inside this crate they are read by
 //! exactly two things: [`crate::prompt::ReaderPrompt`], and the direct task
-//! ([`ForgeIssue::direct_task`]). Serialization is the other way out, for the channel.
+//! ([`ForgeIssue::direct_task`]).
+//!
+//! There are two ways out, both deliberate: serialization, for the channel; and a finished reader or
+//! direct prompt (`into_text`), which has to become a string for the model or the substrate. Passing
+//! such a string to [`OperatorText::new`] would relabel forge text as the operator's. That is the
+//! bypass code review guards against.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -128,7 +133,8 @@ impl PluginText {
 
 /// Text written on the forge: tainted. It is data to be read, never instructions to the engine, and
 /// its `Debug` form shows only how long it is.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// Not ordered: comparing with chosen strings would recover the text a byte at a time.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ForgeText(String);
 

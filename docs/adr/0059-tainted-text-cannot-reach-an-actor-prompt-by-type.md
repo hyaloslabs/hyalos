@@ -61,9 +61,10 @@ Taking an issue's text into an actor's prompt by mistake is now a compile error,
 
 **What the type does not stop.** It stops mistakes, not deliberate bypass in trusted code:
 - Serializing a `ForgeIssue` with `serde_json` and reading the JSON gives back the text. Serialization has to exist for the channel.
-- `OperatorText::new` takes any string, so code that got forge text some other way could relabel it.
+- A finished `ReaderPrompt` or `DirectPrompt` becomes a `String` (`into_text`) that holds forge text, since the model or the substrate needs one.
+- `OperatorText::new` takes any string, so code could relabel forge text from either of these as the operator's.
 
-Both are visible in review, and all of it is trusted core under code-owner review. The engine never reads the forge itself ([ADR-0052](0052-reading-the-jobs-issue-from-github.md)), so it has no other source of forge text to relabel.
+All three are visible in review, and all of it is trusted core under code-owner review. The engine never reads the forge itself ([ADR-0052](0052-reading-the-jobs-issue-from-github.md)), so it has no other source of forge text to relabel.
 
 **What it does not cover.** As [ADR-0005](0005-provenance-is-a-type.md) says, the type covers what the engine hands a step, not what a harness reads inside its sandbox. A harness actor still reads its repository and runs tainted. The manifest, sandbox and gates remain the boundary for that.
 
