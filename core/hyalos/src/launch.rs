@@ -15,10 +15,11 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use hyalos_types::wire::{
-    ForgeBases, MAX_SOCKET_PATH, ToBroker, ToEngine, WIRE_VERSION, WireError, read_frame,
-    write_frame,
+    ForgeBases, MAX_SOCKET_PATH, ReaderCall, ToBroker, ToEngine, WIRE_VERSION, WireError,
+    read_frame, write_frame,
 };
-use hyalos_types::{ManifestKey, ManifestPublicKey};
+use hyalos_types::workflow::{TypedValue, values_fit};
+use hyalos_types::{JobId, ManifestKey, ManifestPublicKey, ReasonCode};
 use std::os::unix::net::UnixStream;
 use zeroize::Zeroizing;
 
@@ -369,6 +370,43 @@ impl BrokerProcess {
                 self.close();
                 Err(e)
             }
+        }
+    }
+
+    /// Runs a reader step in the broker (ADR-0061) and waits up to `wait` for its typed values,
+    /// checked against the engine's own copy of the step's output. `Err` is why there are none: the
+    /// broker's refusal (it has ended the job), or one of the engine's own codes. A broker that answers
+    /// values that do not fit, or answers something else, has broken the protocol and is stopped.
+    pub fn read(
+        &mut self,
+        job: JobId,
+        call: &ReaderCall,
+        wait: Duration,
+    ) -> Result<Vec<TypedValue>, ReasonCode> {
+        let code = |text: &str| ReasonCode::new(text).unwrap_or_else(ReasonCode::unavailable);
+        self.send(&ToBroker::Read {
+            job,
+            call: call.clone(),
+        })
+        .map_err(|_| code("reader.broker_unavailable"))?;
+        match self.poll(wait) {
+            Ok(Incoming::Message(ToEngine::Values { job: read, values }))
+                if read == job && values_fit(&call.output, &values) =>
+            {
+                Ok(values)
+            }
+            Ok(Incoming::Message(ToEngine::Refused { job: read, reason })) if read == job => {
+                Err(reason)
+            }
+            Ok(Incoming::Nothing) => {
+                self.close();
+                Err(code("reader.no_answer"))
+            }
+            Ok(Incoming::Message(_)) => {
+                self.close();
+                Err(code("reader.bad_answer"))
+            }
+            Ok(Incoming::Closed) | Err(_) => Err(code("reader.broker_unavailable")),
         }
     }
 

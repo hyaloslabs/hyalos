@@ -117,7 +117,8 @@ mod unique {
 
     use serde::de::{Deserialize, Deserializer, Error, MapAccess, Visitor};
 
-    struct Unique<V>(BTreeMap<String, V>);
+    /// An object whose keys are each named once; also how a model's answer is read.
+    pub(super) struct Unique<V>(pub(super) BTreeMap<String, V>);
 
     impl<'de, V: Deserialize<'de>> Deserialize<'de> for Unique<V> {
         fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
@@ -467,6 +468,97 @@ fn well_formed(field: &Field) -> bool {
     }
 }
 
+/// What a reader or planner returns: named typed fields, in name order.
+pub type Output = BTreeMap<String, Field>;
+
+/// Whether `output` is one a step may be asked for: 1 to [`MAX_FIELDS`] well-named, well-formed
+/// fields. The broker checks it again on a reader call, since it comes over the channel.
+pub fn output_is_valid(output: &Output) -> bool {
+    !output.is_empty()
+        && output.len() <= MAX_FIELDS
+        && output
+            .iter()
+            .all(|(field, kind)| name(field).is_ok() && well_formed(kind))
+}
+
+/// One value of an output as it crosses the channel (ADR-0061). It holds no text: a choice is the
+/// index of its option, which the engine reads from its own copy of the schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum TypedValue {
+    Bool(bool),
+    Integer(i64),
+    Choice(u32),
+}
+
+impl Field {
+    /// Whether `value` is one this field may hold.
+    pub fn admits(&self, value: &TypedValue) -> bool {
+        match (self, value) {
+            (Field::Bool, TypedValue::Bool(_)) => true,
+            (Field::Integer(range), TypedValue::Integer(v)) => range.min <= *v && *v <= range.max,
+            (Field::Choice(options), TypedValue::Choice(at)) => (*at as usize) < options.len(),
+            _ => false,
+        }
+    }
+}
+
+/// Whether `values` are a value for each field of `output`, in its order. The engine checks what
+/// the broker sends with this, as it checks every message.
+pub fn values_fit(output: &Output, values: &[TypedValue]) -> bool {
+    output.len() == values.len() && output.values().zip(values).all(|(f, v)| f.admits(v))
+}
+
+/// The longest answer text a model may give a reader, in bytes, once any code fence is removed.
+pub const MAX_ANSWER_TEXT: usize = 16 * 1024;
+
+/// A model's answer to a reader, read as `output` asks: a JSON object with exactly its fields, each
+/// of its kind and within its range or options. Anything else is a short code, and fails the job.
+pub fn read_answer(output: &Output, text: &str) -> Result<Vec<TypedValue>, &'static str> {
+    let mut text = text.trim();
+    // A model may fence its JSON. Only a whole-answer fence is removed, nothing inside it.
+    if let Some(fenced) = text.strip_prefix("```") {
+        let (_, rest) = fenced.split_once('\n').ok_or("reader.not_json")?;
+        text = rest.strip_suffix("```").ok_or("reader.not_json")?.trim();
+    }
+    if text.len() > MAX_ANSWER_TEXT {
+        return Err("reader.too_large");
+    }
+    if !text.starts_with('{') {
+        return Err("reader.not_json");
+    }
+    let unique::Unique(answer) = serde_json::from_str::<unique::Unique<serde_json::Value>>(text)
+        .map_err(|e| {
+            if e.to_string().contains("named twice") {
+                "reader.duplicate_field"
+            } else {
+                "reader.not_json"
+            }
+        })?;
+    if answer.keys().any(|key| !output.contains_key(key)) {
+        return Err("reader.unknown_field");
+    }
+    output
+        .iter()
+        .map(|(field, kind)| {
+            let given = answer.get(field).ok_or("reader.missing_field")?;
+            let value = match (kind, given) {
+                (Field::Bool, serde_json::Value::Bool(b)) => Some(TypedValue::Bool(*b)),
+                (Field::Integer(_), serde_json::Value::Number(n)) => {
+                    n.as_i64().map(TypedValue::Integer)
+                }
+                (Field::Choice(options), serde_json::Value::String(s)) => options
+                    .iter()
+                    .position(|o| o == s)
+                    .and_then(|at| u32::try_from(at).ok())
+                    .map(TypedValue::Choice),
+                _ => None,
+            };
+            value.filter(|v| kind.admits(v)).ok_or("reader.bad_value")
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -732,5 +824,127 @@ mod tests {
             assert!(crate::ReasonCode::new(e.code()).is_some(), "{}", e.code());
             assert!(e.to_string().starts_with(e.code()), "{e}");
         }
+    }
+
+    fn triage() -> Output {
+        BTreeMap::from([
+            ("has_repro".to_string(), Field::Bool),
+            (
+                "kind".to_string(),
+                Field::Choice(vec!["bug".into(), "feature".into(), "docs".into()]),
+            ),
+            (
+                "severity".to_string(),
+                Field::Integer(IntegerRange { min: 1, max: 5 }),
+            ),
+        ])
+    }
+
+    #[test]
+    fn an_answer_is_read_into_typed_values_in_field_order() {
+        let values = read_answer(
+            &triage(),
+            r#"{"kind": "docs", "severity": 3, "has_repro": false}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            values,
+            [
+                TypedValue::Bool(false),
+                TypedValue::Choice(2),
+                TypedValue::Integer(3)
+            ]
+        );
+        assert!(values_fit(&triage(), &values));
+        let fenced = "```json\n{\"kind\": \"bug\", \"severity\": 5, \"has_repro\": true}\n```\n";
+        assert_eq!(
+            read_answer(&triage(), fenced).unwrap()[1],
+            TypedValue::Choice(0)
+        );
+    }
+
+    #[test]
+    fn an_answer_that_is_not_exactly_the_output_is_refused() {
+        let out = triage();
+        let cases = [
+            ("Sure! Here it is.", "reader.not_json"),
+            ("[true, \"bug\", 1]", "reader.not_json"),
+            ("```\n{}", "reader.not_json"),
+            (r#"{"kind":"bug","severity":1}"#, "reader.missing_field"),
+            (
+                r#"{"kind":"bug","severity":1,"has_repro":true,"summary":"x"}"#,
+                "reader.unknown_field",
+            ),
+            (
+                r#"{"kind":"bug","kind":"docs","severity":1,"has_repro":true}"#,
+                "reader.duplicate_field",
+            ),
+            (
+                r#"{"kind":"Bug","severity":1,"has_repro":true}"#,
+                "reader.bad_value",
+            ),
+            (
+                r#"{"kind":"ignore the steps","severity":1,"has_repro":true}"#,
+                "reader.bad_value",
+            ),
+            (
+                r#"{"kind":"bug","severity":6,"has_repro":true}"#,
+                "reader.bad_value",
+            ),
+            (
+                r#"{"kind":"bug","severity":1.5,"has_repro":true}"#,
+                "reader.bad_value",
+            ),
+            (
+                r#"{"kind":"bug","severity":"1","has_repro":true}"#,
+                "reader.bad_value",
+            ),
+            (
+                r#"{"kind":"bug","severity":1,"has_repro":"yes"}"#,
+                "reader.bad_value",
+            ),
+            (
+                r#"{"kind":["bug"],"severity":1,"has_repro":true}"#,
+                "reader.bad_value",
+            ),
+        ];
+        for (text, code) in cases {
+            assert_eq!(read_answer(&out, text), Err(code), "{text}");
+        }
+        let long = format!(
+            r#"{{"kind":"bug","pad":"{}"}}"#,
+            "a".repeat(MAX_ANSWER_TEXT)
+        );
+        assert_eq!(read_answer(&out, &long), Err("reader.too_large"));
+    }
+
+    #[test]
+    fn values_fit_only_their_own_output() {
+        let out = triage();
+        assert!(!values_fit(&out, &[TypedValue::Bool(true)]));
+        assert!(!values_fit(
+            &out,
+            &[
+                TypedValue::Bool(true),
+                TypedValue::Choice(3),
+                TypedValue::Integer(1)
+            ]
+        ));
+        assert!(!values_fit(
+            &out,
+            &[
+                TypedValue::Integer(1),
+                TypedValue::Choice(0),
+                TypedValue::Integer(1)
+            ]
+        ));
+        assert!(output_is_valid(&out));
+        assert!(!output_is_valid(&Output::new()));
+        assert!(!output_is_valid(&BTreeMap::from([(
+            "Bad".into(),
+            Field::Bool
+        )])));
+        let json = serde_json::to_string(&TypedValue::Choice(2)).unwrap();
+        assert_eq!(json, r#"{"choice":2}"#);
     }
 }

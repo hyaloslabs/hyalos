@@ -10,6 +10,7 @@ pub mod git;
 pub mod model;
 pub mod pack;
 pub mod pulls;
+pub mod reader;
 pub mod sandbox;
 mod serve;
 

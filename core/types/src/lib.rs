@@ -46,4 +46,4 @@ pub use snapshot::{ImageError, PolicyImage, STATE_VERSION, StateImage};
 pub use stakes::{Sensitive, Stakes, Tier, Touches};
 pub use substrate::{Attestation, SubstrateName};
 pub use time::{Clock, Timestamp};
-pub use workflow::{Checked, Workflow, WorkflowError};
+pub use workflow::{Checked, TypedValue, Workflow, WorkflowError};

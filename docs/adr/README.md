@@ -74,3 +74,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0058](0058-the-firecracker-microvm-substrate.md) | The Firecracker microVM substrate | Accepted |
 | [0059](0059-tainted-text-cannot-reach-an-actor-prompt-by-type.md) | Tainted text cannot reach an actor's prompt, by type | Accepted |
 | [0060](0060-the-workflow-document-and-the-check-at-install.md) | The workflow document, and the check at install | Accepted |
+| [0061](0061-reader-steps-run-in-the-broker.md) | Reader steps run in the broker, and the engine gets typed values | Proposed |

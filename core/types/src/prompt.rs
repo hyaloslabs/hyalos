@@ -354,6 +354,25 @@ impl ReaderPrompt {
         self
     }
 
+    /// An issue in an `<issue number="N">` block, written with `&lt;` as in
+    /// [`ForgeIssue::direct_task`], so only this block's tags open and close it (ADR-0061).
+    pub fn issue(&mut self, issue: &ForgeIssue) -> &mut Self {
+        let labels: Vec<String> = issue.labels().iter().map(|l| inert(l.text())).collect();
+        let block = format!(
+            "<issue number=\"{number}\">\nTitle: {title}\nLabels: {labels}\n\n{body}\n</issue>",
+            number = issue.number(),
+            title = inert(issue.title().text()),
+            labels = if labels.is_empty() {
+                "none".to_string()
+            } else {
+                labels.join(", ")
+            },
+            body = inert(issue.body().text().trim_end()),
+        );
+        self.0.push(&block, Some(Provenance::ForgeAuthored));
+        self
+    }
+
     pub fn inputs(&self) -> StepInputs {
         StepInputs::of(self.0.reads.iter().copied())
     }
