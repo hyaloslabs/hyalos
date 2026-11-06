@@ -365,6 +365,18 @@ fn an_answer_that_is_not_the_output_fails_the_job_and_the_broker_serves_on() -> 
                 .into_bytes(),
             "reader.tool_call",
         ),
+        (
+            json!({"content": [{"type": "server_tool_use", "name": "web_search", "input": {}}]})
+                .to_string()
+                .into_bytes(),
+            "reader.tool_call",
+        ),
+        (
+            json!({"content": [{"type": "refusal", "text": "no"}]})
+                .to_string()
+                .into_bytes(),
+            "reader.not_text",
+        ),
     ];
     let mut r = rig()?;
     for (n, (reply, code)) in cases.into_iter().enumerate() {

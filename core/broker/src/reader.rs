@@ -138,8 +138,8 @@ fn prompt(call: &ReaderCall, issue: Option<&ForgeIssue>) -> Result<String, &'sta
     Ok(p.into_text())
 }
 
-/// The model's text in a provider's response. A tool call, which a request with no tools cannot
-/// ask for, is refused rather than ignored.
+/// The model's text in a provider's response. Any block that is not text or reasoning is refused
+/// rather than ignored.
 fn answer_text(protocol: Protocol, bytes: &[u8]) -> Result<String, &'static str> {
     let response: Value =
         serde_json::from_slice(bytes).map_err(|_| "reader.provider_unreadable")?;
@@ -166,7 +166,7 @@ fn answer_text(protocol: Protocol, bytes: &[u8]) -> Result<String, &'static str>
                     ),
                     // A model may reason before it answers; that is not its answer.
                     Some("reasoning") => {}
-                    _ => return Err("reader.tool_call"),
+                    kind => return Err(not_text(kind)),
                 }
             }
             blocks
@@ -184,10 +184,21 @@ fn answer_text(protocol: Protocol, bytes: &[u8]) -> Result<String, &'static str>
                 );
             }
             Some("thinking") | Some("redacted_thinking") => {}
-            _ => return Err("reader.tool_call"),
+            kind => return Err(not_text(kind)),
         }
     }
     Ok(text)
+}
+
+/// Why a block that is not text fails the call: a tool call, which a request with no tools cannot
+/// ask for, or anything else, such as a refusal or a kind this broker does not know.
+fn not_text(kind: Option<&str>) -> &'static str {
+    let tool = kind.is_some_and(|k| k.ends_with("tool_use") || k.ends_with("_call"));
+    if tool {
+        "reader.tool_call"
+    } else {
+        "reader.not_text"
+    }
 }
 
 /// A reason code the relay gave, as the `&'static str` this module answers with. Only the relay's

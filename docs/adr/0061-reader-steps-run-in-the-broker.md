@@ -55,7 +55,8 @@ It sends one request with no tools, no tool choice and no MCP servers. For Anthr
 | The response is at most 1 MiB. | `reader.too_large` |
 | It nests at most 16 deep, checked by byte scan before parsing (`forge::depth`). | `reader.too_deep` |
 | It is the protocol's JSON with a list of content blocks. | `reader.provider_unreadable` |
-| Every block is text. Thinking, and OpenAI's reasoning items, are skipped. Anything else, such as a tool call, is refused, never ignored. | `reader.tool_call` |
+| Every block is text. Thinking, and OpenAI's reasoning items, are skipped. A tool call (a `*tool_use` block or a `*_call` item) is refused, never ignored. | `reader.tool_call` |
+| Any other block, such as a refusal or a kind the broker does not know, is refused too. | `reader.not_text` |
 
 The model's text is read with `workflow::read_answer`:
 
@@ -89,7 +90,7 @@ The tests:
 
 **A reader's prompt can still be steered.** The issue can tell the model what to answer. The schema bounds what that buys: a bool, a number in range or one of the operator's options, which then taint every step that reads them (ADR-0060). That is the design of ADR-0005, not something this ADR fixes.
 
-**The call blocks the broker's channel**, as an issue read does. A reader's call takes seconds, and up to the relay's retries when the provider is busy. The broker's sockets serve sandboxes on their own threads, so a sandbox of another job is not held up. But other messages from the engine wait behind it, and so do the reports it would send. The runner in S4.6 can choose a `wait`, and can run readers when no other job needs the channel. Moving reader calls to their own thread is a change to the broker if that proves too slow.
+**The call blocks the broker's channel**, as an issue read does. A reader's call takes seconds, and up to the relay's retries when the provider is busy. The broker's sockets serve sandboxes on their own threads, so a sandbox of another job is not held up. But the engine's next message waits behind it. The sandboxes' gate reports do not: their threads hand them to the writer thread of `serve_with`, which sends them while the call runs. The runner in S4.6 can choose a `wait`, and can run readers when no other job needs the channel. Moving reader calls to their own thread is a change to the broker if that proves too slow.
 
 **A reader job is still admitted with a manifest**, so its budget, its deadline and its `read` action come from the policy (`mint_manifest`) like any other job's. It gets a socket like any job. Nothing runs in it, since no sandbox is started for a reader.
 
