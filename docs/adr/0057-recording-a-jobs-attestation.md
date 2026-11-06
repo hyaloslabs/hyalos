@@ -1,6 +1,6 @@
 # ADR-0057: Recording a job's attestation
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

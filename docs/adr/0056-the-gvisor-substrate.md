@@ -1,6 +1,6 @@
 # ADR-0056: The gVisor substrate
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
