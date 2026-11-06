@@ -89,10 +89,12 @@ pub fn choose(
     Ok(Choice { tried, chosen })
 }
 
-/// [`choose`] on this host among the drivers this build has: Podman, then Docker.
+/// [`choose`] on this host among the drivers this build has: gVisor under Podman, then under Docker
+/// (ADR-0056), then Podman, then Docker.
 pub fn detect(image: &str) -> Result<Choice, Unsupported> {
-    let drivers = ContainerSubstrate::candidates()
+    let drivers = ContainerSubstrate::gvisor_candidates()
         .into_iter()
+        .chain(ContainerSubstrate::candidates())
         .map(|d| Box::new(d) as Box<dyn Substrate>)
         .collect();
     choose(HOST_OS, drivers, image)

@@ -372,7 +372,9 @@ fn reports_itself(s: &dyn Substrate, _: &Ctx) -> Result<(), String> {
 // ---- isolation ------------------------------------------------------------------------------
 
 fn no_network(s: &dyn Substrate, c: &Ctx) -> Result<(), String> {
-    let script = r#"ls /sys/class/net | tr '\n' ' '; echo;
+    // The interfaces from /proc/net/dev, which every kernel the drivers run has (gVisor has no
+    // /sys/class/net).
+    let script = r#"tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ' | tr '\n' ' '; echo;
 perl -MIO::Socket::INET -e 'my $s = IO::Socket::INET->new(PeerAddr => "1.1.1.1:53", Timeout => 3); print $s ? "connected\n" : "unreachable\n"'
 perl -MIO::Socket::INET -e 'my $s = IO::Socket::INET->new(PeerAddr => "127.0.0.1:1", Timeout => 3); print $s ? "connected\n" : "closed\n"'"#;
     let out = run_to_end(s, &c.sh(script))?;
@@ -435,17 +437,47 @@ fn broker_socket(s: &dyn Substrate, c: &Ctx) -> Result<(), String> {
     Ok(())
 }
 
+/// The limits by what they do, not by a file that shows them: a driver may enforce them where the
+/// sandbox cannot read them, as gVisor does (ADR-0056).
 fn limits(s: &dyn Substrate, c: &Ctx) -> Result<(), String> {
-    let mut spec = c.sh("cat /sys/fs/cgroup/pids.max /sys/fs/cgroup/memory.max");
-    spec.max_processes = 77;
+    // Processes: asking for many more than the limit gets fewer than it.
+    let max = 40u32;
+    let mut spec = c.spec(&[
+        "perl",
+        "-e",
+        r#"my ($ok, $no) = (0, 0); for (1 .. 120) { my $p = fork; if (!defined $p) { $no++; next } if ($p == 0) { sleep 3; exit 0 } $ok++ } print "forked $ok refused $no\n"; 1 while wait != -1;"#,
+    ]);
+    spec.max_processes = max;
+    let out = run_to_end(s, &spec)?;
+    let text = out.stdout_text();
+    let counts: Vec<u32> = text
+        .split_whitespace()
+        .filter_map(|w| w.parse().ok())
+        .collect();
+    match counts[..] {
+        [forked, refused] if refused > 0 && forked < max && forked + 5 >= max => {}
+        _ => {
+            return Err(format!(
+                "a limit of {max} processes: {:?} with {text:?}",
+                out.ending
+            ));
+        }
+    }
+    // Memory: a program that takes twice the limit is ended before it can say it has it.
+    let mut spec = c.spec(&[
+        "perl",
+        "-e",
+        r#"my $x = "a" x (600 * 1024 * 1024); print "allocated\n";"#,
+    ]);
     spec.memory_bytes = 300 * 1024 * 1024;
     let out = run_to_end(s, &spec)?;
-    expect(
-        "limits",
-        &out,
-        Ending::Exited(0),
-        &format!("77\n{}\n", 300 * 1024 * 1024),
-    )
+    if out.ending == Ending::Exited(0) || out.stdout_text().contains("allocated") {
+        return Err(format!(
+            "a limit of 300 MiB let 600 MiB be allocated: {:?}",
+            out.ending
+        ));
+    }
+    Ok(())
 }
 
 fn init_reaps(s: &dyn Substrate, c: &Ctx) -> Result<(), String> {

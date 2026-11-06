@@ -5,7 +5,12 @@
 //! and processes, and nothing inherited from the host. The one thing mounted in is the broker's
 //! socket. Whether the host's kernel is shared with the sandbox, which is what makes this the weakest
 //! boundary (ADR-0011), depends on the runtime: a rootless Podman is stronger than a root Docker
-//! daemon, and gVisor behind either is stronger again (story S2.2).
+//! daemon.
+//!
+//! The same driver runs gVisor (ADR-0056): the same options under the OCI runtime the operator
+//! registers as [`GVISOR_RUNTIME`], so the program talks to gVisor's kernel, not the host's. gVisor
+//! keeps its processes inside its own kernel, where the host's process limit cannot count them, so
+//! the driver also limits them there with `RLIMIT_NPROC`.
 //!
 //! Commands are run directly, never through a shell, and a spec is validated before anything is run.
 
@@ -41,9 +46,20 @@ const PROBE_LABEL: &str = "hyalos.probe";
 /// The runtimes the engine looks for, in order of preference.
 const RUNTIMES: [&str; 2] = ["podman", "docker"];
 
+/// The name under which the operator registers gVisor's `runsc` with the container runtime, with the
+/// options a job needs (ADR-0056): `--host-uds=open`, so the sandbox can connect to the broker's
+/// socket. A name of its own, so an operator's other `runsc` settings are not a job's.
+pub const GVISOR_RUNTIME: &str = "hyalos-runsc";
+
+/// The fewest host tasks a gVisor sandbox may have. Its host cgroup counts gVisor's own threads, not
+/// the program's processes, which `RLIMIT_NPROC` limits inside; too few and gVisor cannot start.
+const GVISOR_HOST_TASKS: u32 = 256;
+
 #[derive(Debug, Clone)]
 pub struct ContainerSubstrate {
     runtime: String,
+    /// Run every sandbox under [`GVISOR_RUNTIME`].
+    gvisor: bool,
 }
 
 impl ContainerSubstrate {
@@ -51,6 +67,15 @@ impl ContainerSubstrate {
     pub fn new(runtime: &str) -> Self {
         Self {
             runtime: runtime.to_string(),
+            gvisor: false,
+        }
+    }
+
+    /// A driver that runs every sandbox through this command under gVisor ([`GVISOR_RUNTIME`]).
+    pub fn gvisor(runtime: &str) -> Self {
+        Self {
+            runtime: runtime.to_string(),
+            gvisor: true,
         }
     }
 
@@ -58,6 +83,15 @@ impl ContainerSubstrate {
     /// without a root daemon.
     pub fn candidates() -> Vec<Self> {
         RUNTIMES.into_iter().map(Self::new).collect()
+    }
+
+    /// [`ContainerSubstrate::candidates`], each under gVisor.
+    pub fn gvisor_candidates() -> Vec<Self> {
+        RUNTIMES.into_iter().map(Self::gvisor).collect()
+    }
+
+    pub fn is_gvisor(&self) -> bool {
+        self.gvisor
     }
 
     pub fn runtime(&self) -> &str {
@@ -96,12 +130,27 @@ impl ContainerSubstrate {
         }
     }
 
+    /// The OCI runtime option every container this driver starts is given, if any.
+    fn runtime_option(&self) -> &'static [&'static str] {
+        if self.gvisor {
+            &["--runtime", GVISOR_RUNTIME]
+        } else {
+            &[]
+        }
+    }
+
     /// Starts and removes one short container from `image` under `--init`, the way a job's sandbox
-    /// starts, running `true`. A runtime with no init refuses it (ADR-0041).
+    /// starts. A runtime with no init refuses it (ADR-0041). It runs `true`, or under gVisor
+    /// `uname -r`, whose answer shows the kernel really is gVisor's (ADR-0056).
     fn starts_an_init(&self, image: &str) -> Result<(), Unavailable> {
-        let out = self.run(&[
-            "run",
-            "--rm",
+        let (entrypoint, args): (&str, &[&str]) = if self.gvisor {
+            ("uname", &["-r"])
+        } else {
+            ("true", &[])
+        };
+        let mut probe = vec!["run", "--rm"];
+        probe.extend_from_slice(self.runtime_option());
+        probe.extend_from_slice(&[
             "--init",
             "--network",
             "none",
@@ -119,19 +168,34 @@ impl ContainerSubstrate {
             "--label",
             PROBE_LABEL,
             "--entrypoint",
-            "true",
+            entrypoint,
             image,
-        ])?;
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err(Unavailable(format!(
-                "{} cannot start a container with an init ({}). {}",
-                self.runtime,
-                first_line(&out.stderr),
+        ]);
+        probe.extend_from_slice(args);
+        let out = self.run(&probe)?;
+        if !out.status.success() {
+            let advice = if self.gvisor {
+                GVISOR_ADVICE
+            } else {
                 self.init_advice()
-            )))
+            };
+            return Err(Unavailable(format!(
+                "{} cannot start a container with an init{} ({}). {advice}",
+                self.runtime,
+                if self.gvisor { " under gVisor" } else { "" },
+                first_line(&out.stderr),
+            )));
         }
+        if self.gvisor {
+            let kernel = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !is_gvisor_kernel(&kernel) {
+                return Err(Unavailable(format!(
+                    "{} runs {GVISOR_RUNTIME}, but its kernel is {kernel:?}, not gVisor's. {GVISOR_ADVICE}",
+                    self.runtime
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn run(&self, args: &[&str]) -> Result<std::process::Output, Unavailable> {
@@ -141,6 +205,14 @@ impl ContainerSubstrate {
             .output()
             .map_err(|e| Unavailable(format!("cannot run {}: {e}", self.runtime)))
     }
+}
+
+/// What to do when gVisor is not ready.
+const GVISOR_ADVICE: &str = "Install gVisor and register it as the runtime hyalos-runsc with --host-uds=open (docs/operations/substrates.md). If runsc starts nothing on this kernel, as on WSL2, add --platform=kvm or --platform=ptrace";
+
+/// Whether `release`, as `uname -r` prints it in a sandbox, is gVisor's kernel.
+fn is_gvisor_kernel(release: &str) -> bool {
+    release.ends_with("-gvisor")
 }
 
 fn first_line(bytes: &[u8]) -> String {
@@ -154,19 +226,24 @@ fn first_line(bytes: &[u8]) -> String {
 
 impl Substrate for ContainerSubstrate {
     fn name(&self) -> &'static str {
-        "container"
+        if self.gvisor { "gvisor" } else { "container" }
     }
 
-    /// `container.podman` or `container.docker`, or `container` for a command that is neither.
+    /// `container.podman` or `container.docker` (`gvisor.podman`, `gvisor.docker` under gVisor), or
+    /// the bare name for a command that is neither.
     fn recorded_as(&self) -> SubstrateName {
         self.known_runtime()
-            .and_then(|r| SubstrateName::new(&format!("container.{r}")))
-            .or_else(|| SubstrateName::new("container"))
+            .and_then(|r| SubstrateName::new(&format!("{}.{r}", self.name())))
+            .or_else(|| SubstrateName::new(self.name()))
             .unwrap_or_else(SubstrateName::unrecorded)
     }
 
     fn isolation(&self) -> Isolation {
-        Isolation::Container
+        if self.gvisor {
+            Isolation::UserspaceKernel
+        } else {
+            Isolation::Container
+        }
     }
 
     fn ready(&self, image: &str) -> Result<(), Unavailable> {
@@ -201,9 +278,17 @@ impl Substrate for ContainerSubstrate {
             .command
             .split_first()
             .ok_or(StartError::Spec(crate::SpecError::Command))?;
+        // Under gVisor the host's process limit counts gVisor's threads, and the program's processes
+        // are limited inside its kernel instead (ADR-0056).
+        let host_tasks = if self.gvisor {
+            spec.max_processes.max(GVISOR_HOST_TASKS)
+        } else {
+            spec.max_processes
+        };
         let mut create = Command::new(&self.runtime);
         create
             .arg("create")
+            .args(self.runtime_option())
             .args(["--label", &format!("{LABEL}={}", spec.job)])
             // A minimal init is PID 1 (ADR-0041): it reaps orphaned processes, which would
             // otherwise count against the process limit, and passes signals on to the program.
@@ -217,7 +302,7 @@ impl Substrate for ContainerSubstrate {
             .args(["--security-opt", "no-new-privileges"])
             .args(["--memory", &spec.memory_bytes.to_string()])
             .args(["--memory-swap", &spec.memory_bytes.to_string()])
-            .args(["--pids-limit", &spec.max_processes.to_string()])
+            .args(["--pids-limit", &host_tasks.to_string()])
             // The image is run as asked, never pulled during a job, and its output is not kept by
             // the runtime.
             .args(["--pull", "never"])
@@ -227,6 +312,10 @@ impl Substrate for ContainerSubstrate {
                 "type=bind,src={},dst={BROKER_SOCKET_IN_SANDBOX}",
                 spec.broker_socket.display()
             ));
+        if self.gvisor {
+            let n = spec.max_processes;
+            create.args(["--ulimit", &format!("nproc={n}:{n}")]);
+        }
         for (key, value) in &spec.env {
             create.arg("--env").arg(format!("{key}={value}"));
         }
@@ -433,5 +522,43 @@ impl Drop for ContainerSandbox {
             let _ = self.child.wait();
             self.remove();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_gvisor_s_kernel_counts_as_gvisor() {
+        assert!(is_gvisor_kernel("4.19.0-gvisor"));
+        for other in [
+            "6.6.87.2-microsoft-standard-WSL2",
+            "6.8.0-45-generic",
+            "",
+            "gvisor-6.1",
+        ] {
+            assert!(!is_gvisor_kernel(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn a_gvisor_driver_names_its_runtime_and_isolation() {
+        let d = ContainerSubstrate::gvisor("docker");
+        assert_eq!(d.name(), "gvisor");
+        assert_eq!(d.isolation(), Isolation::UserspaceKernel);
+        assert_eq!(d.recorded_as().as_str(), "gvisor.docker");
+        assert_eq!(d.runtime_option(), ["--runtime", GVISOR_RUNTIME]);
+        assert_eq!(
+            ContainerSubstrate::gvisor("/opt/nerdctl")
+                .recorded_as()
+                .as_str(),
+            "gvisor"
+        );
+        assert!(
+            ContainerSubstrate::new("docker")
+                .runtime_option()
+                .is_empty()
+        );
     }
 }

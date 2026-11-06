@@ -22,6 +22,7 @@ on:
       - ".cargo/**"
       - ".dockerignore"
       - ".github/workflows/sandbox-image.yml"
+      - ".github/scripts/install-gvisor.sh"
   push:
     branches: [main]
     paths:
@@ -39,6 +40,7 @@ on:
       - ".cargo/**"
       - ".dockerignore"
       - ".github/workflows/sandbox-image.yml"
+      - ".github/scripts/install-gvisor.sh"
 
 permissions:
   contents: read
@@ -62,6 +64,9 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup toolchain install
       # Base images are pinned by digest in the Containerfile, harnesses by the lockfile.
+      # A job runs on the strongest substrate the host has, so the end-to-end job runs under gVisor.
+      - name: Install gVisor
+        run: .github/scripts/install-gvisor.sh
       - name: Build the image and its test target
         run: |
           docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox .
@@ -76,3 +81,4 @@ jobs:
         env:
           HYALOS_REQUIRE_SANDBOX_IMAGE: "1"
           HYALOS_REQUIRE_GIT: "1"
+          HYALOS_REQUIRE_GVISOR: "1"
