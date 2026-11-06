@@ -122,6 +122,9 @@ mod tests {
         fn isolation(&self) -> Isolation {
             self.isolation
         }
+        fn attestation(&self) -> hyalos_types::Attestation {
+            hyalos_types::Attestation::no_hardware_root()
+        }
         fn available(&self) -> Result<(), Unavailable> {
             Ok(())
         }

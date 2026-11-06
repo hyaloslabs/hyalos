@@ -43,6 +43,12 @@ impl ReasonCode {
         Self("gate.unavailable".to_string())
     }
 
+    /// The substrate has no hardware root to sign what it started, so a job on it carries no
+    /// attestation evidence (ADR-0057).
+    pub fn no_hardware_root() -> Self {
+        Self("attestation.no_hardware_root".to_string())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

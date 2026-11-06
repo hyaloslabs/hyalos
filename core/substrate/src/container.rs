@@ -20,7 +20,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use hyalos_types::SubstrateName;
+use hyalos_types::{Attestation, SubstrateName};
 
 use crate::spec::{BROKER_SOCKET_IN_SANDBOX, OUTPUT_LIMIT};
 use crate::{
@@ -244,6 +244,11 @@ impl Substrate for ContainerSubstrate {
         } else {
             Isolation::Container
         }
+    }
+
+    /// None: neither a container nor gVisor has a hardware root that signs what it started.
+    fn attestation(&self) -> Attestation {
+        Attestation::no_hardware_root()
     }
 
     fn ready(&self, image: &str) -> Result<(), Unavailable> {

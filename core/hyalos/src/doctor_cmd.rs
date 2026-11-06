@@ -70,14 +70,15 @@ pub fn report(os: &str, detected: &Result<Choice, Unsupported>, image: &str) -> 
                     }
                 }
             }
-            match choice.chosen_name() {
-                Some(name) => {
+            match (choice.chosen_name(), &choice.chosen) {
+                (Some(name), Some(driver)) => {
                     out.push_str(&format!(
-                        "chosen: {name}; each job records it on its job.started event\n"
+                        "chosen: {name}; each job records it on its job.started event\nattestation: {}; each job records this too (ADR-0057)\n",
+                        crate::run_cmd::attestation_text(&driver.attestation())
                     ));
                     true
                 }
-                None => {
+                _ => {
                     out.push_str(
                         "chosen: none; no job can run until one substrate above is ready\n",
                     );
@@ -142,6 +143,10 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("chosen: container.docker"), "{text}");
+        assert!(
+            text.contains("attestation: none (attestation.no_hardware_root)"),
+            "{text}"
+        );
         assert!(text.ends_with(&format!("{SPEND_CAP}\n")), "{text}");
     }
 

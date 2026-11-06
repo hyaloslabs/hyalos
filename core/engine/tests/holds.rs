@@ -115,6 +115,7 @@ impl World {
                         substrate: SubstrateName::new("test")
                             .unwrap_or_else(SubstrateName::unrecorded),
                         credentials: hyalos_types::CredentialTier::BrokerHeld,
+                        attestation: hyalos_types::Attestation::no_hardware_root(),
                     },
                 )?
                 .seq,
@@ -196,6 +197,7 @@ fn a_fresh_on_time_allow_releases_the_hold_as_reevaluated() -> Res {
                 task: h.task,
                 substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
                 credentials: hyalos_types::CredentialTier::BrokerHeld,
+                attestation: hyalos_types::Attestation::no_hardware_root(),
             },
         )?
         .seq;
@@ -563,6 +565,7 @@ fn log_with_release(name: &str, stakes: Stakes, release: Event) -> Res<PathBuf> 
             task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     )?;
     raw_event(
@@ -819,6 +822,7 @@ fn time_passing_releases_nothing() -> Res {
             task: h.task,
             substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
             credentials: hyalos_types::CredentialTier::BrokerHeld,
+            attestation: hyalos_types::Attestation::no_hardware_root(),
         },
     );
     assert!(matches!(
@@ -853,6 +857,7 @@ fn a_gate_that_reports_after_the_jobs_deadline_can_neither_hold_nor_allow() -> R
                     task,
                     substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
                     credentials: hyalos_types::CredentialTier::BrokerHeld,
+                    attestation: hyalos_types::Attestation::no_hardware_root(),
                 },
             )?
             .seq,

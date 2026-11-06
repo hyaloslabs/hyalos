@@ -1,4 +1,5 @@
-//! The name a job's substrate is recorded under (ADR-0011, ADR-0043).
+//! The name a job's substrate is recorded under (ADR-0011, ADR-0043), and what it could attest to
+//! (ADR-0057).
 
 use std::fmt;
 
@@ -62,9 +63,50 @@ impl<'de> Deserialize<'de> for SubstrateName {
     }
 }
 
+/// What the substrate could show about the sandbox a job ran in, as evidence an auditor can check
+/// without trusting the engine (ADR-0011, ADR-0057). No driver offers evidence yet, so each job
+/// records which reason applies.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Attestation {
+    /// The substrate offers no evidence, for the reason the code names.
+    None(crate::ReasonCode),
+    /// A `job.started` written before schema version 9, which did not say.
+    Unrecorded,
+}
+
+impl Attestation {
+    /// None, because the substrate has no hardware root to sign what it started: true of a
+    /// container, gVisor and a Firecracker microVM.
+    pub fn no_hardware_root() -> Self {
+        Attestation::None(crate::ReasonCode::no_hardware_root())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attestation_is_a_reason_or_unrecorded_and_nothing_else() {
+        let none = Attestation::no_hardware_root();
+        assert_eq!(
+            serde_json::to_string(&none).unwrap(),
+            r#"{"none":"attestation.no_hardware_root"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Attestation::Unrecorded).unwrap(),
+            r#""unrecorded""#
+        );
+        for bad in [
+            r#"{"none":"Free text here"}"#,
+            r#"{"evidence":"00"}"#,
+            r#"{"none":"attestation.x","extra":1}"#,
+            r#""none""#,
+        ] {
+            assert!(serde_json::from_str::<Attestation>(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn names_are_short_and_plain() {
