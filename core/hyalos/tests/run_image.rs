@@ -425,14 +425,26 @@ fn codex_in_the_sandbox_pushes_a_branch_and_opens_a_pull_request() -> Res {
     );
     assert!(gh.issued().is_empty(), "no token is left live");
 
-    // The log: the container substrate and broker-held credentials, and curl's refused host.
+    // The log: the substrate detection chose on this runtime, gVisor where it is set up (ADR-0056),
+    // broker-held credentials, and curl's refused host.
     let events = world.events()?;
+    let ran_on = events.iter().find_map(|e| match e {
+        Event::JobStarted {
+            substrate,
+            credentials: CredentialTier::BrokerHeld,
+            ..
+        } => Some(substrate.as_str().to_string()),
+        _ => None,
+    });
+    eprintln!("the job ran on {ran_on:?}");
     assert!(
-        events.iter().any(|e| matches!(e,
-        Event::JobStarted { substrate, credentials: CredentialTier::BrokerHeld, .. }
-            if substrate.as_str() == format!("container.{runtime}"))),
+        ran_on.as_deref() == Some(&format!("container.{runtime}"))
+            || ran_on.as_deref() == Some(&format!("gvisor.{runtime}")),
         "{events:?}"
     );
+    if std::env::var_os("HYALOS_REQUIRE_GVISOR").is_some() {
+        assert_eq!(ran_on, Some(format!("gvisor.{runtime}")));
+    }
     assert!(
         events.iter().any(|e| matches!(e,
         Event::GateAnswered { gate: Gate::Egress, answer: Answer::Deny, reason, .. }

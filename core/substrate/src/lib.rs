@@ -16,7 +16,7 @@ mod container;
 mod spec;
 
 pub use choose::{Choice, HOST_OS, Tried, Unsupported, check_host, choose, detect};
-pub use container::ContainerSubstrate;
+pub use container::{ContainerSubstrate, GVISOR_RUNTIME};
 pub use spec::{
     BROKER_SOCKET_IN_SANDBOX, Ending, Isolation, OUTPUT_LIMIT, Outcome, SandboxSpec, SpecError,
     StartError, Unavailable,
