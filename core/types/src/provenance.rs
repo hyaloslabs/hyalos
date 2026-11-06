@@ -9,6 +9,13 @@
 //! Taint is derived from what a step reads ([`StepInputs::tainted`]), never requested: an actor reads
 //! its repository, which contributors write, so it always runs tainted, and any step given forge-authored
 //! text or model output derived from it does too (ADR-0004, ADR-0005).
+//!
+//! Text has one type per author (ADR-0059): [`OperatorText`], [`PluginText`], [`ForgeText`] and
+//! [`ModelText`]. The last two are tainted text. Neither can be read as a string outside this crate:
+//! they have no `as_str`, `Display`, `Deref`, `AsRef<str>` or `Into<String>`, so code elsewhere can
+//! learn only their length and whether they equal a given text. Inside this crate they are read by
+//! exactly two things: [`crate::prompt::ReaderPrompt`], and the direct task
+//! ([`ForgeIssue::direct_task`]). Serialization is the other way out, for the channel.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -74,8 +81,53 @@ pub const MAX_NAME: usize = 128;
 /// The most bytes an issue may take as JSON, so it fits a channel frame however its text escapes.
 pub const MAX_ISSUE_JSON: usize = 48 * 1024;
 
-/// Text written on the forge. It is data to be read, never instructions to the engine, and its
-/// `Debug` form shows only how long it is.
+/// The operator's text: the request, configuration and policy, and what the engine makes from them.
+/// It is made only from those, never from something read from the forge or written by a model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorText(String);
+
+impl OperatorText {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
+    pub const fn provenance(&self) -> Provenance {
+        Provenance::Operator
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for OperatorText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Instructions from an installed skill or plugin. It may enter an actor's prompt, and never widens
+/// the job (ADR-0006). Made only by the plugin loader, which comes with S4.8.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginText(String);
+
+impl PluginText {
+    #[cfg(test)]
+    pub(crate) fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
+    pub const fn provenance(&self) -> Provenance {
+        Provenance::PluginAuthored
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Text written on the forge: tainted. It is data to be read, never instructions to the engine, and
+/// its `Debug` form shows only how long it is.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ForgeText(String);
@@ -89,9 +141,39 @@ impl ForgeText {
         Provenance::ForgeAuthored
     }
 
-    /// The text, for a step that is allowed to read it.
-    pub fn as_str(&self) -> &str {
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The text, for the two readers in this crate (see the module documentation).
+    pub(crate) fn text(&self) -> &str {
         &self.0
+    }
+}
+
+impl fmt::Debug for ForgeText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ForgeText({} bytes, forge-authored)", self.0.len())
+    }
+}
+
+/// Free text a model wrote after reading tainted input: tainted. Made only by a reader's output
+/// check, which comes with S4.2 and S4.3.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ModelText(String);
+
+impl ModelText {
+    #[cfg(test)]
+    pub(crate) fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
+    pub const fn provenance(&self) -> Provenance {
+        Provenance::ModelFromTainted
     }
 
     pub fn len(&self) -> usize {
@@ -101,11 +183,15 @@ impl ForgeText {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    pub(crate) fn text(&self) -> &str {
+        &self.0
+    }
 }
 
-impl fmt::Debug for ForgeText {
+impl fmt::Debug for ModelText {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ForgeText({} bytes, forge-authored)", self.0.len())
+        write!(f, "ModelText({} bytes, from tainted input)", self.0.len())
     }
 }
 

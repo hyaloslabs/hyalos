@@ -10,6 +10,7 @@ pub mod hex;
 pub mod ids;
 pub mod manifest;
 pub mod origin;
+pub mod prompt;
 pub mod provenance;
 pub mod reason;
 pub mod schema;
@@ -32,7 +33,12 @@ pub use manifest::{
     OpenError, Role, SignedManifest, flow,
 };
 pub use origin::Origin;
-pub use provenance::{ForgeIssue, ForgeText, IssueState, Provenance, StepInputs};
+pub use prompt::{
+    ActorPrompt, Choice, Choices, DirectPrompt, DirectTask, ReaderPrompt, Sourced, Typed,
+};
+pub use provenance::{
+    ForgeIssue, ForgeText, IssueState, ModelText, OperatorText, PluginText, Provenance, StepInputs,
+};
 pub use reason::{Answer, ReasonCode};
 pub use schema::{Schema, Upcast, UpcastFn, Value};
 pub use snapshot::{ImageError, PolicyImage, STATE_VERSION, StateImage};
