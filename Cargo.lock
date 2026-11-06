@@ -758,6 +758,7 @@ name = "hyalos-substrate"
 version = "0.0.0"
 dependencies = [
  "hyalos-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -775,6 +776,13 @@ dependencies = [
  "ed25519-dalek",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "hyalos-vm-init"
+version = "0.0.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

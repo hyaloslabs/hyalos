@@ -71,3 +71,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0055](0055-data-flows-name-where-the-jobs-data-may-go.md) | Data flows name where the job's data may go | Accepted |
 | [0056](0056-the-gvisor-substrate.md) | The gVisor substrate | Proposed |
 | [0057](0057-recording-a-jobs-attestation.md) | Recording a job's attestation | Proposed |
+| [0058](0058-the-firecracker-microvm-substrate.md) | The Firecracker microVM substrate | Proposed |

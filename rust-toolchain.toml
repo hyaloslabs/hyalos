@@ -2,3 +2,5 @@
 channel = "1.99.1"
 profile = "minimal"
 components = ["rustfmt", "clippy"]
+# The microVM init is a static binary, since it runs on whatever image the job uses (ADR-0058).
+targets = ["x86_64-unknown-linux-musl"]

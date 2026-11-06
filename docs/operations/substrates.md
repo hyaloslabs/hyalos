@@ -4,8 +4,48 @@ A job runs on the strongest substrate this host has ready ([ADR-0011](../adr/001
 
 | Substrate | Recorded as | Isolation | Needs |
 |---|---|---|---|
+| MicroVM | `microvm.firecracker` | its own guest kernel in a Firecracker virtual machine on KVM, with no network device | `/dev/kvm`, Firecracker, a guest kernel and `hyalos-vm-init`, named in `microvm.conf`; Docker or Podman holds the image |
 | gVisor | `gvisor.docker`, `gvisor.podman` | gVisor's kernel in user space between the job and the host's | `runsc` registered as `hyalos-runsc` |
 | Container | `container.docker`, `container.podman` | the host's kernel, behind namespaces and dropped privileges | Docker or Podman with its init |
+
+## MicroVM
+
+Each job runs in its own Firecracker virtual machine, on a guest kernel, with KVM between it and the host ([ADR-0058](../adr/0058-the-firecracker-microvm-substrate.md)). This is the strongest boundary Hyalos has, and a job runs in one whenever one is set up and ready. The VM has no network device: the guest reaches the host only through vsock, and only the broker's socket is wired to it.
+
+**Install** (x86_64 Linux with KVM; `sudo` only to open `/dev/kvm`). These are the release and kernel CI tests, checked against their SHA-256; `.github/scripts/install-firecracker.sh <dir>` does the same, from a checkout of this repository.
+
+```
+DIR=/opt/hyalos-microvm   # anywhere you own
+V=v1.17.0
+curl -fsSLO "https://github.com/firecracker-microvm/firecracker/releases/download/${V}/firecracker-${V}-x86_64.tgz"
+echo "06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558  firecracker-${V}-x86_64.tgz" | sha256sum -c -
+tar xzf "firecracker-${V}-x86_64.tgz"
+install -m 755 "release-${V}-x86_64/firecracker-${V}-x86_64" "$DIR/firecracker"
+curl -fsSL -o vmlinux https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155
+echo "e20e46d0c36c55c0d1014eb20576171b3f3d922260d9f792017aeff53af3d4f2  vmlinux" | sha256sum -c -
+install -m 644 vmlinux "$DIR/vmlinux"
+cargo build --release --locked -p hyalos-vm-init --target x86_64-unknown-linux-musl
+install -m 755 target/x86_64-unknown-linux-musl/release/hyalos-vm-init "$DIR/hyalos-vm-init"
+```
+
+Then say where they are in `microvm.conf` in the config directory (beside `engine.pub`). All three are required and must be absolute paths:
+
+```
+firecracker = /opt/hyalos-microvm/firecracker
+kernel = /opt/hyalos-microvm/vmlinux
+init = /opt/hyalos-microvm/hyalos-vm-init
+```
+
+- **KVM.** You must be able to open `/dev/kvm` for reading and writing. Add yourself to the `kvm` group (`sudo usermod -aG kvm $USER`, then log in again). On WSL2, `/dev/kvm` exists when nested virtualisation is on; `sudo chmod 666 /dev/kvm` lasts until the next restart.
+- **The image** still comes from Docker or Podman. The first job on an image turns it into a read-only disk (about 1.3 times its size) under `microvm/` in the data directory, kept by the image's id and the init. Delete that directory to reclaim the space; the next job makes the disk again. `mke2fs` (e2fsprogs) must be installed.
+- **The kernel** must have vsock, virtio block, ext4, devtmpfs and cgroup v2 with the memory and pids controllers. The pinned one does.
+- **Each VM** has the job's memory plus 128 MiB for its kernel and init, and 2 vCPUs. Its sockets are under `vm/` in the runtime directory while it runs.
+
+**Check it.** `hyalos doctor` should say `substrate microvm.firecracker: ready (micro-VM isolation)` and `chosen: microvm.firecracker`. Without `microvm.conf` it says `microvm: not set up`. The readiness check boots a tiny VM, which takes about a second.
+
+**What runs where.** Firecracker runs as you, with its own seccomp filters, but not under its jailer, which needs root ([ADR-0058](../adr/0058-the-firecracker-microvm-substrate.md)). Inside, `hyalos-vm-init` is PID 1: it mounts a read-only root, private `/tmp` and `/run`, sets the job's memory and process limits in a cgroup, drops every capability from the bounding set, sets no-new-privileges, and runs the program as user 65534. If the engine is gone, the VM ends itself 30 seconds after the job's deadline.
+
+**Upgrading.** Pin a new release or kernel by its SHA-256, here and in `.github/scripts/install-firecracker.sh`, and run the contract (`cargo test -p hyalos-substrate-contract --test microvm` with `HYALOS_REQUIRE_MICROVM=1` and `HYALOS_FIRECRACKER`, `HYALOS_VM_KERNEL` and `HYALOS_VM_INIT` set).
 
 ## gVisor
 

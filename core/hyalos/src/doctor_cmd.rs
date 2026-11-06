@@ -7,7 +7,7 @@
 
 use std::process::ExitCode;
 
-use hyalos_substrate::{Choice, HOST_OS, Isolation, Unsupported, detect};
+use hyalos_substrate::{Choice, HOST_OS, Isolation, Unsupported, detect_with};
 
 /// The sandbox image a job runs, as `images/sandbox/Containerfile` builds it (ADR-0040).
 pub const DEFAULT_IMAGE: &str = "hyalos-sandbox:latest";
@@ -22,6 +22,9 @@ const USAGE: &str = "usage: hyalos doctor [--image <image>]
 /// the provider can bound a key that has leaked.
 pub const SPEND_CAP: &str = "spend cap: set a spend limit on the dedicated API key at the provider (the Anthropic Console's or OpenAI's usage limits). Hyalos holds each job to its budget, but a key cannot be scoped to one job, so the provider's cap is what bounds a loss if the key leaks. See docs/operations/provider-keys.md";
 
+/// Said when there is no `microvm.conf`, since a job then never runs in a microVM (ADR-0058).
+pub const MICROVM_ADVICE: &str = "microvm: not set up (no microvm.conf in the config directory); a microVM is the strongest boundary. See docs/operations/substrates.md\n";
+
 pub fn run(args: &[String]) -> ExitCode {
     let image = match args {
         [] => DEFAULT_IMAGE.to_string(),
@@ -31,7 +34,19 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let (text, ok) = report(HOST_OS, &detect(&image), &image);
+    let env = |name: &str| std::env::var(name).ok();
+    let microvm = match crate::microvm_conf::from_env(&env) {
+        Ok(microvm) => microvm,
+        Err(message) => {
+            eprintln!("hyalos: {message}");
+            return ExitCode::from(1);
+        }
+    };
+    let none = microvm.is_none();
+    let (mut text, ok) = report(HOST_OS, &detect_with(&image, microvm), &image);
+    if none {
+        text.push_str(MICROVM_ADVICE);
+    }
     print!("{text}");
     if ok {
         ExitCode::SUCCESS
