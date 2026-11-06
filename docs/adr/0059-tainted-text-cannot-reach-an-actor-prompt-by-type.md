@@ -1,6 +1,6 @@
 # ADR-0059: Tainted text cannot reach an actor's prompt, by type
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
