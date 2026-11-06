@@ -72,4 +72,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0056](0056-the-gvisor-substrate.md) | The gVisor substrate | Accepted |
 | [0057](0057-recording-a-jobs-attestation.md) | Recording a job's attestation | Accepted |
 | [0058](0058-the-firecracker-microvm-substrate.md) | The Firecracker microVM substrate | Accepted |
-| [0059](0059-tainted-text-cannot-reach-an-actor-prompt-by-type.md) | Tainted text cannot reach an actor's prompt, by type | Proposed |
+| [0059](0059-tainted-text-cannot-reach-an-actor-prompt-by-type.md) | Tainted text cannot reach an actor's prompt, by type | Accepted |
