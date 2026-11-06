@@ -60,7 +60,7 @@ There is no string field. A schema cannot declare free text, so no reader's outp
 | Check | Code |
 | --- | --- |
 | The document is at most 64 KiB. | `workflow.too_large` |
-| It is JSON of this shape, with no unknown field and no unknown kind. | `workflow.malformed` |
+| It is JSON of this shape, with no unknown field, no unknown kind and no key named twice in any object. | `workflow.malformed` |
 | Its version is 1. | `workflow.unknown_version` |
 | Names (workflow, inputs, steps, fields) are 1 to 32 of `a-z`, `0-9` and `_`, starting with a letter. | `workflow.bad_name` |
 | A step id is unique and is not also an input's name. | `workflow.duplicate_name` |
@@ -96,4 +96,4 @@ What this does not decide:
 - **Gated handles** (S4.4) and **plugin-authored instructions** (S4.8): `instructions` are the author's, the operator's today.
 - **Which tools, egress hosts and budget a step gets.** These stay in the manifest that `hyalos run` mints. The format will grow them with S4.6, as a new version if the shape changes.
 
-A JSON object that names one key twice keeps the last value, as `serde_json` does. The document is the operator's own, so that is a typo, not an attack. A schema author who needs text after all has to choose among options or wait for handles, which is the restriction ADR-0059 chose.
+A key named twice is refused anywhere in the document, including in `inputs` and `output`, where `serde_json` would otherwise keep the last value. What a reviewer reads first is then what was checked. A schema author who needs text after all has to choose among options or wait for handles, which is the restriction ADR-0059 chose.

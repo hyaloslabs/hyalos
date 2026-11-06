@@ -90,7 +90,11 @@ pub struct Step {
     /// The author's instructions: operator text.
     pub instructions: String,
     /// The typed fields the step returns. Required for a reader and a planner.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "unique::optional"
+    )]
     pub output: Option<BTreeMap<String, Field>>,
 }
 
@@ -99,9 +103,62 @@ pub struct Step {
 pub struct Workflow {
     pub version: u32,
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "unique::map")]
     pub inputs: BTreeMap<String, InputKind>,
     pub steps: Vec<Step>,
+}
+
+/// The document's maps, refusing a key named twice: what a reviewer reads first is what is checked.
+/// Derived structs already refuse a repeated field.
+mod unique {
+    use std::collections::BTreeMap;
+    use std::fmt;
+    use std::marker::PhantomData;
+
+    use serde::de::{Deserialize, Deserializer, Error, MapAccess, Visitor};
+
+    struct Unique<V>(BTreeMap<String, V>);
+
+    impl<'de, V: Deserialize<'de>> Deserialize<'de> for Unique<V> {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct Keys<V>(PhantomData<V>);
+            impl<'de, V: Deserialize<'de>> Visitor<'de> for Keys<V> {
+                type Value = Unique<V>;
+
+                fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    f.write_str("an object")
+                }
+
+                fn visit_map<A: MapAccess<'de>>(
+                    self,
+                    mut access: A,
+                ) -> Result<Unique<V>, A::Error> {
+                    let mut map = BTreeMap::new();
+                    while let Some((key, value)) = access.next_entry::<String, V>()? {
+                        if map.contains_key(&key) {
+                            let shown: String = key.chars().take(64).collect();
+                            return Err(A::Error::custom(format!("{shown:?} is named twice")));
+                        }
+                        map.insert(key, value);
+                    }
+                    Ok(Unique(map))
+                }
+            }
+            d.deserialize_map(Keys(PhantomData))
+        }
+    }
+
+    pub fn map<'de, D: Deserializer<'de>, V: Deserialize<'de>>(
+        d: D,
+    ) -> Result<BTreeMap<String, V>, D::Error> {
+        Unique::deserialize(d).map(|u| u.0)
+    }
+
+    pub fn optional<'de, D: Deserializer<'de>, V: Deserialize<'de>>(
+        d: D,
+    ) -> Result<Option<BTreeMap<String, V>>, D::Error> {
+        Option::<Unique<V>>::deserialize(d).map(|o| o.map(|u| u.0))
+    }
 }
 
 /// Why a workflow does not install. Each has a short code ([`WorkflowError::code`]).
@@ -197,7 +254,7 @@ impl fmt::Display for WorkflowError {
             }
             WorkflowError::ForwardReference { step, reference } => write!(
                 f,
-                "{code}: step {step} reads {reference}, which a later step defines"
+                "{code}: step {step} reads {reference}, which this step or a later one defines"
             ),
             WorkflowError::OutputRequired { step } => {
                 write!(
@@ -598,6 +655,29 @@ mod tests {
             &format!(r#""{}""#, "a".repeat(MAX_INSTRUCTIONS + 1)),
         );
         assert_eq!(long.unwrap_err().code(), "workflow.instructions_too_long");
+    }
+
+    #[test]
+    fn a_key_named_twice_is_refused_in_every_object() {
+        // A map: what a reviewer reads first would not be what was checked.
+        let input = edited(
+            r#""issue": "forge_issue""#,
+            r#""issue": "forge_issue", "issue": "operator_text""#,
+        );
+        assert_eq!(input.unwrap_err().code(), "workflow.malformed");
+        let field = edited(
+            r#""has_repro": "bool""#,
+            r#""has_repro": "bool", "has_repro": "bool""#,
+        );
+        assert_eq!(field.unwrap_err().code(), "workflow.malformed");
+        // A step, and the document: derived structs already refuse a repeated field.
+        let step = edited(
+            r#""role": "actor","#,
+            r#""role": "actor", "role": "reader","#,
+        );
+        assert_eq!(step.unwrap_err().code(), "workflow.malformed");
+        let document = edited(r#""version": 1,"#, r#""version": 1, "version": 1,"#);
+        assert_eq!(document.unwrap_err().code(), "workflow.malformed");
     }
 
     #[test]
