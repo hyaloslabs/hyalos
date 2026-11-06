@@ -13,10 +13,12 @@ use hyalos_types::{Attestation, SubstrateName};
 
 mod choose;
 mod container;
+mod microvm;
 mod spec;
 
-pub use choose::{Choice, HOST_OS, Tried, Unsupported, check_host, choose, detect};
+pub use choose::{Choice, HOST_OS, Tried, Unsupported, check_host, choose, detect, detect_with};
 pub use container::{ContainerSubstrate, GVISOR_RUNTIME};
+pub use microvm::{MicroVmConfig, MicroVmSubstrate};
 pub use spec::{
     BROKER_SOCKET_IN_SANDBOX, Ending, Isolation, OUTPUT_LIMIT, Outcome, SandboxSpec, SpecError,
     StartError, Unavailable,

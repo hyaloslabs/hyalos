@@ -1,0 +1,21 @@
+[package]
+name = "hyalos-vm-init"
+description = "The init inside a microVM sandbox (ADR-0058): mounts, limits, the broker's socket over vsock, and the job as an unprivileged user. It runs in the sandbox, never in the engine or broker, so it is not part of the trusted core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Not the workspace's lints: an init must make system calls the standard library does not wrap
+# (mount, vsock, reboot, an interface flag), so `unsafe` is allowed here, each use with its reason.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+undocumented_unsafe_blocks = "deny"
+
+[dependencies]
+libc = "0.2.191"

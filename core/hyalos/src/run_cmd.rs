@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use hyalos_engine::{Engine, Ruling};
 use hyalos_policy::{GateRequest, Outcome as GateOutcome};
-use hyalos_substrate::{Choice, Ending, HOST_OS, Outcome, SandboxSpec, Unsupported, detect};
+use hyalos_substrate::{Choice, Ending, HOST_OS, Outcome, SandboxSpec, Unsupported, detect_with};
 use hyalos_types::wire::{ToBroker, ToEngine};
 use hyalos_types::{
     Answer, Budget, Clock, CredentialTier, Digest, Event, ForgeIssue, ForgeToken, HoldReason,
@@ -107,7 +107,7 @@ impl Harness {
     }
 }
 
-/// Finds the substrates on a host. [`detect`] in the binary; tests pass another.
+/// Finds the substrates on a host. [`detect_with`] in the binary; tests pass another.
 pub type Detect = Box<dyn FnOnce(&str) -> Result<Choice, Unsupported> + Send>;
 
 /// Where the engine finds what it needs.
@@ -173,7 +173,10 @@ fn setup(env: Env<'_>) -> Result<Setup, String> {
         runtime_dir: paths::runtime_dir(env)?,
         broker_exe: std::env::current_exe()
             .map_err(|e| format!("cannot find this executable: {e}"))?,
-        detect: Box::new(detect),
+        detect: {
+            let microvm = crate::microvm_conf::from_env(env)?;
+            Box::new(move |image: &str| detect_with(image, microvm))
+        },
         detect_timeout: DETECT_TIMEOUT,
         // From here the first Ctrl-C or SIGTERM ends the job cleanly, and a second exits at once.
         interrupt: Interrupt::on_signals(again)
