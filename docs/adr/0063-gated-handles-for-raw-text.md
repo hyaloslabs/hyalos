@@ -1,6 +1,6 @@
 # ADR-0063: Gated handles: the broker holds raw text, a human releases it by digest
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
