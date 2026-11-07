@@ -1,4 +1,4 @@
-//! Reader steps, run in the broker (ADR-0005, ADR-0061).
+//! Reader steps, run in the broker (ADR-0005, ADR-0061), and planner steps the same way (ADR-0062).
 //!
 //! The engine sends a [`ReaderCall`]: the model, the step's instructions and the operator's context,
 //! the issue to read if any, and the typed fields the step returns. The broker reads the issue itself,
@@ -50,8 +50,13 @@ pub fn run(
     clock: &dyn Clock,
     issue: impl FnOnce(u64) -> Result<ForgeIssue, &'static str>,
 ) -> Result<Vec<TypedValue>, &'static str> {
-    if manifest.role != Role::Reader {
-        return Err("reader.not_a_reader");
+    // A planner runs here too, as a call with no tools that reads only typed values, never an issue
+    // (ADR-0062).
+    match manifest.role {
+        Role::Reader => {}
+        Role::Planner if call.issue.is_none() => {}
+        Role::Planner => return Err("reader.planner_reads_issue"),
+        Role::Actor | Role::Deterministic => return Err("reader.not_a_reader"),
     }
     if !well_formed(call) {
         return Err("reader.bad_call");
@@ -61,7 +66,7 @@ pub fn run(
         return Err("admission.expired");
     }
     let issue = call.issue.map(issue).transpose()?;
-    let text = prompt(call, issue.as_ref())?;
+    let text = prompt(manifest.role, call, issue.as_ref())?;
     let (target, body) = match call.protocol {
         Protocol::Anthropic => (
             "/v1/messages",
@@ -112,12 +117,19 @@ pub fn run(
 
 /// The prompt: the engine's framing, the operator's instructions and context, the issue, and the
 /// shape of the answer, which is the output the operator wrote.
-fn prompt(call: &ReaderCall, issue: Option<&ForgeIssue>) -> Result<String, &'static str> {
+fn prompt(
+    role: Role,
+    call: &ReaderCall,
+    issue: Option<&ForgeIssue>,
+) -> Result<String, &'static str> {
     let shape = serde_json::to_string(&call.output).map_err(|_| "reader.bad_call")?;
     let mut p = ReaderPrompt::new();
-    p.literal(
-        "You read and classify. You have no tools. Answer with one JSON object and nothing else.\n\n",
-    )
+    p.literal(if role == Role::Planner {
+        "You plan from the values you are given. You have no tools. Answer with one JSON object and \
+         nothing else.\n\n"
+    } else {
+        "You read and classify. You have no tools. Answer with one JSON object and nothing else.\n\n"
+    })
     .operator(&OperatorText::new(&call.instructions));
     for context in &call.context {
         p.literal("\n\n").operator(&OperatorText::new(context));

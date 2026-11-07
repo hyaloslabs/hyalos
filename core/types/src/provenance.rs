@@ -14,11 +14,10 @@
 //! [`ModelText`]. The last two are tainted text. Neither can be read as a string outside this crate:
 //! they have no `as_str`, `Display`, `Deref`, `AsRef<str>` or `Into<String>`, so code elsewhere can
 //! learn only their length and whether they equal a given text. Inside this crate they are read by
-//! exactly two things: [`crate::prompt::ReaderPrompt`], and the direct task
-//! ([`ForgeIssue::direct_task`]).
+//! exactly one thing: [`crate::prompt::ReaderPrompt`], which the broker builds.
 //!
-//! There are two ways out, both deliberate: serialization, for the channel; and a finished reader or
-//! direct prompt (`into_text`), which has to become a string for the model or the substrate. Passing
+//! There are two ways out, both deliberate: serialization, for the channel; and a finished reader
+//! prompt (`into_text`), which has to become a string for the model. Passing
 //! such a string to [`OperatorText::new`] would relabel forge text as the operator's. That is the
 //! bypass code review guards against.
 

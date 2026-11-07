@@ -367,6 +367,78 @@ pub fn repository(root: &Path, home: &Path) -> Res {
     Ok(())
 }
 
+/// A local OpenAI-compatible model: answers each call with the next text it is given, and keeps
+/// every request body it received. With no text left it answers 500.
+pub struct Model {
+    port: u16,
+    sent: Arc<Mutex<Vec<serde_json::Value>>>,
+}
+
+impl Model {
+    pub fn start(texts: &[&str]) -> Res<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let log = sent.clone();
+        let mut texts: Vec<String> = texts.iter().rev().map(|t| t.to_string()).collect();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
+                let _ = answer(stream, texts.pop(), &log);
+            }
+        });
+        Ok(Self { port, sent })
+    }
+
+    pub fn base(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    pub fn sent(&self) -> Vec<serde_json::Value> {
+        self.sent.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+}
+
+fn answer(stream: TcpStream, text: Option<String>, log: &Mutex<Vec<serde_json::Value>>) -> Res {
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut length = 0usize;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 || line == "\r\n" {
+            break;
+        }
+        if let Some((n, v)) = line.split_once(':')
+            && n.trim().eq_ignore_ascii_case("content-length")
+        {
+            length = v.trim().parse().unwrap_or(0);
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body)?;
+    if let Ok(mut log) = log.lock() {
+        log.push(serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null));
+    }
+    let (status, json) = match text {
+        Some(text) => (
+            "200 OK",
+            serde_json::json!({
+                "object": "response",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}],
+                "usage": {"input_tokens": 40, "output_tokens": 8},
+            })
+            .to_string(),
+        ),
+        None => ("500 Oops", "{}".to_string()),
+    };
+    let mut out = stream;
+    write!(
+        out,
+        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{json}",
+        json.len()
+    )?;
+    Ok(())
+}
+
 /// Everything a job needs on disk: the engine's key, an approved policy, provider keys and the App.
 pub struct World {
     pub root: PathBuf,
@@ -418,6 +490,21 @@ impl World {
             private(world.config.join("github-app.pem"), PEM)?;
         }
         Ok(world)
+    }
+
+    /// Points the broker's OpenAI key at `model`, for the readers and planners of a workflow.
+    pub fn use_model(&self, model: &Model) -> Res {
+        let path = self.config.join("provider.keys");
+        std::fs::write(
+            &path,
+            format!(
+                "openai.key = {}\nopenai.base = {}\n",
+                self.provider_key,
+                model.base()
+            ),
+        )?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(())
     }
 
     pub fn cli(&self, args: &[&str]) -> Res<Output> {

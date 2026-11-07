@@ -50,6 +50,7 @@ fn waiting(started: &Path) -> Request {
         budget_tokens: 10_000,
         minutes: 2,
         egress_hosts: BTreeSet::new(),
+        step_model: None,
     }
 }
 

@@ -1,8 +1,8 @@
 //! `hyalos workflow check <file>`: whether a workflow installs (ADR-0005, ADR-0060).
 //!
 //! It reads and checks the document, writes nothing, and prints each step with its role, what it
-//! reads by provenance, and whether it runs tainted. Installing a workflow comes with the fix-issue
-//! workflow (S4.6).
+//! reads by provenance, and whether it runs tainted. The shipped fix-issue workflow is checked the
+//! same way each time `hyalos run --issue-number` starts (ADR-0062).
 
 use std::io::Read;
 use std::process::ExitCode;
