@@ -152,6 +152,14 @@ fn state_from(
     replay_from(schema, base, events)
 }
 
+/// The state of the log at `path`, after checking it against the engine's public key: its latest
+/// snapshot, then the events that follow. It needs no secret, so the MCP server reads tasks with it
+/// while `hyalos run` writes (ADR-0067).
+pub fn read_state(path: &std::path::Path, key: &PublicKey) -> Result<State, EngineError> {
+    let contents = read_verified(path, key).map_err(EngineError::Verify)?;
+    state_from(&SCHEMA, contents.anchor.as_ref(), &contents.events)
+}
+
 /// Every archive the log at `path` records as pruned (ADR-0026), after checking the log against the
 /// engine's public key. It needs no secret, so an operator or auditor can ask. Records from before
 /// the latest snapshot are in the snapshot, so compacting does not lose them.

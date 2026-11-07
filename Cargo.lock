@@ -718,6 +718,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyalos-mcp-conformance"
+version = "0.0.0"
+dependencies = [
+ "hyalos",
+ "serde_json",
+]
+
+[[package]]
 name = "hyalos-policy"
 version = "0.0.0"
 dependencies = [

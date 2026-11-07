@@ -80,3 +80,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0064](0064-results-a-harness-submits-and-the-broker-reads.md) | Results a harness submits through `hyalos-submit`, and the broker reads as typed values | Accepted |
 | [0065](0065-the-content-gate-on-what-a-tainted-job-publishes.md) | The content gate on what a tainted job publishes, and the ported red-team corpus | Accepted |
 | [0066](0066-plugin-authored-text-and-the-grant-that-bounds-it.md) | Plugin-authored text, and the grant that bounds the job it steers | Accepted |
+| [0067](0067-the-mcp-server-and-the-conformance-suite.md) | The MCP server, its two transports, and the conformance suite it passes | Proposed |

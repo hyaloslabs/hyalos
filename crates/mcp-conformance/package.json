@@ -1,0 +1,8 @@
+{
+  "name": "hyalos-mcp-conformance",
+  "private": true,
+  "description": "The pinned MCP conformance suite. Install with npm ci --ignore-scripts.",
+  "dependencies": {
+    "@modelcontextprotocol/conformance": "0.2.0-alpha.12"
+  }
+}
