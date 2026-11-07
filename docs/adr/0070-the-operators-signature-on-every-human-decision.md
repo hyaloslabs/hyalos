@@ -27,7 +27,7 @@ characters; the seal is bound to the format and the public key written beside it
 from `ring`, already in the `hyalos` crate. The public half is `operator.pub` (0444). A file asking for
 fewer than 100,000 or more than 10,000,000 iterations is refused. The key is never replaced: `init`
 refuses if either file exists. The passphrase is read from `/dev/tty` with echo off (rustix's
-`termios`), or as one line from stdin with `--passphrase-stdin` for a script the operator runs and for
+`termios`; a signal during the read puts echo back before the command exits), or as one line from stdin with `--passphrase-stdin` for a script the operator runs and for
 tests; never from an argument, the environment or a file. An agent that can read every file still
 cannot sign without the passphrase.
 
@@ -59,19 +59,28 @@ must be no later than the last event and no earlier than the last signed decisio
 The state keeps that last signed decision (`StateImage` version 8, `last_approval`; older images read
 as none). The engine never writes `unrecorded`.
 
+**The version is no excuse.** An event's schema version is a column its writer chooses, so whoever has
+the engine's key could write a human decision at version 12 and have it read as unsigned and old. The
+state therefore records the first event written at version 13 or later (`signed_since`, kept in
+`StateImage` version 8, so compaction keeps it), and `State::apply_written` refuses an `unrecorded`
+decision written at version 13 or later, or after that event, on write and on replay. The engine, the
+MCP server and minting therefore never act on one.
+
 **What verify checks.** `hyalos log verify` runs `hyalos_engine::approvals` with the engine's public
 key and the operator's, from `--operator-key`, `--operator-key-file` or `operator.pub` (refused if
 writable by others), never from the log. Every human decision written at version 13 or later must be
 signed by that key for this event in this log, with `after` before it and no earlier than the
-previous signed decision, and `after_hash` equal to that event's hash when the event is in the file
-(an event before the latest snapshot rests on the engine's signature on the snapshot). A signed
-decision with no operator key to check it fails. Human decisions written before version 13 pass and
-are listed as unsigned. `StoredEvent` now carries each event's hash for this.
+previous signed decision, and `after_hash` equal to that event's hash when the event is in a file
+given. A signed decision with no operator key to check it fails. Human decisions written before the
+log reached version 13 pass and are listed as unsigned. The check runs over the archives given with
+`--archive` as well as the live log, in sequence order, so compacting does not hide a decision from
+it; history in no file given rests on the engine's signature on the snapshot it ends at (ADR-0026),
+and verify says so. `StoredEvent` now carries each event's hash for this.
 
 ## Consequences
 
 - An approval the engine's key alone wrote fails `hyalos log verify`, and replay refuses one that
-  claims a human and carries no signature. The driving agent's credential is a bearer secret and
+  claims a human and carries no signature, at any version once the log has reached version 13. The driving agent's credential is a bearer secret and
   opens nothing: given as the passphrase it is refused, and no key made from it is the operator's.
 - The operator types a passphrase for each decision, including issuing and revoking an agent's
   credential and approving a policy. Scripts and tests pass it on stdin. A lost passphrase or key file
@@ -80,7 +89,15 @@ are listed as unsigned. `StoredEvent` now carries each event's hash for this.
 - `hyalos log verify` needs `operator.pub` once any decision is signed; an auditor on another machine
   passes `--operator-key` as they pass `--public-key`.
 - Logs written before version 13 still open, verify and audit; their human decisions are listed as
-  resting on the engine's key alone.
+  resting on the engine's key alone. Upgrade with no run in progress: an older build still running
+  after this one has written could record a human decision the log then refuses on replay.
+- What is signed is the event's payload, not its stamp: whoever has the engine's key could restamp a
+  signed decision, within the rule that time never goes back (ADR-0024). The approval's `after` still
+  binds it to its place in the log.
+- The engine signs with whatever `operator.key` holds when the passphrase opens it, and verify checks
+  against whatever `operator.pub` holds: someone who can replace both files before the first signed
+  decision has replaced the operator. That access also reaches `engine.key`; keep a copy of
+  `operator.pub` off the machine, as for `engine.pub`.
 - Not built here: ADR-0012's merge approval bound to a pull request's head commit (no irreversible
   action mints yet), a hardware key or a second device for the operator, and rotating the operator's
   key.

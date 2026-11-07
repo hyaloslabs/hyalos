@@ -79,7 +79,7 @@ fn route(e: &mut Engine, at: Timestamp, event: Event) -> Result<Head, EngineErro
 #[test]
 fn a_task_runs_through_a_hold_to_completion() -> Res {
     let mut e = Engine::open(&fresh_path("lifecycle")?, key())?
-        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let task = TaskId::from_seq(submit(&mut e, 1, Event::TaskCreated { request: d(1) })?);
     assert_eq!(
         task.seq(),
@@ -192,7 +192,7 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
 #[test]
 fn two_holds_keep_a_task_held_until_both_resolve() -> Res {
     let mut e = Engine::open(&fresh_path("two-holds")?, key())?
-        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let task = TaskId::from_seq(submit(&mut e, 1, Event::TaskCreated { request: d(1) })?);
     let open = |e: &mut Engine, n, gate| {
         submit(
@@ -238,8 +238,8 @@ fn two_holds_keep_a_task_held_until_both_resolve() -> Res {
 #[test]
 fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
     let path = fresh_path("refused")?;
-    let mut e =
-        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+    let mut e = Engine::open(&path, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let task = TaskId::from_seq(submit(&mut e, 1, Event::TaskCreated { request: d(1) })?);
     let job = JobId::from_seq(submit(
         &mut e,
@@ -418,7 +418,7 @@ fn deleting_the_projection_and_replaying_gives_identical_state() -> Res {
     let path = fresh_path("rebuild")?;
     let live = {
         let mut e = Engine::open(&path, key())?
-            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+            .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
         let t1 = TaskId::from_seq(submit(&mut e, 1, Event::TaskCreated { request: d(1) })?);
         let t2 = TaskId::from_seq(submit(&mut e, 2, Event::TaskCreated { request: d(2) })?);
         let j = JobId::from_seq(submit(
@@ -455,8 +455,8 @@ fn deleting_the_projection_and_replaying_gives_identical_state() -> Res {
         e.state().clone()
     };
     // Rebuilt two ways: by reopening the engine, and by folding the stored events directly.
-    let reopened =
-        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+    let reopened = Engine::open(&path, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     assert_eq!(reopened.state(), &live);
     let folded: State = replay(&Log::open(&path, key())?.events()?)?;
     assert_eq!(folded, live);
@@ -469,7 +469,7 @@ fn a_log_that_fails_verification_is_not_loaded() -> Res {
     let path = fresh_path("tampered")?;
     {
         let mut e = Engine::open(&path, key())?
-            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+            .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
         submit(&mut e, 1, Event::TaskCreated { request: d(1) })?;
     }
     // Same file, wrong key: the chain fails at event 1.
@@ -662,7 +662,7 @@ fn random_runs_keep_every_invariant_and_replay_to_the_same_state() -> Res {
         let mut rng = sim.stream("events");
         let path = fresh_path(&format!("random-{seed}"))?;
         let mut e = Engine::open(&path, key())?
-            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+            .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
         let (mut accepted, mut refused) = (0u32, 0u32);
         for step in 0..200u64 {
             let next = e.state().last_seq() + 1;
@@ -683,7 +683,7 @@ fn random_runs_keep_every_invariant_and_replay_to_the_same_state() -> Res {
         drop(e);
         assert_eq!(
             Engine::open(&path, key())?
-                .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]))
+                .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]))
                 .state(),
             &live,
             "seed {seed}"
@@ -703,7 +703,7 @@ fn the_same_seed_gives_the_same_log_and_state() -> Res {
         let sim = Sim::new(77);
         let mut rng = sim.stream("events");
         let mut e = Engine::open(&fresh_path(name)?, key())?
-            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+            .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
         for step in 0..200u64 {
             let next = e.state().last_seq() + 1;
             let event = random_event(&mut rng, e.state(), next);

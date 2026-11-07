@@ -53,8 +53,8 @@ const OPERATOR: &str = r#"
 fn running(name: &str) -> Res<(Engine, JobId, PathBuf)> {
     let d = dir(name)?;
     let path = d.join("events.db");
-    let mut e =
-        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+    let mut e = Engine::open(&path, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let task = e
         .submit(
             at(1),
@@ -253,8 +253,8 @@ fn the_policy_in_force_is_the_projection_of_the_log() -> Res {
     let path = d.join("events.db");
     drop(e);
     // Reopening replays the log; so does replaying the stored events directly.
-    let reopened =
-        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+    let reopened = Engine::open(&path, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     assert_eq!(reopened.state(), &live);
     let events = Log::open(&path, key())?.events()?;
     assert_eq!(&replay(&events)?, &live);
@@ -273,8 +273,8 @@ fn compaction_keeps_the_policy_in_force() -> Res {
     e.compact(at(20), &d.join("archive.db"))?;
     let path = d.join("events.db");
     drop(e);
-    let reopened =
-        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+    let reopened = Engine::open(&path, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     assert_eq!(reopened.state().policy(), before.policy());
     // And it still mints from the policy it started from.
     assert!(
@@ -608,15 +608,16 @@ fn a_stored_policy_that_no_longer_validates_holds_requests_until_it_is_replaced(
                 at(i as u64 + 1),
                 Origin::Engine,
                 event.kind(),
-                hyalos_types::event::SCHEMA_VERSION,
+                // A policy an older build approved, before decisions were signed (ADR-0070).
+                12,
                 &event.encode()?,
             )?;
         }
     }
     // Opening does not fail: the log is intact, and refusing to open would lock the operator out of
     // replacing the policy.
-    let mut e =
-        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+    let mut e = Engine::open(&path, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let job = JobId::from_seq(2);
     let unavailable = e.policies().err().ok_or("the stale policy loaded")?;
     assert_eq!(unavailable.since, Some(3));

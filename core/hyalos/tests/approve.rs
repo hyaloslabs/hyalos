@@ -160,7 +160,7 @@ fn a_human_decision_the_engine_writes_without_the_operator_fails_verify() -> Res
 #[test]
 fn verify_fails_on_signed_decisions_checked_against_another_operator_key() -> Res {
     let world = World::new("approve-other-key", None)?;
-    let other = hyalos_types::OperatorKey::from_seed([3; 32])
+    let other = hyalos_types::OperatorKey::from_seed(&[3; 32])
         .public()
         .to_hex();
     let out = world.cli(&["log", "verify", "--operator-key", &other])?;

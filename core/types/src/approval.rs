@@ -28,12 +28,18 @@ const APPROVAL_TAG: &[u8] = b"hyalos.approval.signature";
 
 pub const APPROVAL_SIGNATURE_LEN: usize = 64;
 
+/// The first schema version that signs human decisions. Once a log has an event written at it or
+/// later, a human decision without the operator's signature is refused whatever version its own row
+/// claims, since that column is the writer's to choose.
+pub const SIGNED_SINCE: u32 = 13;
+
 /// The operator's signing key. A derived `Debug` would be one field away from printing it.
 pub struct OperatorKey(SigningKey);
 
 impl OperatorKey {
-    pub fn from_seed(seed: [u8; 32]) -> Self {
-        Self(SigningKey::from_bytes(&seed))
+    /// Taken by reference, so the caller's copy is the only one, to wipe as it chooses.
+    pub fn from_seed(seed: &[u8; 32]) -> Self {
+        Self(SigningKey::from_bytes(seed))
     }
 
     pub fn public(&self) -> OperatorPublic {
@@ -210,7 +216,7 @@ mod tests {
 
     #[test]
     fn an_approval_holds_only_for_its_operator_log_place_and_event() {
-        let key = OperatorKey::from_seed([7; 32]);
+        let key = OperatorKey::from_seed(&[7; 32]);
         let engine = [1; 32];
         let after = Digest::from_bytes([2; 32]);
         let approval = key.approve(&engine, 4, after, b"event");
@@ -218,7 +224,7 @@ mod tests {
         assert!(approval.is_by(&me, &engine, b"event"));
         assert!(!approval.is_by(&me, &engine, b"evenT"));
         assert!(!approval.is_by(&me, &[9; 32], b"event"));
-        let other = OperatorKey::from_seed([8; 32]).public();
+        let other = OperatorKey::from_seed(&[8; 32]).public();
         assert!(!approval.is_by(&other, &engine, b"event"));
         let moved = OperatorApproval {
             after: 5,
@@ -233,15 +239,19 @@ mod tests {
         // Another key claiming the operator's name does not make its signature the operator's.
         let forged = OperatorApproval {
             operator: me,
-            ..OperatorKey::from_seed([8; 32]).approve(&engine, 4, after, b"event")
+            ..OperatorKey::from_seed(&[8; 32]).approve(&engine, 4, after, b"event")
         };
         assert!(!forged.is_by(&me, &engine, b"event"));
     }
 
     #[test]
     fn signed_reads_and_writes_its_three_forms() {
-        let approval =
-            OperatorKey::from_seed([7; 32]).approve(&[1; 32], 0, Digest::from_bytes([0; 32]), b"x");
+        let approval = OperatorKey::from_seed(&[7; 32]).approve(
+            &[1; 32],
+            0,
+            Digest::from_bytes([0; 32]),
+            b"x",
+        );
         for signed in [Signed::None, Signed::Unrecorded, Signed::Operator(approval)] {
             let json = serde_json::to_string(&signed).unwrap();
             assert_eq!(serde_json::from_str::<Signed>(&json).unwrap(), signed);

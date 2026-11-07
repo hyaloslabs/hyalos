@@ -113,7 +113,7 @@ pub fn replay_from(
         let event = Event::decode_with(schema, &e.kind, e.schema_version, &e.payload)
             .map_err(|error| EngineError::Event { seq: e.seq, error })?;
         state
-            .apply(e.seq, e.at, e.origin, &event)
+            .apply_written(e.seq, e.at, e.origin, e.schema_version, &event)
             .map_err(|violation| EngineError::Replay {
                 seq: e.seq,
                 violation,
@@ -566,7 +566,11 @@ impl Engine {
                 Err(LogError::Moved) => continue,
                 other => other?,
             };
-            if self.state.apply(head.seq, at, origin, &event).is_err() {
+            if self
+                .state
+                .apply_written(head.seq, at, origin, self.schema.current, &event)
+                .is_err()
+            {
                 self.poisoned = true;
                 return Err(EngineError::Poisoned);
             }
@@ -651,7 +655,7 @@ impl Engine {
         let mut next = self.state.clone();
         for (origin, event) in events {
             let seq = next.last_seq() + 1;
-            next.apply(seq, at, *origin, event)
+            next.apply_written(seq, at, *origin, self.schema.current, event)
                 .map_err(EngineError::Rule)?;
         }
         if next.awaiting_hold() {

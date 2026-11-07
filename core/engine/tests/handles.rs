@@ -78,7 +78,7 @@ fn start(e: &mut Engine, task: TaskId, n: u64) -> Res<JobId> {
 fn engine(name: &str) -> Res<(Engine, TaskId, PathBuf)> {
     let d = dir(name)?;
     let mut e = Engine::open(&d.join("events.db"), key())?
-        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     e.approve_policy(at(1), POLICY, Decider::Human, code("policy.approved"))?;
     let t = task(&mut e, 2)?;
     Ok((e, t, d))
@@ -257,7 +257,7 @@ fn released_handles_survive_replay_and_compaction() -> Res {
     e.compact(at(10), &d.join("archive.db"))?;
     drop(e);
     let reopened = Engine::open(&d.join("events.db"), key())?
-        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     assert_eq!(reopened.state().handles(), before.handles());
     let mut reopened = reopened;
     let job = start(&mut reopened, t, 11)?;

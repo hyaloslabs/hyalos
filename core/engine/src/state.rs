@@ -14,8 +14,8 @@ use hyalos_types::snapshot::{
 use hyalos_types::workflow::MAX_FIELDS;
 use hyalos_types::{
     AgentId, AgentName, Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome,
-    MAX_POLICY_DOCUMENT, Origin, ReasonCode, Resolution, Sensitive, Signed, Stakes, TaskId,
-    Timestamp, TypedValue,
+    MAX_POLICY_DOCUMENT, Origin, ReasonCode, Resolution, SIGNED_SINCE, Sensitive, Signed, Stakes,
+    TaskId, Timestamp, TypedValue,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -394,6 +394,8 @@ pub struct State {
     pending: Option<Pending>,
     /// The event of the last decision the operator signed (ADR-0070).
     last_approval: Option<u64>,
+    /// The first event written at schema version 13 or later (ADR-0070).
+    signed_since: Option<u64>,
     last_seq: u64,
     last_at: Option<Timestamp>,
 }
@@ -818,6 +820,35 @@ impl State {
         }
     }
 
+    /// [`State::apply`] for an event written at schema `version`. A human decision without the
+    /// operator's signature is refused if it, or any event before it, was written at version 13 or
+    /// later: the version is the writer's to choose, so an old one is no excuse once the log has
+    /// moved past it (ADR-0070).
+    pub fn apply_written(
+        &mut self,
+        seq: u64,
+        at: Timestamp,
+        origin: Origin,
+        version: u32,
+        event: &Event,
+    ) -> Result<(), RuleViolation> {
+        if event.signed() == Some(&Signed::Unrecorded)
+            && (version >= SIGNED_SINCE || self.signed_since.is_some())
+        {
+            return Err(RuleViolation::HumanDecisionUnsigned);
+        }
+        self.apply(seq, at, origin, event)?;
+        if version >= SIGNED_SINCE && self.signed_since.is_none() {
+            self.signed_since = Some(seq);
+        }
+        Ok(())
+    }
+
+    /// Since which event human decisions must be signed, if the log has reached that version.
+    pub fn signed_since(&self) -> Option<u64> {
+        self.signed_since
+    }
+
     /// Applies `event`, which was appended at `seq` at time `at`. A refused event changes nothing.
     pub fn apply(
         &mut self,
@@ -1047,6 +1078,7 @@ impl State {
             agents,
             pending,
             last_approval,
+            signed_since,
             last_seq,
             last_at,
         } = self;
@@ -1057,6 +1089,7 @@ impl State {
             last_seq: *last_seq,
             last_at: last_at.map(Timestamp::as_millis),
             last_approval: *last_approval,
+            signed_since: *signed_since,
             tasks: tasks
                 .iter()
                 .map(|(id, t)| {
@@ -1236,9 +1269,11 @@ impl State {
             handles,
             agents,
             last_approval,
+            signed_since,
         } = image;
         let mut state = State {
             last_approval,
+            signed_since,
             last_seq,
             last_at: last_at.map(Timestamp::from_millis),
             ..State::default()

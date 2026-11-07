@@ -125,7 +125,7 @@ pub fn run_job(seed: u64, dir: &Path) -> Res<Run> {
     let public = log_key.public();
     let db = dir.join("events.db");
     // The operator signs every human decision with a key of their own (ADR-0070).
-    let operator = OperatorKey::from_seed(key_bytes(&sim, "operator-key"));
+    let operator = OperatorKey::from_seed(&key_bytes(&sim, "operator-key"));
     let operator_public = operator.public();
     let mut engine = Engine::open(&db, log_key)?.with_operator(operator);
 
@@ -351,7 +351,7 @@ pub fn run_job(seed: u64, dir: &Path) -> Res<Run> {
     log.verify(&public)?;
     drop(log);
     // Every human decision carries the operator's signature, checked with the public keys alone.
-    if approvals(&db, &public, Some(&operator_public))?
+    if approvals(&db, &[], &public, Some(&operator_public))?
         .signed
         .is_empty()
     {

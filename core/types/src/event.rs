@@ -612,7 +612,7 @@ mod tests {
                     hold: HoldId::from_seq(5),
                     by: Resolution::Human,
                     reason: ReasonCode::new("approved.operator").unwrap(),
-                    signed: Signed::Operator(crate::OperatorKey::from_seed([7; 32]).approve(
+                    signed: Signed::Operator(crate::OperatorKey::from_seed(&[7; 32]).approve(
                         &[1; 32],
                         4,
                         d(2),

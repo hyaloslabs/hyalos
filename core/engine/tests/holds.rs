@@ -11,7 +11,6 @@ use hyalos_log::Log;
 use hyalos_log::LogKey;
 use hyalos_policy::{Evaluate, Fault, GateRequest, Outcome, Verdict, ask};
 use hyalos_sim::{FakeClock, START, Sim};
-use hyalos_types::event::SCHEMA_VERSION;
 use hyalos_types::{
     Answer, Clock, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, Origin, ReasonCode,
     Resolution, Sensitive, Stakes, SubstrateName, TaskId, Tier, Timestamp,
@@ -70,7 +69,7 @@ fn world(name: &str) -> Res<World> {
     let path = path(name)?;
     Ok(World {
         engine: Engine::open(&path, key())?
-            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32])),
+            .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32])),
         clock: FakeClock::new(START),
         path,
         next: 1,
@@ -541,7 +540,9 @@ fn raw_event(log: &mut Log, n: u64, origin: Origin, event: &Event) -> Res {
         Timestamp::from_millis(n),
         origin,
         event.kind(),
-        SCHEMA_VERSION,
+        // Written as a log from before signed approvals, whose human decisions carry none
+        // (ADR-0070): the rules under test here are the authority table's.
+        12,
         &event.encode()?,
     )?;
     Ok(())
@@ -675,7 +676,7 @@ fn a_signed_log_that_releases_a_hold_the_wrong_way_is_refused_on_open() -> Res {
     ] {
         let p = log_with_release(name, stakes, release(by))?;
         let e = Engine::open(&p, key())?
-            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+            .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
         assert_eq!(
             e.state().holds()[&HoldId::from_seq(5)]
                 .resolved
@@ -747,7 +748,7 @@ fn a_hold_from_before_stakes_existed_reads_as_needing_a_human() -> Res {
     // Written by the first build: no stakes were recorded, so the hold reads as the most cautious.
     let p = old_log("legacy-human", "human")?;
     let e =
-        Engine::open(&p, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+        Engine::open(&p, key())?.with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let hold = &e.state().holds()[&HoldId::from_seq(5)];
     assert_eq!(hold.stakes, Stakes::irreversible());
     let r = hold.resolved.as_ref().ok_or("not resolved")?;
@@ -842,7 +843,7 @@ fn time_passing_releases_nothing() -> Res {
     assert_eq!(w.snapshot()?, before);
     // Nor does a restart.
     let reopened = Engine::open(&w.path, key())?
-        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     assert_eq!(reopened.state(), &before.1);
     Ok(())
 }
@@ -1056,7 +1057,7 @@ fn no_random_sequence_releases_a_hold_without_an_allow_or_an_authorized_decision
         drop(w.engine);
         assert_eq!(
             Engine::open(&w.path, key())?
-                .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]))
+                .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]))
                 .state(),
             &live,
             "seed {seed}"

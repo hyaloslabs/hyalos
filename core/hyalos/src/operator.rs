@@ -65,10 +65,10 @@ pub fn create(
         .fill(&mut extra)
         .map_err(|e| format!("no randomness: {e}"))?;
     let (salt, nonce) = (&extra[..16], &extra[16..28]);
-    let public = OperatorKey::from_seed(*seed).public();
-    let mut sealed = seed.to_vec();
+    let public = OperatorKey::from_seed(&seed).public();
+    let mut sealed = Zeroizing::new(seed.to_vec());
     cipher(passphrase, salt, ITERATIONS)?
-        .seal_in_place_append_tag(nonce_of(nonce)?, aad(&public), &mut sealed)
+        .seal_in_place_append_tag(nonce_of(nonce)?, aad(&public), &mut *sealed)
         .map_err(|_| "cannot seal the operator key".to_string())?;
     let line = Zeroizing::new(format!(
         "{PREFIX}:{ITERATIONS}:{}:{}:{}:{}\n",
@@ -112,7 +112,8 @@ pub fn unlock(config_dir: &Path, passphrase: &str) -> Result<OperatorKey, String
     let seed = cipher(passphrase, &sealed.salt, sealed.iterations)?
         .open_in_place(nonce_of(&sealed.nonce)?, aad(&public), &mut bytes)
         .map_err(|_| format!("the passphrase does not open {}", path.display()))?;
-    let seed: [u8; 32] = seed
+    // Borrowed from the wiped buffer, never copied out of it.
+    let seed: &[u8; 32] = (&*seed)
         .try_into()
         .map_err(|_| format!("{} is not an operator key", path.display()))?;
     let key = OperatorKey::from_seed(seed);
@@ -231,7 +232,7 @@ mod tests {
     fn a_key_opens_only_with_its_passphrase_and_is_never_replaced() {
         let d = dir("roundtrip");
         let public = create(&d, WORDS, &mut Fixed(1)).unwrap();
-        assert_eq!(public, OperatorKey::from_seed([1; 32]).public());
+        assert_eq!(public, OperatorKey::from_seed(&[1; 32]).public());
         assert_eq!(unlock(&d, WORDS).unwrap().public(), public);
         let wrong = unlock(&d, "correct horse battery!").unwrap_err();
         assert!(wrong.contains("does not open"), "{wrong}");
@@ -268,7 +269,7 @@ mod tests {
             fs::write(&path, text).unwrap();
         };
         // Another public key beside the same sealed seed: refused before the passphrase is tried.
-        let other = OperatorKey::from_seed([9; 32]).public().to_hex();
+        let other = OperatorKey::from_seed(&[9; 32]).public().to_hex();
         let fields: Vec<&str> = good.trim_end().split(':').collect();
         rewrite(&good.replace(fields[4], &other));
         assert!(unlock(&d, WORDS).unwrap_err().contains("not the key"));

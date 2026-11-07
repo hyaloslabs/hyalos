@@ -8,16 +8,14 @@
 //! decision from before version 13 carried none; it passes and is listed, so the operator knows which
 //! decisions rest on the engine's key alone.
 
+use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use hyalos_log::{PublicKey, VerifyError, read_verified};
+use hyalos_log::{Anchor, PublicKey, StoredEvent, VerifyError, read_verified};
 use hyalos_types::event::SCHEMA;
 use hyalos_types::snapshot::StateImage;
-use hyalos_types::{Event, EventError, OperatorPublic, Resolution, Signed};
-
-/// The first schema version that signs human decisions.
-pub const SIGNED_SINCE: u32 = 13;
+use hyalos_types::{Event, EventError, OperatorPublic, Resolution, SIGNED_SINCE, Signed};
 
 /// The kinds that record a decision.
 const DECISIONS: [&str; 6] = [
@@ -114,30 +112,52 @@ impl fmt::Display for ApprovalError {
 
 impl std::error::Error for ApprovalError {}
 
-/// Checks every human decision in the log at `path`, after checking the log against the engine's
-/// public key `engine`. `operator` is the operator's public key from `operator.pub`; with none, a log
-/// with no signed decision still passes. It writes nothing.
+/// Checks every human decision in the log at `live` and in the `archives` given, each checked against
+/// the engine's public key `engine`, in sequence order across the files. `operator` is the
+/// operator's public key from `operator.pub`; with none, a log with no signed decision still passes.
+/// History that is in no file given, before the earliest snapshot reached, rests on the engine's
+/// signature on that snapshot (ADR-0026); give the archives to check it too. It writes nothing.
 pub fn approvals(
-    path: &Path,
+    live: &Path,
+    archives: &[PathBuf],
     engine: &PublicKey,
     operator: Option<&OperatorPublic>,
 ) -> Result<Approvals, ApprovalError> {
-    let contents = read_verified(path, engine).map_err(ApprovalError::Verify)?;
-    let mut last_signed = match &contents.anchor {
-        Some(anchor) => {
-            StateImage::decode(anchor.state_version, &anchor.state)
-                .map_err(|e| ApprovalError::Snapshot(e.to_string()))?
-                .last_approval
-        }
-        None => None,
-    };
+    let mut files = Vec::new();
+    for path in archives.iter().map(PathBuf::as_path).chain([live]) {
+        files.push(read_verified(path, engine).map_err(ApprovalError::Verify)?);
+    }
+    let mut events: BTreeMap<u64, &StoredEvent> = BTreeMap::new();
+    let mut anchors: BTreeMap<u64, &Anchor> = BTreeMap::new();
+    for file in &files {
+        events.extend(file.events.iter().map(|e| (e.seq, e)));
+        anchors.extend(file.anchors.iter().map(|a| (a.seq, a)));
+    }
+    let mut last_signed = None;
+    let mut signed_era = false;
+    let mut previous: Option<u64> = None;
     let mut out = Approvals::default();
-    for e in contents
-        .events
-        .iter()
-        .filter(|e| DECISIONS.contains(&e.kind.as_str()))
-    {
-        let seq = e.seq;
+    for (&seq, e) in &events {
+        // At the start, and after a stretch no file given holds, carry on from the snapshot there.
+        if previous.is_none_or(|p| seq != p + 1) {
+            let image = match anchors.get(&(seq - 1)) {
+                Some(anchor) => Some(
+                    StateImage::decode(anchor.state_version, &anchor.state)
+                        .map_err(|e| ApprovalError::Snapshot(e.to_string()))?,
+                ),
+                None => None,
+            };
+            last_signed = image.as_ref().and_then(|i| i.last_approval);
+            signed_era = image.is_some_and(|i| i.signed_since.is_some());
+        }
+        previous = Some(seq);
+        let decision = DECISIONS.contains(&e.kind.as_str());
+        let written_signed = e.schema_version >= SIGNED_SINCE;
+        let unsigned_allowed = !written_signed && !signed_era;
+        signed_era |= written_signed;
+        if !decision {
+            continue;
+        }
         let event = Event::decode_with(&SCHEMA, &e.kind, e.schema_version, &e.payload)
             .map_err(|error| ApprovalError::Event { seq, error })?;
         if event.decided_by() != Some(Resolution::Human) {
@@ -145,7 +165,9 @@ pub fn approvals(
         }
         let approval = match event.signed() {
             Some(Signed::Operator(approval)) => approval,
-            Some(Signed::Unrecorded) if e.schema_version < SIGNED_SINCE => {
+            // The version is the writer's to choose: once the log has reached the signed version,
+            // an older one does not excuse a missing signature.
+            Some(Signed::Unrecorded) if unsigned_allowed => {
                 out.unrecorded.push(Unrecorded {
                     seq,
                     kind: e.kind.clone(),
@@ -169,19 +191,16 @@ pub fn approvals(
         if after >= seq || last_signed.is_some_and(|last| after < last) {
             return Err(wrong);
         }
-        // The event named must be this log's. One before the latest snapshot is no longer in the
-        // file, and that history rests on the engine's signature on the snapshot (ADR-0026).
+        // The event named must be this log's. One in no file given lies before a snapshot, and
+        // rests on the engine's signature on it (ADR-0026).
         let seen = if after == 0 {
             Some([0; 32])
         } else {
-            contents
-                .events
-                .iter()
-                .find(|x| x.seq == after)
-                .map(|x| x.hash)
+            events.get(&after).map(|x| x.hash)
         };
+        let before_a_snapshot = anchors.keys().any(|&a| a >= after);
         if seen.is_some_and(|hash| hash != *approval.after_hash.as_bytes())
-            || (seen.is_none() && contents.anchor.is_none())
+            || (seen.is_none() && !before_a_snapshot)
         {
             return Err(wrong);
         }

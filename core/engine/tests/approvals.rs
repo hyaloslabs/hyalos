@@ -20,7 +20,7 @@ fn key() -> LogKey {
 }
 
 fn operator() -> OperatorKey {
-    OperatorKey::from_seed([0x0e; 32])
+    OperatorKey::from_seed(&[0x0e; 32])
 }
 
 fn at(n: u64) -> Timestamp {
@@ -112,7 +112,7 @@ fn the_engine_signs_each_human_decision_for_its_place_in_this_log() -> Res {
     }
     // A policy decision carries none.
     assert_eq!(events[2].0.signed(), Some(&Signed::None));
-    let found = approvals(&p, &engine, Some(&operator().public()))?;
+    let found = approvals(&p, &[], &engine, Some(&operator().public()))?;
     assert_eq!(found.signed, vec![1, 2]);
     assert!(found.unrecorded.is_empty());
     // It reopens: replay accepts what the engine wrote.
@@ -145,7 +145,7 @@ fn an_approval_signed_with_any_other_key_such_as_the_agents_fails_verify() -> Re
     // The agent holds only its bearer credential. A key made from it is still not the operator's.
     let credential = [0x5a; 32];
     let p = path("agent-key")?;
-    let mut e = Engine::open(&p, key())?.with_operator(OperatorKey::from_seed(credential));
+    let mut e = Engine::open(&p, key())?.with_operator(OperatorKey::from_seed(&credential));
     e.issue_agent(
         at(1),
         name("one")?,
@@ -154,7 +154,7 @@ fn an_approval_signed_with_any_other_key_such_as_the_agents_fails_verify() -> Re
         code(),
     )?;
     drop(e);
-    let refused = approvals(&p, &key().public(), Some(&operator().public()));
+    let refused = approvals(&p, &[], &key().public(), Some(&operator().public()));
     assert!(
         matches!(refused, Err(ApprovalError::WrongOperator { seq: 1 })),
         "{refused:?}"
@@ -169,26 +169,98 @@ fn a_human_decision_the_engine_writes_without_the_operators_signature_fails() ->
         let p = path(&format!("forged-{test}"))?;
         let event = issued(name("one")?, 1, signed.clone());
         append(&p, 1, SCHEMA_VERSION, event.kind(), &event.encode()?)?;
-        let refused = approvals(&p, &key().public(), Some(&operator().public()));
+        let refused = approvals(&p, &[], &key().public(), Some(&operator().public()));
         assert!(
             matches!(refused, Err(ApprovalError::Unsigned { seq: 1 })),
             "{test}: {refused:?}"
         );
-        if signed == Signed::None {
-            // Replay refuses it too; one marked unrecorded passes replay and fails here only.
-            let open = Engine::open(&p, key());
-            assert!(
-                matches!(
-                    open,
-                    Err(EngineError::Replay {
-                        seq: 1,
-                        violation: RuleViolation::HumanDecisionUnsigned
-                    })
-                ),
-                "{open:?}"
-            );
-        }
+        // Replay refuses it too, so the engine, the MCP server and minting never act on it.
+        let open = Engine::open(&p, key());
+        assert!(
+            matches!(
+                open,
+                Err(EngineError::Replay {
+                    seq: 1,
+                    violation: RuleViolation::HumanDecisionUnsigned
+                })
+            ),
+            "{test}: {open:?}"
+        );
     }
+    Ok(())
+}
+
+#[test]
+fn a_human_decision_stamped_with_an_older_version_after_the_log_moved_on_is_refused() -> Res {
+    // The version is a column the writer chooses. Once the log has an event at version 13, a row
+    // claiming version 12 does not excuse a missing signature.
+    let p = signed_log("downgraded")?;
+    let payload = r#"{"kind":"agent.issued","name":"three","credential":"0303030303030303030303030303030303030303030303030303030303030303","by":"human","reason":"agent.issued"}"#;
+    append(&p, 4, 12, "agent.issued", payload.as_bytes())?;
+    let refused = approvals(&p, &[], &key().public(), Some(&operator().public()));
+    assert!(
+        matches!(refused, Err(ApprovalError::Unsigned { seq: 4 })),
+        "{refused:?}"
+    );
+    let open = Engine::open(&p, key());
+    assert!(
+        matches!(
+            open,
+            Err(EngineError::Replay {
+                seq: 4,
+                violation: RuleViolation::HumanDecisionUnsigned
+            })
+        ),
+        "{open:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn compacting_neither_hides_a_forged_decision_nor_forgets_the_log_moved_on() -> Res {
+    // A key that is not the operator's signs a decision; the state cannot tell, so it compacts.
+    let p = path("compacted")?;
+    let dir = p.parent().ok_or("dir")?.to_path_buf();
+    let mut e = Engine::open(&p, key())?.with_operator(OperatorKey::from_seed(&[0x5a; 32]));
+    e.issue_agent(
+        at(1),
+        name("one")?,
+        Digest::from_bytes([1; 32]),
+        Decider::Human,
+        code(),
+    )?;
+    let archive = dir.join("archive-1.db");
+    e.compact(at(2), &archive)?;
+    drop(e);
+    // The live log alone no longer holds it: its history rests on the snapshot.
+    let operator_public = operator().public();
+    assert!(
+        approvals(&p, &[], &key().public(), Some(&operator_public))?
+            .signed
+            .is_empty()
+    );
+    // Given the archive, the decision is checked and refused.
+    let refused = approvals(&p, &[archive], &key().public(), Some(&operator_public));
+    assert!(
+        matches!(refused, Err(ApprovalError::WrongOperator { seq: 1 })),
+        "{refused:?}"
+    );
+    // The snapshot carries that the log reached the signed version, so an old-version unsigned
+    // decision after it is still refused.
+    let payload = r#"{"kind":"agent.issued","name":"two","credential":"0202020202020202020202020202020202020202020202020202020202020202","by":"human","reason":"agent.issued"}"#;
+    append(&p, 3, 12, "agent.issued", payload.as_bytes())?;
+    let refused = approvals(&p, &[], &key().public(), Some(&operator_public));
+    assert!(
+        matches!(refused, Err(ApprovalError::Unsigned { .. })),
+        "{refused:?}"
+    );
+    assert!(matches!(
+        Engine::open(&p, key()),
+        Err(EngineError::Replay {
+            violation: RuleViolation::HumanDecisionUnsigned,
+            ..
+        })
+    ));
     Ok(())
 }
 
@@ -198,7 +270,7 @@ fn a_human_decision_from_before_signatures_passes_and_is_listed() -> Res {
     let payload = r#"{"kind":"agent.issued","name":"one","credential":"0101010101010101010101010101010101010101010101010101010101010101","by":"human","reason":"agent.issued"}"#;
     append(&p, 1, 12, "agent.issued", payload.as_bytes())?;
     // No operator key is needed for a log with no signed decision.
-    let found = approvals(&p, &key().public(), None)?;
+    let found = approvals(&p, &[], &key().public(), None)?;
     assert!(found.signed.is_empty());
     assert_eq!(
         found.unrecorded,
@@ -214,7 +286,7 @@ fn a_human_decision_from_before_signatures_passes_and_is_listed() -> Res {
 #[test]
 fn a_signed_log_needs_the_operators_key_to_pass() -> Res {
     let p = signed_log("needs-key")?;
-    let refused = approvals(&p, &key().public(), None);
+    let refused = approvals(&p, &[], &key().public(), None);
     assert!(
         matches!(refused, Err(ApprovalError::NoOperatorKey { seq: 1 })),
         "{refused:?}"
@@ -239,7 +311,7 @@ fn a_signature_moved_to_another_event_or_another_log_does_not_hold() -> Res {
         changed.kind(),
         &changed.encode()?,
     )?;
-    let refused = approvals(&other, &key().public(), Some(&operator().public()));
+    let refused = approvals(&other, &[], &key().public(), Some(&operator().public()));
     assert!(
         matches!(refused, Err(ApprovalError::BadSignature { seq: 1 })),
         "{refused:?}"
@@ -254,7 +326,12 @@ fn a_signature_moved_to_another_event_or_another_log_does_not_hold() -> Res {
         SCHEMA_VERSION,
         &first.encode()?,
     )?;
-    let refused = approvals(&elsewhere, &theirs().public(), Some(&operator().public()));
+    let refused = approvals(
+        &elsewhere,
+        &[],
+        &theirs().public(),
+        Some(&operator().public()),
+    );
     assert!(
         matches!(refused, Err(ApprovalError::BadSignature { seq: 1 })),
         "{refused:?}"
@@ -277,7 +354,7 @@ fn an_approval_signed_for_an_earlier_place_is_refused() -> Res {
     );
     let late = late.with_signed(Signed::Operator(approval));
     append(&p, 4, SCHEMA_VERSION, late.kind(), &late.encode()?)?;
-    let refused = approvals(&p, &engine, Some(&operator().public()));
+    let refused = approvals(&p, &[], &engine, Some(&operator().public()));
     assert!(
         matches!(refused, Err(ApprovalError::WrongPlace { seq: 4, after: 0 })),
         "{refused:?}"
@@ -310,7 +387,7 @@ fn an_approval_that_names_another_history_is_refused() -> Res {
     );
     let event = event.with_signed(Signed::Operator(approval));
     append(&p, 4, SCHEMA_VERSION, event.kind(), &event.encode()?)?;
-    let refused = approvals(&p, &engine, Some(&operator().public()));
+    let refused = approvals(&p, &[], &engine, Some(&operator().public()));
     assert!(
         matches!(refused, Err(ApprovalError::WrongPlace { seq: 4, after: 3 })),
         "{refused:?}"

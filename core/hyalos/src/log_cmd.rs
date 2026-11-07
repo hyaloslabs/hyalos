@@ -179,18 +179,19 @@ fn check(options: &Options) -> Result<Done, String> {
             )
         } else if history.archives == 0 {
             format!(
-                "events up to {} were compacted; they rest on the engine's signature on the snapshot. Give --archive <file> for each archive to check them too",
+                "events up to {} were compacted; they, and any human decision among them, rest on the engine's signature on the snapshot. Give --archive <file> for each archive to check them too",
                 snapshot.seq
             )
         } else {
             format!(
-                "events up to {} were compacted and the archives given do not cover all of them; the rest rest on the engine's signature on the snapshot",
+                "events up to {} were compacted and the archives given do not cover all of them; the rest, and any human decision among them, rest on the engine's signature on the snapshot",
                 snapshot.seq
             )
         });
     }
     let decisions = approvals(
         &options.db,
+        &options.archives,
         &options.key,
         options.operator.as_ref().map(|(key, _)| key),
     )

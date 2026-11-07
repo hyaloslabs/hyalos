@@ -394,7 +394,7 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
         let json = format!("{},\"signed\":{value}}}", json.trim_end_matches('}'));
         all.push((13, kind, json, event));
     }
-    let approval = hyalos_types::OperatorKey::from_seed([7; 32]).approve(&[1; 32], 4, d(2), b"x");
+    let approval = hyalos_types::OperatorKey::from_seed(&[7; 32]).approve(&[1; 32], 4, d(2), b"x");
     all.push((
         13,
         "hold.resolved",

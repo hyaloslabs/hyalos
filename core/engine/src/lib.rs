@@ -9,7 +9,7 @@ mod engine;
 mod mint;
 mod state;
 
-pub use approvals::{ApprovalError, Approvals, SIGNED_SINCE, Unrecorded, approvals};
+pub use approvals::{ApprovalError, Approvals, Unrecorded, approvals};
 pub use audit::{Audit, AuditError, Gap, audit};
 pub use engine::{
     Compaction, Decider, Engine, EngineError, PolicyUnavailable, Reevaluation, Ruling,

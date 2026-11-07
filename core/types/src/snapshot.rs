@@ -51,6 +51,9 @@ pub struct StateImage {
     /// The event of the last decision the operator signed. The next one must have been signed after
     /// seeing it, so an old approval cannot be written again (ADR-0070).
     pub last_approval: Option<u64>,
+    /// The first event written at schema version 13 or later: from it on, a human decision without
+    /// the operator's signature is refused (ADR-0070).
+    pub signed_since: Option<u64>,
 }
 
 /// An `agent.issued` event and, if one followed, its `agent.revoked`: whether the MCP server admits
@@ -225,6 +228,7 @@ impl StateImage {
         // have happened yet, so a replay has nothing more to drop for them.
         if version < 8 {
             self.last_approval = None;
+            self.signed_since = None;
         }
         if version < 7 {
             for job in &mut self.jobs {
@@ -287,6 +291,7 @@ impl StateImage {
         }
         // 7 -> 8: no decision had been signed by the operator.
         object.insert("last_approval".into(), Value::Null);
+        object.insert("signed_since".into(), Value::Null);
         // 6 -> 7: no job's reason was kept, and no job had returned values.
         if version >= 7 {
             return serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()));
@@ -454,6 +459,7 @@ mod tests {
                 }),
             }],
             last_approval: Some(3),
+            signed_since: Some(2),
         }
     }
 

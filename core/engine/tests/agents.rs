@@ -34,7 +34,7 @@ fn engine(test: &str) -> Res<(Engine, PathBuf)> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     let e = Engine::open(&dir.join("events.db"), key())?
-        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     Ok((e, dir))
 }
 
@@ -197,7 +197,7 @@ fn agents_survive_replay_compaction_and_a_read_with_the_public_key_alone() -> Re
     e.compact(at(10), &dir.join("archive.db"))?;
     drop(e);
     let reopened = Engine::open(&dir.join("events.db"), key())?
-        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     assert_eq!(reopened.state().agents(), &before);
     drop(reopened);
 

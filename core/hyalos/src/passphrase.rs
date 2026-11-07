@@ -10,6 +10,8 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Read, Write};
 
 use rustix::termios::{LocalModes, OptionalActions, tcgetattr, tcsetattr};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
+use signal_hook::iterator::Signals;
 use zeroize::Zeroizing;
 
 /// The flag that reads the passphrase from standard input.
@@ -62,11 +64,30 @@ fn from_terminal(prompt: &str) -> Result<Zeroizing<String>, String> {
     (&tty)
         .write_all(prompt.as_bytes())
         .map_err(|e| format!("cannot write to the terminal: {e}"))?;
-    tcsetattr(&tty, OptionalActions::Flush, &quiet)
-        .map_err(|e| format!("cannot turn the terminal's echo off: {e}"))?;
-    let read = line(&tty);
+    // A signal while echo is off would leave the terminal silent: take them for the read, put the
+    // terminal back, then exit as the signal would have.
+    let mut signals = Signals::new([SIGINT, SIGTERM, SIGHUP, SIGQUIT])
+        .map_err(|e| format!("cannot take signals while reading the passphrase: {e}"))?;
+    let handle = signals.handle();
+    let (back, settings) = (
+        tty.try_clone()
+            .map_err(|e| format!("cannot use the terminal: {e}"))?,
+        saved.clone(),
+    );
+    let watcher = std::thread::spawn(move || {
+        if signals.forever().next().is_some() {
+            let _ = tcsetattr(&back, OptionalActions::Now, &settings);
+            let _ = (&back).write_all(b"\n");
+            std::process::exit(130);
+        }
+    });
+    let quieted = tcsetattr(&tty, OptionalActions::Flush, &quiet)
+        .map_err(|e| format!("cannot turn the terminal's echo off: {e}"));
+    let read = quieted.and_then(|()| line(&tty));
     // Echo comes back whatever the read did.
     let restored = tcsetattr(&tty, OptionalActions::Now, &saved);
+    handle.close();
+    let _ = watcher.join();
     let _ = (&tty).write_all(b"\n");
     restored.map_err(|e| format!("cannot turn the terminal's echo back on: {e}"))?;
     read

@@ -93,7 +93,7 @@ fn go(e: &mut Engine, n: u64, event: Event) -> Res<u64> {
 /// What a kind needs in front of it to be legal, and the event itself.
 fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
     let mut e = Engine::open(&path(&format!("{name}-{kind}"))?, key())?
-        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let event = match kind {
         "task.created" => Event::TaskCreated { request: d(1) },
         "task.completed" => {
@@ -316,7 +316,7 @@ fn the_engine_may_submit_every_kind_including_a_gate_answer() -> Res {
 #[test]
 fn the_origin_is_checked_before_the_state_so_a_refusal_reveals_nothing() -> Res {
     let mut e = Engine::open(&path("precedence")?, key())?
-        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     // Task 99 does not exist, but the broker is told it may not do this, not that the task is unknown.
     let result = e.submit(
         at(1),
@@ -368,7 +368,7 @@ fn unknown_batch(job: JobId, task: TaskId, ended: Origin, opened: Origin) -> Vec
 #[test]
 fn a_hold_and_the_job_ending_that_goes_with_it_cannot_come_from_the_broker() -> Res {
     let mut e = Engine::open(&path("hold-origin")?, key())?
-        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let task = TaskId::from_seq(go(&mut e, 1, Event::TaskCreated { request: d(1) })?);
     let job = JobId::from_seq(go(
         &mut e,
@@ -415,7 +415,7 @@ fn a_hold_and_the_job_ending_that_goes_with_it_cannot_come_from_the_broker() -> 
 fn a_gate_hold_is_recorded_with_the_gates_origin_and_the_engines_consequences() -> Res {
     let p = path("recorded-origins")?;
     let mut e =
-        Engine::open(&p, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+        Engine::open(&p, key())?.with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let task = TaskId::from_seq(go(&mut e, 1, Event::TaskCreated { request: d(1) })?);
     let job = JobId::from_seq(go(
         &mut e,
@@ -458,7 +458,7 @@ fn a_gate_hold_is_recorded_with_the_gates_origin_and_the_engines_consequences() 
         ]
     );
     // And such a log reopens.
-    Engine::open(&p, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+    Engine::open(&p, key())?.with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     Ok(())
 }
 
@@ -467,7 +467,7 @@ fn a_gate_hold_is_recorded_with_the_gates_origin_and_the_engines_consequences() 
 #[test]
 fn an_event_may_share_a_time_with_the_one_before_but_not_precede_it() -> Res {
     let mut e = Engine::open(&path("time")?, key())?
-        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     go(&mut e, 5, Event::TaskCreated { request: d(1) })?;
     go(&mut e, 5, Event::TaskCreated { request: d(2) })?; // same time: fine
     let before = (e.head()?, e.state().clone());
@@ -506,7 +506,7 @@ fn an_event_may_share_a_time_with_the_one_before_but_not_precede_it() -> Res {
 #[test]
 fn time_is_enforced_for_batches_and_gates_and_nothing_is_half_written() -> Res {
     let mut e = Engine::open(&path("time-batch")?, key())?
-        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let task = TaskId::from_seq(go(&mut e, 10, Event::TaskCreated { request: d(1) })?);
     let job = JobId::from_seq(go(
         &mut e,
@@ -552,11 +552,11 @@ fn time_survives_a_restart() -> Res {
     let p = path("time-restart")?;
     {
         let mut e = Engine::open(&p, key())?
-            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+            .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
         go(&mut e, 7, Event::TaskCreated { request: d(1) })?;
     }
     let mut e =
-        Engine::open(&p, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+        Engine::open(&p, key())?.with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     assert_eq!(e.state().last_at(), Some(at(7)));
     assert!(matches!(
         e.submit(at(6), Origin::Engine, Event::TaskCreated { request: d(2) }),
@@ -632,7 +632,7 @@ fn opening_verifies_the_file_that_was_opened_whether_or_not_it_was_there_before(
     assert!(!fresh.exists());
     assert_eq!(
         Engine::open(&fresh, key())?
-            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]))
+            .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]))
             .head()?,
         None
     );
@@ -642,7 +642,7 @@ fn opening_verifies_the_file_that_was_opened_whether_or_not_it_was_there_before(
     std::fs::write(&pre, b"")?;
     assert_eq!(
         Engine::open(&pre, key())?
-            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]))
+            .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]))
             .head()?,
         None
     );
@@ -651,7 +651,7 @@ fn opening_verifies_the_file_that_was_opened_whether_or_not_it_was_there_before(
     let bad = path("open-tampered")?;
     {
         let mut e = Engine::open(&bad, key())?
-            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+            .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
         go(&mut e, 1, Event::TaskCreated { request: d(1) })?;
     }
     let mut bytes = std::fs::read(&bad)?;

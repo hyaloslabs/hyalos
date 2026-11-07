@@ -25,7 +25,7 @@ pub mod wire;
 pub mod workflow;
 
 pub use agent::AgentName;
-pub use approval::{OperatorApproval, OperatorKey, OperatorPublic, Signed};
+pub use approval::{OperatorApproval, OperatorKey, OperatorPublic, SIGNED_SINCE, Signed};
 pub use digest::Digest;
 pub use entropy::{Entropy, SeededRng};
 pub use event::{
