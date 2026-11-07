@@ -395,3 +395,22 @@ fn the_approval_is_signed_survives_compaction_and_verifies() -> Res {
     assert!(mint(&e, &merge_manifest(job, 3)?).is_ok());
     Ok(())
 }
+
+#[test]
+fn an_approval_is_used_by_one_job_however_it_ended() -> Res {
+    let (mut e, job, _) = approved("one-job")?;
+    e.submit(
+        at(5),
+        Origin::Engine,
+        Event::JobEnded {
+            job,
+            outcome: hyalos_types::JobOutcome::Failed,
+            reason: why(),
+        },
+    )?;
+    assert!(matches!(
+        start(&mut e, 6, TaskId::from_seq(2)),
+        Err(err) if err.to_string().contains("merge job")
+    ));
+    Ok(())
+}

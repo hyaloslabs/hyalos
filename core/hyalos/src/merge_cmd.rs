@@ -210,19 +210,23 @@ pub fn merge_job(
         "task {}: merge approved at event {approval}, signed by you",
         task.seq()
     );
-    let job = engine
-        .submit(
-            now(),
-            Origin::Engine,
-            Event::JobStarted {
-                task,
-                substrate: SubstrateName::new("broker").unwrap_or_else(SubstrateName::unrecorded),
-                credentials: CredentialTier::BrokerHeld,
-                attestation: Attestation::None(code("attestation.no_sandbox")),
-            },
-        )
-        .map_err(|e| e.to_string())?;
-    let job = JobId::from_seq(job.seq);
+    let job = engine.submit(
+        now(),
+        Origin::Engine,
+        Event::JobStarted {
+            task,
+            substrate: SubstrateName::new("broker").unwrap_or_else(SubstrateName::unrecorded),
+            credentials: CredentialTier::BrokerHeld,
+            attestation: Attestation::None(code("attestation.no_sandbox")),
+        },
+    );
+    let job = match job {
+        Ok(head) => JobId::from_seq(head.seq),
+        Err(e) => {
+            let _ = engine.submit(now(), Origin::Engine, Event::TaskCompleted { task });
+            return Err(format!("the merge job was not recorded: {e}"));
+        }
+    };
     let mut token = None;
     let merged = attempt(
         engine,
@@ -265,6 +269,13 @@ pub fn merge_job(
             revoked?;
             ended.map(|_| ()).map_err(|e| e.to_string())
         }
+        Err(failure) if failure.reason.as_str() == "merge.unconfirmed" => Err(format!(
+            "job {}: GitHub accepted the merge but its answer could not be read ({}): check pull \
+             request {} on GitHub before trying again",
+            job.seq(),
+            failure.reason,
+            request.pr
+        )),
         Err(failure) => Err(format!(
             "job {}: not merged ({}): {}",
             job.seq(),

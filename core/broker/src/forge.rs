@@ -212,13 +212,18 @@ impl Forge {
             422 => return Err("merge.rejected"),
             _ => return Err("forge.upstream_status"),
         }
+        // GitHub has answered 200: it has merged. An answer that cannot be read confirms nothing,
+        // so the operator is told to look rather than that nothing happened.
         let mut answer = Vec::new();
         response
             .body
             .take(MAX_MERGE_ANSWER as u64 + 1)
             .read_to_end(&mut answer)
-            .map_err(|_| "forge.unreadable")?;
-        parse_merged(&answer)
+            .map_err(|_| "merge.unconfirmed")?;
+        parse_merged(&answer).map_err(|code| match code {
+            "merge.not_merged" => code,
+            _ => "merge.unconfirmed",
+        })
     }
 }
 

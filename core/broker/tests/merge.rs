@@ -295,9 +295,9 @@ fn what_github_refuses_is_a_code_and_ends_the_job() -> Res {
         (
             200,
             r#"{"sha":"not a commit","merged":true}"#,
-            "forge.malformed",
+            "merge.unconfirmed",
         ),
-        (200, "not json", "forge.malformed"),
+        (200, "not json", "merge.unconfirmed"),
     ]
     .into_iter()
     .enumerate()

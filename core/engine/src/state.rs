@@ -208,6 +208,8 @@ pub enum RuleViolation {
     },
     /// A task holds one merge approval, made before any job runs on it.
     MergeAlreadyApproved(TaskId),
+    /// A second job on a task whose merge approval a job has already had.
+    MergeJobRan(TaskId),
     /// The repository or pull request number is not one an approval may name.
     MergeTargetInvalid,
     /// Issuing a credential grants a capability, so only a human does it (ADR-0012, ADR-0068).
@@ -307,6 +309,10 @@ impl fmt::Display for RuleViolation {
             RuleViolation::MergeAlreadyApproved(task) => write!(
                 f,
                 "task {task} already has a merge approved, or has started a job; a merge approval opens its own task"
+            ),
+            RuleViolation::MergeJobRan(task) => write!(
+                f,
+                "task {task} has had its merge job; an approval is used once, so approve again in a new task"
             ),
             RuleViolation::MergeTargetInvalid => f.write_str(
                 "a merge approval names an owner/name repository and a pull request number",
@@ -693,6 +699,10 @@ impl State {
                         task: *task,
                         status,
                     });
+                }
+                // A merge's approval is used by one job, whatever became of it (ADR-0071).
+                if self.merge_of(*task).is_some() && self.jobs.values().any(|j| j.task == *task) {
+                    return Err(RuleViolation::MergeJobRan(*task));
                 }
                 // One running job per task. Concurrent jobs would need their own decision (ADR-0019).
                 self.no_running_job(*task)

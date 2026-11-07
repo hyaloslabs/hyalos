@@ -71,8 +71,12 @@ It mints a read-only token for the repository, shows the installation and when t
 - **Required status checks**: keep them. The App's merge waits for them like anyone's, and a pull request whose checks have not passed fails as `merge.not_mergeable`. Never add the App to a bypass list for status checks.
 - **Required reviews**: your approval in Hyalos is not a GitHub review, and the App cannot review its own merge. Choose one:
   - keep required reviews and approve the pull request on GitHub as well before running `hyalos merge`; or
-  - let the App bypass **only** the pull request review rule. In a ruleset (**Settings → Rules → Rulesets**), add the App to **Bypass list** with **For pull requests only**; with classic branch protection, add it under **Allow specified actors to bypass required pull requests**. Your signed approval in Hyalos is then the review.
+  - let the App bypass **only** the pull request review rule. Your signed approval in Hyalos is then the review.
+    - With classic branch protection, add the App under **Allow specified actors to bypass required pull requests**. That covers the review rule alone.
+    - With rulesets (**Settings → Rules → Rulesets**), a bypass covers **every rule in the ruleset**. Put **Require a pull request before merging** in a ruleset of its own and add the App to that ruleset's **Bypass list** (**For pull requests only**). Keep status checks and every other rule in another ruleset with no bypass for the App.
 - **Restrict who can push** (classic) or **Restrict updates** (rulesets): if set, add the App to the actors allowed, or its merge fails as `forge.upstream_refused`.
+
+A pull request that changes `.github/workflows/` cannot be merged by the App: it has no Workflows permission, and should not be given one. GitHub refuses the merge (`forge.upstream_refused` or `merge.rejected`); merge such a pull request yourself.
 
 Do not give the App **Administration** or let it bypass every rule. A merge is refused by GitHub, not by Hyalos, when the pull request's head is no longer the commit you approved; a rule the App bypasses is no longer checked for its merges.
 
