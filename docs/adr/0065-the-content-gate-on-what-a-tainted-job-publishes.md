@@ -45,14 +45,16 @@ A pull request's text is published where people and their browsers render it, an
   - runs of pieces of at most 4 characters joined, which catches a key split into groups;
   - the text reversed;
   - percent-decoded;
+  - with HTML character references decoded;
   - each run of 16 or more base64 or hex characters, decoded.
 - `content.link`: a link anywhere but the forge's web host, or one there with a query. A link is any of:
-  - a URL with a scheme (only `http` and `https` can pass);
-  - a scheme-relative `//host.name`;
+  - a URL with a scheme of two or more letters and a slash or backslash after it (only `http` and `https` can pass);
+  - `http:` or `https:` with no slash at all, since browsers read `https:/host`, `https:\\host` and `https:host` as the host;
+  - a scheme-relative link: two or more slashes or backslashes where a link begins, before a host name (`//host.name`, `///host.name`, `\\host.name`);
   - a `data:` URI;
   - a bare host name that starts `www.` or carries a query, which GitHub autolinks or which carries data.
 
-  A `// comment` and a bare `Node.js/path` are not links. With no forge host known, no link passes.
+  The text is checked as written and with HTML character references decoded, since Markdown and HTML both decode them (`&#47;&#47;host`, `https&colon;//host`). A `// comment`, a bare `Node.js/path`, a Rust path `a::b` and a drive `C:\Users` are not links. With no forge host known, no link passes.
 
 **The route chooses the check by the manifest's taint.** `pulls::answer` runs `check_published` on the title and body when `manifest.tainted`, and `check` otherwise. A refusal is 403 with the code, plus the content gate's `deny` (SHA-256 of the title and body), as before. Nothing refused reaches the forge. An actor is always tainted, so every pull request `hyalos run` opens gets the published check.
 
@@ -96,7 +98,10 @@ S4.5's acceptance holds. Every ported item that targets a sink is refused but th
 | `content.too_long` | 7 |
 
 The tests:
-- `core/broker/src/content.rs`: each rule refuses its case. An ordinary pull request, with code, paths, a `// comment`, a commit id, links to its own repository and words like `risk_test_cases`, passes.
+- `core/broker/src/content.rs`:
+  - each rule refuses its case, including the link forms browsers accept with extra or missing slashes, backslashes and character references;
+  - an ordinary pull request, with code, paths, a `// comment`, a commit id, links to its own repository and words like `risk_test_cases`, passes;
+  - every rule reads a bounded distance from each match, so text built to be slow (20,000 of `=`, `https:`, `eyJ` and so on) is checked in linear time.
 - `crates/redteam/src/lib.rs`: the corpus loads whole, every item says what to expect, and placeholders render as hivrr's renderer does.
 - `crates/redteam/tests/corpus.rs`: the run and its control.
 
@@ -110,6 +115,6 @@ The tests:
 - **Growing the corpus and tracking the reach rate in CI over time** is S8.4 (#53). This ADR ports version 1 and pins its result.
 - **The live runner,** which asks whether a model complies, is not ported. The measure here is the gates alone.
 
-**Costs.** 306 more lines of trusted core, all in the broker: the published check and its decoders in `content.rs`, the route's choice of check in `pulls.rs`, and the git host's web host in `git.rs`.
+**Costs.** 376 more lines of trusted core, all in the broker: the published check and its decoders in `content.rs`, the route's choice of check in `pulls.rs`, and the git host's web host in `git.rs`.
 
-Trusted core goes from 15,990 to 16,296 lines of 30,000. Outside the core, `crates/redteam` holds the corpus (310 items, about 270 KiB of JSON), its renderer and the offline run.
+Trusted core goes from 15,990 to 16,366 lines of 30,000. Outside the core, `crates/redteam` holds the corpus (310 items, about 270 KiB of JSON), its renderer and the offline run.

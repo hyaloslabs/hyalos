@@ -56,19 +56,22 @@ pub fn check_published(
     if views(text).iter().any(|v| held(v) || issued_key(v)) {
         return Err("content.encoded_credential");
     }
-    if !links_allowed(text, forge) {
+    // Markdown and HTML both decode character references, so `&#47;&#47;host` is a link too.
+    if !links_allowed(text, forge) || !links_allowed(&entities_decoded(text), forge) {
         return Err("content.link");
     }
     Ok(())
 }
 
 /// The ways `text` could carry a key it does not show: with runs of short pieces joined (a key split
-/// by spaces), reversed, percent-decoded, and each run of base64 or hex decoded.
+/// by spaces), reversed, percent-decoded, with character references decoded, and each run of base64
+/// or hex decoded.
 fn views(text: &str) -> Vec<String> {
     let mut views = vec![
         joined(text),
         text.chars().rev().collect(),
         percent_decoded(text),
+        entities_decoded(text),
     ];
     let runs = |alphabet: fn(u8) -> bool| {
         text.as_bytes()
@@ -222,10 +225,13 @@ fn issued_key(text: &str) -> bool {
         ("rk_test_", 8),
     ];
     let starts_word = |at: usize| !text[..at].chars().next_back().is_some_and(key_char);
-    let tail = |at: usize, of: fn(char) -> bool| text[at..].chars().take_while(|c| of(*c)).count();
+    // Whether `need` characters of the kind `of` follow `at`; it reads no further than that.
+    let tail = |at: usize, of: fn(char) -> bool, need: usize| {
+        text[at..].chars().take(need).take_while(|c| of(*c)).count() >= need
+    };
     if PREFIXES.iter().any(|(prefix, need)| {
         text.match_indices(prefix)
-            .any(|(at, _)| starts_word(at) && tail(at + prefix.len(), key_char) >= *need)
+            .any(|(at, _)| starts_word(at) && tail(at + prefix.len(), key_char, *need))
     }) {
         return true;
     }
@@ -233,17 +239,18 @@ fn issued_key(text: &str) -> bool {
     let aws = |c: char| c.is_ascii_uppercase() || c.is_ascii_digit();
     if ["AKIA", "ASIA"].iter().any(|prefix| {
         text.match_indices(prefix)
-            .any(|(at, _)| starts_word(at) && tail(at + 4, aws) >= 16)
+            .any(|(at, _)| starts_word(at) && tail(at + 4, aws, 16))
     }) {
         return true;
     }
     if text.contains("PRIVATE KEY-----") {
         return true;
     }
-    // A JSON web token: two base64url segments that each start `eyJ`, joined by a dot.
-    text.match_indices("eyJ").any(|(at, _)| {
-        let first = tail(at, key_char);
-        first >= 8 && text[at + first..].starts_with(".eyJ")
+    // A JSON web token: a word of base64url segments, the first two starting `eyJ`, joined by dots.
+    text.split(|c: char| !(key_char(c) || c == '.')).any(|word| {
+        let mut parts = word.split('.');
+        matches!((parts.next(), parts.next()),
+            (Some(head), Some(body)) if head.len() >= 8 && head.starts_with("eyJ") && body.starts_with("eyJ"))
     })
 }
 
@@ -265,43 +272,110 @@ fn assignment(text: &str) -> bool {
         if text[..at].ends_with(':') || text[at + 1..].starts_with(':') {
             return false;
         }
+        // Each side is read only so far, so text of many `=` is checked in linear time.
         let name: String = text[..at]
             .trim_end()
             .chars()
             .rev()
+            .take(64)
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<String>()
-            .to_ascii_uppercase();
+            .map(|c| c.to_ascii_uppercase())
+            .collect();
+        let name: String = name.chars().rev().collect();
+        if !NAMES.iter().any(|n| name.contains(n)) {
+            return false;
+        }
         let value: String = text[at + 1..]
             .trim_start()
             .trim_start_matches(['"', '\''])
             .chars()
+            .take(256)
             .take_while(|c| !c.is_whitespace() && !"\"'".contains(*c))
             .collect();
         // A secret is made of key characters and has a digit: a number is a setting such as
         // `max_tokens: 16384`, and `token: Option<&str>` is a type.
-        !name.is_empty()
-            && NAMES.iter().any(|n| name.contains(n))
-            && value.chars().count() >= 8
+        value.chars().count() >= 8
             && value.chars().all(|c| key_char(c) || "+/=.".contains(c))
             && value.chars().any(|c| c.is_ascii_digit())
             && !value.chars().all(|c| c.is_ascii_digit() || c == '_')
     })
 }
 
-/// Whether every link in `text` is to `forge` with no query. A link is a URL with a scheme, a
-/// scheme-relative `//host.name`, a `data:` URI, or a bare host name that starts `www.` or carries a
-/// query (`exfil.example/c?d=...`); a bare `Node.js/path` is not one. A reader's browser or the
-/// forge's image proxy fetches what an image link names, so a link off the forge, or a query to
-/// it, carries data out of the job (ADR-0065).
+/// `text` with HTML character references decoded: decimal and hexadecimal ones, and the named ones
+/// a URL can be spelled with. Others are left as they are.
+fn entities_decoded(text: &str) -> String {
+    const NAMED: [(&str, char); 18] = [
+        ("amp", '&'),
+        ("lt", '<'),
+        ("gt", '>'),
+        ("quot", '"'),
+        ("apos", '\''),
+        ("colon", ':'),
+        ("sol", '/'),
+        ("bsol", '\\'),
+        ("period", '.'),
+        ("quest", '?'),
+        ("equals", '='),
+        ("num", '#'),
+        ("commat", '@'),
+        ("lpar", '('),
+        ("rpar", ')'),
+        ("lsqb", '['),
+        ("rsqb", ']'),
+        ("Tab", '\t'),
+    ];
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('&') {
+        out.push_str(&rest[..at]);
+        rest = &rest[at + 1..];
+        let name: String = rest
+            .chars()
+            .take(10)
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '#')
+            .collect();
+        let decoded = match name.strip_prefix('#') {
+            Some(n) => match n.strip_prefix(['x', 'X']) {
+                Some(h) => u32::from_str_radix(h, 16).ok(),
+                None => n.parse().ok(),
+            }
+            .and_then(char::from_u32),
+            None => NAMED.iter().find(|(n, _)| *n == name).map(|(_, c)| *c),
+        };
+        match decoded {
+            Some(c) => {
+                out.push(c);
+                rest = &rest[name.len()..];
+                rest = rest.strip_prefix(';').unwrap_or(rest);
+            }
+            None => out.push('&'),
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Whether a character ends a URL's host.
+fn ends_host(c: char) -> bool {
+    c.is_whitespace() || "/\\?#)]>\"'<".contains(c)
+}
+
+/// Whether every link in `text` is to `forge` with no query. A link is any of:
+/// - a URL with a scheme and a slash or backslash after it, or `http:`/`https:` with neither, as
+///   browsers read `https:/host` and `https:\\host` (only `http` and `https` can pass);
+/// - a scheme-relative link, two or more slashes or backslashes where a link begins, before a host
+///   name (`//host.name`, `///host.name`, `\\\\host.name`);
+/// - a `data:` URI;
+/// - a bare host name that starts `www.` or carries a query (`exfil.example/c?d=...`).
+///
+/// A `// comment` and a bare `Node.js/path` are not links. A reader's browser or the forge's image
+/// proxy fetches what an image link names, so a link off the forge, or a query to it, carries data
+/// out of the job (ADR-0065).
 fn links_allowed(text: &str, forge: Option<&str>) -> bool {
+    // `rest` starts after the scheme's colon, or at the slashes of a scheme-relative link.
     let to_forge = |rest: &str| {
-        let end = rest
-            .find(|c: char| c.is_whitespace() || "/?#)]>\"'<".contains(c))
-            .unwrap_or(rest.len());
+        let rest = rest.trim_start_matches(['/', '\\']);
+        let end = rest.find(ends_host).unwrap_or(rest.len());
         let authority = &rest[..end];
         let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
         let host = host.split(':').next().unwrap_or_default();
@@ -312,48 +386,59 @@ fn links_allowed(text: &str, forge: Option<&str>) -> bool {
             .contains('?');
         forge.is_some_and(|f| host.eq_ignore_ascii_case(f)) && !query
     };
-    let bytes = text.as_bytes();
-    // `//` that starts a URL: after a scheme, or where a link begins.
-    for (at, _) in text.match_indices("//") {
-        let before = at.checked_sub(1).map(|i| bytes[i]);
+    let slash = |c: char| c == '/' || c == '\\';
+    for (at, _) in text.match_indices(':') {
         let scheme: String = text[..at]
-            .strip_suffix(':')
-            .unwrap_or_default()
             .chars()
             .rev()
             .take_while(|c| c.is_ascii_alphanumeric() || "+.-".contains(*c))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
             .collect();
-        let starts_link = match before {
-            None => true,
-            Some(b) => b.is_ascii_whitespace() || b"(\"'=<[".contains(&b),
-        };
-        if !scheme.is_empty() {
-            let scheme: String = scheme.chars().rev().collect();
-            if !scheme.eq_ignore_ascii_case("https") && !scheme.eq_ignore_ascii_case("http") {
-                return false;
-            }
-        } else if !starts_link
-            || !text[at + 2..]
-                .split(|c: char| c.is_whitespace() || "/?#)]>\"'<".contains(c))
-                .next()
-                .is_some_and(|host| host.contains('.'))
-        {
-            // A `// comment`, or `//` in the middle of a word.
+        let after = &text[at + 1..];
+        let web = scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http");
+        // A scheme starts with a letter; one letter alone is a drive, as in `C:\\Users`.
+        if scheme.len() < 2 || !scheme.starts_with(|c: char| c.is_ascii_alphabetic()) {
             continue;
         }
-        if !to_forge(&text[at + 2..]) {
+        if scheme.eq_ignore_ascii_case("data") && !after.starts_with(char::is_whitespace) {
+            return false;
+        }
+        if after.starts_with(slash) && !web {
+            return false;
+        }
+        // `https:host` too; `https: ` in prose names no host.
+        if web && !after.starts_with(char::is_whitespace) && !after.is_empty() && !to_forge(after) {
+            return false;
+        }
+    }
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    for (i, (at, c)) in chars.iter().enumerate() {
+        let starts_link = match i.checked_sub(1).map(|j| chars[j].1) {
+            None => true,
+            Some(b) => b.is_whitespace() || "(\"'=<[".contains(b),
+        };
+        if !slash(*c) || !starts_link || !text[*at + 1..].starts_with(slash) {
+            continue;
+        }
+        let rest = &text[*at..];
+        let host_named = rest
+            .trim_start_matches(slash)
+            .split(ends_host)
+            .next()
+            .is_some_and(|host| host.contains('.'));
+        // A `// comment` is not a link.
+        if host_named && !to_forge(rest) {
             return false;
         }
     }
     for word in text.split(|c: char| c.is_whitespace() || "()[]<>\"'".contains(c)) {
-        if word.to_ascii_lowercase().starts_with("data:") {
-            return false;
-        }
-        // A bare host name followed by a path or a query: `exfil.example/c?d=...`.
-        if word.contains("//") {
+        if word.contains(':') {
             continue;
         }
-        let end = word.find(['/', '?']).unwrap_or(word.len());
+        // A bare host name followed by a query, or one that starts `www.`.
+        let end = word.find(['/', '\\', '?']).unwrap_or(word.len());
         let host = &word[..end];
         let labels: Vec<&str> = host.split('.').collect();
         let named = labels.len() >= 2
@@ -558,6 +643,17 @@ mod tests {
             "https://github.com/octo/repo/issues?q=1",
             "![x](data:text/plain;base64,aGk=)",
             "HTTPS://EXFIL.EXAMPLE/",
+            "![s](///exfil.example/p.png)",
+            "![s](\\\\exfil.example/p.png)",
+            "https:\\\\exfil.example/p",
+            "https:/exfil.example/p",
+            "https:exfil.example/p",
+            "<img src=\"&#47;&#47;exfil.example/p.png\">",
+            "[r](https&colon;//exfil.example/x)",
+            "[r](&#x68;ttps://exfil.example/x)",
+            "https://github.com@exfil.example/x",
+            "DATA:text/plain,hi",
+            "javascript://exfil.example/%0aalert(1)",
         ] {
             assert_eq!(
                 check_published(text, &[], FORGE),
@@ -570,9 +666,40 @@ mod tests {
             check_published("https://github.com/octo/repo", &[], None),
             Err("content.link")
         );
-        assert_eq!(
-            check_published("https://GitHub.com/octo/repo/pull/1#x", &[], FORGE),
-            Ok(())
-        );
+        for text in [
+            "https://GitHub.com/octo/repo/pull/1#x",
+            "use https: always, and see the note: it is short",
+            "Fixes `Ord::cmp` in a::b::c, ratio 1:2, at 10:30.",
+            "R&amp;D, &lt;T&gt; and &#169; 2026",
+            "Built on C:\\Users\\ci and D:/cache.",
+        ] {
+            assert_eq!(check_published(text, &[], FORGE), Ok(()), "{text}");
+        }
+    }
+
+    #[test]
+    fn text_built_to_be_slow_is_checked_in_time() {
+        let started = std::time::Instant::now();
+        for text in [
+            "/".repeat(MAX_PUBLISHED),
+            ":".repeat(MAX_PUBLISHED),
+            "&#".repeat(MAX_PUBLISHED / 2),
+            "a=".repeat(MAX_PUBLISHED / 2),
+            "https:".repeat(MAX_PUBLISHED / 6),
+            "eyJ".repeat(MAX_PUBLISHED / 3),
+            "ab ".repeat(MAX_PUBLISHED / 3),
+            "TOKEN=".repeat(MAX_PUBLISHED / 6),
+            "TOKEN:a".repeat(MAX_PUBLISHED / 7),
+            format!(
+                "{}{}",
+                " ".repeat(MAX_PUBLISHED / 2),
+                ": ".repeat(MAX_PUBLISHED / 4)
+            ),
+            format!("{}:", " ".repeat(MAX_PUBLISHED - 1)),
+        ] {
+            let _ = check_published(&text, &[TOKEN, KEY], FORGE);
+        }
+        // Linear work, even unoptimised; a quadratic scan of 20,000 characters takes far longer.
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 }
