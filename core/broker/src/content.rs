@@ -417,7 +417,9 @@ fn links_allowed(text: &str, forge: Option<&str>) -> bool {
         if scheme.len() < 2 || !scheme.starts_with(|c: char| c.is_ascii_alphabetic()) {
             continue;
         }
-        if scheme.eq_ignore_ascii_case("data") && !after.starts_with(char::is_whitespace) {
+        // A `data:` URI goes on with its media type, `,` or `;`; `data::Thing` is a path.
+        let media = |c: char| c.is_ascii_alphanumeric() || c == ',' || c == ';';
+        if scheme.eq_ignore_ascii_case("data") && after.starts_with(media) {
             return false;
         }
         if after.starts_with(slash) && !web {
@@ -689,6 +691,7 @@ mod tests {
             "Fixes `Ord::cmp` in a::b::c, ratio 1:2, at 10:30.",
             "R&amp;D, &lt;T&gt; and &#169; 2026",
             "Built on C:\\Users\\ci and D:/cache.",
+            "`data::Thing` holds the data:",
         ] {
             assert_eq!(check_published(text, &[], FORGE), Ok(()), "{text}");
         }

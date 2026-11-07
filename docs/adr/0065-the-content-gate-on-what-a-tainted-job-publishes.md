@@ -54,7 +54,7 @@ A pull request's text is published where people and their browsers render it, an
   - a `data:` URI;
   - a bare host name that starts `www.` or carries a query, which GitHub autolinks or which carries data.
 
-  The text is checked as written and with HTML character references decoded, since Markdown and HTML both decode them (`&#47;&#47;host`, `https&colon;//host`). A `// comment`, a bare `Node.js/path`, a Rust path `a::b` and a drive `C:\Users` are not links. With no forge host known, no link passes.
+  The text is checked as written and with HTML character references decoded, since Markdown and HTML both decode them (`&#47;&#47;host`, `https&colon;//host`). A `// comment`, a bare `Node.js/path`, a Rust path `a::b` or `data::Thing` and a drive `C:\Users` are not links. With no forge host known, no link passes.
 
 **The route chooses the check by the manifest's taint.** `pulls::answer` runs `check_published` on the title and body when `manifest.tainted`, and `check` otherwise. A refusal is 403 with the code, plus the content gate's `deny` (SHA-256 of the title and body), as before. Nothing refused reaches the forge. An actor is always tainted, so every pull request `hyalos run` opens gets the published check.
 
@@ -115,6 +115,6 @@ The tests:
 - **Growing the corpus and tracking the reach rate in CI over time** is S8.4 (#53). This ADR ports version 1 and pins its result.
 - **The live runner,** which asks whether a model complies, is not ported. The measure here is the gates alone.
 
-**Costs.** 390 more lines of trusted core, all in the broker: the published check and its decoders in `content.rs`, the route's choice of check in `pulls.rs`, and the git host's web host in `git.rs`.
+**Costs.** 391 more lines of trusted core, all in the broker: the published check and its decoders in `content.rs`, the route's choice of check in `pulls.rs`, and the git host's web host in `git.rs`.
 
-Trusted core goes from 15,990 to 16,380 lines of 30,000. Outside the core, `crates/redteam` holds the corpus (310 items, about 270 KiB of JSON), its renderer and the offline run.
+Trusted core goes from 15,990 to 16,381 lines of 30,000. Outside the core, `crates/redteam` holds the corpus (310 items, about 270 KiB of JSON), its renderer and the offline run.
