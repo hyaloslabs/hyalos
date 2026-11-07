@@ -3,7 +3,7 @@
 //! The shipped baseline forbids, and Cedar allows nothing that no policy permits, so until the
 //! operator approves a policy no manifest can be signed and no job runs. `approve` records the
 //! document as approved by a human, the operator at this terminal, which is the only decider the
-//! state accepts for a policy change (the claim is the caller's until signed approvals, S5.4).
+//! state accepts for a policy change; the approval is signed with the operator's key (ADR-0070).
 
 use std::process::ExitCode;
 
@@ -11,15 +11,16 @@ use hyalos_engine::{Decider, Engine};
 use hyalos_types::{MAX_POLICY_DOCUMENT, ReasonCode};
 
 use crate::clock::SystemClock;
-use crate::keys;
 use crate::paths::{self, Env};
+use crate::{keys, operator, passphrase};
 
 const USAGE: &str = "usage: hyalos policy check <file>
-       hyalos policy approve <file> [--reason <code>]
+       hyalos policy approve <file> [--reason <code>] [--passphrase-stdin]
        hyalos policy show
   check says whether <file> is Cedar that the shipped schema accepts, and writes nothing
   approve records <file> as the operator's policy, approved by you, from this event on; it is checked
-  first and nothing is written if it fails. --reason is a short code (default policy.approved)
+  first and nothing is written if it fails. --reason is a short code (default policy.approved). It is
+  signed with your approval key: the passphrase is asked for at the terminal, or read from stdin
   show prints the policy in force, or says there is none
   The log is events.db in the data directory and the key engine.key in the config directory
   (HYALOS_DATA_DIR / HYALOS_CONFIG_DIR override both)";
@@ -40,9 +41,10 @@ pub fn run(args: &[String]) -> ExitCode {
 
 /// The command's output, or its exit code and message.
 pub fn run_with(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
+    let (args, source) = passphrase::source(args);
     let usage = |why: &str| (2, format!("{why}\n{USAGE}"));
     let failed = |e: String| (1, e);
-    match args {
+    match args.as_slice() {
         [check, file] if check == "check" => {
             let document = read(file).map_err(failed)?;
             Engine::check_policy(&document).map_err(|e| failed(format!("{file}: {e}")))?;
@@ -57,7 +59,9 @@ pub fn run_with(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
             let reason = ReasonCode::new(&reason)
                 .ok_or_else(|| usage("a reason is a short code, such as policy.approved"))?;
             let document = read(file).map_err(failed)?;
-            let mut engine = open(env).map_err(failed)?;
+            // Checked before the passphrase is asked for, so a bad file costs nothing.
+            Engine::check_policy(&document).map_err(|e| failed(format!("{file}: {e}")))?;
+            let mut engine = operator::engine(env, source).map_err(failed)?;
             let at = hyalos_types::Clock::now(&SystemClock);
             let head = engine
                 .approve_policy(at, &document, Decider::Human, reason)

@@ -48,14 +48,15 @@ use crate::workflow_run::{self, Runnable, Supplied, Values};
 const USAGE: &str = "usage: hyalos run --repo <owner/name>
                   (--issue <text> | --issue-file <file> | --issue-number <n>) [--base <branch>] [--harness codex|claude-code] [--image <image>]
                   [--budget-tokens <n>] [--minutes <n>] [--allow-host <host>]... [--step-model <model>]
-                  [--release-issue]
+                  [--release-issue [--passphrase-stdin]]
   runs a harness in a sandbox on <owner/name>: it pushes the branch hyalos/job-<id> and opens a
   pull request into --base (default main). With --issue or --issue-file it works on your text.
   --issue-number runs the fix-issue workflow on issue <n> of <owner/name>: a reader in the broker
   classifies the issue, a planner chooses an approach, and the harness gets those typed values and
   your text (--issue, if given) but not the issue's own text, unless you give --release-issue: you
   then release the issue as it is when the reader holds it, by its digest, and the harness may read
-  that text from the broker with hyalos-handle. Readers and planners call
+  that text from the broker with hyalos-handle. The release is your decision, signed with your
+  approval key: the passphrase is asked for first, or read from stdin with --passphrase-stdin. Readers and planners call
   --step-model (default a small model of the harness's provider). It needs hyalos init, an approved
   policy that allows read, push, open_pr and data_flow (hyalos policy approve), provider.keys and
   the GitHub App (github.app, github-app.pem) in the config directory, and a ready substrate (hyalos
@@ -162,6 +163,9 @@ pub struct Setup {
     /// Called once the task is recorded, before any job: the MCP runner names its files after the
     /// task and tells the server its id (ADR-0069). It returns a file whose appearance cancels the run.
     pub on_task: Option<OnTask>,
+    /// The operator's key, unlocked before the run for `--release-issue`, the one human decision a run
+    /// records (ADR-0070). A run the MCP server starts never has it.
+    pub operator: Option<hyalos_types::OperatorKey>,
 }
 
 /// See [`Setup::on_task`].
@@ -193,7 +197,8 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         _ => {}
     }
-    let request = match parse(args) {
+    let (args, source) = crate::passphrase::source(args);
+    let request = match parse(&args) {
         Ok(request) => request,
         Err(message) => {
             eprintln!("hyalos: {message}\n{USAGE}");
@@ -201,13 +206,25 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     };
     let env = |name: &str| std::env::var(name).ok();
-    let setup = match setup(&env) {
+    let mut setup = match setup(&env) {
         Ok(setup) => setup,
         Err(message) => {
             eprintln!("hyalos: {message}");
             return ExitCode::from(2);
         }
     };
+    // The release is the operator's decision: the key is opened before anything is written.
+    if request.release_issue {
+        let key = crate::passphrase::read(source, "operator passphrase: ")
+            .and_then(|words| crate::operator::unlock(&setup.config_dir, &words));
+        match key {
+            Ok(key) => setup.operator = Some(key),
+            Err(message) => {
+                eprintln!("hyalos: --release-issue: {message}");
+                return ExitCode::from(1);
+            }
+        }
+    }
     match run_job(&request, setup, &mut std::io::stdout()) {
         Ok(summary) if summary.ok() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::from(1),
@@ -234,6 +251,7 @@ pub(crate) fn setup(env: Env<'_>) -> Result<Setup, String> {
         interrupt: Interrupt::on_signals(again)
             .map_err(|e| format!("cannot take Ctrl-C and SIGTERM: {e}"))?,
         on_task: None,
+        operator: None,
     })
 }
 
@@ -639,6 +657,7 @@ fn drive(
         detect_timeout,
         mut interrupt,
         on_task,
+        operator,
     } = setup;
     let before_recorded = |interrupt: &Interrupt| {
         interrupt.signal().map(|signal| {
@@ -668,7 +687,16 @@ fn drive(
     }
     let manifest_key = fresh_manifest_key().map_err(|e| format!("no manifest key: {e}"))?;
     let key = keys::load(&config_dir.join(paths::ENGINE_KEY_FILE)).map_err(|e| e.to_string())?;
+    if request.release_issue && operator.is_none() {
+        return Err(
+            "--release-issue records your decision, and the run was not given your approval key"
+                .into(),
+        );
+    }
     let mut engine = Engine::open(&log, key).map_err(|e| e.to_string())?;
+    if let Some(operator) = operator {
+        engine = engine.with_operator(operator);
+    }
     // Other runs write the same log; each write follows the latest event, whoever wrote it.
     engine.stamp_forward();
     // Never before the log's last event, which another process may have written.
@@ -1225,8 +1253,8 @@ impl Run<'_> {
     }
 
     /// Has the broker hold issue `number` for `job` and records the operator's release of it to this
-    /// run's task, bound to the digest the broker answered (ADR-0063). The claim that a human decided
-    /// is the operator's, made with `--release-issue`, as for policy and holds until S5.4 signs it.
+    /// run's task, bound to the digest the broker answered (ADR-0063). It is the operator's decision,
+    /// made with `--release-issue` and signed with the key unlocked before the run (ADR-0070).
     fn release(&mut self, job: JobId, number: u64, out: &mut dyn Write) -> Result<(), Failure> {
         let wait = self.remaining().min(STEP_WAIT);
         let handle = match self.broker.as_mut() {

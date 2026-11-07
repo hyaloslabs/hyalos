@@ -11,14 +11,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgentId, AgentName, Answer, Attestation, Digest, HoldId, JobId, Origin, ReasonCode, Schema,
-    Stakes, SubstrateName, TaskId, TypedValue, Upcast, Value,
+    Signed, Stakes, SubstrateName, TaskId, TypedValue, Upcast, Value,
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 12;
+pub const SCHEMA_VERSION: u32 = 13;
 
-/// What this build reads: version 12, and versions 1 to 11 upcast to it (ADR-0023, ADR-0025, ADR-0027,
-/// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069).
+/// What this build reads: version 13, and versions 1 to 12 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069,
+/// ADR-0070).
 ///
 /// Version 2 added the stakes of a hold and the reason for resolving one. A version 1 hold is given the
 /// most cautious stakes, so only a human can release it; a version 1 resolution is given an explicit
@@ -30,7 +31,9 @@ pub const SCHEMA_VERSION: u32 = 12;
 /// an older one reads as `legacy.unrecorded`. Version 9 added the attestation to `job.started`; an
 /// older one reads as `unrecorded`. Version 10 added `handle.released` and changed no payload. Version 11
 /// added `agent.issued` and `agent.revoked` and changed no payload. Version 12 added `job.values` and
-/// changed no payload.
+/// changed no payload. Version 13 added `signed` to every decision (`hold.resolved`, `task.cancelled`,
+/// `policy.approved`, `handle.released`, `agent.issued`, `agent.revoked`): an older human decision
+/// reads as `unrecorded`, any other as `none`.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -63,6 +66,36 @@ pub static SCHEMA: Schema = Schema {
             kind: "job.started",
             from: 8,
             step: job_started_v8,
+        },
+        Upcast {
+            kind: "hold.resolved",
+            from: 12,
+            step: decision_v12,
+        },
+        Upcast {
+            kind: "task.cancelled",
+            from: 12,
+            step: decision_v12,
+        },
+        Upcast {
+            kind: "policy.approved",
+            from: 12,
+            step: decision_v12,
+        },
+        Upcast {
+            kind: "handle.released",
+            from: 12,
+            step: decision_v12,
+        },
+        Upcast {
+            kind: "agent.issued",
+            from: 12,
+            step: decision_v12,
+        },
+        Upcast {
+            kind: "agent.revoked",
+            from: 12,
+            step: decision_v12,
         },
     ],
 };
@@ -97,6 +130,13 @@ fn job_started_v6(payload: Value) -> Result<Value, String> {
 
 fn job_started_v8(payload: Value) -> Result<Value, String> {
     insert(payload, "attestation", Value::String("unrecorded".into()))
+}
+
+/// Before version 13 no decision was signed: a human's reads as `unrecorded`, any other as `none`.
+fn decision_v12(payload: Value) -> Result<Value, String> {
+    let human = payload.get("by").and_then(Value::as_str) == Some("human");
+    let signed = if human { "unrecorded" } else { "none" };
+    insert(payload, "signed", Value::String(signed.into()))
 }
 
 fn job_ended_v7(payload: Value) -> Result<Value, String> {
@@ -213,6 +253,7 @@ pub enum Event {
         hold: HoldId,
         by: Resolution,
         reason: ReasonCode,
+        signed: Signed,
     },
     /// An archive of compacted events was deleted from the machine (ADR-0026). It names the last event
     /// the archive held and that event's hash, which is also where the snapshot that stands for the
@@ -228,6 +269,7 @@ pub enum Event {
         task: TaskId,
         by: Resolution,
         reason: ReasonCode,
+        signed: Signed,
     },
     /// A held request was put to its gate again and the gate refused. This is evidence that the action
     /// is refused now. It releases nothing and ends nothing (ADR-0029).
@@ -243,6 +285,7 @@ pub enum Event {
         document: String,
         by: Resolution,
         reason: ReasonCode,
+        signed: Signed,
     },
     /// A human released the raw text the broker holds as `handle` to the task's actor (ADR-0005,
     /// ADR-0063). The handle is the SHA-256 of the bytes the broker holds, so the decision is bound to
@@ -255,6 +298,7 @@ pub enum Event {
         handle: Digest,
         by: Resolution,
         reason: ReasonCode,
+        signed: Signed,
     },
     /// A human issued a credential to a driving agent, which the engine's MCP server admits from this
     /// event on (ADR-0010, ADR-0068). `credential` is the SHA-256 of the secret the agent presents;
@@ -266,6 +310,7 @@ pub enum Event {
         credential: Digest,
         by: Resolution,
         reason: ReasonCode,
+        signed: Signed,
     },
     /// A credential was revoked: the MCP server refuses it from this event on (ADR-0068). Revoking
     /// only takes a capability away, so any decider may.
@@ -274,6 +319,7 @@ pub enum Event {
         agent: AgentId,
         by: Resolution,
         reason: ReasonCode,
+        signed: Signed,
     },
     /// The typed values a running job returned: a reader's or planner's answer, or an actor's submitted
     /// result (ADR-0062, ADR-0064, ADR-0069). A choice is its option's index, so no text is stored. It
@@ -363,6 +409,52 @@ impl Event {
         }
     }
 
+    /// Who decided, for the six kinds that record a decision (ADR-0070).
+    pub fn decided_by(&self) -> Option<Resolution> {
+        match self {
+            Event::HoldResolved { by, .. }
+            | Event::TaskCancelled { by, .. }
+            | Event::PolicyApproved { by, .. }
+            | Event::HandleReleased { by, .. }
+            | Event::AgentIssued { by, .. }
+            | Event::AgentRevoked { by, .. } => Some(*by),
+            _ => None,
+        }
+    }
+
+    /// The signature a decision carries, for the same six kinds.
+    pub fn signed(&self) -> Option<&Signed> {
+        match self {
+            Event::HoldResolved { signed, .. }
+            | Event::TaskCancelled { signed, .. }
+            | Event::PolicyApproved { signed, .. }
+            | Event::HandleReleased { signed, .. }
+            | Event::AgentIssued { signed, .. }
+            | Event::AgentRevoked { signed, .. } => Some(signed),
+            _ => None,
+        }
+    }
+
+    /// The decision with `signed` in place of what it carried. Other kinds are returned as they are.
+    pub fn with_signed(mut self, value: Signed) -> Self {
+        match &mut self {
+            Event::HoldResolved { signed, .. }
+            | Event::TaskCancelled { signed, .. }
+            | Event::PolicyApproved { signed, .. }
+            | Event::HandleReleased { signed, .. }
+            | Event::AgentIssued { signed, .. }
+            | Event::AgentRevoked { signed, .. } => *signed = value,
+            _ => {}
+        }
+        self
+    }
+
+    /// The bytes the operator signs for this decision: the event as written, with [`Signed::None`] in
+    /// place of its signature, so the signature covers every other field (ADR-0070).
+    pub fn approval_bytes(&self) -> Result<Vec<u8>, EventError> {
+        self.clone().with_signed(Signed::None).encode()
+    }
+
     /// The value for the log's `kind` column.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -450,6 +542,11 @@ mod tests {
         Digest::from_bytes([byte; 32])
     }
 
+    /// The operator key from seed 7 and its signature in the pinned `hold.resolved`. Ed25519 signing
+    /// is deterministic, so these never change.
+    const OPERATOR: &str = "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
+    const SIGNATURE: &str = "9917aead5135233d25540b04e458996ebe7f1f41fc3d3e3ebd241f335b414080334096d65f4ab7729f316332350aba267c69ce6233ddf1569b5698d90150bf0f";
+
     fn samples() -> Vec<(Event, String)> {
         let h = |b: u8| format!("{b:02x}").repeat(32);
         vec![
@@ -515,9 +612,17 @@ mod tests {
                     hold: HoldId::from_seq(5),
                     by: Resolution::Human,
                     reason: ReasonCode::new("approved.operator").unwrap(),
+                    signed: Signed::Operator(crate::OperatorKey::from_seed(&[7; 32]).approve(
+                        &[1; 32],
+                        4,
+                        d(2),
+                        b"the event",
+                    )),
                 },
-                r#"{"kind":"hold.resolved","hold":5,"by":"human","reason":"approved.operator"}"#
-                    .to_string(),
+                format!(
+                    r#"{{"kind":"hold.resolved","hold":5,"by":"human","reason":"approved.operator","signed":{{"operator":{{"operator":"{OPERATOR}","after":4,"after_hash":"{}","signature":"{SIGNATURE}"}}}}}}"#,
+                    h(2)
+                ),
             ),
             (
                 Event::ArchivePruned {
@@ -534,8 +639,9 @@ mod tests {
                     task: TaskId::from_seq(3),
                     by: Resolution::Human,
                     reason: ReasonCode::new("cancelled.operator").unwrap(),
+                    signed: Signed::Unrecorded,
                 },
-                r#"{"kind":"task.cancelled","task":3,"by":"human","reason":"cancelled.operator"}"#
+                r#"{"kind":"task.cancelled","task":3,"by":"human","reason":"cancelled.operator","signed":"unrecorded"}"#
                     .to_string(),
             ),
             (
@@ -550,8 +656,9 @@ mod tests {
                     document: "permit (principal, action, resource);".into(),
                     by: Resolution::Human,
                     reason: ReasonCode::new("policy.approved").unwrap(),
+                    signed: Signed::Unrecorded,
                 },
-                r#"{"kind":"policy.approved","document":"permit (principal, action, resource);","by":"human","reason":"policy.approved"}"#
+                r#"{"kind":"policy.approved","document":"permit (principal, action, resource);","by":"human","reason":"policy.approved","signed":"unrecorded"}"#
                     .to_string(),
             ),
             (
@@ -560,9 +667,10 @@ mod tests {
                     handle: d(9),
                     by: Resolution::Human,
                     reason: ReasonCode::new("handle.operator").unwrap(),
+                    signed: Signed::Unrecorded,
                 },
                 format!(
-                    r#"{{"kind":"handle.released","task":3,"handle":"{}","by":"human","reason":"handle.operator"}}"#,
+                    r#"{{"kind":"handle.released","task":3,"handle":"{}","by":"human","reason":"handle.operator","signed":"unrecorded"}}"#,
                     h(9)
                 ),
             ),
@@ -572,19 +680,21 @@ mod tests {
                     credential: d(5),
                     by: Resolution::Human,
                     reason: ReasonCode::new("agent.issued").unwrap(),
+                    signed: Signed::Unrecorded,
                 },
                 format!(
-                    r#"{{"kind":"agent.issued","name":"claude-code","credential":"{}","by":"human","reason":"agent.issued"}}"#,
+                    r#"{{"kind":"agent.issued","name":"claude-code","credential":"{}","by":"human","reason":"agent.issued","signed":"unrecorded"}}"#,
                     h(5)
                 ),
             ),
             (
                 Event::AgentRevoked {
                     agent: crate::AgentId::from_seq(4),
-                    by: Resolution::Human,
+                    by: Resolution::Policy,
                     reason: ReasonCode::new("agent.revoked").unwrap(),
+                    signed: Signed::None,
                 },
-                r#"{"kind":"agent.revoked","agent":4,"by":"human","reason":"agent.revoked"}"#
+                r#"{"kind":"agent.revoked","agent":4,"by":"policy","reason":"agent.revoked","signed":"none"}"#
                     .to_string(),
             ),
             (

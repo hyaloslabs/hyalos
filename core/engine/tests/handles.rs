@@ -77,7 +77,8 @@ fn start(e: &mut Engine, task: TaskId, n: u64) -> Res<JobId> {
 /// An engine with the policy approved and one task, no job yet.
 fn engine(name: &str) -> Res<(Engine, TaskId, PathBuf)> {
     let d = dir(name)?;
-    let mut e = Engine::open(&d.join("events.db"), key())?;
+    let mut e = Engine::open(&d.join("events.db"), key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     e.approve_policy(at(1), POLICY, Decider::Human, code("policy.approved"))?;
     let t = task(&mut e, 2)?;
     Ok((e, t, d))
@@ -168,6 +169,7 @@ fn a_raw_handle_release_is_refused_from_the_engine_and_the_broker() -> Res {
         handle: handle(7),
         by: Resolution::Human,
         reason: code("handle.operator"),
+        signed: hyalos_types::Signed::Unrecorded,
     };
     let before = events(&d)?;
     let v = violation(e.submit(at(4), Origin::Engine, event.clone()))?;
@@ -254,7 +256,8 @@ fn released_handles_survive_replay_and_compaction() -> Res {
     let before = e.state().clone();
     e.compact(at(10), &d.join("archive.db"))?;
     drop(e);
-    let reopened = Engine::open(&d.join("events.db"), key())?;
+    let reopened = Engine::open(&d.join("events.db"), key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     assert_eq!(reopened.state().handles(), before.handles());
     let mut reopened = reopened;
     let job = start(&mut reopened, t, 11)?;

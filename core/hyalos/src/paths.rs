@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 pub const LOG_FILE: &str = "events.db";
 pub const ENGINE_PUBLIC_KEY_FILE: &str = "engine.pub";
 pub const ENGINE_KEY_FILE: &str = "engine.key";
+/// The operator's approval key, sealed under a passphrase, and its public half (ADR-0070).
+pub const OPERATOR_KEY_FILE: &str = "operator.key";
+pub const OPERATOR_PUBLIC_KEY_FILE: &str = "operator.pub";
 /// The provider API keys the broker reads (ADR-0038), owner-only like `engine.key`.
 pub const PROVIDER_KEYS_FILE: &str = "provider.keys";
 

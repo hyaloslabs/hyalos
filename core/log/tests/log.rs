@@ -301,6 +301,7 @@ fn events_come_back_in_order_exactly_as_appended() -> Res {
             kind: format!("test.event.{n}"),
             schema_version: 1,
             payload: format!("{{\"n\":{n}}}").into_bytes(),
+            hash: e.hash,
         };
         assert_eq!(e, &expected);
     }

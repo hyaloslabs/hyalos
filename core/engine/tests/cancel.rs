@@ -113,7 +113,8 @@ fn stored(path: &std::path::Path) -> Res<Vec<hyalos_log::StoredEvent>> {
 fn a_held_task_is_ended_by_a_recorded_decision_and_replay_agrees() -> Res {
     let d_ = dir("cancel")?;
     let path = d_.join("events.db");
-    let mut e = Engine::open(&path, key())?;
+    let mut e = Engine::open(&path, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let (task, _job, hold, request) = held_by_a_job(&mut e, 1, Stakes::routine())?;
     assert_eq!(e.state().tasks()[&task].status(), TaskStatus::Held);
 
@@ -194,7 +195,8 @@ fn a_held_task_is_ended_by_a_recorded_decision_and_replay_agrees() -> Res {
     assert_eq!(replay(&stored(&path)?)?, live);
     e.compact(at(20), &d_.join("a.db"))?;
     drop(e);
-    let again = Engine::open(&path, key())?;
+    let again = Engine::open(&path, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     assert_eq!(*again.state(), live);
     assert!(again.state().tasks()[&task].cancelled.is_some());
     Ok(())
@@ -234,7 +236,8 @@ fn every_decider_at_every_tier_and_sensitive_category_is_allowed_or_refused_as_t
     for (i, stakes) in stakes_list.into_iter().enumerate() {
         for (decider, resolution) in DECIDERS {
             let d_ = dir(&format!("matrix-{i}-{resolution:?}"))?;
-            let mut e = Engine::open(&d_.join("events.db"), key())?;
+            let mut e = Engine::open(&d_.join("events.db"), key())?
+                .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
             let (task, _) = held(&mut e, 1, stakes)?;
             let before = (e.head()?, e.state().clone());
 
@@ -281,7 +284,8 @@ fn every_decider_at_every_tier_and_sensitive_category_is_allowed_or_refused_as_t
 #[test]
 fn a_task_with_several_holds_needs_a_decider_every_one_of_them_allows() -> Res {
     let d_ = dir("several")?;
-    let mut e = Engine::open(&d_.join("events.db"), key())?;
+    let mut e = Engine::open(&d_.join("events.db"), key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     // Routine and escalated: neither policy nor the verifier is allowed at both; a human is.
     let (task, _) = held(&mut e, 1, Stakes::routine())?;
     put(&mut e, 3, hold_opened(task, Stakes::escalated()))?;
@@ -307,7 +311,8 @@ fn a_task_with_several_holds_needs_a_decider_every_one_of_them_allows() -> Res {
 #[test]
 fn only_a_held_task_can_be_cancelled() -> Res {
     let d_ = dir("not-held")?;
-    let mut e = Engine::open(&d_.join("events.db"), key())?;
+    let mut e = Engine::open(&d_.join("events.db"), key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let open = TaskId::from_seq(put(&mut e, 1, Event::TaskCreated { request: d(1) })?);
     let done = TaskId::from_seq(put(&mut e, 2, Event::TaskCreated { request: d(2) })?);
     put(&mut e, 3, Event::TaskCompleted { task: done })?;
@@ -338,12 +343,14 @@ fn only_a_held_task_can_be_cancelled() -> Res {
 #[test]
 fn a_cancellation_is_recorded_only_through_the_engine_call() -> Res {
     let d_ = dir("api")?;
-    let mut e = Engine::open(&d_.join("events.db"), key())?;
+    let mut e = Engine::open(&d_.join("events.db"), key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let (task, _) = held(&mut e, 1, Stakes::routine())?;
     let event = || Event::TaskCancelled {
         task,
         by: Resolution::Human,
         reason: why(),
+        signed: hyalos_types::Signed::Unrecorded,
     };
     let before = (e.head()?, e.state().clone());
     let through = RuleViolation::ThroughTheEngineApi {
@@ -370,7 +377,8 @@ fn a_cancellation_is_recorded_only_through_the_engine_call() -> Res {
 fn a_refusal_is_recorded_as_a_fact_and_releases_and_ends_nothing() -> Res {
     let d_ = dir("refusal")?;
     let path = d_.join("events.db");
-    let mut e = Engine::open(&path, key())?;
+    let mut e = Engine::open(&path, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let (task, _job, hold, request) = held_by_a_job(&mut e, 1, Stakes::routine())?;
     let before = e.state().clone();
 
@@ -440,7 +448,8 @@ fn a_refusal_is_recorded_as_a_fact_and_releases_and_ends_nothing() -> Res {
 #[test]
 fn a_refusal_is_for_an_open_hold_and_its_own_request_and_goes_through_the_call() -> Res {
     let d_ = dir("refusal-rules")?;
-    let mut e = Engine::open(&d_.join("events.db"), key())?;
+    let mut e = Engine::open(&d_.join("events.db"), key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let (task, _job, hold, request) = held_by_a_job(&mut e, 1, Stakes::routine())?;
     let refuse = || Outcome::Refuse { reason: why() };
     let before = (e.head()?, e.state().clone());
@@ -495,7 +504,8 @@ fn a_refusal_is_for_an_open_hold_and_its_own_request_and_goes_through_the_call()
 #[test]
 fn after_a_refusal_a_decision_ends_the_task_and_only_a_decider_allowed_at_its_stakes() -> Res {
     let d_ = dir("refuse-then-decide")?;
-    let mut e = Engine::open(&d_.join("events.db"), key())?;
+    let mut e = Engine::open(&d_.join("events.db"), key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let (task, _job, hold, request) = held_by_a_job(&mut e, 1, Stakes::escalated())?;
     e.reevaluate_hold(at(10), hold, &request, Outcome::Refuse { reason: why() })?;
     // The gate said no, but that is not a decision; and the wrong tier cannot make one.
@@ -516,7 +526,9 @@ fn raw(log: &mut Log, n: u64, event: &Event) -> Res {
         at(n),
         Origin::Engine,
         event.kind(),
-        hyalos_types::event::SCHEMA_VERSION,
+        // Written as a log from before signed approvals, whose human decisions carry none
+        // (ADR-0070): the rules under test here are the authority table's.
+        12,
         &event.encode()?,
     )?;
     Ok(())
@@ -534,6 +546,7 @@ fn a_log_that_cancels_what_could_not_be_cancelled_does_not_open() -> Res {
                     task: TaskId::from_seq(1),
                     by: Resolution::Policy,
                     reason: why(),
+                    signed: hyalos_types::Signed::None,
                 },
             ],
             "may not cancel",
@@ -547,6 +560,7 @@ fn a_log_that_cancels_what_could_not_be_cancelled_does_not_open() -> Res {
                     task: TaskId::from_seq(1),
                     by: Resolution::Reevaluated,
                     reason: why(),
+                    signed: hyalos_types::Signed::None,
                 },
             ],
             "may not cancel",
@@ -559,6 +573,7 @@ fn a_log_that_cancels_what_could_not_be_cancelled_does_not_open() -> Res {
                     task: TaskId::from_seq(1),
                     by: Resolution::Human,
                     reason: why(),
+                    signed: hyalos_types::Signed::Unrecorded,
                 },
             ],
             "only a held task",
@@ -572,6 +587,7 @@ fn a_log_that_cancels_what_could_not_be_cancelled_does_not_open() -> Res {
                     task: TaskId::from_seq(1),
                     by: Resolution::Human,
                     reason: why(),
+                    signed: hyalos_types::Signed::Unrecorded,
                 },
                 Event::HoldRefused {
                     hold: HoldId::from_seq(2),
@@ -611,7 +627,8 @@ fn a_build_from_before_the_events_existed_refuses_a_log_that_has_one() -> Res {
     };
     let d_ = dir("older")?;
     let path = d_.join("events.db");
-    let mut e = Engine::open(&path, key())?;
+    let mut e = Engine::open(&path, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let (task, _) = held(&mut e, 1, Stakes::routine())?;
     e.cancel_task(at(5), task, Decider::Human, why())?;
     drop(e);
@@ -627,7 +644,8 @@ fn a_build_from_before_the_events_existed_refuses_a_log_that_has_one() -> Res {
 #[test]
 fn a_snapshot_that_cancels_a_task_it_could_not_have_is_not_started_from() -> Res {
     let d_ = dir("image")?;
-    let mut e = Engine::open(&d_.join("events.db"), key())?;
+    let mut e = Engine::open(&d_.join("events.db"), key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let (task, _) = held(&mut e, 1, Stakes::escalated())?;
     // A task still held, as the image of a state that would be legal.
     let held_image = e.state().to_image().map_err(|j| format!("{j}"))?;

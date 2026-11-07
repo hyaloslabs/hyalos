@@ -200,7 +200,8 @@ fn write_old_log(path: &Path) -> Res {
 
 /// The same history written by today's engine, which is what the upgraded engine must end up equal to.
 fn reference_state(path: &Path) -> Res<hyalos_engine::State> {
-    let mut e = Engine::open(path, key())?;
+    let mut e =
+        Engine::open(path, key())?.with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let legacy = ReasonCode::new("legacy.unrecorded").ok_or("reason")?;
     let mut n = 0;
     let mut go = |e: &mut Engine, event: Event| -> Res {
@@ -304,10 +305,17 @@ fn a_version_1_log_loads_under_a_version_2_engine_with_no_manual_step() -> Res {
     assert!(before.iter().all(|r| r.1 == 1));
 
     // Just open it: no migration command, no flag.
-    let upgraded = Engine::open_with(&old, key(), &V2)?;
+    let upgraded = Engine::open_with(&old, key(), &V2)?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
 
     // The state is the one today's engine would have built from the same history...
-    assert_eq!(*upgraded.state(), reference_state(&path("loads-ref")?)?);
+    // (Today's engine also marks the first event written at the signed version, ADR-0070; an old log
+    // has none, which is the one difference.)
+    let image = |s: &hyalos_engine::State| s.to_image().map_err(|j| format!("{j:?}"));
+    let mut want = image(&reference_state(&path("loads-ref")?)?)?;
+    assert_eq!(want.signed_since, Some(1));
+    want.signed_since = None;
+    assert_eq!(image(upgraded.state())?, want);
     assert_eq!(upgraded.state().last_seq(), 10);
     // ...including the rule that an unknown answer holds the task.
     assert_eq!(upgraded.state().holds().len(), 1);
@@ -325,7 +333,8 @@ fn new_events_are_written_at_the_new_version_and_the_mixed_log_keeps_working() -
     write_old_log(&old)?;
     let before = stored(&old)?;
 
-    let mut e = Engine::open_with(&old, key(), &V2)?;
+    let mut e = Engine::open_with(&old, key(), &V2)?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     // A hold written before stakes existed reads as the most cautious, so only a human releases it.
     let head = e.decide_hold(at(11), HoldId::from_seq(10), Decider::Human, why())?;
     let head2 = e.submit(at(12), Origin::Engine, Event::TaskCreated { request: d(3) })?;
@@ -368,7 +377,8 @@ fn new_events_are_written_at_the_new_version_and_the_mixed_log_keeps_working() -
     );
 
     // Reopening reproduces the live state, by the engine and by a bare replay.
-    let reopened = Engine::open_with(&old, key(), &V2)?;
+    let reopened = Engine::open_with(&old, key(), &V2)?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     assert_eq!(*reopened.state(), live);
     assert_eq!(replay_with(&V2, &Log::open(&old, key())?.events()?)?, live);
     Ok(())
@@ -378,14 +388,16 @@ fn new_events_are_written_at_the_new_version_and_the_mixed_log_keeps_working() -
 fn a_mixed_log_survives_backup_and_restore() -> Res {
     let old = path("backup")?;
     write_old_log(&old)?;
-    let mut e = Engine::open_with(&old, key(), &V2)?;
+    let mut e = Engine::open_with(&old, key(), &V2)?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     let head = e.submit(at(11), Origin::Engine, Event::TaskCreated { request: d(3) })?;
     let live = e.state().clone();
     drop(e);
 
     let target = old.with_file_name("restored.db");
     copy_verified(&old, &target, &key().public(), Some(head))?;
-    let restored = Engine::open_with(&target, key(), &V2)?;
+    let restored = Engine::open_with(&target, key(), &V2)?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     assert_eq!(*restored.state(), live);
     Ok(())
 }
@@ -393,7 +405,8 @@ fn a_mixed_log_survives_backup_and_restore() -> Res {
 #[test]
 fn a_build_that_is_older_than_the_log_refuses_it_and_changes_nothing() -> Res {
     let p = path("downgrade")?;
-    let mut e = Engine::open(&p, key())?;
+    let mut e =
+        Engine::open(&p, key())?.with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     e.submit(at(1), Origin::Engine, Event::TaskCreated { request: d(1) })?;
     drop(e);
     // A newer build appends an event at the next version.

@@ -75,4 +75,4 @@ One thing follows from it: while running, the process's `/proc/<pid>` files belo
 
 - The key sits in a file, readable by programs running as you. The sandboxes and the broker cannot read it. Keyring and hardware storage are not used yet (ADR-0022).
 - The manifest signing key is not kept: it is made fresh each time the engine starts.
-- The operator's approval key (ADR-0012) is a different key, held by you, and never loaded by the engine.
+- Your approval key, `operator.key`, is a different key, sealed under a passphrase only you know, and it signs every decision recorded as yours. The engine uses it only inside a command you run and type the passphrase into. See [approvals.md](approvals.md).

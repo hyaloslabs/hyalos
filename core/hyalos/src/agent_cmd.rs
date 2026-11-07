@@ -14,20 +14,23 @@ use zeroize::Zeroizing;
 
 use crate::clock::SystemClock;
 use crate::mcp_cmd::{CREDENTIAL_VAR, EngineLog};
+use crate::operator;
+use crate::passphrase;
 use crate::paths::{self, Env};
-use crate::policy_cmd;
 
 /// What every credential starts with, so one found somewhere is recognised.
 pub const CREDENTIAL_PREFIX: &str = "hyalos-agent-";
 
-const USAGE: &str = "usage: hyalos agent issue <name> [--reason <code>]
-       hyalos agent revoke <id> [--reason <code>]
+const USAGE: &str = "usage: hyalos agent issue <name> [--reason <code>] [--passphrase-stdin]
+       hyalos agent revoke <id> [--reason <code>] [--passphrase-stdin]
        hyalos agent list
   issue records a new credential for a driving agent, issued by you, and prints it once: the log keeps
   only its SHA-256. <name> is 1 to 64 lowercase letters, digits, '.', '_' and '-', such as claude-code
   revoke stops the MCP server admitting agent <id> from its next call
   list shows every credential issued, by id and name, and whether it is revoked
-  --reason is a short code (default agent.issued or agent.revoked)";
+  --reason is a short code (default agent.issued or agent.revoked)
+  issue and revoke are your decisions, signed with your approval key (hyalos operator init): the
+  passphrase is asked for at the terminal, or read from stdin with --passphrase-stdin";
 
 pub fn run(args: &[String]) -> ExitCode {
     let env = |name: &str| std::env::var(name).ok();
@@ -54,6 +57,7 @@ pub struct Output {
 
 /// The command's output, or its exit code and message.
 pub fn run_with(args: &[String], env: Env<'_>) -> Result<Output, (u8, String)> {
+    let (args, source) = passphrase::source(args);
     let usage = |why: &str| (2, format!("{why}\n{USAGE}"));
     let failed = |e: String| (1, e);
     let reason = |rest: &[String], default: &str| -> Result<ReasonCode, (u8, String)> {
@@ -64,14 +68,14 @@ pub fn run_with(args: &[String], env: Env<'_>) -> Result<Output, (u8, String)> {
         };
         ReasonCode::new(text).ok_or_else(|| usage("a reason is a short code, such as agent.issued"))
     };
-    match args {
+    match args.as_slice() {
         [issue, name, rest @ ..] if issue == "issue" => {
             let name = AgentName::new(name).ok_or_else(|| {
                 usage("a name is 1 to 64 lowercase letters, digits, '.', '_' and '-'")
             })?;
             let reason = reason(rest, "agent.issued")?;
             let credential = fresh_credential().map_err(failed)?;
-            let mut engine = policy_cmd::open(env).map_err(failed)?;
+            let mut engine = operator::engine(env, source).map_err(failed)?;
             let at = hyalos_types::Clock::now(&SystemClock);
             let head = engine
                 .issue_agent(
@@ -100,7 +104,7 @@ pub fn run_with(args: &[String], env: Env<'_>) -> Result<Output, (u8, String)> {
                 .map(AgentId::from_seq)
                 .map_err(|_| usage("an agent's id is the number hyalos agent list shows"))?;
             let reason = reason(rest, "agent.revoked")?;
-            let mut engine = policy_cmd::open(env).map_err(failed)?;
+            let mut engine = operator::engine(env, source).map_err(failed)?;
             let at = hyalos_types::Clock::now(&SystemClock);
             let head = engine
                 .revoke_agent(at, agent, Decider::Human, reason)

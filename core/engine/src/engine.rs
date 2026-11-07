@@ -11,8 +11,8 @@ use hyalos_policy::{GateRequest, LoadError, Outcome, Policies};
 use hyalos_types::event::SCHEMA;
 use hyalos_types::snapshot::{STATE_VERSION, StateImage};
 use hyalos_types::{
-    AgentId, AgentName, Answer, Digest, Event, EventError, HoldId, JobId, Origin, ReasonCode,
-    Resolution, Schema, TaskId, Timestamp,
+    AgentId, AgentName, Answer, Digest, Event, EventError, HoldId, JobId, OperatorKey,
+    OperatorPublic, Origin, ReasonCode, Resolution, Schema, Signed, TaskId, Timestamp,
 };
 
 use crate::state::{Pruned, RuleViolation, State};
@@ -47,6 +47,9 @@ pub enum EngineError {
     /// An event was appended but could not be projected. This cannot happen, since it was checked
     /// first. The engine stops accepting events rather than continue with state it cannot trust.
     Poisoned,
+    /// A human decision needs the operator's signature, and this engine was not given the operator's
+    /// key (ADR-0070). Nothing was written.
+    NoOperatorKey,
 }
 
 impl fmt::Display for EngineError {
@@ -66,6 +69,10 @@ impl fmt::Display for EngineError {
             EngineError::Snapshot(e) => write!(f, "the log's snapshot cannot be used: {e}"),
             EngineError::Policy(e) => write!(f, "{e}"),
             EngineError::Compact(e) => write!(f, "{e}"),
+            EngineError::NoOperatorKey => write!(
+                f,
+                "a human decision must be signed with the operator's key, and none was given"
+            ),
             EngineError::Poisoned => {
                 write!(
                     f,
@@ -106,7 +113,7 @@ pub fn replay_from(
         let event = Event::decode_with(schema, &e.kind, e.schema_version, &e.payload)
             .map_err(|error| EngineError::Event { seq: e.seq, error })?;
         state
-            .apply(e.seq, e.at, e.origin, &event)
+            .apply_written(e.seq, e.at, e.origin, e.schema_version, &event)
             .map_err(|violation| EngineError::Replay {
                 seq: e.seq,
                 violation,
@@ -312,6 +319,8 @@ pub struct Engine {
     poisoned: bool,
     /// Stamp each write no earlier than the last event caught up to (ADR-0069).
     forward: bool,
+    /// The operator's key, given only to a command the operator runs (ADR-0070).
+    operator: Option<OperatorKey>,
 }
 
 /// How many times a write is checked again after another process appended first.
@@ -350,7 +359,41 @@ impl Engine {
             schema,
             poisoned: false,
             forward: false,
+            operator: None,
         })
+    }
+
+    /// Gives this engine the operator's key, with which it signs each human decision it writes
+    /// (ADR-0070). Only a command the operator runs, after the passphrase, has it; without it a human
+    /// decision is refused with nothing written.
+    pub fn with_operator(mut self, key: OperatorKey) -> Self {
+        self.operator = Some(key);
+        self
+    }
+
+    /// The public half of the operator's key this engine was given, if any.
+    pub fn operator(&self) -> Option<OperatorPublic> {
+        self.operator.as_ref().map(OperatorKey::public)
+    }
+
+    /// `event` with the operator's signature if it is a human decision: over the event, this log's
+    /// key and the last event the engine has read, so it holds for this place in this log only.
+    fn sign(&self, event: &Event) -> Result<Event, EngineError> {
+        if event.decided_by() != Some(Resolution::Human) || event.signed() != Some(&Signed::None) {
+            return Ok(event.clone());
+        }
+        let key = self.operator.as_ref().ok_or(EngineError::NoOperatorKey)?;
+        let bytes = event
+            .approval_bytes()
+            .map_err(|error| EngineError::Event { seq: 0, error })?;
+        let (after, hash) = self.known.map_or((0, [0; 32]), |h| (h.seq, h.hash));
+        let approval = key.approve(
+            self.log.public_key().as_bytes(),
+            after,
+            Digest::from_bytes(hash),
+            &bytes,
+        );
+        Ok(event.clone().with_signed(Signed::Operator(approval)))
     }
 
     pub fn state(&self) -> &State {
@@ -496,15 +539,22 @@ impl Engine {
         ) {
             return Err(EngineError::Rule(RuleViolation::UnknownNeedsHold));
         }
-        let payload = event
-            .encode()
-            .map_err(|error| EngineError::Event { seq: 0, error })?;
         for _ in 0..WRITE_ATTEMPTS {
             self.catch_up()?;
+            // Signed after catching up, so the approval names the last event this engine has read.
+            let event = self.sign(&event)?;
+            let payload = event
+                .encode()
+                .map_err(|error| EngineError::Event { seq: 0, error })?;
             let at = self.stamp(at);
             self.state
                 .check_stamped(at, origin, &event)
                 .map_err(EngineError::Rule)?;
+            // Replay lets a human decision from before signatures existed through; the engine never
+            // writes one.
+            if event.signed() == Some(&Signed::Unrecorded) {
+                return Err(EngineError::Rule(RuleViolation::HumanDecisionUnsigned));
+            }
             let new = NewEvent {
                 at,
                 origin,
@@ -516,7 +566,11 @@ impl Engine {
                 Err(LogError::Moved) => continue,
                 other => other?,
             };
-            if self.state.apply(head.seq, at, origin, &event).is_err() {
+            if self
+                .state
+                .apply_written(head.seq, at, origin, self.schema.current, &event)
+                .is_err()
+            {
                 self.poisoned = true;
                 return Err(EngineError::Poisoned);
             }
@@ -601,7 +655,7 @@ impl Engine {
         let mut next = self.state.clone();
         for (origin, event) in events {
             let seq = next.last_seq() + 1;
-            next.apply(seq, at, *origin, event)
+            next.apply_written(seq, at, *origin, self.schema.current, event)
                 .map_err(EngineError::Rule)?;
         }
         if next.awaiting_hold() {
@@ -726,6 +780,7 @@ impl Engine {
                         hold,
                         by: Resolution::Reevaluated,
                         reason,
+                        signed: Signed::None,
                     },
                 )?;
                 Ok(Reevaluation::Released(head))
@@ -759,6 +814,7 @@ impl Engine {
                 task,
                 by: decider.resolution(),
                 reason,
+                signed: Signed::None,
             },
         )
     }
@@ -781,6 +837,7 @@ impl Engine {
                 hold,
                 by: decider.resolution(),
                 reason,
+                signed: Signed::None,
             },
         )
     }
@@ -812,6 +869,7 @@ impl Engine {
                 document: document.to_string(),
                 by: decider.resolution(),
                 reason,
+                signed: Signed::None,
             },
         )
     }
@@ -837,6 +895,7 @@ impl Engine {
                 credential,
                 by: decider.resolution(),
                 reason,
+                signed: Signed::None,
             },
         )
     }
@@ -858,6 +917,7 @@ impl Engine {
                 agent,
                 by: decider.resolution(),
                 reason,
+                signed: Signed::None,
             },
         )
     }
@@ -884,6 +944,7 @@ impl Engine {
                 handle,
                 by: decider.resolution(),
                 reason,
+                signed: Signed::None,
             },
         )
     }

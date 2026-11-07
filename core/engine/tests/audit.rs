@@ -138,7 +138,8 @@ fn built(name: &str) -> Res<Built> {
     let d = dir(name)?;
     let live = d.join("events.db");
     let (a1, a2) = (d.join("a1.db"), d.join("a2.db"));
-    let mut e = Engine::open(&live, key())?;
+    let mut e = Engine::open(&live, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     first_part(&mut e)?;
     e.compact(at(20), &a1)?;
     second_part(&mut e)?;
@@ -222,7 +223,8 @@ fn archives_that_do_not_reach_a_snapshot_leave_it_unaudited_and_say_so() -> Res 
 fn a_log_that_was_never_compacted_has_nothing_to_compare_but_must_still_replay() -> Res {
     let d = dir("never")?;
     let live = d.join("events.db");
-    let mut e = Engine::open(&live, key())?;
+    let mut e = Engine::open(&live, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     first_part(&mut e)?;
     let result = audit(&live, &[], &key().public(), None)?;
     assert_eq!(
@@ -237,7 +239,8 @@ fn a_log_that_was_never_compacted_has_nothing_to_compare_but_must_still_replay()
 
 /// The state the engine holds at the end of event 9, as an image.
 fn truth_at_9(live: &Path) -> Res<StateImage> {
-    let mut e = Engine::open(live, key())?;
+    let mut e =
+        Engine::open(live, key())?.with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     first_part(&mut e)?;
     Ok(e.state().to_image().map_err(|j| format!("pending {j}"))?)
 }
@@ -333,7 +336,8 @@ fn the_first_wrong_snapshot_is_the_one_named_even_if_a_later_one_is_right() -> R
     // Snapshot 9 carries a wrong stamp. The engine carries on from it, and the next snapshot is taken
     // after more events have overwritten that stamp, so it is right. Only the first is named.
     let b = forged("first-wrong", |i| i.last_at = Some(5))?;
-    let mut e = Engine::open(&b.live, key())?;
+    let mut e = Engine::open(&b.live, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     second_part(&mut e)?;
     e.compact(at(21), &b.a2)?;
     drop(e);
@@ -347,7 +351,8 @@ fn the_first_wrong_snapshot_is_the_one_named_even_if_a_later_one_is_right() -> R
 fn a_snapshot_that_cannot_be_read_is_an_error_not_a_skip() -> Res {
     let d = dir("unreadable")?;
     let live = d.join("events.db");
-    let mut e = Engine::open(&live, key())?;
+    let mut e = Engine::open(&live, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     first_part(&mut e)?;
     drop(e);
     for (name, version, bytes) in [
@@ -397,7 +402,8 @@ fn another_key_another_logs_archive_and_a_wrong_head_are_refused() -> Res {
 
     // An archive of a different log does not end at one of this log's snapshots.
     let stranger = built("refused-stranger")?;
-    let mut e = Engine::open(&stranger.live, key())?;
+    let mut e = Engine::open(&stranger.live, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     put(&mut e, 14, Event::TaskCreated { request: d(14) })?;
     let foreign = stranger.a1.with_file_name("foreign.db");
     e.compact(at(30), &foreign)?;

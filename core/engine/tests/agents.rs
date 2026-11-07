@@ -33,7 +33,8 @@ fn engine(test: &str) -> Res<(Engine, PathBuf)> {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("agents-{test}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
-    let e = Engine::open(&dir.join("events.db"), key())?;
+    let e = Engine::open(&dir.join("events.db"), key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     Ok((e, dir))
 }
 
@@ -162,11 +163,13 @@ fn raw_agent_events_are_refused_from_the_engine_and_the_broker() -> Res {
             credential: secret(2),
             by: Resolution::Human,
             reason: code("agent.issued"),
+            signed: hyalos_types::Signed::Unrecorded,
         },
         Event::AgentRevoked {
             agent,
             by: Resolution::Human,
             reason: code("agent.revoked"),
+            signed: hyalos_types::Signed::Unrecorded,
         },
     ] {
         let v = violation(e.submit(at(2), Origin::Engine, event.clone()))?;
@@ -193,7 +196,8 @@ fn agents_survive_replay_compaction_and_a_read_with_the_public_key_alone() -> Re
     let before = e.state().agents().clone();
     e.compact(at(10), &dir.join("archive.db"))?;
     drop(e);
-    let reopened = Engine::open(&dir.join("events.db"), key())?;
+    let reopened = Engine::open(&dir.join("events.db"), key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
     assert_eq!(reopened.state().agents(), &before);
     drop(reopened);
 

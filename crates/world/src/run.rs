@@ -5,14 +5,14 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use hyalos_broker::{Admission, Credential, LiveJobs, Refusal};
-use hyalos_engine::{Decider, Engine, Ruling, replay};
+use hyalos_engine::{Decider, Engine, Ruling, approvals, replay};
 use hyalos_log::{Head, Log, LogKey, StoredEvent};
 use hyalos_policy::{GateRequest, ask};
 use hyalos_sim::Sim;
 use hyalos_substrate::{Ending, SandboxSpec, Substrate};
 use hyalos_types::{
     Budget, Clock, Digest, Entropy, Event, Gate, JobId, JobOutcome, MANIFEST_VERSION, Manifest,
-    ManifestKey, Origin, ReasonCode, Role, Stakes, TaskId, Timestamp,
+    ManifestKey, OperatorKey, Origin, ReasonCode, Role, Stakes, TaskId, Timestamp,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -124,7 +124,10 @@ pub fn run_job(seed: u64, dir: &Path) -> Res<Run> {
     let log_key = LogKey::from_seed(key_bytes(&sim, "log-key"));
     let public = log_key.public();
     let db = dir.join("events.db");
-    let mut engine = Engine::open(&db, log_key)?;
+    // The operator signs every human decision with a key of their own (ADR-0070).
+    let operator = OperatorKey::from_seed(&key_bytes(&sim, "operator-key"));
+    let operator_public = operator.public();
+    let mut engine = Engine::open(&db, log_key)?.with_operator(operator);
 
     // The operator's policy, approved by a human, then the task and its job.
     engine.approve_policy(clock.now(), OPERATOR, Decider::Human, code("sim.operator"))?;
@@ -347,6 +350,13 @@ pub fn run_job(seed: u64, dir: &Path) -> Res<Run> {
     }
     log.verify(&public)?;
     drop(log);
+    // Every human decision carries the operator's signature, checked with the public keys alone.
+    if approvals(&db, &[], &public, Some(&operator_public))?
+        .signed
+        .is_empty()
+    {
+        return Err(format!("seed {seed}: the operator's policy approval is not signed").into());
+    }
 
     Ok(Run {
         seed,

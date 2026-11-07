@@ -3,6 +3,7 @@
 //! Layout rule (ADR-0017): this crate depends on no other workspace crate.
 
 pub mod agent;
+pub mod approval;
 pub mod digest;
 pub mod entropy;
 pub mod event;
@@ -24,6 +25,7 @@ pub mod wire;
 pub mod workflow;
 
 pub use agent::AgentName;
+pub use approval::{OperatorApproval, OperatorKey, OperatorPublic, SIGNED_SINCE, Signed};
 pub use digest::Digest;
 pub use entropy::{Entropy, SeededRng};
 pub use event::{

@@ -665,7 +665,7 @@ fn the_command_refuses_bad_arguments() -> Res {
     );
     assert_eq!(
         world
-            .cli(&["policy", "approve", &bad.to_string_lossy()])?
+            .signed(&["policy", "approve", &bad.to_string_lossy()])?
             .status
             .code(),
         Some(1)
