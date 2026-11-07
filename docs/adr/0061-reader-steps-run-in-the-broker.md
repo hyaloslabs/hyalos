@@ -1,6 +1,6 @@
 # ADR-0061: Reader steps run in the broker, and the engine gets typed values
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
