@@ -46,7 +46,10 @@ fn submit(e: &mut Engine, n: u64, event: Event) -> Result<u64, EngineError> {
 /// Submits an event, sending a hold's release through the API that records what justifies it. A
 /// re-evaluation is given the allow that the hold's own gate would have to answer.
 fn route(e: &mut Engine, at: Timestamp, event: Event) -> Result<Head, EngineError> {
-    let Event::HoldResolved { hold, by, reason } = event else {
+    let Event::HoldResolved {
+        hold, by, reason, ..
+    } = event
+    else {
         return e.submit(at, Origin::Engine, event);
     };
     let decider = match by {
@@ -75,7 +78,8 @@ fn route(e: &mut Engine, at: Timestamp, event: Event) -> Result<Head, EngineErro
 
 #[test]
 fn a_task_runs_through_a_hold_to_completion() -> Res {
-    let mut e = Engine::open(&fresh_path("lifecycle")?, key())?;
+    let mut e = Engine::open(&fresh_path("lifecycle")?, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     let task = TaskId::from_seq(submit(&mut e, 1, Event::TaskCreated { request: d(1) })?);
     assert_eq!(
         task.seq(),
@@ -136,6 +140,7 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
             hold,
             by: Resolution::Human,
             reason: why(),
+            signed: hyalos_types::Signed::Unrecorded,
         },
     )?;
     assert_eq!(e.state().tasks()[&task].status(), TaskStatus::Open);
@@ -186,7 +191,8 @@ fn a_task_runs_through_a_hold_to_completion() -> Res {
 
 #[test]
 fn two_holds_keep_a_task_held_until_both_resolve() -> Res {
-    let mut e = Engine::open(&fresh_path("two-holds")?, key())?;
+    let mut e = Engine::open(&fresh_path("two-holds")?, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     let task = TaskId::from_seq(submit(&mut e, 1, Event::TaskCreated { request: d(1) })?);
     let open = |e: &mut Engine, n, gate| {
         submit(
@@ -211,6 +217,7 @@ fn two_holds_keep_a_task_held_until_both_resolve() -> Res {
             hold: a,
             by: Resolution::Policy,
             reason: why(),
+            signed: hyalos_types::Signed::None,
         },
     )?;
     assert_eq!(e.state().tasks()[&task].status(), TaskStatus::Held);
@@ -221,6 +228,7 @@ fn two_holds_keep_a_task_held_until_both_resolve() -> Res {
             hold: b,
             by: Resolution::Reevaluated,
             reason: why(),
+            signed: hyalos_types::Signed::None,
         },
     )?;
     assert_eq!(e.state().tasks()[&task].status(), TaskStatus::Open);
@@ -230,7 +238,8 @@ fn two_holds_keep_a_task_held_until_both_resolve() -> Res {
 #[test]
 fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
     let path = fresh_path("refused")?;
-    let mut e = Engine::open(&path, key())?;
+    let mut e =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     let task = TaskId::from_seq(submit(&mut e, 1, Event::TaskCreated { request: d(1) })?);
     let job = JobId::from_seq(submit(
         &mut e,
@@ -269,6 +278,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
                 hold: HoldId::from_seq(99),
                 by: Resolution::Human,
                 reason: why(),
+                signed: hyalos_types::Signed::Unrecorded,
             },
             "unknown hold",
         ),
@@ -350,6 +360,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
             hold,
             by: Resolution::Policy,
             reason: why(),
+            signed: hyalos_types::Signed::None,
         },
     )?;
     assert!(matches!(
@@ -360,6 +371,7 @@ fn an_illegal_event_is_refused_and_nothing_is_written() -> Res {
                 hold,
                 by: Resolution::Human,
                 reason: why(),
+                signed: hyalos_types::Signed::Unrecorded,
             },
         ),
         Err(EngineError::Rule(RuleViolation::HoldNotOpen(_)))
@@ -405,7 +417,8 @@ fn deleting_the_projection_and_replaying_gives_identical_state() -> Res {
     // the engine; the log is all that remains.
     let path = fresh_path("rebuild")?;
     let live = {
-        let mut e = Engine::open(&path, key())?;
+        let mut e = Engine::open(&path, key())?
+            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
         let t1 = TaskId::from_seq(submit(&mut e, 1, Event::TaskCreated { request: d(1) })?);
         let t2 = TaskId::from_seq(submit(&mut e, 2, Event::TaskCreated { request: d(2) })?);
         let j = JobId::from_seq(submit(
@@ -442,7 +455,8 @@ fn deleting_the_projection_and_replaying_gives_identical_state() -> Res {
         e.state().clone()
     };
     // Rebuilt two ways: by reopening the engine, and by folding the stored events directly.
-    let reopened = Engine::open(&path, key())?;
+    let reopened =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     assert_eq!(reopened.state(), &live);
     let folded: State = replay(&Log::open(&path, key())?.events()?)?;
     assert_eq!(folded, live);
@@ -454,7 +468,8 @@ fn deleting_the_projection_and_replaying_gives_identical_state() -> Res {
 fn a_log_that_fails_verification_is_not_loaded() -> Res {
     let path = fresh_path("tampered")?;
     {
-        let mut e = Engine::open(&path, key())?;
+        let mut e = Engine::open(&path, key())?
+            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
         submit(&mut e, 1, Event::TaskCreated { request: d(1) })?;
     }
     // Same file, wrong key: the chain fails at event 1.
@@ -634,6 +649,7 @@ fn random_event(rng: &mut SeededRng, state: &State, seq_next: u64) -> Event {
                 hold,
                 by: by[pick(rng, by.len())],
                 reason: why(),
+                signed: hyalos_types::Signed::None,
             }
         }
     }
@@ -645,7 +661,8 @@ fn random_runs_keep_every_invariant_and_replay_to_the_same_state() -> Res {
         let sim = Sim::new(seed);
         let mut rng = sim.stream("events");
         let path = fresh_path(&format!("random-{seed}"))?;
-        let mut e = Engine::open(&path, key())?;
+        let mut e = Engine::open(&path, key())?
+            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
         let (mut accepted, mut refused) = (0u32, 0u32);
         for step in 0..200u64 {
             let next = e.state().last_seq() + 1;
@@ -664,7 +681,13 @@ fn random_runs_keep_every_invariant_and_replay_to_the_same_state() -> Res {
         );
         let live = e.state().clone();
         drop(e);
-        assert_eq!(Engine::open(&path, key())?.state(), &live, "seed {seed}");
+        assert_eq!(
+            Engine::open(&path, key())?
+                .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]))
+                .state(),
+            &live,
+            "seed {seed}"
+        );
         assert_eq!(
             live.last_seq(),
             u64::from(accepted),
@@ -679,7 +702,8 @@ fn the_same_seed_gives_the_same_log_and_state() -> Res {
     let run = |name: &str| -> Result<(State, String), Box<dyn std::error::Error>> {
         let sim = Sim::new(77);
         let mut rng = sim.stream("events");
-        let mut e = Engine::open(&fresh_path(name)?, key())?;
+        let mut e = Engine::open(&fresh_path(name)?, key())?
+            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
         for step in 0..200u64 {
             let next = e.state().last_seq() + 1;
             let event = random_event(&mut rng, e.state(), next);

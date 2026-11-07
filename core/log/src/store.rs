@@ -102,6 +102,8 @@ pub struct StoredEvent {
     pub kind: String,
     pub schema_version: u32,
     pub payload: Vec<u8>,
+    /// The event's hash in the chain, which an operator's approval names (ADR-0070).
+    pub hash: Hash,
 }
 
 impl Head {
@@ -436,6 +438,7 @@ impl Log {
                 kind,
                 schema_version,
                 payload,
+                hash: stored_hash,
             });
         }
         Ok((events, head))
@@ -551,7 +554,7 @@ pub(crate) fn read_anchors(conn: &Connection) -> Result<Vec<Anchor>, LogError> {
 
 pub(crate) fn read_events(conn: &Connection) -> Result<Vec<StoredEvent>, LogError> {
     let mut stmt = conn.prepare(
-        "SELECT seq, at, origin, kind, schema_version, payload FROM events ORDER BY seq",
+        "SELECT seq, at, origin, kind, schema_version, payload, hash FROM events ORDER BY seq",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
@@ -561,11 +564,12 @@ pub(crate) fn read_events(conn: &Connection) -> Result<Vec<StoredEvent>, LogErro
             r.get::<_, String>(3)?,
             r.get::<_, u32>(4)?,
             r.get::<_, Vec<u8>>(5)?,
+            r.get::<_, Vec<u8>>(6)?,
         ))
     })?;
     let mut events = Vec::new();
     for row in rows {
-        let (seq, at, origin, kind, schema_version, payload) = row?;
+        let (seq, at, origin, kind, schema_version, payload, hash) = row?;
         events.push(StoredEvent {
             seq: u64::try_from(seq).map_err(|_| LogError::Corrupt("sequence number"))?,
             at: Timestamp::from_millis(
@@ -575,6 +579,9 @@ pub(crate) fn read_events(conn: &Connection) -> Result<Vec<StoredEvent>, LogErro
             kind,
             schema_version,
             payload,
+            hash: hash
+                .try_into()
+                .map_err(|_| LogError::Corrupt("event hash"))?,
         });
     }
     Ok(events)

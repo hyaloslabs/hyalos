@@ -75,7 +75,8 @@ struct Rig {
 fn rig(name: &str) -> Result<Rig, Box<dyn std::error::Error>> {
     let path = fresh_path(name)?;
     let clock = FakeClock::new(START);
-    let mut engine = Engine::open(&path, key())?;
+    let mut engine =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     let task = TaskId::from_seq(
         engine
             .submit(
@@ -547,7 +548,8 @@ fn a_complete_hand_written_hold_replays() -> Res {
         stakes: Stakes::irreversible(),
     });
     write_raw(&path, &events)?;
-    let e = Engine::open(&path, key())?;
+    let e =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     assert_eq!(
         e.state().tasks()[&TaskId::from_seq(1)].status(),
         TaskStatus::Held
@@ -641,7 +643,13 @@ fn random_gate_outcomes_never_let_unknown_through() -> Res {
         let live = r.engine.state().clone();
         let path = r.path.clone();
         drop(r);
-        assert_eq!(Engine::open(&path, key())?.state(), &live, "seed {seed}");
+        assert_eq!(
+            Engine::open(&path, key())?
+                .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]))
+                .state(),
+            &live,
+            "seed {seed}"
+        );
     }
     Ok(())
 }

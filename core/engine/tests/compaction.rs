@@ -220,7 +220,12 @@ fn a_compacted_engine_and_one_that_never_compacted_agree_through_reopens_and_res
         let mut pick = |n: u64| rng.below(n);
         let tmp = dir(&format!("twin-{seed}"))?;
         let (live, twin) = (tmp.join("events.db"), tmp.join("twin.db"));
-        let (mut a, mut b) = (Engine::open(&live, key())?, Engine::open(&twin, key())?);
+        let (mut a, mut b) = (
+            Engine::open(&live, key())?
+                .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32])),
+            Engine::open(&twin, key())?
+                .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32])),
+        );
         let mut archives: Vec<PathBuf> = Vec::new();
 
         for n in 0..110u64 {
@@ -241,7 +246,8 @@ fn a_compacted_engine_and_one_that_never_compacted_agree_through_reopens_and_res
                 1 => {
                     // A restart: the engine is rebuilt from the file alone.
                     drop(a);
-                    a = Engine::open(&live, key())?;
+                    a = Engine::open(&live, key())?
+                        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
                     reopens += 1;
                 }
                 _ => {
@@ -280,7 +286,9 @@ fn a_compacted_engine_and_one_that_never_compacted_agree_through_reopens_and_res
         // And the file alone, restarted, still means the same thing.
         drop(a);
         assert_eq!(
-            Engine::open(&live, key())?.state(),
+            Engine::open(&live, key())?
+                .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]))
+                .state(),
             b.state(),
             "seed {seed}"
         );
@@ -332,7 +340,8 @@ fn varied(e: &mut Engine) -> Res<(TaskId, TaskId, JobId)> {
 fn open_holds_running_jobs_and_released_holds_all_survive_a_compaction() -> Res {
     let tmp = dir("varied")?;
     let path = tmp.join("events.db");
-    let mut e = Engine::open(&path, key())?;
+    let mut e =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     let (held, running_task, running_job) = varied(&mut e)?;
     let before = e.state().clone();
     assert_eq!(before.tasks()[&held].status(), TaskStatus::Held);
@@ -346,7 +355,8 @@ fn open_holds_running_jobs_and_released_holds_all_survive_a_compaction() -> Res 
     );
 
     drop(e);
-    let e = Engine::open(&path, key())?;
+    let e =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     let s = e.state();
     assert_eq!(s, &before);
     assert_eq!(s.tasks()[&held].status(), TaskStatus::Held);
@@ -369,11 +379,13 @@ fn open_holds_running_jobs_and_released_holds_all_survive_a_compaction() -> Res 
 fn rules_keep_working_from_a_snapshot_with_no_events_after_it() -> Res {
     let tmp = dir("rules")?;
     let path = tmp.join("events.db");
-    let mut e = Engine::open(&path, key())?;
+    let mut e =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     varied(&mut e)?;
     e.compact(at(100), &tmp.join("a1.db"))?;
     drop(e);
-    let mut e = Engine::open(&path, key())?;
+    let mut e =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     assert!(
         Log::open(&path, key())?.events()?.is_empty(),
         "every event is in the archive; only the snapshot is left"
@@ -417,11 +429,13 @@ fn rules_keep_working_from_a_snapshot_with_no_events_after_it() -> Res {
 fn authority_over_a_hold_survives_a_restore_from_a_snapshot() -> Res {
     let tmp = dir("authority")?;
     let path = tmp.join("events.db");
-    let mut e = Engine::open(&path, key())?;
+    let mut e =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     varied(&mut e)?;
     e.compact(at(100), &tmp.join("a1.db"))?;
     drop(e);
-    let mut e = Engine::open(&path, key())?;
+    let mut e =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     for decider in [Decider::Policy, Decider::Verifier] {
         let result = e.decide_hold(at(200), HoldId::from_seq(5), decider, why());
         assert!(
@@ -443,7 +457,8 @@ fn authority_over_a_hold_survives_a_restore_from_a_snapshot() -> Res {
 fn compaction_refuses_to_go_back_in_time_to_overwrite_or_to_do_nothing() -> Res {
     let tmp = dir("refuse")?;
     let path = tmp.join("events.db");
-    let mut e = Engine::open(&path, key())?;
+    let mut e =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     let archive = tmp.join("a1.db");
     assert!(matches!(
         e.compact(at(1), &archive),
@@ -493,7 +508,8 @@ fn log_with_snapshot(
 ) -> Res<PathBuf> {
     let tmp = dir(name)?;
     let path = tmp.join("events.db");
-    let mut e = Engine::open(&path, key())?;
+    let mut e =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     varied(&mut e)?;
     let image = e
         .state()
@@ -518,7 +534,8 @@ type Case = (
 fn a_snapshot_that_is_not_a_state_this_build_can_read_stops_the_engine() -> Res {
     let good = |i: &StateImage| i.encode().unwrap_or_default();
     // The control: the same route with a good state opens.
-    Engine::open(&log_with_snapshot("good", STATE_VERSION, good)?, key())?;
+    Engine::open(&log_with_snapshot("good", STATE_VERSION, good)?, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
 
     let cases: Vec<Case> = vec![
         (
@@ -609,7 +626,8 @@ fn a_snapshot_edited_without_the_key_stops_the_engine_before_it_is_read() -> Res
 fn a_backup_of_a_compacted_log_restores_to_the_same_state() -> Res {
     let tmp = dir("backup")?;
     let path = tmp.join("events.db");
-    let mut e = Engine::open(&path, key())?;
+    let mut e =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     varied(&mut e)?;
     e.compact(at(100), &tmp.join("a1.db"))?;
     apply(&mut e, 120, &Op::Create(77))?;
@@ -619,6 +637,11 @@ fn a_backup_of_a_compacted_log_restores_to_the_same_state() -> Res {
 
     let backup = tmp.join("backup.db");
     hyalos_log::copy_verified(&path, &backup, &key().public(), head)?;
-    assert_eq!(Engine::open(&backup, key())?.state(), &state);
+    assert_eq!(
+        Engine::open(&backup, key())?
+            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]))
+            .state(),
+        &state
+    );
     Ok(())
 }

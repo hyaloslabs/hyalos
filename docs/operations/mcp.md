@@ -28,7 +28,7 @@ A name belongs to one credential in force at a time. To replace a credential, re
 
 Without a credential in force, the server answers every call 401 (`-32030`). If it cannot read the log to check, it answers 503 and says why on its stderr.
 
-The credential lets the agent call the server. It cannot approve anything: approvals are written with the engine's key by your commands, never through the server.
+The credential lets the agent call the server. It cannot approve anything: a decision of yours is written only by a command you run, signed with your approval key after your passphrase ([approvals.md](approvals.md)), never through the server. Each `hyalos agent issue` and `revoke` asks for that passphrase.
 
 ## From a client that starts it (stdio)
 

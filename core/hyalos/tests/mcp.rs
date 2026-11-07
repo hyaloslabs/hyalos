@@ -53,12 +53,32 @@ impl Machine {
         let hex: String = SEED.iter().map(|b| format!("{b:02x}")).collect();
         std::fs::write(&private, format!("hyalos-engine-key-v1:{hex}\n"))?;
         std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o600))?;
+        // The operator's approval key, which every credential issued or revoked is signed with.
+        let out = self.signed(&["operator", "init"])?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
+        }
         Ok(())
+    }
+
+    /// A command that records the operator's decision, the passphrase given on stdin (ADR-0070).
+    fn signed(&self, args: &[&str]) -> Res<std::process::Output> {
+        let mut child = self
+            .command(args)
+            .arg("--passphrase-stdin")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = writeln!(stdin, "the operator's own passphrase");
+        }
+        Ok(child.wait_with_output()?)
     }
 
     /// Issues a credential with the binary, as the operator does, and returns it.
     fn issue(&self, name: &str) -> Res<String> {
-        let out = self.command(&["agent", "issue", name]).output()?;
+        let out = self.signed(&["agent", "issue", name])?;
         if !out.status.success() {
             return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
         }
@@ -70,7 +90,7 @@ impl Machine {
     }
 
     fn agent(&self, args: &[&str]) -> Res<String> {
-        let out = self.command(&[&["agent"], args].concat()).output()?;
+        let out = self.signed(&[&["agent"], args].concat())?;
         if !out.status.success() {
             return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
         }
@@ -362,13 +382,10 @@ fn agent_commands_refuse_bad_names_ids_and_reasons() {
     }
     m.issue("claude-code").unwrap();
     // A name in force is not issued twice, and an unknown agent is not revoked.
-    let out = m
-        .command(&["agent", "issue", "claude-code"])
-        .output()
-        .unwrap();
+    let out = m.signed(&["agent", "issue", "claude-code"]).unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("already in force"));
-    let out = m.command(&["agent", "revoke", "99"]).output().unwrap();
+    let out = m.signed(&["agent", "revoke", "99"]).unwrap();
     assert_eq!(out.status.code(), Some(1));
 }
 

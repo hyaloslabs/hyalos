@@ -19,6 +19,9 @@ use hyalos_types::Event;
 pub type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 pub const EXE: &str = env!("CARGO_BIN_EXE_hyalos");
+
+/// The passphrase each world's operator key is sealed under.
+pub const PASSPHRASE: &str = "the operator's own passphrase";
 const PEM: &[u8] = include_bytes!("../fixtures/github-app-test.pem");
 const POLICY: &str = r#"permit (principal, action in [Action::"read", Action::"push", Action::"open_pr", Action::"request_host", Action::"data_flow"], resource);"#;
 
@@ -464,9 +467,10 @@ impl World {
             provider_key: format!("sk-test-{}-{}", std::process::id(), name),
         };
         ok_cli(world.cli(&["init"])?)?;
+        ok_cli(world.signed(&["operator", "init"])?)?;
         let policy = world.root.join("policy.cedar");
         std::fs::write(&policy, POLICY)?;
-        ok_cli(world.cli(&["policy", "approve", &policy.to_string_lossy()])?)?;
+        ok_cli(world.signed(&["policy", "approve", &policy.to_string_lossy()])?)?;
         let private = |path: PathBuf, text: &[u8]| -> Res {
             std::fs::write(&path, text)?;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
@@ -516,6 +520,35 @@ impl World {
             .output()?)
     }
 
+    /// A command that records the operator's decision, given the passphrase on stdin (ADR-0070).
+    pub fn signed(&self, args: &[&str]) -> Res<Output> {
+        self.signed_with(args, PASSPHRASE)
+    }
+
+    /// As [`World::signed`], with `passphrase` on stdin.
+    pub fn signed_with(&self, args: &[&str], passphrase: &str) -> Res<Output> {
+        let mut child = Command::new(EXE)
+            .args(args)
+            .arg("--passphrase-stdin")
+            .env("HYALOS_CONFIG_DIR", &self.config)
+            .env("HYALOS_DATA_DIR", &self.data)
+            .env("HYALOS_RUNTIME_DIR", &self.runtime)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            // A command that refuses first may not read it.
+            let _ = writeln!(stdin, "{passphrase}");
+        }
+        Ok(child.wait_with_output()?)
+    }
+
+    /// The operator's key, as `hyalos operator init` made it for this world.
+    pub fn operator_key(&self) -> Option<hyalos_types::OperatorKey> {
+        hyalos::operator::unlock(&self.config, PASSPHRASE).ok()
+    }
+
     pub fn setup(&self, detect: Detect, timeout: Duration) -> Setup {
         self.setup_with(detect, timeout, Interrupt::none())
     }
@@ -531,6 +564,7 @@ impl World {
             detect_timeout: timeout,
             interrupt,
             on_task: None,
+            operator: self.operator_key(),
         }
     }
 

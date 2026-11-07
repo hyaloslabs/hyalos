@@ -69,7 +69,8 @@ struct World {
 fn world(name: &str) -> Res<World> {
     let path = path(name)?;
     Ok(World {
-        engine: Engine::open(&path, key())?,
+        engine: Engine::open(&path, key())?
+            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32])),
         clock: FakeClock::new(START),
         path,
         next: 1,
@@ -358,6 +359,7 @@ fn a_hold_is_released_only_through_the_calls_that_record_what_justifies_it() -> 
         hold: h.hold,
         by: Resolution::Human,
         reason: ReasonCode::unavailable(),
+        signed: hyalos_types::Signed::Unrecorded,
     };
     assert!(matches!(
         w.engine.submit(w.now(), Origin::Engine, release()),
@@ -611,6 +613,12 @@ fn release(by: Resolution) -> Event {
         hold: HoldId::from_seq(5),
         by,
         reason: ReasonCode::unavailable(),
+        // A human decision written before signatures existed still replays (ADR-0070).
+        signed: if by == Resolution::Human {
+            hyalos_types::Signed::Unrecorded
+        } else {
+            hyalos_types::Signed::None
+        },
     }
 }
 
@@ -666,7 +674,8 @@ fn a_signed_log_that_releases_a_hold_the_wrong_way_is_refused_on_open() -> Res {
         ),
     ] {
         let p = log_with_release(name, stakes, release(by))?;
-        let e = Engine::open(&p, key())?;
+        let e = Engine::open(&p, key())?
+            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
         assert_eq!(
             e.state().holds()[&HoldId::from_seq(5)]
                 .resolved
@@ -737,7 +746,8 @@ fn old_log(name: &str, by: &str) -> Res<PathBuf> {
 fn a_hold_from_before_stakes_existed_reads_as_needing_a_human() -> Res {
     // Written by the first build: no stakes were recorded, so the hold reads as the most cautious.
     let p = old_log("legacy-human", "human")?;
-    let e = Engine::open(&p, key())?;
+    let e =
+        Engine::open(&p, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     let hold = &e.state().holds()[&HoldId::from_seq(5)];
     assert_eq!(hold.stakes, Stakes::irreversible());
     let r = hold.resolved.as_ref().ok_or("not resolved")?;
@@ -831,7 +841,8 @@ fn time_passing_releases_nothing() -> Res {
     ));
     assert_eq!(w.snapshot()?, before);
     // Nor does a restart.
-    let reopened = Engine::open(&w.path, key())?;
+    let reopened = Engine::open(&w.path, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     assert_eq!(reopened.state(), &before.1);
     Ok(())
 }
@@ -1043,7 +1054,13 @@ fn no_random_sequence_releases_a_hold_without_an_allow_or_an_authorized_decision
         // Replay agrees.
         let live = w.engine.state().clone();
         drop(w.engine);
-        assert_eq!(Engine::open(&w.path, key())?.state(), &live, "seed {seed}");
+        assert_eq!(
+            Engine::open(&w.path, key())?
+                .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]))
+                .state(),
+            &live,
+            "seed {seed}"
+        );
     }
     // Across the seeds the run met every way a hold can be released, and every way it cannot.
     assert!(

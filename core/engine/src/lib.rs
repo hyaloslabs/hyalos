@@ -3,11 +3,13 @@
 //!
 //! Layout rule (ADR-0017): this crate must not depend on `hyalos-broker`.
 
+mod approvals;
 mod audit;
 mod engine;
 mod mint;
 mod state;
 
+pub use approvals::{ApprovalError, Approvals, SIGNED_SINCE, Unrecorded, approvals};
 pub use audit::{Audit, AuditError, Gap, audit};
 pub use engine::{
     Compaction, Decider, Engine, EngineError, PolicyUnavailable, Reevaluation, Ruling,

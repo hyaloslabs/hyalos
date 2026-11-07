@@ -14,8 +14,8 @@ use hyalos_types::snapshot::{
 use hyalos_types::workflow::MAX_FIELDS;
 use hyalos_types::{
     AgentId, AgentName, Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome,
-    MAX_POLICY_DOCUMENT, Origin, ReasonCode, Resolution, Sensitive, Stakes, TaskId, Timestamp,
-    TypedValue,
+    MAX_POLICY_DOCUMENT, Origin, ReasonCode, Resolution, Sensitive, Signed, Stakes, TaskId,
+    Timestamp, TypedValue,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +214,19 @@ pub enum RuleViolation {
     AgentAlreadyRevoked(AgentId),
     /// A revocation is a decision, never a gate's re-evaluation.
     RevokeNotADecision,
+    /// A human decision must carry the operator's signature (ADR-0070).
+    HumanDecisionUnsigned,
+    /// Only a human decision carries a signature.
+    SignedButNotHuman {
+        by: Resolution,
+    },
+    /// The approval names an event after the last one, or before the last decision the operator
+    /// signed, so it was not signed for this place in the log.
+    ApprovalOutOfPlace {
+        after: u64,
+        since: u64,
+        last: u64,
+    },
     /// A job returns its values once, while it runs, and no more of them than an output has fields.
     JobValuesTwice(JobId),
     TooManyValues(JobId),
@@ -302,6 +315,17 @@ impl fmt::Display for RuleViolation {
             RuleViolation::RevokeNotADecision => {
                 write!(f, "a credential is revoked by a decision, not by a gate")
             }
+            RuleViolation::HumanDecisionUnsigned => {
+                write!(f, "a human decision must carry the operator's signature")
+            }
+            RuleViolation::SignedButNotHuman { by } => {
+                write!(f, "a decision by {by:?} carries no operator signature")
+            }
+            RuleViolation::ApprovalOutOfPlace { after, since, last } => write!(
+                f,
+                "the approval was signed after event {after}, which is not between the last \
+                 approval ({since}) and the last event ({last})"
+            ),
             RuleViolation::PolicyTooLarge { len } => write!(
                 f,
                 "a policy document of {len} bytes is larger than the {MAX_POLICY_DOCUMENT} bytes allowed"
@@ -368,6 +392,8 @@ pub struct State {
     handles: Vec<ReleasedHandle>,
     agents: BTreeMap<AgentId, Agent>,
     pending: Option<Pending>,
+    /// The event of the last decision the operator signed (ADR-0070).
+    last_approval: Option<u64>,
     last_seq: u64,
     last_at: Option<Timestamp>,
 }
@@ -567,7 +593,36 @@ impl State {
                 return Err(RuleViolation::HoldRequired { job: p.job, next });
             }
         }
+        self.check_signed(event)?;
         self.check_rules(event)
+    }
+
+    /// A human decision carries the operator's signature and any other carries none (ADR-0070). The
+    /// signature itself is checked against `operator.pub` by the engine and by `hyalos log verify`;
+    /// here, where no key is known, only its place is: it names an event at or before the last one,
+    /// and at or after the last decision the operator signed, so an old approval cannot be written
+    /// again. A human decision from before schema version 13 reads as unrecorded and is let through.
+    fn check_signed(&self, event: &Event) -> Result<(), RuleViolation> {
+        let (Some(by), Some(signed)) = (event.decided_by(), event.signed()) else {
+            return Ok(());
+        };
+        match (by, signed) {
+            (Resolution::Human, Signed::Operator(approval)) => {
+                let since = self.last_approval.unwrap_or(0);
+                if approval.after > self.last_seq || approval.after < since {
+                    return Err(RuleViolation::ApprovalOutOfPlace {
+                        after: approval.after,
+                        since,
+                        last: self.last_seq,
+                    });
+                }
+                Ok(())
+            }
+            (Resolution::Human, Signed::Unrecorded) => Ok(()),
+            (Resolution::Human, Signed::None) => Err(RuleViolation::HumanDecisionUnsigned),
+            (_, Signed::None) => Ok(()),
+            (by, _) => Err(RuleViolation::SignedButNotHuman { by }),
+        }
     }
 
     fn check_rules(&self, event: &Event) -> Result<(), RuleViolation> {
@@ -866,7 +921,9 @@ impl State {
                 // This is the hold an unknown answer was waiting for, if there was one.
                 self.pending = None;
             }
-            Event::HoldResolved { hold, by, reason } => {
+            Event::HoldResolved {
+                hold, by, reason, ..
+            } => {
                 if let Some(h) = self.holds.get_mut(hold) {
                     h.resolved = Some(Resolved {
                         at,
@@ -878,7 +935,9 @@ impl State {
                     }
                 }
             }
-            Event::TaskCancelled { task, by, reason } => {
+            Event::TaskCancelled {
+                task, by, reason, ..
+            } => {
                 if let Some(t) = self.tasks.get_mut(task) {
                     // The holds that were open stay unresolved: they were ended, not released.
                     t.open_holds.clear();
@@ -895,6 +954,7 @@ impl State {
                 document,
                 by,
                 reason,
+                ..
             } => {
                 self.policy = Some(PolicyApproval {
                     seq,
@@ -909,6 +969,7 @@ impl State {
                 handle,
                 by,
                 reason,
+                ..
             } => self.handles.push(ReleasedHandle {
                 seq,
                 at,
@@ -922,6 +983,7 @@ impl State {
                 credential,
                 by,
                 reason,
+                ..
             } => {
                 self.agents.insert(
                     AgentId::from_seq(seq),
@@ -935,7 +997,9 @@ impl State {
                     },
                 );
             }
-            Event::AgentRevoked { agent, by, reason } => {
+            Event::AgentRevoked {
+                agent, by, reason, ..
+            } => {
                 if let Some(a) = self.agents.get_mut(agent) {
                     a.revoked = Some(Revoked {
                         at,
@@ -959,6 +1023,9 @@ impl State {
                 }
             }
         }
+        if let Some(Signed::Operator(_)) = event.signed() {
+            self.last_approval = Some(seq);
+        }
         self.last_seq = seq;
         self.last_at = Some(at);
         Ok(())
@@ -979,6 +1046,7 @@ impl State {
             handles,
             agents,
             pending,
+            last_approval,
             last_seq,
             last_at,
         } = self;
@@ -988,6 +1056,7 @@ impl State {
         Ok(StateImage {
             last_seq: *last_seq,
             last_at: last_at.map(Timestamp::as_millis),
+            last_approval: *last_approval,
             tasks: tasks
                 .iter()
                 .map(|(id, t)| {
@@ -1166,8 +1235,10 @@ impl State {
             policy,
             handles,
             agents,
+            last_approval,
         } = image;
         let mut state = State {
+            last_approval,
             last_seq,
             last_at: last_at.map(Timestamp::from_millis),
             ..State::default()

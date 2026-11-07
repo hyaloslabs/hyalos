@@ -38,7 +38,8 @@ fn d(byte: u8) -> Digest {
 
 /// A busy engine: finished work, a task held by a timed-out gate, one running job and a resolved hold.
 fn busy(path: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
-    let mut e = Engine::open(path, key())?;
+    let mut e =
+        Engine::open(path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     let mut n = 0;
     let mut step = |e: &mut Engine, event: Event| -> Result<u64, Box<dyn std::error::Error>> {
         n += 1;
@@ -102,6 +103,7 @@ fn busy(path: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
             hold,
             by: Resolution::Human,
             reason: why(),
+            signed: hyalos_types::Signed::Unrecorded,
         },
     )?;
     let job = JobId::from_seq(step(
@@ -141,7 +143,8 @@ fn restore_onto_a_fresh_machine_reproduces_state_byte_for_byte() -> Res {
     std::fs::create_dir_all(target.parent().ok_or("no parent")?)?;
     copy_verified(&backup, &target, &key().public(), Some(head))?;
 
-    let mut restored = Engine::open(&target, key())?;
+    let mut restored = Engine::open(&target, key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     assert_eq!(restored.state(), live.state(), "the rebuilt state is equal");
     assert_eq!(
         restored.head()?,
@@ -171,7 +174,8 @@ fn a_restore_of_the_wrong_log_is_caught_by_the_recorded_head() -> Res {
     let recorded = live.head()?.ok_or("empty log")?;
     // More events happen after the head was recorded; a backup that stops short of it must not pass.
     let other = machine("short-backup")?;
-    let mut shorter = Engine::open(&other.join("events.db"), key())?;
+    let mut shorter = Engine::open(&other.join("events.db"), key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     shorter.submit(at(1), Origin::Engine, Event::TaskCreated { request: d(1) })?;
     let result = copy_verified(
         &other.join("events.db"),

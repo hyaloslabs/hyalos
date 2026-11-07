@@ -247,22 +247,7 @@ fn prepare_as(
     if let Some(data_dir) = log.parent().filter(|d| !d.as_os_str().is_empty()) {
         make_dir(data_dir)?;
     }
-    let dir_meta =
-        fs::metadata(config_dir).map_err(|e| io(format!("read {}", config_dir.display()), e))?;
-    if dir_meta.uid() != user {
-        return Err(KeyError::DirNotOwned {
-            path: config_dir.to_path_buf(),
-            owner: dir_meta.uid(),
-            user,
-        });
-    }
-    let dir_mode = dir_meta.mode();
-    if dir_mode & 0o077 != 0 {
-        return Err(KeyError::DirAccessible {
-            path: config_dir.to_path_buf(),
-            mode: dir_mode,
-        });
-    }
+    check_dir(config_dir, user)?;
 
     let key_path = config_dir.join(ENGINE_KEY_FILE);
     let public_path = config_dir.join(ENGINE_PUBLIC_KEY_FILE);
@@ -329,6 +314,31 @@ fn prepare_as(
     })
 }
 
+/// Refuses a config directory owned by another user or open to group or others (ADR-0030).
+pub(crate) fn private_dir(config_dir: &Path) -> Result<(), KeyError> {
+    check_dir(config_dir, current_user())
+}
+
+fn check_dir(config_dir: &Path, user: u32) -> Result<(), KeyError> {
+    let dir_meta =
+        fs::metadata(config_dir).map_err(|e| io(format!("read {}", config_dir.display()), e))?;
+    if dir_meta.uid() != user {
+        return Err(KeyError::DirNotOwned {
+            path: config_dir.to_path_buf(),
+            owner: dir_meta.uid(),
+            user,
+        });
+    }
+    let dir_mode = dir_meta.mode();
+    if dir_mode & 0o077 != 0 {
+        return Err(KeyError::DirAccessible {
+            path: config_dir.to_path_buf(),
+            mode: dir_mode,
+        });
+    }
+    Ok(())
+}
+
 fn public_text(public: &PublicKey) -> String {
     format!("{}\n", public.to_hex())
 }
@@ -356,7 +366,12 @@ fn create(config_dir: &Path, seeds: &mut dyn SeedSource) -> Result<Ready, KeyErr
 
 /// Creates `dir/name` with `contents` and `mode`, atomically and without ever replacing a file: the
 /// bytes are written and flushed to a temporary file made exclusively, then linked into place.
-fn publish_new(dir: &Path, name: &str, contents: &[u8], mode: u32) -> Result<(), KeyError> {
+pub(crate) fn publish_new(
+    dir: &Path,
+    name: &str,
+    contents: &[u8],
+    mode: u32,
+) -> Result<(), KeyError> {
     let target = dir.join(name);
     let temp = dir.join(format!("{name}.tmp"));
     let mut file = match OpenOptions::new()

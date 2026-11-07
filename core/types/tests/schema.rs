@@ -3,7 +3,7 @@
 use hyalos_types::event::{SCHEMA, SCHEMA_VERSION};
 use hyalos_types::{
     Answer, Attestation, Digest, Event, EventError, Gate, HoldId, HoldReason, JobId, JobOutcome,
-    ReasonCode, Resolution, Schema, Sensitive, Stakes, SubstrateName, TaskId, Upcast,
+    ReasonCode, Resolution, Schema, Sensitive, Signed, Stakes, SubstrateName, TaskId, Upcast,
 };
 use serde_json::{Value, json};
 
@@ -100,6 +100,7 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
                 hold: HoldId::from_seq(5),
                 by: Resolution::Human,
                 reason: ReasonCode::new("legacy.unrecorded").ok_or("reason")?,
+                signed: Signed::Unrecorded,
             },
         ),
     ];
@@ -136,6 +137,7 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             hold: HoldId::from_seq(5),
             by: Resolution::Human,
             reason: ReasonCode::new("approved.operator").ok_or("reason")?,
+            signed: Signed::Unrecorded,
         },
     ));
 
@@ -172,6 +174,7 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             task: TaskId::from_seq(3),
             by: Resolution::Human,
             reason: ReasonCode::new("cancelled.operator").ok_or("reason")?,
+            signed: Signed::Unrecorded,
         },
     ));
     all.push((
@@ -198,7 +201,7 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             document: "permit (principal, action, resource);".into(),
             by: Resolution::Human,
             reason: ReasonCode::new("policy.approved").ok_or("reason")?,
-        },
+            signed: Signed::Unrecorded,        },
     ));
 
     // Version 6 added the substrate to `job.started`, so the ten other kinds read as they did at
@@ -307,7 +310,7 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             handle: d(9),
             by: Resolution::Human,
             reason: ReasonCode::new("handle.operator").ok_or("reason")?,
-        },
+            signed: Signed::Unrecorded,        },
     ));
 
     // Version 11 added `agent.issued` and `agent.revoked` and changed no payload, so the twelve older
@@ -328,7 +331,7 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             credential: d(5),
             by: Resolution::Human,
             reason: ReasonCode::new("agent.issued").ok_or("reason")?,
-        },
+            signed: Signed::Unrecorded,        },
     ));
     all.push((
         11,
@@ -338,6 +341,7 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             agent: hyalos_types::AgentId::from_seq(4),
             by: Resolution::Human,
             reason: ReasonCode::new("agent.revoked").ok_or("reason")?,
+            signed: Signed::Unrecorded,
         },
     ));
 
@@ -359,6 +363,52 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
                 hyalos_types::TypedValue::Bool(true),
                 hyalos_types::TypedValue::Integer(-3),
             ],
+        },
+    ));
+    // A version 12 decision by anyone but a human reads as unsigned, which is all it needs.
+    all.push((
+        12,
+        "agent.revoked",
+        r#"{"kind":"agent.revoked","agent":4,"by":"policy","reason":"agent.revoked"}"#.into(),
+        Event::AgentRevoked {
+            agent: hyalos_types::AgentId::from_seq(4),
+            by: Resolution::Policy,
+            reason: ReasonCode::new("agent.revoked").ok_or("reason")?,
+            signed: Signed::None,
+        },
+    ));
+
+    // Version 13 added `signed` to the six kinds that record a decision (ADR-0070); the others read as
+    // they did at version 12. A human decision carries the operator's signature.
+    let at_12: Vec<_> = all.iter().filter(|g| g.0 == 12).cloned().collect();
+    for (_, kind, json, event) in at_12 {
+        // One row a kind at the current version; `hold.resolved` is the signed one below.
+        if kind == "hold.resolved" || all.iter().any(|g| g.0 == 13 && g.1 == kind) {
+            continue;
+        }
+        let Some(signed) = event.signed() else {
+            all.push((13, kind, json, event));
+            continue;
+        };
+        let value = serde_json::to_string(signed)?;
+        let json = format!("{},\"signed\":{value}}}", json.trim_end_matches('}'));
+        all.push((13, kind, json, event));
+    }
+    let approval = hyalos_types::OperatorKey::from_seed([7; 32]).approve(&[1; 32], 4, d(2), b"x");
+    all.push((
+        13,
+        "hold.resolved",
+        format!(
+            r#"{{"kind":"hold.resolved","hold":5,"by":"human","reason":"approved.operator","signed":{{"operator":{{"operator":"{}","after":4,"after_hash":"{}","signature":"{}"}}}}}}"#,
+            approval.operator,
+            hex(2),
+            hyalos_types::hex::to_hex(approval.signature.as_bytes())
+        ),
+        Event::HoldResolved {
+            hold: HoldId::from_seq(5),
+            by: Resolution::Human,
+            reason: ReasonCode::new("approved.operator").ok_or("reason")?,
+            signed: Signed::Operator(approval),
         },
     ));
     Ok(all)

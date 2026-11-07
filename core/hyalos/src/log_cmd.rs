@@ -11,14 +11,14 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use hyalos_engine::{Engine, audit};
+use hyalos_engine::{Engine, approvals, audit};
 use hyalos_log::{Head, PublicKey, Verified, copy_verified, verify, verify_history};
-use hyalos_types::Timestamp;
+use hyalos_types::{OperatorPublic, Timestamp};
 
 use crate::keys;
 use crate::paths::{self, Env};
 
-const USAGE: &str = "usage: hyalos log verify  [--db <path>] [KEY] [--expect-head <seq>:<hash>] [--archive <file>]...
+const USAGE: &str = "usage: hyalos log verify  [--db <path>] [KEY] [--expect-head <seq>:<hash>] [--archive <file>]... [--operator-key <hex> | --operator-key-file <path>]
        hyalos log audit   [--db <path>] [KEY] [--expect-head <seq>:<hash>] [--archive <file>]...
        hyalos log backup  <new-file> [--db <path>] [KEY] [--expect-head <seq>:<hash>]
        hyalos log restore <backup-file> [--db <path>] [KEY] [--expect-head <seq>:<hash>]
@@ -35,6 +35,9 @@ const USAGE: &str = "usage: hyalos log verify  [--db <path>] [KEY] [--expect-hea
   engine.key in the config directory) and the engine stopped (if the log changes while it runs it refuses
   and changes nothing); archives go to the 'archive' directory beside the log unless --archive-dir says
   otherwise
+  verify also checks the operator's signature on every human decision against --operator-key <hex>,
+  --operator-key-file <path> or operator.pub in the config directory (ADR-0070); a signed decision with
+  no operator key fails, and a human decision from before signed approvals is listed as unsigned
   verify --archive checks an archive too, and that it ends where a snapshot of this log stands; without
   it the history before the latest snapshot rests on the engine's signature on that snapshot
   audit replays the archives and the log from event 1 and compares the state at each snapshot with the
@@ -66,6 +69,9 @@ struct Options {
     file: Option<PathBuf>,
     /// Archives to check along with the log (`verify --archive`).
     archives: Vec<PathBuf>,
+    /// The operator's public key that every human decision is checked against, and where it came
+    /// from: `--operator-key`, `--operator-key-file`, else `operator.pub` if there is one (ADR-0070).
+    operator: Option<(OperatorPublic, String)>,
 }
 
 /// What a command did, for printing.
@@ -182,6 +188,24 @@ fn check(options: &Options) -> Result<Done, String> {
                 snapshot.seq
             )
         });
+    }
+    let decisions = approvals(
+        &options.db,
+        &options.key,
+        options.operator.as_ref().map(|(key, _)| key),
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some((key, source)) = &options.operator {
+        notes.push(format!(
+            "human decisions: {} signed by the operator, key {key} ({source})",
+            decisions.signed.len()
+        ));
+    }
+    for u in &decisions.unrecorded {
+        notes.push(format!(
+            "unsigned: event {} ({}) is a human decision written before signed approvals; it rests on the engine's key alone",
+            u.seq, u.kind
+        ));
     }
     for p in hyalos_engine::pruned_archives(&options.db, &options.key).map_err(|e| e.to_string())? {
         notes.push(format!(
@@ -529,6 +553,7 @@ fn parse(command: Command, args: &[String], env: Env<'_>) -> Result<Options, Str
     let mut key_file = None;
     let mut expect = None;
     let mut archives: Vec<PathBuf> = Vec::new();
+    let (mut operator_hex, mut operator_file) = (None, None);
     let mut files: Vec<&String> = Vec::new();
     let mut it = args.iter();
     while let Some(flag) = it.next() {
@@ -545,12 +570,17 @@ fn parse(command: Command, args: &[String], env: Env<'_>) -> Result<Options, Str
             "--archive" if matches!(command, Command::Verify | Command::Audit) => {
                 archives.push(PathBuf::from(value()?))
             }
+            "--operator-key" if command == Command::Verify => operator_hex = Some(value()?),
+            "--operator-key-file" if command == Command::Verify => operator_file = Some(value()?),
             other if other.starts_with('-') => return Err(format!("unknown argument {other}")),
             _ => files.push(flag),
         }
     }
     if key_hex.is_some() && key_file.is_some() {
         return Err("give --public-key or --public-key-file, not both".into());
+    }
+    if operator_hex.is_some() && operator_file.is_some() {
+        return Err("give --operator-key or --operator-key-file, not both".into());
     }
     let file = match (command, files.as_slice()) {
         (Command::Verify | Command::Audit, []) => None,
@@ -580,17 +610,8 @@ fn parse(command: Command, args: &[String], env: Env<'_>) -> Result<Options, Str
                 ));
             }
             // The default file is trusted without being asked for, so refuse one that other users could
-            // have replaced. A file named with --public-key-file is the operator's own choice.
-            let mode = std::fs::metadata(&path)
-                .map_err(|e| format!("cannot read {shown}: {e}"))?
-                .permissions()
-                .mode();
-            if mode & 0o022 != 0 {
-                return Err(format!(
-                    "{shown} can be written by other users (mode {:04o}), so it cannot be trusted; run chmod go-w on it, or pass --public-key or --public-key-file",
-                    mode & 0o7777
-                ));
-            }
+            // have replaced.
+            trusted(&path, "--public-key or --public-key-file")?;
             (read_key_file(&shown)?, format!("from {shown}"))
         }
     };
@@ -602,6 +623,33 @@ fn parse(command: Command, args: &[String], env: Env<'_>) -> Result<Options, Str
             Head::parse(&text).ok_or("--expect-head must look like <seq>:<64 hex characters>")?,
         ),
     };
+    let operator = match (operator_hex, operator_file) {
+        (Some(hex), _) => Some((hex, "from --operator-key".to_string())),
+        (None, Some(path)) => Some((read_key_file(&path)?, format!("from {path}"))),
+        // Only verify checks decisions, and only if the operator has a key: a log with signed
+        // decisions and no key to check them with fails there.
+        (None, None) => match paths::config_dir(env) {
+            Ok(dir) if command == Command::Verify => {
+                let path = dir.join(paths::OPERATOR_PUBLIC_KEY_FILE);
+                if path.exists() {
+                    let shown = path.display().to_string();
+                    trusted(&path, "--operator-key or --operator-key-file")?;
+                    Some((read_key_file(&shown)?, format!("from {shown}")))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        },
+    };
+    let operator = match operator {
+        None => None,
+        Some((text, source)) => Some((
+            OperatorPublic::from_hex(&text)
+                .ok_or("the operator key must be 64 hexadecimal characters (32 bytes)")?,
+            source,
+        )),
+    };
     Ok(Options {
         db,
         key,
@@ -609,7 +657,25 @@ fn parse(command: Command, args: &[String], env: Env<'_>) -> Result<Options, Str
         expect_head,
         file,
         archives,
+        operator,
     })
+}
+
+/// Refuses a default key file that other users could have replaced. A file named on the command line
+/// is the operator's own choice.
+fn trusted(path: &std::path::Path, instead: &str) -> Result<(), String> {
+    let shown = path.display();
+    let mode = std::fs::metadata(path)
+        .map_err(|e| format!("cannot read {shown}: {e}"))?
+        .permissions()
+        .mode();
+    if mode & 0o022 != 0 {
+        return Err(format!(
+            "{shown} can be written by other users (mode {:04o}), so it cannot be trusted; run chmod go-w on it, or pass {instead}",
+            mode & 0o7777
+        ));
+    }
+    Ok(())
 }
 
 fn read_key_file(path: &str) -> Result<String, String> {

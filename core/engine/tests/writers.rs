@@ -75,8 +75,10 @@ fn violation<T: std::fmt::Debug>(result: Result<T, EngineError>) -> Res<RuleViol
 #[test]
 fn two_engines_on_one_log_each_see_the_others_events_before_writing() -> Res {
     let path = log("two")?;
-    let mut a = Engine::open(&path, key())?;
-    let mut b = Engine::open(&path, key())?;
+    let mut a =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+    let mut b =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     let first = task(&mut a, 1)?;
     // B never saw the task, yet starts a job on it: it reads A's event first.
     let started = job(&mut b, 2, first)?;
@@ -103,7 +105,12 @@ fn two_engines_on_one_log_each_see_the_others_events_before_writing() -> Res {
     assert_eq!(a.state().last_seq(), 4);
     // A has not written since B's last event; it catches up on its next write, or on reopening.
     drop(a);
-    assert_eq!(Engine::open(&path, key())?.state(), &replayed);
+    assert_eq!(
+        Engine::open(&path, key())?
+            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]))
+            .state(),
+        &replayed
+    );
     assert_eq!(b.state(), &replayed);
     let done = &replayed.jobs()[&started];
     assert_eq!(
@@ -117,8 +124,10 @@ fn two_engines_on_one_log_each_see_the_others_events_before_writing() -> Res {
 #[test]
 fn an_event_stamped_before_another_processes_last_one_is_refused_and_nothing_is_written() -> Res {
     let path = log("time")?;
-    let mut a = Engine::open(&path, key())?;
-    let mut b = Engine::open(&path, key())?;
+    let mut a =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+    let mut b =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     task(&mut a, 10)?;
     // B's clock says 5, but the log already holds an event at 10 that B had not read.
     let v = violation(b.submit(
@@ -138,7 +147,8 @@ fn an_event_stamped_before_another_processes_last_one_is_refused_and_nothing_is_
 #[test]
 fn a_job_returns_values_once_while_it_runs_and_no_more_than_an_output_holds() -> Res {
     let path = log("values")?;
-    let mut e = Engine::open(&path, key())?;
+    let mut e =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     let t = task(&mut e, 1)?;
     let j = job(&mut e, 2, t)?;
     let values = |n: usize| Event::JobValues {
@@ -167,15 +177,22 @@ fn a_job_returns_values_once_while_it_runs_and_no_more_than_an_output_holds() ->
     let before = e.state().clone();
     e.compact(at(9), &path.with_file_name("archive.db"))?;
     drop(e);
-    assert_eq!(Engine::open(&path, key())?.state(), &before);
+    assert_eq!(
+        Engine::open(&path, key())?
+            .with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]))
+            .state(),
+        &before
+    );
     Ok(())
 }
 
 #[test]
 fn an_engine_that_stamps_forward_follows_another_processes_later_event() -> Res {
     let path = log("forward")?;
-    let mut a = Engine::open(&path, key())?;
-    let mut b = Engine::open(&path, key())?;
+    let mut a =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
+    let mut b =
+        Engine::open(&path, key())?.with_operator(hyalos_types::OperatorKey::from_seed([0x0e; 32]));
     b.stamp_forward();
     task(&mut a, 10)?;
     // B's clock says 5: it is stamped at A's 10 instead of refused.

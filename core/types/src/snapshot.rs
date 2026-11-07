@@ -25,7 +25,7 @@ use crate::{
 /// handles released (ADR-0063). Earlier images have none. Version 6 added the agents' credentials
 /// (ADR-0068). Earlier images have none. Version 7 added why each job ended and the values it returned
 /// (ADR-0069). An earlier job ended for an unrecorded reason and returned none.
-pub const STATE_VERSION: u32 = 7;
+pub const STATE_VERSION: u32 = 8;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +48,9 @@ pub struct StateImage {
     pub handles: Vec<HandleImage>,
     /// Every agent's credential issued, revoked ones too, in id order (ADR-0068).
     pub agents: Vec<AgentImage>,
+    /// The event of the last decision the operator signed. The next one must have been signed after
+    /// seeing it, so an old approval cannot be written again (ADR-0070).
+    pub last_approval: Option<u64>,
 }
 
 /// An `agent.issued` event and, if one followed, its `agent.revoked`: whether the MCP server admits
@@ -220,6 +223,9 @@ impl StateImage {
     pub fn as_kept_at(mut self, version: u32) -> Self {
         // Before 7 no job's reason or values were kept. The earlier versions only added what could not
         // have happened yet, so a replay has nothing more to drop for them.
+        if version < 8 {
+            self.last_approval = None;
+        }
         if version < 7 {
             for job in &mut self.jobs {
                 job.values = None;
@@ -279,7 +285,12 @@ impl StateImage {
         if version < 6 {
             object.insert("agents".into(), Value::Array(Vec::new()));
         }
+        // 7 -> 8: no decision had been signed by the operator.
+        object.insert("last_approval".into(), Value::Null);
         // 6 -> 7: no job's reason was kept, and no job had returned values.
+        if version >= 7 {
+            return serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()));
+        }
         let jobs = object
             .get_mut("jobs")
             .and_then(Value::as_array_mut)
@@ -442,6 +453,7 @@ mod tests {
                     reason: ReasonCode::unavailable(),
                 }),
             }],
+            last_approval: Some(3),
         }
     }
 
