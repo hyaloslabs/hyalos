@@ -340,6 +340,27 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             reason: ReasonCode::new("agent.revoked").ok_or("reason")?,
         },
     ));
+
+    // Version 12 added `job.values` and changed no payload, so the fourteen older kinds read as they
+    // did at version 11.
+    let at_11: Vec<_> = all.iter().filter(|g| g.0 == 11).cloned().collect();
+    for (_, kind, json, event) in at_11 {
+        all.push((12, kind, json, event));
+    }
+    all.push((
+        12,
+        "job.values",
+        r#"{"kind":"job.values","job":4,"values":[{"choice":2},{"bool":true},{"integer":-3}]}"#
+            .into(),
+        Event::JobValues {
+            job: JobId::from_seq(4),
+            values: vec![
+                hyalos_types::TypedValue::Choice(2),
+                hyalos_types::TypedValue::Bool(true),
+                hyalos_types::TypedValue::Integer(-3),
+            ],
+        },
+    ));
     Ok(all)
 }
 
@@ -351,6 +372,7 @@ fn introduced(kind: &str) -> u32 {
         "policy.approved" => 5,
         "handle.released" => 10,
         "agent.issued" | "agent.revoked" => 11,
+        "job.values" => 12,
         _ => 1,
     }
 }

@@ -23,7 +23,7 @@ use std::process::ExitCode;
 use std::sync::mpsc::{self, TryRecvError};
 use std::time::Duration;
 
-use hyalos_engine::{Decider, Engine, Ruling};
+use hyalos_engine::{Decider, Engine, Ruling, TaskStatus};
 use hyalos_policy::{GateRequest, Outcome as GateOutcome};
 use hyalos_substrate::{
     Choice, Ending, HOST_OS, Outcome, SandboxSpec, Substrate, Unsupported, detect_with,
@@ -33,7 +33,7 @@ use hyalos_types::workflow::{Output, Step, TypedValue, values_fit};
 use hyalos_types::{
     ActorPrompt, Answer, Attestation, Budget, Clock, CredentialTier, Digest, Event, ForgeToken,
     HoldReason, JobId, JobOutcome, MANIFEST_VERSION, Manifest, ManifestKey, OperatorText, Origin,
-    ReasonCode, Role, SignedManifest, Stakes, StepInputs, SubstrateName, Timestamp, flow,
+    ReasonCode, Role, SignedManifest, Stakes, StepInputs, SubstrateName, TaskId, Timestamp, flow,
 };
 
 use crate::clock::SystemClock;
@@ -156,7 +156,13 @@ pub struct Setup {
     pub detect_timeout: Duration,
     /// Whether the operator has interrupted the run (ADR-0053). [`Interrupt::none`] in most tests.
     pub interrupt: Interrupt,
+    /// Called once the task is recorded, before any job: the MCP runner names its files after the
+    /// task and tells the server its id (ADR-0069). It returns a file whose appearance cancels the run.
+    pub on_task: Option<OnTask>,
 }
+
+/// See [`Setup::on_task`].
+pub type OnTask = Box<dyn FnOnce(TaskId) -> Result<Option<PathBuf>, String> + Send>;
 
 /// How the job went.
 #[derive(Debug, PartialEq, Eq)]
@@ -175,6 +181,12 @@ impl Summary {
 }
 
 pub fn run(args: &[String]) -> ExitCode {
+    // The two ways the MCP server starts a run, and the operator's resume (ADR-0069).
+    match args {
+        [flag, nonce] if flag == "--mcp-start" => return crate::runs::start(nonce),
+        [flag, task] if flag == "--resume" => return crate::runs::resume(task),
+        _ => {}
+    }
     let request = match parse(args) {
         Ok(request) => request,
         Err(message) => {
@@ -200,7 +212,7 @@ pub fn run(args: &[String]) -> ExitCode {
     }
 }
 
-fn setup(env: Env<'_>) -> Result<Setup, String> {
+pub(crate) fn setup(env: Env<'_>) -> Result<Setup, String> {
     Ok(Setup {
         config_dir: paths::config_dir(env)?,
         log: paths::log_file(env)?,
@@ -215,6 +227,7 @@ fn setup(env: Env<'_>) -> Result<Setup, String> {
         // From here the first Ctrl-C or SIGTERM ends the job cleanly, and a second exits at once.
         interrupt: Interrupt::on_signals(again)
             .map_err(|e| format!("cannot take Ctrl-C and SIGTERM: {e}"))?,
+        on_task: None,
     })
 }
 
@@ -282,16 +295,18 @@ pub fn parse(args: &[String]) -> Result<Request, String> {
             other => return Err(format!("unknown option {other}")),
         }
     }
-    let part_ok = |p: &str| {
-        !p.is_empty()
-            && p != "."
-            && p != ".."
-            && p.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-    };
-    match request.repo.split_once('/') {
-        Some((owner, name)) if part_ok(owner) && part_ok(name) => {}
-        _ => return Err("--repo is owner/name".into()),
+    check(&request)?;
+    Ok(request)
+}
+
+/// The checks every request passes, from the command line or from the driving agent: a repository
+/// and a branch name are identifiers, never text (ADR-0069).
+pub fn check(request: &Request) -> Result<(), String> {
+    if !is_repo(&request.repo) {
+        return Err("--repo is owner/name".into());
+    }
+    if !is_branch(&request.base) {
+        return Err("--base is a branch name: letters, digits, '.', '_', '-' and '/'".into());
     }
     if request.release_issue && request.issue_number.is_none() {
         return Err("--release-issue releases the issue of --issue-number".into());
@@ -299,7 +314,35 @@ pub fn parse(args: &[String]) -> Result<Request, String> {
     if request.issue_number.is_none() && request.issue.trim().is_empty() {
         return Err("the issue text is empty; give --issue, --issue-file or --issue-number".into());
     }
-    Ok(request)
+    Ok(())
+}
+
+/// `owner/name`, each part of letters, digits, `-`, `_` and `.`, and neither `.` nor `..`.
+pub fn is_repo(repo: &str) -> bool {
+    let part_ok = |p: &str| {
+        !p.is_empty()
+            && p != "."
+            && p != ".."
+            && p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+    };
+    repo.split_once('/')
+        .is_some_and(|(owner, name)| part_ok(owner) && part_ok(name))
+}
+
+/// A branch git and GitHub accept, of plain characters only: at most 100, no `..`, no leading `-`,
+/// `/` or `.`, and no trailing `/`, `.` or `.lock`.
+pub fn is_branch(branch: &str) -> bool {
+    !branch.is_empty()
+        && branch.len() <= 100
+        && branch
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b))
+        && !branch.contains("..")
+        && !branch.contains("//")
+        && !branch.starts_with(['-', '/', '.'])
+        && !branch.ends_with(['/', '.'])
+        && !branch.ends_with(".lock")
 }
 
 /// What a run does: one actor given the operator's text, or a workflow (ADR-0062).
@@ -490,8 +533,12 @@ pub mod why {
     pub const SUBMITTED: &str = "step.submitted";
     /// The broker did not answer for the job's result, or answered values that do not fit it.
     pub const NO_RESULT: &str = "submit.no_answer";
+    /// The job was running when its runner stopped, and a resumed run ended it (ADR-0069).
+    pub const RESTARTED: &str = "engine.restarted";
+    /// The driving agent cancelled the run with `tasks/cancel` (ADR-0069).
+    pub const CANCELLED: &str = "run.cancelled";
 
-    pub const ALL: [&str; 13] = [
+    pub const ALL: [&str; 15] = [
         FINISHED,
         ANSWERED,
         DEADLINE,
@@ -505,6 +552,8 @@ pub mod why {
         HANDLE_REFUSED,
         SUBMITTED,
         NO_RESULT,
+        RESTARTED,
+        CANCELLED,
     ];
 }
 
@@ -537,16 +586,40 @@ fn interrupted(interrupt: &Interrupt, job: JobId, out: &mut dyn Write) -> Option
          stop at once, which can leave the token live",
         job.seq()
     );
-    Some(Failure::new(
-        why::INTERRUPTED,
-        format!("interrupted ({signal})"),
-    ))
+    let reason = if signal == interrupt::CANCELLED {
+        why::CANCELLED
+    } else {
+        why::INTERRUPTED
+    };
+    Some(Failure::new(reason, format!("interrupted ({signal})")))
 }
 
 /// Runs one job, or a workflow's jobs one after another under one task, and writes what happens to
 /// `out`. `Err` is a refusal before anything ran; once a job is recorded, how it ended is in the
 /// [`Summary`] (of the last job that ran) and in the log.
 pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<Summary, String> {
+    drive(request, setup, None, out)?.ok_or_else(|| "no job ran".to_string())
+}
+
+/// Carries on with `task`, which `request` started, from what its log records (ADR-0069). A job the
+/// log shows running has no runner any more: it is ended `engine.restarted` and its step runs again in
+/// a new job. Steps that returned their values are not run again. `Ok(None)` if nothing was left to
+/// run; the task is then completed if it was not.
+pub fn resume_job(
+    request: &Request,
+    task: TaskId,
+    setup: Setup,
+    out: &mut dyn Write,
+) -> Result<Option<Summary>, String> {
+    drive(request, setup, Some(task), out)
+}
+
+fn drive(
+    request: &Request,
+    setup: Setup,
+    resume: Option<TaskId>,
+    out: &mut dyn Write,
+) -> Result<Option<Summary>, String> {
     // 1. A ready substrate, or a refusal that says why, before anything is written.
     let Setup {
         config_dir,
@@ -555,13 +628,17 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
         broker_exe,
         detect,
         detect_timeout,
-        interrupt,
+        mut interrupt,
+        on_task,
     } = setup;
     let before_recorded = |interrupt: &Interrupt| {
         interrupt.signal().map(|signal| {
             format!("interrupted ({signal}) before the job was recorded, so nothing was written")
         })
     };
+    if resume.is_some() && (request.issue_number.is_none() || request.release_issue) {
+        return Err("only a fix-issue run that released no handle can be resumed".into());
+    }
     let substrate = choose(&request.image, detect, detect_timeout, &interrupt)?;
     let chosen_name = substrate.chosen_name().ok_or("no substrate was chosen")?;
     let driver = substrate.chosen.ok_or("no substrate was chosen")?;
@@ -583,30 +660,61 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
     let manifest_key = fresh_manifest_key().map_err(|e| format!("no manifest key: {e}"))?;
     let key = keys::load(&config_dir.join(paths::ENGINE_KEY_FILE)).map_err(|e| e.to_string())?;
     let engine = Engine::open(&log, key).map_err(|e| e.to_string())?;
-    let mut clock = Stamps(SystemClock.now());
+    // Never before the log's last event, which another process may have written.
+    let mut clock = Stamps(
+        SystemClock.now().max(
+            engine
+                .state()
+                .last_at()
+                .unwrap_or(Timestamp::from_millis(0)),
+        ),
+    );
     if let Some(refusal) = before_recorded(&interrupt) {
         return Err(refusal);
     }
+    let minutes = Duration::from_secs(request.minutes.saturating_mul(60));
 
     // 3. The task. Every job of the run belongs to it, one at a time, and ends by the run deadline.
     let mut engine = engine;
-    let task = engine
-        .submit(
-            clock.now(),
-            Origin::Engine,
-            Event::TaskCreated {
-                request: request_digest(request),
-            },
-        )
-        .map_err(|e| e.to_string())?;
-    let deadline = clock
-        .now()
-        .saturating_add(Duration::from_secs(request.minutes.saturating_mul(60)));
+    let (task, deadline) = match resume {
+        None => {
+            let created = engine
+                .submit(
+                    clock.now(),
+                    Origin::Engine,
+                    Event::TaskCreated {
+                        request: request_digest(request),
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+            let task = TaskId::from_seq(created.seq);
+            if let Some(on_task) = on_task
+                && let Some(cancel) = on_task(task)?
+            {
+                interrupt.watch(cancel);
+            }
+            (task, clock.now().saturating_add(minutes))
+        }
+        Some(task) => {
+            let recorded = engine
+                .state()
+                .tasks()
+                .get(&task)
+                .ok_or_else(|| format!("there is no task {task}"))?;
+            if recorded.request != request_digest(request) {
+                return Err(format!("task {task} was not started with this request"));
+            }
+            if recorded.status() != TaskStatus::Open {
+                return Ok(None);
+            }
+            (task, recorded.created_at.saturating_add(minutes))
+        }
+    };
     let mut run = Run {
         request,
         engine,
         clock,
-        task: hyalos_types::TaskId::from_seq(task.seq),
+        task,
         app,
         provider_keys,
         runtime_dir,
@@ -618,29 +726,54 @@ pub fn run_job(request: &Request, setup: Setup, out: &mut dyn Write) -> Result<S
         revoked: Ok(()),
         handle: None,
     };
-
-    // 4. The workflow's readers and planners, each a job the broker runs (ADR-0061, ADR-0062).
-    let mut values = Values::default();
-    if let Planned::Workflow(flow, supplied) = &planned {
-        let _ = writeln!(
-            out,
-            "workflow {}: {} step(s), task {}",
-            flow.checked().workflow().name,
-            flow.checked().workflow().steps.len(),
-            task.seq
-        );
-        for step in flow.typed_steps() {
-            if let Some(stopped) = run.typed_step(flow, supplied, step, &mut values, out)? {
-                run.shutdown_broker();
-                return Ok(stopped);
-            }
+    let summary = match &planned {
+        Planned::Workflow(flow, _) => {
+            let done = match resume {
+                None => {
+                    let _ = writeln!(
+                        out,
+                        "workflow {}: {} step(s), task {}",
+                        flow.checked().workflow().name,
+                        flow.checked().workflow().steps.len(),
+                        task.seq()
+                    );
+                    Done::default()
+                }
+                Some(_) => run.recover(flow, out)?,
+            };
+            run.workflow(&planned, done, (driver, chosen_name, attestation), out)
         }
-    }
-
-    // 5. The actor, in a sandbox.
-    let summary = run.actor_job(&planned, &values, driver, chosen_name, attestation, out);
+        Planned::Actor => run
+            .actor_job(
+                &planned,
+                &Values::default(),
+                driver,
+                chosen_name,
+                attestation,
+                out,
+            )
+            .map(Some),
+    };
     run.shutdown_broker();
+    // The run is over unless it stopped held, which only a decision ends (ADR-0029). A refusal here
+    // is printed: the jobs are recorded either way.
+    if let Ok(Some(last)) = &summary
+        && last.outcome != JobOutcome::Held
+    {
+        run.complete(out);
+    }
     summary
+}
+
+/// What a resumed run found already done (ADR-0069).
+#[derive(Default)]
+struct Done {
+    /// The values of the steps that finished, in order.
+    values: Values,
+    /// How many steps finished, the actor included.
+    steps: usize,
+    /// The last job's ending, if the run is over: it did not succeed, or every step finished.
+    over: Option<Summary>,
 }
 
 /// What the jobs of one run share.
@@ -696,6 +829,19 @@ impl Run<'_> {
         failure: Failure,
         revoked: Result<(), String>,
     ) -> Result<Summary, String> {
+        self.end_values(job, out, outcome, failure, revoked, None)
+    }
+
+    /// [`Run::end`], recording in the same write the values the job returned (ADR-0069).
+    fn end_values(
+        &mut self,
+        job: JobId,
+        out: &mut dyn Write,
+        outcome: JobOutcome,
+        failure: Failure,
+        revoked: Result<(), String>,
+        values: Option<Vec<TypedValue>>,
+    ) -> Result<Summary, String> {
         let revoked = match (&self.revoked, revoked) {
             (Err(earlier), _) => Err(earlier.clone()),
             (Ok(()), now) => now,
@@ -706,7 +852,128 @@ impl Run<'_> {
             clock: &mut self.clock,
             job,
         };
-        ended.with(out, outcome, failure, revoked)
+        ended.with(out, outcome, failure, revoked, values)
+    }
+
+    /// Records that the run is over (`task.completed`), however its last job ended.
+    fn complete(&mut self, out: &mut dyn Write) {
+        let task = self.task;
+        let recorded = self.engine.submit(
+            self.clock.now(),
+            Origin::Engine,
+            Event::TaskCompleted { task },
+        );
+        let _ = match recorded {
+            Ok(head) => writeln!(out, "task {}: completed (event {})", task.seq(), head.seq),
+            Err(e) => writeln!(
+                out,
+                "task {}: recording its completion failed: {e}",
+                task.seq()
+            ),
+        };
+    }
+
+    /// What a resumed run's log shows done (ADR-0069). A job still running lost its runner, and with
+    /// it its broker and sandbox: it is ended `engine.restarted` (or `job.deadline` past the run's
+    /// deadline). The token it may have had was never written down, so it cannot be revoked here;
+    /// GitHub expires it within an hour.
+    fn recover(&mut self, flow: &Runnable, out: &mut dyn Write) -> Result<Done, String> {
+        let task = self.task;
+        let running = self
+            .engine
+            .state()
+            .jobs()
+            .iter()
+            .find(|(_, job)| job.task == task && job.is_running())
+            .map(|(id, _)| *id);
+        if let Some(job) = running {
+            let past = self.clock.now() >= self.deadline;
+            let (outcome, reason) = if past {
+                (JobOutcome::DeadlineExceeded, why::DEADLINE)
+            } else {
+                (JobOutcome::Failed, why::RESTARTED)
+            };
+            let _ = writeln!(
+                out,
+                "job {}: was running when its runner stopped; ending it. A GitHub token it held \
+                 expires within an hour; a sandbox it ran stops at its deadline",
+                job.seq()
+            );
+            self.end(
+                job,
+                out,
+                outcome,
+                Failure::new(reason, "its runner stopped"),
+                Ok(()),
+            )?;
+        }
+        let typed = flow.typed_steps();
+        let total = typed.len() + 1;
+        let mut done = Done::default();
+        let jobs: Vec<_> = self
+            .engine
+            .state()
+            .jobs()
+            .iter()
+            .filter(|(_, job)| job.task == task)
+            .map(|(id, job)| (*id, job.clone()))
+            .collect();
+        for (id, job) in jobs {
+            let Some((_, outcome)) = job.ended else {
+                continue;
+            };
+            let last = Summary {
+                job: id,
+                outcome,
+                revoked: Ok(()),
+            };
+            let restarted = job.reason.as_ref().map(ReasonCode::as_str) == Some(why::RESTARTED);
+            match (outcome, &job.values) {
+                (JobOutcome::Succeeded, Some(values)) if done.steps < total => {
+                    let step = typed.get(done.steps).unwrap_or(flow.actor());
+                    if !flow.accept(step, values, &mut done.values) {
+                        return Err(format!("job {id}'s values do not fit step {}", step.id));
+                    }
+                    done.steps += 1;
+                    done.over = (done.steps == total).then_some(last);
+                }
+                _ if restarted => done.over = None,
+                _ => done.over = Some(last),
+            }
+        }
+        let _ = writeln!(
+            out,
+            "task {}: resumed with {} of {total} step(s) done",
+            task.seq(),
+            done.steps
+        );
+        Ok(done)
+    }
+
+    /// The workflow's readers and planners, each a job the broker runs (ADR-0061, ADR-0062), from the
+    /// first not done, then the actor in a sandbox.
+    fn workflow(
+        &mut self,
+        planned: &Planned,
+        done: Done,
+        actor: (Box<dyn Substrate>, SubstrateName, Attestation),
+        out: &mut dyn Write,
+    ) -> Result<Option<Summary>, String> {
+        if let Some(over) = done.over {
+            return Ok(Some(over));
+        }
+        let Planned::Workflow(flow, supplied) = planned else {
+            return Err("not a workflow".into());
+        };
+        let mut values = done.values;
+        for step in flow.typed_steps().iter().skip(done.steps) {
+            if let Some(stopped) = self.typed_step(flow, supplied, step, &mut values, out)? {
+                return Ok(Some(stopped));
+            }
+        }
+        let (driver, name, attestation) = actor;
+        self.actor_job(planned, &values, driver, name, attestation, out)
+            .map(Some)
     }
 
     fn remaining(&mut self) -> Duration {
@@ -917,7 +1184,14 @@ impl Run<'_> {
                     values.shown(&step.id)
                 );
                 let answered = Failure::new(why::ANSWERED, "the step returned its values");
-                self.end(job, out, JobOutcome::Succeeded, answered, revoked)?;
+                self.end_values(
+                    job,
+                    out,
+                    JobOutcome::Succeeded,
+                    answered,
+                    revoked,
+                    Some(returned),
+                )?;
                 if self.revoked.is_err() {
                     // A token that may still be live stops the run rather than minting another.
                     return Ok(Some(Summary {
@@ -1278,7 +1552,11 @@ impl Run<'_> {
             show(out);
         }
         let (ended, failure) = outcome_of;
-        self.end(job, out, ended, failure, revoked)
+        // A submitted result is recorded with the ending, so the task's result is in the log.
+        let values = state
+            .values
+            .filter(|_| failure.reason.as_str() == why::SUBMITTED);
+        self.end_values(job, out, ended, failure, revoked, values)
     }
 }
 
@@ -1356,19 +1634,91 @@ fn choose(
     }
 }
 
-/// The digest a task records of what was asked for.
-fn request_digest(request: &Request) -> Digest {
-    let text = serde_json::json!({
-        "repo": request.repo,
-        "base": request.base,
-        "issue": request.issue,
-        "issue_number": request.issue_number,
-    })
-    .to_string();
-    let hash = ring::digest::digest(&ring::digest::SHA256, text.as_bytes());
-    let mut bytes = [0u8; 32];
-    bytes.copy_from_slice(hash.as_ref());
-    Digest::from_bytes(bytes)
+/// A request as a run document stores it (ADR-0069): what `task.created` records the SHA-256 of, and
+/// what a resumed run is rebuilt from. Every field the run acts on is here, so a changed document does
+/// not match its task.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Stored {
+    pub version: u32,
+    pub repo: String,
+    pub issue: String,
+    pub issue_number: Option<u64>,
+    pub base: String,
+    pub image: String,
+    /// `codex`, `claude-code`, or `command` for a test's command, which a document never runs.
+    pub harness: String,
+    pub budget_tokens: u64,
+    pub minutes: u64,
+    pub egress_hosts: BTreeSet<String>,
+    pub step_model: Option<String>,
+    pub release_issue: bool,
+}
+
+/// The version of [`Stored`] written today.
+pub const STORED_VERSION: u32 = 1;
+
+impl Request {
+    pub fn stored(&self) -> Stored {
+        Stored {
+            version: STORED_VERSION,
+            repo: self.repo.clone(),
+            issue: self.issue.clone(),
+            issue_number: self.issue_number,
+            base: self.base.clone(),
+            image: self.image.clone(),
+            harness: match self.harness {
+                Harness::Codex => "codex",
+                Harness::ClaudeCode => "claude-code",
+                Harness::Command(_) => "command",
+            }
+            .into(),
+            budget_tokens: self.budget_tokens,
+            minutes: self.minutes,
+            egress_hosts: self.egress_hosts.clone(),
+            step_model: self.step_model.clone(),
+            release_issue: self.release_issue,
+        }
+    }
+
+    /// The request a run document holds, checked as one from the command line is.
+    pub fn from_stored(stored: Stored) -> Result<Self, String> {
+        if stored.version != STORED_VERSION {
+            return Err(format!(
+                "run document version {} is not one this build reads",
+                stored.version
+            ));
+        }
+        let harness = match stored.harness.as_str() {
+            "codex" => Harness::Codex,
+            "claude-code" => Harness::ClaudeCode,
+            other => return Err(format!("a run document cannot run the harness {other}")),
+        };
+        let request = Self {
+            repo: stored.repo,
+            issue: stored.issue,
+            issue_number: stored.issue_number,
+            base: stored.base,
+            image: stored.image,
+            harness,
+            budget_tokens: stored.budget_tokens,
+            minutes: stored.minutes,
+            egress_hosts: stored.egress_hosts,
+            step_model: stored.step_model,
+            release_issue: stored.release_issue,
+        };
+        check(&request)?;
+        Ok(request)
+    }
+}
+
+/// The digest a task records of what was asked for: SHA-256 of the request's stored form.
+pub fn request_digest(request: &Request) -> Digest {
+    let bytes = serde_json::to_vec(&request.stored()).unwrap_or_default();
+    let hash = ring::digest::digest(&ring::digest::SHA256, &bytes);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(hash.as_ref());
+    Digest::from_bytes(out)
 }
 
 /// Writes the job's last events.
@@ -1385,18 +1735,23 @@ impl Ended<'_> {
         outcome: JobOutcome,
         failure: Failure,
         revoked: Result<(), String>,
+        values: Option<Vec<TypedValue>>,
     ) -> Result<Summary, String> {
         let job = self.job;
         let Failure { reason, why } = failure;
-        let recorded = self.engine.submit(
-            self.clock.now(),
+        let mut events: Vec<(Origin, Event)> = values
+            .map(|values| (Origin::Engine, Event::JobValues { job, values }))
+            .into_iter()
+            .collect();
+        events.push((
             Origin::Engine,
             Event::JobEnded {
                 job,
                 outcome,
                 reason: reason.clone(),
             },
-        );
+        ));
+        let recorded = self.engine.submit_all(self.clock.now(), &events);
         match &recorded {
             Ok(head) => writeln!(
                 out,

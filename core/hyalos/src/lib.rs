@@ -21,5 +21,6 @@ pub mod microvm_conf;
 pub mod paths;
 pub mod policy_cmd;
 pub mod run_cmd;
+pub mod runs;
 pub mod workflow_cmd;
 pub mod workflow_run;

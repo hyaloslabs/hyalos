@@ -1,9 +1,14 @@
-//! `hyalos mcp [--listen <loopback address:port>]`: the engine's MCP server (ADR-0010, ADR-0067).
+//! `hyalos mcp [--listen <loopback address:port>] [<run options>]`: the engine's MCP server
+//! (ADR-0010, ADR-0067, ADR-0069).
 //!
 //! On stdio by default, which is how a client such as Claude Code starts it; with `--listen`, on
-//! Streamable HTTP at `http://<address:port>/mcp`, loopback only. Its one tool so far is `list_tasks`,
-//! which reads the event log with the engine's public key alone and returns ids and statuses, never
-//! text from a task. Starting work and approvals come in later stories (S5.2, S5.4).
+//! Streamable HTTP at `http://<address:port>/mcp`, loopback only. `list_tasks` reads the event log
+//! with the engine's public key alone and returns ids and statuses, never text from a task.
+//! `start_job` runs the fix-issue workflow on an issue, given only a repository, an issue number and a
+//! base branch: the server starts a runner that holds the engine's key, and never opens it itself
+//! (`runs`). For a client that declares the Tasks extension the call answers with a task that
+//! `tasks/get` polls and `tasks/cancel` stops; for one that does not, `start_job` answers the same
+//! task's id and status at once, and `job_status` and `job_result` read it. Approvals come in S5.4.
 //!
 //! Every message needs a credential the operator issued with `hyalos agent issue` and has not
 //! revoked (ADR-0068): on stdio the server's `HYALOS_AGENT_CREDENTIAL`, on HTTP each request's bearer
@@ -19,41 +24,76 @@ use hyalos_types::JobOutcome;
 use serde_json::{Map, Value, json};
 
 use crate::agent_cmd::credential_digest;
-use crate::mcp::{self, Admit, Called, Progress, Refusal, Server, Tool, Tools};
+use crate::mcp::{
+    self, Admit, Called, Progress, Refusal, Server, TaskState, TaskSupport, TaskView, Tool, Tools,
+};
 use crate::paths;
+use crate::run_cmd::{self, Request};
+use crate::runs::{self, Launcher, Phase, RunView, Runs};
+use hyalos_types::TaskId;
 
-const USAGE: &str = "usage: hyalos mcp [--listen <loopback address:port>]
+const USAGE: &str = "usage: hyalos mcp [--listen <loopback address:port>] [--base <branch>] [--harness codex|claude-code]
+                  [--image <image>] [--budget-tokens <n>] [--minutes <n>] [--step-model <model>]
   serves the engine's MCP server on stdio, or with --listen on http://<address:port>/mcp (loopback
-  only). It reads the event log with the engine's public key and writes nothing.
+  only). It reads the event log with the engine's public key and writes nothing itself; start_job
+  starts hyalos run as a process of its own, with these options (as for hyalos run) and the
+  repository, issue and base branch the agent gives.
   Every call needs a credential from hyalos agent issue: on stdio in HYALOS_AGENT_CREDENTIAL, on
   HTTP as Authorization: Bearer <credential>";
 
 /// Where the stdio server takes the driving agent's credential from.
 pub const CREDENTIAL_VAR: &str = "HYALOS_AGENT_CREDENTIAL";
 
-const INSTRUCTIONS: &str = "Hyalos runs agent jobs contained, within a signed manifest. list_tasks shows the tasks in its event log and the state of each one's jobs.";
+const INSTRUCTIONS: &str = "Hyalos runs agent jobs contained, within a signed manifest. start_job runs the fix-issue workflow on a GitHub issue and answers with a task (with the Tasks extension, poll tasks/get; without it, use job_status and job_result). list_tasks shows the tasks in its event log and the state of each one's jobs.";
+
+/// How often a client is asked to poll a run's task. A run takes minutes.
+pub const POLL_MS: u64 = 5_000;
 
 /// Most tasks `list_tasks` returns.
 pub const MAX_TASKS: u64 = 100;
 
 pub fn run(args: &[String]) -> ExitCode {
     let env = |name: &str| std::env::var(name).ok();
-    let log = match (paths::log_file(&env), paths::engine_public_key(&env)) {
-        (Ok(log), Ok(public_key)) => EngineLog { log, public_key },
-        (Err(e), _) | (_, Err(e)) => {
+    let (listen, template) = match options(args) {
+        Ok(options) => options,
+        Err(e) => {
+            eprintln!("hyalos: {e}\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    let found = (|| {
+        let log = EngineLog {
+            log: paths::log_file(&env)?,
+            public_key: paths::engine_public_key(&env)?,
+        };
+        let launcher = Launcher {
+            runs: Runs::from_env(&env)?,
+            exe: std::env::current_exe()
+                .map_err(|e| format!("cannot find this executable: {e}"))?,
+            wait: runs::START_WAIT,
+        };
+        Ok::<_, String>((log, launcher))
+    })();
+    let (log, launcher) = match found {
+        Ok(found) => found,
+        Err(e) => {
             eprintln!("hyalos: {e}");
             return ExitCode::from(1);
         }
     };
+    // Runs whose runner stopped carry on from the log (ADR-0069).
+    if let Ok(state) = log.read() {
+        launcher.resume_all(&state);
+    }
     let server = Server::new(
-        EngineTools::new(log.clone()),
+        EngineTools::new(log.clone(), launcher, template),
         Box::new(LogAdmission(log.clone())),
         "hyalos",
         env!("CARGO_PKG_VERSION"),
         INSTRUCTIONS,
     );
-    let served = match args {
-        [] => {
+    let served = match listen {
+        None => {
             // Checked once here so a wrong setup says so at start, and again on every message.
             let credential = env(CREDENTIAL_VAR);
             if let Err(e) = log.admits(credential.as_deref()) {
@@ -67,7 +107,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 std::io::stdout().lock(),
             )
         }
-        [flag, addr] if flag == "--listen" => match mcp::http::bind(addr) {
+        Some(addr) => match mcp::http::bind(&addr) {
             Ok(listener) => {
                 // The address bound, so port 0 says which port it got.
                 let bound = listener
@@ -81,10 +121,6 @@ pub fn run(args: &[String]) -> ExitCode {
                 return ExitCode::from(1);
             }
         },
-        _ => {
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        }
     };
     match served {
         Ok(()) => ExitCode::SUCCESS,
@@ -93,6 +129,32 @@ pub fn run(args: &[String]) -> ExitCode {
             ExitCode::from(1)
         }
     }
+}
+
+/// `--listen`, and the request every run starts from: `hyalos run`'s options, with no repository,
+/// issue or text of the operator's, which the agent may not add to (ADR-0069).
+fn options(args: &[String]) -> Result<(Option<String>, Request), String> {
+    let mut listen = None;
+    let mut run = vec![
+        "--repo".to_string(),
+        "owner/name".into(),
+        "--issue-number".into(),
+        "1".into(),
+    ];
+    let mut args = args.iter();
+    while let Some(flag) = args.next() {
+        let value = args
+            .next()
+            .cloned()
+            .ok_or_else(|| format!("{flag} needs a value"))?;
+        match flag.as_str() {
+            "--listen" => listen = Some(value),
+            "--base" | "--harness" | "--image" | "--budget-tokens" | "--minutes"
+            | "--step-model" => run.extend([flag.clone(), value]),
+            other => return Err(format!("unknown option {other}")),
+        }
+    }
+    Ok((listen, run_cmd::parse(&run)?))
 }
 
 /// The event log and the engine's public key, read afresh for each message: the server keeps nothing.
@@ -152,11 +214,19 @@ impl Admit for LogAdmission {
 /// The engine's tools.
 pub struct EngineTools {
     log: EngineLog,
+    launcher: Launcher,
+    template: Request,
     tools: Vec<Tool>,
 }
 
 impl EngineTools {
-    pub fn new(log: EngineLog) -> Self {
+    pub fn new(log: EngineLog, launcher: Launcher, template: Request) -> Self {
+        let task_argument = json!({
+            "type": "object",
+            "properties": {"task": {"type": "string", "description": "The task's id, as start_job answered it."}},
+            "required": ["task"],
+            "additionalProperties": false,
+        });
         let list_tasks = Tool {
             name: "list_tasks",
             title: "List tasks",
@@ -191,11 +261,106 @@ impl EngineTools {
                 "required": ["total", "tasks"],
             })),
             requires: &[],
+            task: TaskSupport::Never,
+        };
+        let start_job = Tool {
+            name: "start_job",
+            title: "Start a job on an issue",
+            description: "Runs Hyalos's fix-issue workflow on a GitHub issue: a reader classifies it, a planner chooses an approach, and a harness in a sandbox pushes a branch and opens a pull request into the base branch. It takes minutes. Only the repository, the issue's number and the base branch can be given; the issue's text reaches only the reader. Answers with a task: poll it with tasks/get, or job_status and job_result.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "repo": {"type": "string", "description": "owner/name on GitHub."},
+                    "issue_number": {"type": "integer", "minimum": 1},
+                    "base": {"type": "string", "description": "The branch the pull request is opened into (default the server's, main unless set)."},
+                },
+                "required": ["repo", "issue_number"],
+                "additionalProperties": false,
+            }),
+            output_schema: None,
+            requires: &[],
+            task: TaskSupport::Optional,
+        };
+        let job_status = Tool {
+            name: "job_status",
+            title: "A job's status",
+            description: "The task start_job answered, as tasks/get shows it: its status, how many of its steps are done, and once it has ended its result. For clients without the Tasks extension.",
+            input_schema: task_argument.clone(),
+            output_schema: None,
+            requires: &[],
+            task: TaskSupport::Never,
+        };
+        let job_result = Tool {
+            name: "job_result",
+            title: "A job's result",
+            description: "The result of a task start_job answered, once it has ended: the values the harness submitted (outcome and tests_added), or why the run ended without them. A tool error while it is still working. For clients without the Tasks extension.",
+            input_schema: task_argument,
+            output_schema: None,
+            requires: &[],
+            task: TaskSupport::Never,
         };
         Self {
             log,
-            tools: vec![list_tasks],
+            launcher,
+            template,
+            tools: vec![list_tasks, start_job, job_status, job_result],
         }
+    }
+
+    /// The request a `start_job` call asks for: the server's template with the agent's repository,
+    /// issue and base, each checked to be an identifier.
+    fn request(&self, arguments: &Map<String, Value>) -> Result<Request, String> {
+        if arguments
+            .keys()
+            .any(|k| !["repo", "issue_number", "base"].contains(&k.as_str()))
+        {
+            return Err("start_job takes only repo, issue_number and base".into());
+        }
+        let mut request = self.template.clone();
+        request.repo = arguments
+            .get("repo")
+            .and_then(Value::as_str)
+            .ok_or("repo is owner/name")?
+            .to_string();
+        request.issue_number = Some(
+            arguments
+                .get("issue_number")
+                .and_then(Value::as_u64)
+                .filter(|n| *n > 0)
+                .ok_or("issue_number is a positive integer")?,
+        );
+        if let Some(base) = arguments.get("base") {
+            request.base = base.as_str().ok_or("base is a branch name")?.to_string();
+        }
+        run_cmd::check(&request)?;
+        Ok(request)
+    }
+
+    fn start_job(&self, arguments: &Map<String, Value>) -> Result<TaskView, Called> {
+        let request = self.request(arguments).map_err(|e| Called::error(&e))?;
+        let task = self
+            .launcher
+            .start(&request)
+            .map_err(|e| Called::error(&format!("the job did not start: {e}")))?;
+        self.view(task)
+            .ok_or_else(|| Called::error("the job started but its task cannot be read"))
+    }
+
+    /// `task` as an MCP task, if it is a run this server started. A run whose runner stopped is
+    /// started again here.
+    fn view(&self, task: TaskId) -> Option<TaskView> {
+        let state = self.log.read().ok()?;
+        self.launcher.resume_if_stopped(&state, task);
+        runs::view(&state, &self.launcher.runs, task).map(|v| task_view(&v))
+    }
+
+    fn task_id(&self, arguments: &Map<String, Value>) -> Result<TaskView, Called> {
+        if arguments.keys().any(|k| k != "task") {
+            return Err(Called::error("this tool takes only task"));
+        }
+        let id = arguments.get("task").and_then(Value::as_str).unwrap_or("");
+        self.task(id)
+            .ok_or_else(|| Called::error("there is no such task"))
     }
 
     fn list_tasks(&self, arguments: &Map<String, Value>) -> Called {
@@ -243,10 +408,112 @@ impl Tools for EngineTools {
     }
 
     fn call(&self, name: &str, arguments: &Map<String, Value>, _: &mut Progress<'_>) -> Called {
+        // Without the Tasks extension, the same task, answered as a plain result (ADR-0010).
+        let shown = |view: Result<TaskView, Called>| match view {
+            Ok(view) => Called::structured(Value::Object(mcp::shown(&view))),
+            Err(called) => called,
+        };
         match name {
             "list_tasks" => self.list_tasks(arguments),
+            "start_job" => shown(self.start_job(arguments)),
+            "job_status" => shown(self.task_id(arguments)),
+            "job_result" => match self.task_id(arguments) {
+                Ok(TaskView {
+                    state: TaskState::Completed(called),
+                    ..
+                }) => called,
+                Ok(TaskView {
+                    id,
+                    state: TaskState::Cancelled,
+                    ..
+                }) => Called::error(&format!("task {id} was cancelled")),
+                Ok(TaskView { id, .. }) => Called::error(&format!(
+                    "task {id} is still working; ask again later, or call job_status"
+                )),
+                Err(called) => called,
+            },
             _ => Called::error("unknown tool"),
         }
+    }
+
+    fn start(&self, name: &str, arguments: &Map<String, Value>) -> Result<TaskView, Called> {
+        match name {
+            "start_job" => self.start_job(arguments),
+            _ => Err(Called::error("this tool does not run as a task")),
+        }
+    }
+
+    fn task(&self, id: &str) -> Option<TaskView> {
+        self.view(parse_task(id)?)
+    }
+
+    fn cancel(&self, id: &str) -> bool {
+        let Some(task) = parse_task(id) else {
+            return false;
+        };
+        let Ok(state) = self.log.read() else {
+            return false;
+        };
+        if runs::view(&state, &self.launcher.runs, task).is_none() {
+            return false;
+        }
+        if let Err(e) = self.launcher.cancel(&state, task) {
+            eprintln!("hyalos: {e}");
+        }
+        true
+    }
+}
+
+/// A task's id as the agent was given it: the task's sequence number, in decimal.
+fn parse_task(id: &str) -> Option<TaskId> {
+    if id.is_empty() || id.starts_with('0') || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    id.parse().ok().map(TaskId::from_seq)
+}
+
+/// A run as an MCP task. A run that ended without the actor's result is a completed task whose result
+/// is a tool error, since the protocol keeps `failed` for protocol errors.
+fn task_view(view: &RunView) -> TaskView {
+    let task = view.task.seq();
+    let (state, message) = match &view.phase {
+        Phase::Working { done, of, stopped } => (
+            TaskState::Working,
+            format!(
+                "{done} of {of} steps done{}",
+                if *stopped {
+                    "; its runner stopped, so it is resuming"
+                } else {
+                    ""
+                }
+            ),
+        ),
+        Phase::Succeeded(result) => (
+            TaskState::Completed(Called::structured(
+                json!({"task": task, "outcome": "succeeded", "result": result}),
+            )),
+            "finished".into(),
+        ),
+        Phase::Ended { outcome, reason } => {
+            let outcome = job_status(Some(*outcome));
+            let mut called =
+                Called::structured(json!({"task": task, "outcome": outcome, "reason": reason}));
+            called.is_error = true;
+            (
+                TaskState::Completed(called),
+                format!("ended {outcome} ({reason})"),
+            )
+        }
+        Phase::Cancelled => (TaskState::Cancelled, "cancelled".into()),
+    };
+    TaskView {
+        id: task.to_string(),
+        created_ms: view.created.as_millis(),
+        updated_ms: view.updated.as_millis(),
+        ttl_ms: None,
+        poll_ms: Some(POLL_MS),
+        message: Some(message),
+        state,
     }
 }
 

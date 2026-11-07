@@ -50,6 +50,13 @@ The command prints each step: the substrate and its attestation (none of today's
 
 **Stopping a run.** Press Ctrl-C (or send the command `SIGTERM`) once. The run stops the sandbox, ends the job in the broker, revokes the token, records the job as `failed` with the reason `run.interrupted`, and exits 1 ([ADR-0053](../adr/0053-an-interrupted-run-ends-its-job.md)). That takes a moment; only if you cannot wait, press Ctrl-C again. The command then exits at once and says what it left undone: the token may stay valid until it expires, within an hour (revoke it as under `REVOKING THE FORGE TOKEN FAILED` below), the log does not say how the job ended, and the sandbox may run until its deadline.
 
+**Resuming a run.** Each step's values are recorded with its job's ending, and the run writes `task.completed` when it is over (unless its last job is held). If the command stops without ending its job (killed, or the machine went down), `hyalos run --resume <task>` carries a fix-issue run on from the log ([ADR-0069](../adr/0069-jobs-the-driving-agent-starts-as-mcp-tasks.md)):
+- It ends the job that was cut off as `failed` `engine.restarted`, or `deadline_exceeded` if the deadline has passed.
+- It runs that step again in a new job, and the steps after it. It does not repeat finished steps.
+- The deadline is still the one the task started with.
+
+It needs the run's request in `runs/task-<id>.json` in the data directory, which `hyalos mcp` writes for the jobs an agent starts. A run started from the command line has none, so it cannot be resumed. The MCP server resumes its own runs by itself ([mcp.md](mcp.md)).
+
 ## 3. If something goes wrong
 
 - **Refused before the job started** (not Linux, no ready substrate, a container runtime that does not answer within 60 seconds, missing settings): nothing was written. The message says what to fix; `hyalos doctor` shows the substrates.

@@ -11,14 +11,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgentId, AgentName, Answer, Attestation, Digest, HoldId, JobId, Origin, ReasonCode, Schema,
-    Stakes, SubstrateName, TaskId, Upcast, Value,
+    Stakes, SubstrateName, TaskId, TypedValue, Upcast, Value,
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 
-/// What this build reads: version 11, and versions 1 to 10 upcast to it (ADR-0023, ADR-0025, ADR-0027,
-/// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068).
+/// What this build reads: version 12, and versions 1 to 11 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069).
 ///
 /// Version 2 added the stakes of a hold and the reason for resolving one. A version 1 hold is given the
 /// most cautious stakes, so only a human can release it; a version 1 resolution is given an explicit
@@ -29,7 +29,8 @@ pub const SCHEMA_VERSION: u32 = 11;
 /// `job.started`; an older one reads as `unrecorded` too. Version 8 added the reason to `job.ended`;
 /// an older one reads as `legacy.unrecorded`. Version 9 added the attestation to `job.started`; an
 /// older one reads as `unrecorded`. Version 10 added `handle.released` and changed no payload. Version 11
-/// added `agent.issued` and `agent.revoked` and changed no payload.
+/// added `agent.issued` and `agent.revoked` and changed no payload. Version 12 added `job.values` and
+/// changed no payload.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -274,6 +275,12 @@ pub enum Event {
         by: Resolution,
         reason: ReasonCode,
     },
+    /// The typed values a running job returned: a reader's or planner's answer, or an actor's submitted
+    /// result (ADR-0062, ADR-0064, ADR-0069). A choice is its option's index, so no text is stored. It
+    /// is written together with the job's ending, so a resumed run finds every finished step's values
+    /// in the log.
+    #[serde(rename = "job.values")]
+    JobValues { job: JobId, values: Vec<TypedValue> },
 }
 
 /// The largest policy document an event may hold, in bytes. Events are read whole into memory by
@@ -351,7 +358,8 @@ impl Event {
             | Event::PolicyApproved { .. }
             | Event::HandleReleased { .. }
             | Event::AgentIssued { .. }
-            | Event::AgentRevoked { .. } => origin == Origin::Engine,
+            | Event::AgentRevoked { .. }
+            | Event::JobValues { .. } => origin == Origin::Engine,
         }
     }
 
@@ -372,6 +380,7 @@ impl Event {
             Event::HandleReleased { .. } => "handle.released",
             Event::AgentIssued { .. } => "agent.issued",
             Event::AgentRevoked { .. } => "agent.revoked",
+            Event::JobValues { .. } => "job.values",
         }
     }
 
@@ -381,7 +390,7 @@ impl Event {
     }
 
     /// Every `kind` value, for checking tables and test coverage.
-    pub const KINDS: [&'static str; 14] = [
+    pub const KINDS: [&'static str; 15] = [
         "task.created",
         "task.completed",
         "job.started",
@@ -396,6 +405,7 @@ impl Event {
         "handle.released",
         "agent.issued",
         "agent.revoked",
+        "job.values",
     ];
 
     /// Reads an event back from a log row's `kind`, `schema_version` and `payload`, as this build's
@@ -575,6 +585,18 @@ mod tests {
                     reason: ReasonCode::new("agent.revoked").unwrap(),
                 },
                 r#"{"kind":"agent.revoked","agent":4,"by":"human","reason":"agent.revoked"}"#
+                    .to_string(),
+            ),
+            (
+                Event::JobValues {
+                    job: JobId::from_seq(4),
+                    values: vec![
+                        TypedValue::Choice(2),
+                        TypedValue::Bool(true),
+                        TypedValue::Integer(-3),
+                    ],
+                },
+                r#"{"kind":"job.values","job":4,"values":[{"choice":2},{"bool":true},{"integer":-3}]}"#
                     .to_string(),
             ),
         ]

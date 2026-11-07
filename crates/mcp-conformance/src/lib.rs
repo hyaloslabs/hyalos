@@ -6,11 +6,19 @@
 //! than skips. These are those tools, with the same names and content, so the scenarios exercise
 //! `hyalos::mcp` itself: content blocks of every kind, tool errors, progress over a stream, and the
 //! refusal of a call that needs a capability the client did not declare. None of it is in the binary.
+//!
+//! The Tasks extension's scenarios (SEP-2663, ADR-0069) call their own fixtures: `greet`,
+//! `slow_compute`, `failing_job`, `protocol_error_job` and `confirm_delete`. Their tasks live in
+//! memory here, and each one's state follows from the time since it started.
 
+use std::collections::BTreeMap;
 use std::net::TcpListener;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
-use hyalos::mcp::{self, Admit, Called, Progress, Refusal, Server, Tool, Tools};
+use hyalos::mcp::{
+    self, Admit, Called, Progress, Refusal, Server, TaskState, TaskSupport, TaskView, Tool, Tools,
+};
 use serde_json::{Map, Value, json};
 
 pub const IMAGE_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
@@ -18,6 +26,72 @@ pub const AUDIO_WAV: &str = "UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAAB9AAACABAAZGF
 
 pub struct Fixtures {
     tools: Vec<Tool>,
+    tasks: Mutex<Tasks>,
+}
+
+/// The fixtures' tasks, by id.
+#[derive(Default)]
+struct Tasks {
+    next: u64,
+    started: BTreeMap<String, Started>,
+}
+
+#[derive(Clone)]
+struct Started {
+    kind: Kind,
+    at: Instant,
+    created_ms: u64,
+    /// How long it runs before it ends.
+    takes: Duration,
+    cancelled: Option<Instant>,
+}
+
+#[derive(Clone)]
+enum Kind {
+    Compute(String),
+    Failing,
+    ProtocolError,
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+fn view(id: &str, task: &Started) -> TaskView {
+    let elapsed = task.at.elapsed();
+    let since = |instant: Instant| instant.duration_since(task.at).as_millis() as u64;
+    let ended = elapsed >= task.takes;
+    let (state, updated) = match (&task.cancelled, ended) {
+        // A cancel after it ended changes nothing.
+        (Some(at), _) if *at < task.at + task.takes => (TaskState::Cancelled, since(*at)),
+        (_, false) => (TaskState::Working, 0),
+        (_, true) => (
+            match &task.kind {
+                Kind::Compute(label) => {
+                    TaskState::Completed(Called::text(&format!("Computed {label}")))
+                }
+                Kind::Failing => {
+                    TaskState::Completed(Called::error("This job intentionally fails"))
+                }
+                Kind::ProtocolError => TaskState::Failed {
+                    code: -32603,
+                    message: "This job intentionally ends in a protocol error".into(),
+                },
+            },
+            task.takes.as_millis() as u64,
+        ),
+    };
+    TaskView {
+        id: id.to_string(),
+        created_ms: task.created_ms,
+        updated_ms: task.created_ms + updated,
+        ttl_ms: None,
+        poll_ms: Some(200),
+        message: None,
+        state,
+    }
 }
 
 impl Default for Fixtures {
@@ -29,9 +103,47 @@ impl Default for Fixtures {
             input_schema: json!({"type": "object", "additionalProperties": false}),
             output_schema: None,
             requires,
+            task: TaskSupport::Never,
+        };
+        let with = |name, description, properties: Value, task| Tool {
+            input_schema: json!({"type": "object", "properties": properties}),
+            task,
+            ..tool(name, description, &[])
         };
         Self {
+            tasks: Mutex::default(),
             tools: vec![
+                with(
+                    "greet",
+                    "Greets by name",
+                    json!({"name": {"type": "string"}}),
+                    TaskSupport::Never,
+                ),
+                with(
+                    "slow_compute",
+                    "Sleeps for seconds, then answers; a task when the client has the Tasks extension",
+                    json!({"seconds": {"type": "number"}, "label": {"type": "string"}}),
+                    TaskSupport::Optional,
+                ),
+                with(
+                    "failing_job",
+                    "A task that ends with a tool error",
+                    json!({}),
+                    TaskSupport::Required,
+                ),
+                with(
+                    "protocol_error_job",
+                    "A task that ends in a protocol error",
+                    json!({}),
+                    TaskSupport::Required,
+                ),
+                // The suite's own parks for input, which this server never asks for: a plain call.
+                with(
+                    "confirm_delete",
+                    "Answers at once; asks for no input",
+                    json!({"filename": {"type": "string"}}),
+                    TaskSupport::Never,
+                ),
                 tool(
                     "test_simple_text",
                     "Tests simple text content response",
@@ -75,7 +187,13 @@ impl Tools for Fixtures {
         &self.tools
     }
 
-    fn call(&self, name: &str, _: &Map<String, Value>, progress: &mut Progress<'_>) -> Called {
+    fn call(
+        &self,
+        name: &str,
+        arguments: &Map<String, Value>,
+        progress: &mut Progress<'_>,
+    ) -> Called {
+        let text = |key: &str| arguments.get(key).and_then(Value::as_str).unwrap_or("");
         let blocks = |content: Vec<Value>| Called {
             content,
             structured: None,
@@ -114,9 +232,70 @@ impl Tools for Fixtures {
             "test_logging_tool" => {
                 Called::text("Logging tool completed; nothing was logged without a logLevel")
             }
+            "greet" => Called::text(&format!("Hello, {}!", text("name"))),
+            "slow_compute" => {
+                std::thread::sleep(seconds(arguments));
+                Called::text(&format!("Computed {}", text("label")))
+            }
+            "confirm_delete" => Called::text(&format!("Nothing deleted: {}", text("filename"))),
             _ => Called::error("unknown tool"),
         }
     }
+
+    fn start(&self, name: &str, arguments: &Map<String, Value>) -> Result<TaskView, Called> {
+        let (kind, takes) = match name {
+            "slow_compute" => {
+                let label = arguments.get("label").and_then(Value::as_str);
+                (
+                    Kind::Compute(label.unwrap_or("").into()),
+                    seconds(arguments),
+                )
+            }
+            "failing_job" => (Kind::Failing, Duration::from_secs(1)),
+            "protocol_error_job" => (Kind::ProtocolError, Duration::from_millis(500)),
+            _ => return Err(Called::error("this tool does not run as a task")),
+        };
+        let mut tasks = self.tasks.lock().map_err(|_| Called::error("poisoned"))?;
+        tasks.next += 1;
+        let id = format!("fixture-task-{}", tasks.next);
+        let started = Started {
+            kind,
+            at: Instant::now(),
+            created_ms: now_ms(),
+            takes,
+            cancelled: None,
+        };
+        let shown = view(&id, &started);
+        tasks.started.insert(id, started);
+        Ok(shown)
+    }
+
+    fn task(&self, id: &str) -> Option<TaskView> {
+        let tasks = self.tasks.lock().ok()?;
+        tasks.started.get(id).map(|t| view(id, t))
+    }
+
+    fn cancel(&self, id: &str) -> bool {
+        let Ok(mut tasks) = self.tasks.lock() else {
+            return false;
+        };
+        match tasks.started.get_mut(id) {
+            Some(task) => {
+                task.cancelled.get_or_insert_with(Instant::now);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// `seconds`, at most a minute.
+fn seconds(arguments: &Map<String, Value>) -> Duration {
+    let n = arguments
+        .get("seconds")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    Duration::from_secs_f64(n.clamp(0.0, 60.0))
 }
 
 /// Admits every caller. The suite presents no credential, and these fixtures hold nothing; the

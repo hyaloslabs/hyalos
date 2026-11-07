@@ -305,9 +305,15 @@ fn through_the_api(origin: Origin, event: &Event) -> Option<RuleViolation> {
 pub struct Engine {
     log: Log,
     state: State,
+    /// The last event `state` includes. Another process may append after it; the engine reads those
+    /// events before it checks one of its own (ADR-0069).
+    known: Option<Head>,
     schema: &'static Schema,
     poisoned: bool,
 }
+
+/// How many times a write is checked again after another process appended first.
+const WRITE_ATTEMPTS: usize = 8;
 
 impl Engine {
     /// Opens the log at `path` (creating it if it is new) and rebuilds the state from it. An existing
@@ -332,9 +338,13 @@ impl Engine {
         let log = Log::open(path, key)?;
         log.verify(&public).map_err(EngineError::Verify)?;
         let state = restored_state(schema, &log)?;
+        // Where the state ends, not where the log ends now: another process may have appended since
+        // it was read, and the first write reads those events (ADR-0069).
+        let known = log.head_at(state.last_seq())?;
         Ok(Self {
             log,
             state,
+            known,
             schema,
             poisoned: false,
         })
@@ -363,6 +373,7 @@ impl Engine {
         if self.poisoned {
             return Err(EngineError::Poisoned);
         }
+        self.catch_up()?;
         if let Some(previous) = self.state.last_at()
             && at < previous
         {
@@ -482,20 +493,60 @@ impl Engine {
         ) {
             return Err(EngineError::Rule(RuleViolation::UnknownNeedsHold));
         }
-        self.state
-            .check_stamped(at, origin, &event)
-            .map_err(EngineError::Rule)?;
         let payload = event
             .encode()
             .map_err(|error| EngineError::Event { seq: 0, error })?;
-        let head = self
-            .log
-            .append(at, origin, event.kind(), self.schema.current, &payload)?;
-        if self.state.apply(head.seq, at, origin, &event).is_err() {
-            self.poisoned = true;
-            return Err(EngineError::Poisoned);
+        for _ in 0..WRITE_ATTEMPTS {
+            self.catch_up()?;
+            self.state
+                .check_stamped(at, origin, &event)
+                .map_err(EngineError::Rule)?;
+            let new = NewEvent {
+                at,
+                origin,
+                kind: event.kind(),
+                schema_version: self.schema.current,
+                payload: &payload,
+            };
+            let head = match self.log.append_all_after(self.known, &[new]) {
+                Err(LogError::Moved) => continue,
+                other => other?,
+            };
+            if self.state.apply(head.seq, at, origin, &event).is_err() {
+                self.poisoned = true;
+                return Err(EngineError::Poisoned);
+            }
+            self.known = Some(head);
+            return Ok(head);
         }
-        Ok(head)
+        Err(EngineError::Log(LogError::Moved))
+    }
+
+    /// Reads and projects what other processes appended since this engine last looked, each event
+    /// checked as replay checks it (ADR-0069). The state is unchanged if any of it does not check out,
+    /// and the engine then accepts nothing more.
+    fn catch_up(&mut self) -> Result<(), EngineError> {
+        let (events, head) = match self.log.events_after(self.known) {
+            Ok(read) => read,
+            Err(e) => {
+                self.poisoned = true;
+                return Err(e.into());
+            }
+        };
+        if events.is_empty() {
+            return Ok(());
+        }
+        match replay_from(self.schema, self.state.clone(), &events) {
+            Ok(state) => {
+                self.state = state;
+                self.known = head;
+                Ok(())
+            }
+            Err(e) => {
+                self.poisoned = true;
+                Err(e)
+            }
+        }
     }
     /// Checks a sequence of events against the state, one after another, then writes all of them in
     /// one transaction: every event is written or none is. The sequence must leave nothing owed, so an
@@ -511,6 +562,22 @@ impl Engine {
         if let Some(violation) = events.iter().find_map(|(o, e)| through_the_api(*o, e)) {
             return Err(EngineError::Rule(violation));
         }
+        for _ in 0..WRITE_ATTEMPTS {
+            self.catch_up()?;
+            match self.write_all(at, events) {
+                Err(EngineError::Log(LogError::Moved)) => continue,
+                written => return written,
+            }
+        }
+        Err(EngineError::Log(LogError::Moved))
+    }
+
+    /// One attempt at [`Engine::submit_all`] against the state as this engine knows it.
+    fn write_all(
+        &mut self,
+        at: Timestamp,
+        events: &[(Origin, Event)],
+    ) -> Result<Head, EngineError> {
         // Checked on a copy, so a sequence that fails half way leaves the real state untouched.
         let mut next = self.state.clone();
         for (origin, event) in events {
@@ -537,12 +604,13 @@ impl Engine {
                 payload,
             })
             .collect();
-        let head = self.log.append_all(&batch)?;
+        let head = self.log.append_all_after(self.known, &batch)?;
         if head.seq != next.last_seq() {
             self.poisoned = true;
             return Err(EngineError::Poisoned);
         }
         self.state = next;
+        self.known = Some(head);
         Ok(head)
     }
 
