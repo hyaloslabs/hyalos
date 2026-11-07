@@ -1,6 +1,6 @@
 # ADR-0073: Clients on older MCP revisions are unsupported until they move
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
