@@ -1,6 +1,6 @@
 # ADR-0068: The driving agent's credential, issued and revoked in the log
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
