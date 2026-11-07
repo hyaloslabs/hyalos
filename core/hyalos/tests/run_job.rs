@@ -53,6 +53,7 @@ fn request(harness: Harness) -> Request {
         minutes: 2,
         egress_hosts: BTreeSet::new(),
         step_model: None,
+        release_issue: false,
     }
 }
 
@@ -329,6 +330,84 @@ fn an_issue_number_runs_the_fix_issue_workflow_and_only_the_reader_sees_the_issu
     // The forge's text is not in the log: the task records a digest of the request.
     let raw = std::fs::read(world.data.join("events.db"))?;
     assert!(!contains(&raw, b"issue-body-marker-5b1e"));
+    let _ = std::fs::remove_dir_all(&repos);
+    Ok(())
+}
+
+/// With `--release-issue` the broker holds the issue as a handle, the log records the operator's
+/// release against its digest and nothing of its text, and the actor reads the text from the broker
+/// with the handle in its prompt; the prompt itself still holds none of it (ADR-0063).
+#[test]
+fn a_released_issue_reaches_the_actor_only_through_its_handle() -> Res {
+    let repos = dir("rrepos")?;
+    let gh = GitHub::start(&repos, false)?;
+    let world = World::new("release", Some(&gh))?;
+    let model = Model::start(&[
+        r#"{"kind": "docs", "size": "small", "clear": true, "has_repro": false}"#,
+        r#"{"approach": "docs_only", "add_test": false}"#,
+    ])?;
+    world.use_model(&model)?;
+    let out = world.root.join("out");
+    std::fs::create_dir(&out)?;
+    let Harness::Command(mut command) = this_harness(&world, &out)? else {
+        return Err("harness".into());
+    };
+    command.push("mode:handle".into());
+    let mut asked = request(Harness::Command(command));
+    asked.issue = String::new();
+    asked.issue_number = Some(7);
+    asked.release_issue = true;
+    let mut said = Vec::new();
+    let summary = run_job(
+        &asked,
+        world.setup(local_detect(), Duration::from_secs(10)),
+        &mut said,
+    )?;
+    let said = String::from_utf8_lossy(&said).into_owned();
+    assert!(summary.ok(), "{said}");
+
+    // The release is in the log as a digest, by a human, for the run's task.
+    let events = world.events()?;
+    let released: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::HandleReleased {
+                task, handle, by, ..
+            } => Some((*task, *handle, *by)),
+            _ => None,
+        })
+        .collect();
+    let [(task, handle, by)] = released.as_slice() else {
+        return Err(format!("{events:?}").into());
+    };
+    assert_eq!(*by, hyalos_types::Resolution::Human);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::JobStarted { task: t, .. } if t == task))
+    );
+    assert!(said.contains(&format!("held as handle {handle}")), "{said}");
+
+    // The actor read exactly the bytes the release names, and they are the issue's.
+    let body = std::fs::read_to_string(out.join("handle"))?;
+    assert_eq!(hyalos_broker::egress::inputs_digest(&body), *handle);
+    let issue: serde_json::Value = serde_json::from_str(&body)?;
+    assert_eq!(issue["body"], ISSUE_BODY);
+    // Its prompt named the handle and held none of the issue's text.
+    let prompt = std::fs::read_to_string(out.join("prompt"))?;
+    assert!(
+        prompt.contains(&format!("hyalos-handle {handle}")),
+        "{prompt}"
+    );
+    for forge in [ISSUE_TITLE, ISSUE_BODY, "issue-body-marker-5b1e"] {
+        assert!(!prompt.contains(forge), "{forge} is in the prompt");
+    }
+    // Nothing of the text is in the log or beside it.
+    for entry in std::fs::read_dir(&world.data)? {
+        let raw = std::fs::read(entry?.path())?;
+        assert!(!contains(&raw, b"issue-body-marker-5b1e"));
+    }
+    assert!(gh.issued().is_empty(), "no token is left live");
     let _ = std::fs::remove_dir_all(&repos);
     Ok(())
 }
@@ -625,6 +704,31 @@ fn harness_entry() -> Res {
         .ok_or("no job socket")?;
     let port = forwarder(&socket)?;
     let remote = remote.replace("127.0.0.1:8089", &format!("127.0.0.1:{port}"));
+
+    // Reads the handle the prompt names through the broker, and keeps the prompt and what it read.
+    if arg("mode:").is_some_and(|m| m == Path::new("handle")) {
+        let prompt = std::env::args().next_back().unwrap_or_default();
+        std::fs::write(out.join("prompt"), &prompt)?;
+        let handle = prompt
+            .split("hyalos-handle ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .ok_or("no handle in the prompt")?;
+        let mut stream = TcpStream::connect(("127.0.0.1", port))?;
+        stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+        write!(
+            stream,
+            "GET /handle/{handle} HTTP/1.1\r\nhost: localhost\r\n\r\n"
+        )?;
+        let mut answer = String::new();
+        let _ = stream.read_to_string(&mut answer);
+        let (head, body) = answer.split_once("\r\n\r\n").ok_or("no answer")?;
+        if !head.starts_with("HTTP/1.1 200") {
+            return Err(format!("the handle was refused: {head}").into());
+        }
+        std::fs::write(out.join("handle"), body)?;
+        return Ok(());
+    }
 
     // A push of a pack that is not one, then a wait far longer than the test: the job is held and
     // the sandbox stopped.

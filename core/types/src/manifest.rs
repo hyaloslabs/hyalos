@@ -16,6 +16,7 @@ use std::fmt;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
+use crate::Digest;
 use crate::hex;
 use crate::ids::JobId;
 use crate::time::Timestamp;
@@ -90,6 +91,11 @@ pub struct Manifest {
     /// The last moment this manifest is valid. A job whose deadline passes ends (ADR-0004).
     pub deadline: Timestamp,
     pub approval: Option<Approval>,
+    /// The handles whose raw text the job may read from the broker, each released to its task by a
+    /// human (`handle.released`, ADR-0063). Left out of the signed bytes when empty, so a manifest
+    /// without any signs as before.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub handles: BTreeSet<Digest>,
 }
 
 /// The data flows a manifest may declare (ADR-0055). A flow names where the job's data may go: the

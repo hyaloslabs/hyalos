@@ -99,6 +99,7 @@ fn manifest(job: JobId) -> Manifest {
         budget: Budget { tokens: 200_000 },
         deadline: Timestamp::from_millis(10_000_000),
         approval: None,
+        handles: Default::default(),
     }
 }
 

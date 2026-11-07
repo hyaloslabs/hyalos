@@ -15,10 +15,10 @@ use crate::{
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 
-/// What this build reads: version 9, and versions 1 to 8 upcast to it (ADR-0023, ADR-0025, ADR-0027,
-/// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057).
+/// What this build reads: version 10, and versions 1 to 9 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063).
 ///
 /// Version 2 added the stakes of a hold and the reason for resolving one. A version 1 hold is given the
 /// most cautious stakes, so only a human can release it; a version 1 resolution is given an explicit
@@ -28,7 +28,7 @@ pub const SCHEMA_VERSION: u32 = 9;
 /// `job.started`; an older one reads as `unrecorded`. Version 7 added the credential tier to
 /// `job.started`; an older one reads as `unrecorded` too. Version 8 added the reason to `job.ended`;
 /// an older one reads as `legacy.unrecorded`. Version 9 added the attestation to `job.started`; an
-/// older one reads as `unrecorded`.
+/// older one reads as `unrecorded`. Version 10 added `handle.released` and changed no payload.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -242,6 +242,18 @@ pub enum Event {
         by: Resolution,
         reason: ReasonCode,
     },
+    /// A human released the raw text the broker holds as `handle` to the task's actor (ADR-0005,
+    /// ADR-0063). The handle is the SHA-256 of the bytes the broker holds, so the decision is bound to
+    /// exactly that text: the engine never sees it, and the broker serves only bytes with this digest.
+    /// Raw forge text reaching an actor is a decision only a human makes (ADR-0012), and the state
+    /// refuses anyone else.
+    #[serde(rename = "handle.released")]
+    HandleReleased {
+        task: TaskId,
+        handle: Digest,
+        by: Resolution,
+        reason: ReasonCode,
+    },
 }
 
 /// The largest policy document an event may hold, in bytes. Events are read whole into memory by
@@ -316,7 +328,8 @@ impl Event {
             | Event::ArchivePruned { .. }
             | Event::TaskCancelled { .. }
             | Event::HoldRefused { .. }
-            | Event::PolicyApproved { .. } => origin == Origin::Engine,
+            | Event::PolicyApproved { .. }
+            | Event::HandleReleased { .. } => origin == Origin::Engine,
         }
     }
 
@@ -334,6 +347,7 @@ impl Event {
             Event::TaskCancelled { .. } => "task.cancelled",
             Event::HoldRefused { .. } => "hold.refused",
             Event::PolicyApproved { .. } => "policy.approved",
+            Event::HandleReleased { .. } => "handle.released",
         }
     }
 
@@ -343,7 +357,7 @@ impl Event {
     }
 
     /// Every `kind` value, for checking tables and test coverage.
-    pub const KINDS: [&'static str; 11] = [
+    pub const KINDS: [&'static str; 12] = [
         "task.created",
         "task.completed",
         "job.started",
@@ -355,6 +369,7 @@ impl Event {
         "task.cancelled",
         "hold.refused",
         "policy.approved",
+        "handle.released",
     ];
 
     /// Reads an event back from a log row's `kind`, `schema_version` and `payload`, as this build's
@@ -502,6 +517,18 @@ mod tests {
                 },
                 r#"{"kind":"policy.approved","document":"permit (principal, action, resource);","by":"human","reason":"policy.approved"}"#
                     .to_string(),
+            ),
+            (
+                Event::HandleReleased {
+                    task: TaskId::from_seq(3),
+                    handle: d(9),
+                    by: Resolution::Human,
+                    reason: ReasonCode::new("handle.operator").unwrap(),
+                },
+                format!(
+                    r#"{{"kind":"handle.released","task":3,"handle":"{}","by":"human","reason":"handle.operator"}}"#,
+                    h(9)
+                ),
             ),
         ]
     }

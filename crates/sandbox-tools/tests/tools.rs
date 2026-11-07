@@ -1,6 +1,6 @@
 //! The forwarder relays both ways and ends when the broker does; `prepare` makes the harness's
-//! directories; `submit` and `hyalos-pr` post and read the answer; the DNS log answers and records
-//! (ADR-0040, ADR-0050).
+//! directories; `submit` and `hyalos-pr` post and read the answer, `hyalos-handle` gets one; the DNS
+//! log answers and records (ADR-0040, ADR-0050, ADR-0063).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
@@ -242,6 +242,57 @@ fn hyalos_pr_asks_the_broker_for_a_pull_request_in_its_fields() -> Res {
         .env("HYALOS_FORWARDER", &addr)
         .output()?;
     assert_eq!(bad.status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(&d);
+    Ok(())
+}
+
+#[test]
+fn hyalos_handle_gets_the_handle_it_is_given_and_fails_on_a_refusal() -> Res {
+    let d = dir("handle")?;
+    let socket = d.join("b.sock");
+    let seen = broker(
+        &socket,
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 13\r\nconnection: close\r\n\r\n{\"number\":7}\n",
+    )?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let addr = listener.local_addr()?.to_string();
+    let to = socket.clone();
+    thread::spawn(move || forward(listener, to));
+    let handle = "ab".repeat(32);
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_hyalos-handle"))
+        .arg(&handle)
+        .env("HYALOS_FORWARDER", &addr)
+        .output()?;
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8(out.stdout)?, "{\"number\":7}\n");
+    let seen = seen.join().map_err(|_| "broker panicked")?;
+    assert!(
+        seen.starts_with(&format!("GET /handle/{handle} HTTP/1.1\r\n")),
+        "{seen}"
+    );
+
+    // A refusal fails, and an argument that is not a digest is not sent at all.
+    let socket = d.join("c.sock");
+    let _refuse = broker(
+        &socket,
+        "HTTP/1.1 403 Forbidden\r\ncontent-length: 20\r\nconnection: close\r\n\r\nhandle.not_released\n",
+    )?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let refusing = listener.local_addr()?.to_string();
+    thread::spawn(move || forward(listener, socket));
+    let refused = std::process::Command::new(env!("CARGO_BIN_EXE_hyalos-handle"))
+        .arg(&handle)
+        .env("HYALOS_FORWARDER", &refusing)
+        .output()?;
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("handle.not_released"));
+    for bad in ["", "abc", &"zz".repeat(32)] {
+        let bad = std::process::Command::new(env!("CARGO_BIN_EXE_hyalos-handle"))
+            .arg(bad)
+            .env("HYALOS_FORWARDER", &addr)
+            .output()?;
+        assert_eq!(bad.status.code(), Some(2));
+    }
     let _ = std::fs::remove_dir_all(&d);
     Ok(())
 }

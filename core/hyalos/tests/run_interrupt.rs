@@ -51,6 +51,7 @@ fn waiting(started: &Path) -> Request {
         minutes: 2,
         egress_hosts: BTreeSet::new(),
         step_model: None,
+        release_issue: false,
     }
 }
 

@@ -288,6 +288,27 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             attestation: Attestation::no_hardware_root(),
         },
     ));
+
+    // Version 10 added `handle.released` and changed no payload, so the eleven older kinds read as they
+    // did at version 9.
+    let at_9: Vec<_> = all.iter().filter(|g| g.0 == 9).cloned().collect();
+    for (_, kind, json, event) in at_9 {
+        all.push((10, kind, json, event));
+    }
+    all.push((
+        10,
+        "handle.released",
+        format!(
+            r#"{{"kind":"handle.released","task":3,"handle":"{}","by":"human","reason":"handle.operator"}}"#,
+            hex(9)
+        ),
+        Event::HandleReleased {
+            task: TaskId::from_seq(3),
+            handle: d(9),
+            by: Resolution::Human,
+            reason: ReasonCode::new("handle.operator").ok_or("reason")?,
+        },
+    ));
     Ok(all)
 }
 
@@ -297,6 +318,7 @@ fn introduced(kind: &str) -> u32 {
         "archive.pruned" => 3,
         "task.cancelled" | "hold.refused" => 4,
         "policy.approved" => 5,
+        "handle.released" => 10,
         _ => 1,
     }
 }

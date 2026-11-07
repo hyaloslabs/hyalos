@@ -21,8 +21,9 @@ use crate::{
 ///
 /// Version 2 added the archives that were pruned (ADR-0027). A version 1 image has none. Version 3 added
 /// the cancelling of a task (ADR-0029). Earlier images have no task cancelled. Version 4 added the policy
-/// in force (ADR-0034). Earlier images have none, which is the baseline alone.
-pub const STATE_VERSION: u32 = 4;
+/// in force (ADR-0034). Earlier images have none, which is the baseline alone. Version 5 added the
+/// handles released (ADR-0063). Earlier images have none.
+pub const STATE_VERSION: u32 = 5;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +42,21 @@ pub struct StateImage {
     /// The operator policy in force, from the latest `policy.approved` event. `None` until one is
     /// approved, when only the shipped baseline applies (ADR-0034).
     pub policy: Option<PolicyImage>,
+    /// Every handle released, in the order it was recorded (ADR-0063).
+    pub handles: Vec<HandleImage>,
+}
+
+/// A `handle.released` event, kept: a manifest may name the handle only while its task stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandleImage {
+    /// The sequence number of the event that released it.
+    pub seq: u64,
+    pub at: u64,
+    pub task: TaskId,
+    pub handle: Digest,
+    pub by: Resolution,
+    pub reason: ReasonCode,
 }
 
 /// A `policy.approved` event, kept: the document is the policy in force, so it travels with the state.
@@ -202,11 +218,15 @@ impl StateImage {
                     .insert("cancelled".into(), Value::Null);
             }
         }
-        // 3 -> 4: no operator policy had been approved.
-        value
+        let object = value
             .as_object_mut()
-            .ok_or_else(|| ImageError::Decode("the state is not an object".into()))?
-            .insert("policy".into(), Value::Null);
+            .ok_or_else(|| ImageError::Decode("the state is not an object".into()))?;
+        // 3 -> 4: no operator policy had been approved.
+        if version < 4 {
+            object.insert("policy".into(), Value::Null);
+        }
+        // 4 -> 5: no handle had been released.
+        object.insert("handles".into(), Value::Array(Vec::new()));
         serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()))
     }
 }
@@ -333,6 +353,14 @@ mod tests {
                 reason: ReasonCode::unavailable(),
                 document: "permit (principal, action, resource);".into(),
             }),
+            handles: vec![HandleImage {
+                seq: 13,
+                at: 4_700,
+                task: TaskId::from_seq(1),
+                handle: d(4),
+                by: Resolution::Human,
+                reason: ReasonCode::unavailable(),
+            }],
         }
     }
 

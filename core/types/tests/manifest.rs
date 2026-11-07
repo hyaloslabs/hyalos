@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 
 use hyalos_types::{
-    Approval, Budget, JobId, MANIFEST_VERSION, Manifest, ManifestKey, OpenError, Role,
+    Approval, Budget, Digest, JobId, MANIFEST_VERSION, Manifest, ManifestKey, OpenError, Role,
     SignedManifest, Timestamp,
 };
 
@@ -34,6 +34,7 @@ fn manifest() -> Manifest {
             head_sha: "0123456789abcdef0123456789abcdef01234567".into(),
             event: 77,
         }),
+        handles: Default::default(),
     }
 }
 
@@ -92,6 +93,24 @@ fn a_pull_request_base_is_signed_when_present_and_absent_otherwise() -> Res {
     );
     assert_eq!(signed.open(&key().public())?, with);
     assert_ne!(signed, key().sign(&manifest())?);
+    Ok(())
+}
+
+#[test]
+fn handles_are_signed_when_present_and_absent_otherwise() -> Res {
+    // Empty, they are left out, so a manifest without any signs as it did before ADR-0063.
+    assert!(!PINNED_PAYLOAD.contains("handles"));
+    let mut with = manifest();
+    with.handles = [Digest::from_bytes([2; 32]), Digest::from_bytes([1; 32])].into();
+    let signed = key().sign(&with)?;
+    let payload = String::from_utf8(signed.payload().to_vec())?;
+    let sorted = format!(
+        r#""approval":{{"head_sha":"0123456789abcdef0123456789abcdef01234567","event":77}},"handles":["{}","{}"]}}"#,
+        "01".repeat(32),
+        "02".repeat(32)
+    );
+    assert!(payload.ends_with(&sorted), "{payload}");
+    assert_eq!(signed.open(&key().public())?, with);
     Ok(())
 }
 

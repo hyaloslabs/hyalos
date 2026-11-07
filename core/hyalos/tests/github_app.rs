@@ -229,6 +229,7 @@ fn manifest(job: u64, actions: &[&str]) -> Manifest {
         budget: Budget { tokens: 1 },
         deadline: Timestamp::from_millis(SystemClock.now().as_millis() + 3_600_000),
         approval: None,
+        handles: Default::default(),
     }
 }
 

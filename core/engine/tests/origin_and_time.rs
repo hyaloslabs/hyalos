@@ -60,6 +60,14 @@ fn accept(e: &mut Engine, n: u64, event: Event) -> Res {
         } => {
             e.approve_policy(at(n), &document, Decider::Human, reason)?;
         }
+        Event::HandleReleased {
+            task,
+            handle,
+            reason,
+            ..
+        } => {
+            e.release_handle(at(n), task, handle, Decider::Human, reason)?;
+        }
         other => {
             e.submit(at(n), Origin::Engine, other)?;
         }
@@ -178,6 +186,15 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
             by: Resolution::Human,
             reason: why(),
         },
+        "handle.released" => {
+            let task = TaskId::from_seq(go(&mut e, 1, Event::TaskCreated { request: d(1) })?);
+            Event::HandleReleased {
+                task,
+                handle: d(9),
+                by: Resolution::Human,
+                reason: why(),
+            }
+        }
         "archive.pruned" => {
             // Only an archive the log made can be named, so compact first and name where it ended.
             go(&mut e, 1, Event::TaskCreated { request: d(1) })?;
