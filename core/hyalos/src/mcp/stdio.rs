@@ -23,8 +23,12 @@ pub fn serve<T: Tools>(
         if read == 0 {
             return Ok(());
         }
-        if line.len() > MAX_MESSAGE {
-            skip_line(&mut input)?;
+        // The cap is on the message, not its line break. Only a line cut short has a rest to skip.
+        let complete = line.last() == Some(&b'\n');
+        if line.len() - usize::from(complete) > MAX_MESSAGE {
+            if !complete {
+                skip_line(&mut input)?;
+            }
             let too_long = json!({"jsonrpc": "2.0", "error": {"code": codes::INVALID_REQUEST, "message": "Message too large"}});
             write_line(&mut output, &too_long)?;
             continue;

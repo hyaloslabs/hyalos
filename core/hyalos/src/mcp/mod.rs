@@ -773,6 +773,28 @@ mod tests {
         assert_eq!(lines[2]["error"]["code"], codes::INVALID_REQUEST);
     }
 
+    #[test]
+    fn stdio_takes_a_message_of_exactly_the_cap_and_never_loses_the_next_one() {
+        let request = |id: u64| {
+            json!({"jsonrpc": "2.0", "id": id, "method": "tools/list", "params": {"_meta": meta()}})
+                .to_string()
+        };
+        let pad = |text: String, to: usize| format!("{text}{}", " ".repeat(to - text.len()));
+        let at_cap = pad(request(1), MAX_MESSAGE);
+        let over_cap = pad(request(3), MAX_MESSAGE + 1);
+        let input = format!("{at_cap}\n{}\n{over_cap}\n{}\n", request(2), request(4));
+        let mut output = Vec::new();
+        stdio::serve(&server(), input.as_bytes(), &mut output).unwrap();
+        let ids: Vec<Value> = String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap()["id"].clone())
+            .collect();
+        // The message over the cap is answered without an id (it was never read), and the one after it
+        // is still answered.
+        assert_eq!(ids, [json!(1), json!(2), Value::Null, json!(4)]);
+    }
+
     fn http(port: u16, request: &str) -> String {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream.write_all(request.as_bytes()).unwrap();

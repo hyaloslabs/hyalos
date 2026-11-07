@@ -79,9 +79,9 @@ S5.1's acceptance holds: the official suite passes every scenario 2026-07-28 req
 - **A local socket.** ADR-0010 names a local socket. stdio is that here: a client starts the server as its own child, and no listener is open at all. A Unix-socket listener can be added behind the same `Server` if a client needs one.
 - **Revisions other than 2026-07-28.** An older client is told which revision this is. Serving it would need the stateful handshake back, which no target client needs.
 
-**Costs.** 835 more lines of trusted core:
-- the protocol layer and its two transports (651 in `core/hyalos/src/mcp`, which gets a part budget of 1,000 in `cargo xtask lines`);
+**Costs.** 838 more lines of trusted core:
+- the protocol layer and its two transports (654 in `core/hyalos/src/mcp`, which gets a part budget of 1,000 in `cargo xtask lines`);
 - the command and `list_tasks` (about 180);
 - `read_state` (+4, engine).
 
-Trusted core goes from 16,499 to 17,334 lines of 30,000. CI gains a job that needs npm's registry, pinned by the lockfile's integrity hashes.
+Trusted core goes from 16,499 to 17,337 lines of 30,000. CI gains a job that needs npm's registry, pinned by the lockfile's integrity hashes.
