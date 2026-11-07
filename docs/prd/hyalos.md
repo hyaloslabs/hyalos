@@ -69,7 +69,7 @@ Every requirement above should be traceable through one real job: "From Claude C
 | M3 | E6 Plugin runtime; E7 Marketplace and supply chain | Open to skills and plugins |
 | M4 | E8 Verification and release gates; E9 Learnings and self-improvement; E10 Launch | Public release |
 
-**M2 client support:** M2 works through the plain tools and plain-text approval views (ADR-0010) and does not depend on the Tasks or MCP Apps extensions. Whether clients on the older 2025-11-25 MCP revision, such as Hermes, are in M2's scope is decided in S5.12 (#239).
+**M2 client support:** M2 works through the plain tools and plain-text approval views (ADR-0010) and does not depend on the Tasks or MCP Apps extensions. Clients on older MCP revisions, such as Hermes Agent 0.19.0 on 2025-11-25, are not supported in M2 until they move to 2026-07-28 (ADR-0073).
 
 Epic and story detail is tracked in GitHub issues: each epic is a parent issue (#1, #8, #15, #22, #28, #35, #41, #49, #56, #60) with its stories as sub-issues, grouped by milestone.
 

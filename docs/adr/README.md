@@ -86,3 +86,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0070](0070-the-operators-signature-on-every-human-decision.md) | The operator's signature on every human decision | Accepted |
 | [0071](0071-merging-after-the-operators-approval.md) | Merging a pull request after the operator's approval | Accepted |
 | [0072](0072-marking-untrusted-data-in-results.md) | Marking untrusted data in the driving agent's results | Accepted |
+| [0073](0073-clients-on-older-mcp-revisions-are-unsupported.md) | Clients on older MCP revisions are unsupported until they move | Proposed |
