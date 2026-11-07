@@ -1,0 +1,9 @@
+# The Tasks extension's checks (SEP-2663, ADR-0069) that the engine's MCP server does not pass, each
+# because it needs a task that asks the client for input: no engine tool asks the client for
+# anything (ADR-0067, ADR-0012). Every other check of every tasks scenario must pass, and the suite
+# fails a run if an entry here starts passing.
+server:
+  - tasks-mrtr-input:sep-2663-tasks-get-status-input-required
+  - tasks-mrtr-input:tasks-mrtr-tasks-update-resumes
+  - tasks-mrtr-input:tasks-mrtr-partial-fulfillment
+  - tasks-mrtr-composition:sep-2663-mrtr-synchronous-before-task-creation

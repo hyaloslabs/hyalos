@@ -7,6 +7,8 @@
 //! installed suite unless `HYALOS_REQUIRE_MCP_CONFORMANCE` is set, which the `mcp conformance` CI job
 //! does.
 //!
+//! The Tasks extension's scenarios run one by one, with `expected-failures-tasks.yml` (ADR-0069).
+//!
 //! By hand: `cargo run -p hyalos-mcp-conformance` prints a URL, then
 //! `crates/mcp-conformance/node_modules/.bin/conformance server --url <url> --requirements 2026-07-28 --expected-failures crates/mcp-conformance/expected-failures.yml`.
 
@@ -53,4 +55,56 @@ fn the_conformance_suite_passes_every_required_scenario_but_the_features_not_off
         "the conformance suite failed:\n{report}"
     );
     assert!(report.contains("Baseline check passed"), "{report}");
+}
+
+/// Every scenario of the Tasks extension (SEP-2663, ADR-0069), which the 2026-07-28 requirements list
+/// as extensions and so do not run above, one at a time, with `expected-failures-tasks.yml` naming
+/// the checks that need a task to ask the client for input.
+#[test]
+fn the_tasks_scenarios_pass_but_the_checks_of_input_the_server_never_asks_for() {
+    const SCENARIOS: [&str; 10] = [
+        "tasks-lifecycle",
+        "tasks-capability-negotiation",
+        "tasks-wire-fields",
+        "tasks-request-state-removal",
+        "tasks-mrtr-input",
+        "tasks-request-headers",
+        "tasks-dispatch-and-envelope",
+        "tasks-status-notifications",
+        "tasks-required-task-error",
+        "tasks-mrtr-composition",
+    ];
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let suite = dir.join("node_modules/.bin/conformance");
+    if !suite.exists() {
+        assert!(
+            std::env::var_os("HYALOS_REQUIRE_MCP_CONFORMANCE").is_none(),
+            "the conformance suite is not installed: npm ci --ignore-scripts --prefix crates/mcp-conformance"
+        );
+        eprintln!("skipped: the conformance suite is not installed");
+        return;
+    }
+    let url = hyalos_mcp_conformance::serve_fixtures().expect("serve the fixtures");
+    for scenario in SCENARIOS {
+        let results = std::env::temp_dir().join(format!(
+            "hyalos-mcp-tasks-{}-{scenario}",
+            std::process::id()
+        ));
+        let out = Command::new(&suite)
+            .args(["server", "--url", &url, "--scenario", scenario])
+            .arg("--expected-failures")
+            .arg(dir.join("expected-failures-tasks.yml"))
+            .arg("--output-dir")
+            .arg(&results)
+            .output()
+            .expect("run the conformance suite");
+        let report = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&results);
+        assert!(out.status.success(), "{scenario} failed:\n{report}");
+        assert!(report.contains("0 warnings"), "{scenario}:\n{report}");
+    }
 }

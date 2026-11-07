@@ -17,10 +17,13 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use hyalos::run_cmd::{Harness, Request, Summary, run_job};
+use hyalos::run_cmd::{Harness, Request, Summary, request_digest, resume_job, run_job};
+use hyalos_engine::Engine;
 use hyalos_substrate::{Substrate, choose};
 use hyalos_substrate_contract::LocalProcessSubstrate;
+use hyalos_types::workflow::TypedValue;
 use hyalos_types::{Answer, CredentialTier, Event, Gate, JobOutcome, ReasonCode, SubstrateName};
+use hyalos_types::{Attestation, Clock, JobId, TaskId};
 
 mod common;
 
@@ -54,6 +57,7 @@ fn request(harness: Harness) -> Request {
         egress_hosts: BTreeSet::new(),
         step_model: None,
         release_issue: false,
+        nonce: None,
     }
 }
 
@@ -339,6 +343,17 @@ fn an_issue_number_runs_the_fix_issue_workflow_and_only_the_reader_sees_the_issu
         })
         .collect();
     assert_eq!(ended, ["step.answered", "step.answered", "step.submitted"]);
+    // Each step's values are recorded with its ending, as option indexes, and the run is over
+    // (ADR-0069).
+    let values: Vec<Vec<TypedValue>> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::JobValues { values, .. } => Some(values.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(values, finished_values());
+    assert!(matches!(events.last(), Some(Event::TaskCompleted { .. })));
     // The forge's text is not in the log: the task records a digest of the request.
     let raw = std::fs::read(world.data.join("events.db"))?;
     assert!(!contains(&raw, b"issue-body-marker-5b1e"));
@@ -528,8 +543,16 @@ fn a_reader_that_fails_stops_the_workflow_before_any_sandbox() -> Res {
             outcome: JobOutcome::Failed,
             reason: ReasonCode::new(code).ok_or("code")?,
         }));
-        // The reader was the last job: nothing started after it.
-        assert!(matches!(events.last(), Some(Event::JobEnded { .. })));
+        // The reader was the last job: nothing started after it, and the run is recorded over.
+        let n = events.len();
+        assert!(
+            matches!(events[n - 2], Event::JobEnded { .. }),
+            "{events:?}"
+        );
+        assert!(
+            matches!(events[n - 1], Event::TaskCompleted { .. }),
+            "{events:?}"
+        );
     }
     let _ = std::fs::remove_dir_all(&repos);
     Ok(())
@@ -938,5 +961,186 @@ fn harness_entry() -> Res {
     }
     // The clone is not a dump: it holds no credential, and its files are the sandbox's own.
     let _ = std::fs::remove_dir_all(&home);
+    Ok(())
+}
+
+/// What the fix-issue steps return in these tests, by field name: triage (clear, has_repro, kind
+/// docs, size small), plan (add_test, approach docs_only), fix (outcome pr_opened, tests_added).
+fn finished_values() -> Vec<Vec<TypedValue>> {
+    use TypedValue::{Bool, Choice};
+    vec![
+        vec![Bool(true), Bool(false), Choice(2), Choice(0)],
+        vec![Bool(false), Choice(2)],
+        vec![Choice(0), Bool(true)],
+    ]
+}
+
+/// A runner that stopped during the actor (ADR-0069): the log holds the readers' values and the
+/// actor's job running. Resumed, the run ends that job `engine.restarted`, runs the actor again in a
+/// new job with the recorded values, and asks no model again; a finished run resumes to nothing.
+#[test]
+fn a_run_whose_runner_stopped_resumes_from_the_log_and_reruns_only_the_cut_step() -> Res {
+    let repos = dir("resrepos")?;
+    let gh = GitHub::start(&repos, false)?;
+    let world = World::new("resume", Some(&gh))?;
+    // No answers: a reader or planner that ran again would fail the run.
+    let model = Model::start(&[])?;
+    world.use_model(&model)?;
+    let out = world.root.join("out");
+    std::fs::create_dir(&out)?;
+    let Harness::Command(mut command) = this_harness(&world, &out)? else {
+        return Err("harness".into());
+    };
+    command.push("mode:submit".into());
+    command.push(r#"result:{"outcome":"pr_opened","tests_added":true}"#.into());
+    let mut asked = request(Harness::Command(command));
+    asked.issue = String::new();
+    asked.issue_number = Some(7);
+
+    let (task, cut) = {
+        let key = hyalos::keys::load(&world.config.join("engine.key"))?;
+        let mut e = Engine::open(&world.data.join("events.db"), key)?;
+        let now = || hyalos::clock::SystemClock.now();
+        let task = TaskId::from_seq(
+            e.submit(
+                now(),
+                hyalos_types::Origin::Engine,
+                Event::TaskCreated {
+                    request: request_digest(&asked),
+                },
+            )?
+            .seq,
+        );
+        let start = |e: &mut Engine, substrate: &str| -> Res<JobId> {
+            let head = e.submit(
+                now(),
+                hyalos_types::Origin::Engine,
+                Event::JobStarted {
+                    task,
+                    substrate: SubstrateName::new(substrate).ok_or("substrate")?,
+                    credentials: CredentialTier::BrokerHeld,
+                    attestation: Attestation::no_hardware_root(),
+                },
+            )?;
+            Ok(JobId::from_seq(head.seq))
+        };
+        for values in finished_values().into_iter().take(2) {
+            let job = start(&mut e, "broker")?;
+            e.submit_all(
+                now(),
+                &[
+                    (
+                        hyalos_types::Origin::Engine,
+                        Event::JobValues { job, values },
+                    ),
+                    (
+                        hyalos_types::Origin::Engine,
+                        Event::JobEnded {
+                            job,
+                            outcome: JobOutcome::Succeeded,
+                            reason: ReasonCode::new("step.answered").ok_or("code")?,
+                        },
+                    ),
+                ],
+            )?;
+        }
+        (task, start(&mut e, "local-process")?)
+    };
+
+    let mut said = Vec::new();
+    let summary = resume_job(
+        &asked,
+        task,
+        world.setup(local_detect(), Duration::from_secs(10)),
+        &mut said,
+    )?
+    .ok_or("nothing ran")?;
+    let said = String::from_utf8_lossy(&said).into_owned();
+    assert!(summary.ok(), "{said}");
+    assert!(said.contains("resumed with 2 of 3 step(s) done"), "{said}");
+    assert!(model.sent().is_empty(), "a finished step ran again");
+    let prompt = std::fs::read_to_string(out.join("prompt"))?;
+    assert!(prompt.contains("- triage.kind: docs\n"), "{prompt}");
+    assert!(prompt.contains("- plan.approach: docs_only\n"), "{prompt}");
+
+    let events = world.events()?;
+    assert!(events.contains(&Event::JobEnded {
+        job: cut,
+        outcome: JobOutcome::Failed,
+        reason: ReasonCode::new("engine.restarted").ok_or("code")?,
+    }));
+    let started = events
+        .iter()
+        .filter(|e| matches!(e, Event::JobStarted { .. }))
+        .count();
+    assert_eq!(started, 4);
+    assert_ne!(summary.job, cut);
+    assert!(matches!(events.last(), Some(Event::TaskCompleted { task: t }) if *t == task));
+    assert!(gh.issued().is_empty(), "no token is left live");
+
+    // A finished run has nothing left, and a request that is not the task's is refused.
+    let again = resume_job(
+        &asked,
+        task,
+        world.setup(local_detect(), Duration::from_secs(10)),
+        &mut Vec::new(),
+    )?;
+    assert!(again.is_none());
+    assert_eq!(world.events()?.len(), events.len());
+    let mut other = asked.clone();
+    other.base = "dev".into();
+    let refused = resume_job(
+        &other,
+        task,
+        world.setup(local_detect(), Duration::from_secs(10)),
+        &mut Vec::new(),
+    );
+    assert!(refused.is_err());
+    let _ = std::fs::remove_dir_all(&repos);
+    Ok(())
+}
+
+/// A run the driving agent cancels (ADR-0069): `on_task` hears the task once it is recorded and names
+/// the cancel file, which the run then watches as it does a signal; the job it was in ends
+/// `run.cancelled` and the run is recorded over.
+#[test]
+fn a_cancel_file_ends_the_run_as_a_signal_would() -> Res {
+    let repos = dir("crepos")?;
+    let gh = GitHub::start(&repos, false)?;
+    let world = World::new("cancel", Some(&gh))?;
+    let model =
+        Model::start(&[r#"{"kind": "docs", "size": "small", "clear": true, "has_repro": false}"#])?;
+    world.use_model(&model)?;
+    let mut asked = request(Harness::Command(vec!["/bin/true".into()]));
+    asked.issue = String::new();
+    asked.issue_number = Some(7);
+    let cancel = world.root.join("cancel");
+    std::fs::write(&cancel, b"")?;
+    let heard = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mut setup = world.setup(local_detect(), Duration::from_secs(10));
+    let (told, file) = (heard.clone(), cancel.clone());
+    setup.on_task = Some(Box::new(move |task| {
+        if let Ok(mut told) = told.lock() {
+            *told = Some(task);
+        }
+        Ok(Some(file))
+    }));
+    let mut said = Vec::new();
+    let summary = run_job(&asked, setup, &mut said)?;
+    let said = String::from_utf8_lossy(&said).into_owned();
+    assert_eq!(summary.outcome, JobOutcome::Failed, "{said}");
+    let events = world.events()?;
+    let task = heard
+        .lock()
+        .map_err(|_| "poisoned")?
+        .ok_or("on_task was not called")?;
+    assert!(events.contains(&Event::JobEnded {
+        job: summary.job,
+        outcome: JobOutcome::Failed,
+        reason: ReasonCode::new("run.cancelled").ok_or("code")?,
+    }));
+    assert!(matches!(events.last(), Some(Event::TaskCompleted { task: t }) if *t == task));
+    assert!(gh.issued().is_empty(), "no token is left live");
+    let _ = std::fs::remove_dir_all(&repos);
     Ok(())
 }

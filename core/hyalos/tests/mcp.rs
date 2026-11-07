@@ -1,6 +1,7 @@
 //! `hyalos mcp` (S5.1, ADR-0067): the binary on stdio, with `list_tasks` reading a real log with the
 //! public key alone, and `--listen` refusing anything but loopback. Every call needs a credential the
-//! operator issued with `hyalos agent issue` and has not revoked (S5.8, ADR-0068).
+//! operator issued with `hyalos agent issue` and has not revoked (S5.8, ADR-0068). `start_job` and
+//! the run's task, with the Tasks extension and without it (S5.2, ADR-0069).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -382,4 +383,339 @@ fn listen_takes_a_loopback_address_only_and_bad_usage_is_exit_2() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("loopback"));
     let out = m.command(&["mcp", "--port", "1"]).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
+}
+
+fn declaring(id: u64, method: &str, params: Value) -> Value {
+    let mut message = request(id, method, params);
+    message["params"]["_meta"]["io.modelcontextprotocol/clientCapabilities"] =
+        json!({"extensions": {"io.modelcontextprotocol/tasks": {}}});
+    message
+}
+
+fn text(answer: &Value) -> String {
+    answer["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn events(m: &Machine) -> Res<usize> {
+    let log = hyalos_log::Log::open(&m.root.join("data/events.db"), LogKey::from_seed(SEED))?;
+    Ok(log.events()?.len())
+}
+
+#[test]
+fn start_job_takes_only_identifiers_and_says_why_a_runner_could_not_start() {
+    let m = Machine::new("start").unwrap();
+    m.install_key().unwrap();
+    let credential = m.issue("claude-code").unwrap();
+    let before = events(&m).unwrap();
+    let call = |id, arguments: Value| {
+        declaring(
+            id,
+            "tools/call",
+            json!({"name": "start_job", "arguments": arguments}),
+        )
+    };
+    let answers = m
+        .stdio(
+            Some(&credential),
+            &[
+                request(1, "server/discover", json!({})),
+                call(
+                    2,
+                    json!({"repo": "octo/repo", "issue_number": 7, "issue": "do it"}),
+                ),
+                call(3, json!({"repo": "octo/repo; rm", "issue_number": 7})),
+                call(4, json!({"repo": "octo/repo", "issue_number": 0})),
+                call(
+                    5,
+                    json!({"repo": "octo/repo", "issue_number": 7, "base": "../main"}),
+                ),
+                // Well formed, but this machine has no GitHub App: the runner says so and stops.
+                call(6, json!({"repo": "octo/repo", "issue_number": 7})),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        answers[0]["result"]["capabilities"]["extensions"]["io.modelcontextprotocol/tasks"],
+        json!({})
+    );
+    for answer in &answers[1..] {
+        assert_eq!(answer["result"]["isError"], true, "{answer}");
+        assert_eq!(answer["result"]["resultType"], "complete", "{answer}");
+    }
+    assert!(text(&answers[1]).contains("only repo and issue_number"));
+    // The base branch is the operator's: a branch name could carry words to the actor.
+    assert!(text(&answers[4]).contains("only repo and issue_number"));
+    let refused = text(&answers[5]);
+    assert!(refused.starts_with("the job did not start: "), "{refused}");
+    // Nothing was written, and the runner's files are gone.
+    assert_eq!(events(&m).unwrap(), before);
+    let left: Vec<_> = std::fs::read_dir(m.root.join("data/runs"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
+fn a_runs_task_is_polled_with_the_tasks_extension_or_its_plain_tools_and_reads_the_same() {
+    use hyalos_types::TypedValue::{Bool, Choice};
+    let m = Machine::new("poll").unwrap();
+    m.install_key().unwrap();
+    let credential = m.issue("claude-code").unwrap();
+    let args: Vec<String> = ["--repo", "octo/repo", "--issue-number", "7"]
+        .map(String::from)
+        .to_vec();
+    let asked = hyalos::run_cmd::parse(&args).unwrap();
+    let mut engine = Engine::open(&m.root.join("data/events.db"), LogKey::from_seed(SEED)).unwrap();
+    // After the credential's issue, which the binary stamped with the real time.
+    let mut at = 4_000_000_000_000;
+    let mut write = |engine: &mut Engine, events: Vec<Event>| {
+        at += 1;
+        let events: Vec<_> = events.into_iter().map(|e| (Origin::Engine, e)).collect();
+        engine
+            .submit_all(Timestamp::from_millis(at), &events)
+            .unwrap()
+    };
+    let task = TaskId::from_seq(
+        write(
+            &mut engine,
+            vec![Event::TaskCreated {
+                request: hyalos::run_cmd::request_digest(&asked),
+            }],
+        )
+        .seq,
+    );
+    // A task the server did not start: no run document.
+    let stranger = write(
+        &mut engine,
+        vec![Event::TaskCreated {
+            request: Digest::from_bytes([9; 32]),
+        }],
+    )
+    .seq
+    .to_string();
+    let runs = m.root.join("data/runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    std::fs::write(
+        runs.join(format!("task-{}.json", task.seq())),
+        serde_json::to_vec(&asked.stored()).unwrap(),
+    )
+    .unwrap();
+    // This test is its runner: it holds the lock, so the server starts none.
+    let lock = std::fs::File::create(runs.join(format!("task-{}.lock", task.seq()))).unwrap();
+    lock.lock().unwrap();
+    let mut step = |engine: &mut Engine, substrate: &str, values, reason: &str| {
+        let started = write(
+            engine,
+            vec![Event::JobStarted {
+                task,
+                substrate: SubstrateName::new(substrate).unwrap(),
+                credentials: CredentialTier::BrokerHeld,
+                attestation: Attestation::no_hardware_root(),
+            }],
+        );
+        let job = JobId::from_seq(started.seq);
+        write(
+            engine,
+            vec![
+                Event::JobValues { job, values },
+                Event::JobEnded {
+                    job,
+                    outcome: JobOutcome::Succeeded,
+                    reason: ReasonCode::new(reason).unwrap(),
+                },
+            ],
+        );
+    };
+    step(
+        &mut engine,
+        "broker",
+        vec![Bool(true), Bool(false), Choice(2), Choice(0)],
+        "step.answered",
+    );
+
+    let id = task.seq().to_string();
+    let polls = |answers_for: &str| {
+        m.stdio(
+            Some(&credential),
+            &[
+                declaring(1, "tasks/get", json!({"taskId": answers_for})),
+                request(
+                    2,
+                    "tools/call",
+                    json!({"name": "job_status", "arguments": {"task": answers_for}}),
+                ),
+                request(
+                    3,
+                    "tools/call",
+                    json!({"name": "job_result", "arguments": {"task": answers_for}}),
+                ),
+                request(4, "tasks/get", json!({"taskId": answers_for})),
+            ],
+        )
+        .unwrap()
+    };
+    let working = polls(&id);
+    let got = &working[0]["result"];
+    assert_eq!(got["status"], "working", "{got}");
+    assert_eq!(got["taskId"], id.as_str());
+    assert_eq!(got["statusMessage"], "1 of 3 steps done");
+    assert_eq!(got["pollIntervalMs"], 5000);
+    assert!(got["ttlMs"].is_null());
+    assert!(got.get("result").is_none());
+    // Without the extension: the same task through the plain tools, and tasks/get refused.
+    let plain = &working[1]["result"]["structuredContent"];
+    assert_eq!(plain["status"], "working", "{plain}");
+    assert_eq!(plain["taskId"], id.as_str());
+    assert_eq!(working[2]["result"]["isError"], true);
+    assert!(text(&working[2]).contains("still working"));
+    assert_eq!(working[3]["error"]["code"], -32021);
+
+    // A runner that stopped with an error is never started again by the server: the task says it
+    // waits for the operator, and no resume wrote to its log.
+    lock.unlock().unwrap();
+    let failed = runs.join(format!("task-{}.failed", task.seq()));
+    std::fs::write(&failed, "hyalos: the log could not be written\n").unwrap();
+    let waiting = m
+        .stdio(
+            Some(&credential),
+            &[declaring(1, "tasks/get", json!({"taskId": id}))],
+        )
+        .unwrap();
+    let message = waiting[0]["result"]["statusMessage"].as_str().unwrap_or("");
+    assert!(message.contains("waits for the operator"), "{message}");
+    assert!(!runs.join(format!("task-{}.log", task.seq())).exists());
+    std::fs::remove_file(&failed).unwrap();
+    lock.lock().unwrap();
+
+    // A cancel is asked for in a file the runner watches.
+    let cancelled = m
+        .stdio(
+            Some(&credential),
+            &[declaring(1, "tasks/cancel", json!({"taskId": id}))],
+        )
+        .unwrap();
+    assert_eq!(cancelled[0]["result"]["resultType"], "complete");
+    let cancel = runs.join(format!("task-{}.cancel", task.seq()));
+    assert!(cancel.exists());
+    std::fs::remove_file(&cancel).unwrap();
+
+    step(
+        &mut engine,
+        "broker",
+        vec![Bool(false), Choice(2)],
+        "step.answered",
+    );
+    step(
+        &mut engine,
+        "local-process",
+        vec![Choice(0), Bool(true)],
+        "step.submitted",
+    );
+    write(&mut engine, vec![Event::TaskCompleted { task }]);
+    let done = polls(&id);
+    let got = &done[0]["result"];
+    assert_eq!(got["status"], "completed", "{got}");
+    let result = json!({"task": task.seq(), "outcome": "succeeded", "result": {"outcome": "pr_opened", "tests_added": true}});
+    assert_eq!(got["result"]["structuredContent"], result);
+    assert_eq!(got["result"]["isError"], false);
+    assert_eq!(
+        done[1]["result"]["structuredContent"]["status"],
+        "completed"
+    );
+    assert_eq!(done[2]["result"]["structuredContent"], result);
+    // Cancelling a finished task changes nothing.
+    let again = m
+        .stdio(
+            Some(&credential),
+            &[declaring(1, "tasks/cancel", json!({"taskId": id}))],
+        )
+        .unwrap();
+    assert_eq!(again[0]["result"]["resultType"], "complete");
+    assert!(!cancel.exists());
+
+    // Not one of the server's runs, or not a task at all.
+    for other in [stranger.as_str(), "99", "01", "x"] {
+        let answers = polls(other);
+        assert_eq!(answers[0]["error"]["code"], -32602, "{other}");
+        assert_eq!(answers[1]["result"]["isError"], true, "{other}");
+    }
+    drop(lock);
+}
+
+/// A runner stopped before it answered may already have recorded its task (ADR-0069): the server
+/// adopts the newest open task with the request's digest created since the call began, and writes its
+/// request document if the runner had not, so the run resumes like any other.
+#[test]
+fn a_task_a_stopped_runner_recorded_is_adopted_not_lost() {
+    let m = Machine::new("adopt").unwrap();
+    m.install_key().unwrap();
+    let args: Vec<String> = ["--repo", "octo/repo", "--issue-number", "7"]
+        .map(String::from)
+        .to_vec();
+    let mut asked = hyalos::run_cmd::parse(&args).unwrap();
+    asked.nonce = Some("0123456789abcdef0123456789abcdef".into());
+    let mut engine = Engine::open(&m.root.join("data/events.db"), LogKey::from_seed(SEED)).unwrap();
+    let created = |engine: &mut Engine, at, request| {
+        engine
+            .submit(
+                Timestamp::from_millis(at),
+                Origin::Engine,
+                Event::TaskCreated { request },
+            )
+            .unwrap()
+            .seq
+    };
+    let digest = hyalos::run_cmd::request_digest(&asked);
+    let earlier = created(&mut engine, 1_000, digest);
+    created(&mut engine, 2_000, Digest::from_bytes([4; 32]));
+    let recorded = created(&mut engine, 3_000, digest);
+    let runs = hyalos::runs::Runs::at(m.root.join("data/runs"));
+    std::fs::create_dir_all(runs.dir()).unwrap();
+    let launcher = hyalos::runs::Launcher {
+        runs: runs.clone(),
+        exe: PathBuf::from("/nonexistent"),
+        wait: std::time::Duration::from_secs(1),
+    };
+    let state = engine.state().clone();
+    let since = Timestamp::from_millis(2_500);
+    let adopted = launcher.adopt(&state, &asked, since).unwrap();
+    assert_eq!(adopted.seq(), recorded);
+    assert!(runs.request(&state, adopted).is_some());
+    assert!(runs.request(&state, TaskId::from_seq(earlier)).is_none());
+    // Nothing of another call's request, though it asks the same, or from before the call.
+    let mut again = asked.clone();
+    again.nonce = Some("fedcba9876543210fedcba9876543210".into());
+    assert!(launcher.adopt(&state, &again, since).is_none());
+    assert!(
+        launcher
+            .adopt(&state, &asked, Timestamp::from_millis(3_001))
+            .is_none()
+    );
+
+    // A held run stops compaction, which would change the log under its engine.
+    let lock = std::fs::File::create(runs.file(adopted, "lock")).unwrap();
+    lock.lock().unwrap();
+    assert_eq!(runs.held(), [recorded]);
+    let out = m.command(&["log", "compact"]).output().unwrap();
+    assert!(!out.status.success());
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains(&format!("a run is in progress (task {recorded})")),
+        "{said}"
+    );
+    drop(lock);
+    // Another test's child, forked while the lock was open, shares it until it execs: wait for that.
+    let free = (0..100).any(|_| {
+        let free = runs.held().is_empty();
+        if !free {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        free
+    });
+    assert!(free);
+    assert!(runs.none_running().is_ok());
 }

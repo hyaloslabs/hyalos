@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgentId, AgentName, Digest, Gate, HoldId, HoldReason, JobId, JobOutcome, ReasonCode,
-    Resolution, Stakes, TaskId, Value,
+    Resolution, Stakes, TaskId, TypedValue, Value,
 };
 
 /// The layout [`StateImage`] is written in today.
@@ -23,8 +23,9 @@ use crate::{
 /// the cancelling of a task (ADR-0029). Earlier images have no task cancelled. Version 4 added the policy
 /// in force (ADR-0034). Earlier images have none, which is the baseline alone. Version 5 added the
 /// handles released (ADR-0063). Earlier images have none. Version 6 added the agents' credentials
-/// (ADR-0068). Earlier images have none.
-pub const STATE_VERSION: u32 = 6;
+/// (ADR-0068). Earlier images have none. Version 7 added why each job ended and the values it returned
+/// (ADR-0069). An earlier job ended for an unrecorded reason and returned none.
+pub const STATE_VERSION: u32 = 7;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +138,7 @@ pub struct JobImage {
     pub task: TaskId,
     pub started_at: u64,
     pub ended: Option<JobEndImage>,
+    pub values: Option<Vec<TypedValue>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +146,7 @@ pub struct JobImage {
 pub struct JobEndImage {
     pub at: u64,
     pub outcome: JobOutcome,
+    pub reason: ReasonCode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,6 +214,24 @@ impl StateImage {
         difference("state", &a, &b)
     }
 
+    /// This state as an image written at `version` holds it: what that version did not keep reads as
+    /// [`StateImage::decode`] fills it in. An audit compares a replay with an old snapshot this way,
+    /// since the replay knows what the snapshot never recorded (ADR-0069).
+    pub fn as_kept_at(mut self, version: u32) -> Self {
+        // Before 7 no job's reason or values were kept. The earlier versions only added what could not
+        // have happened yet, so a replay has nothing more to drop for them.
+        if version < 7 {
+            for job in &mut self.jobs {
+                job.values = None;
+                if let Some(ended) = job.ended.as_mut() {
+                    ended.reason =
+                        ReasonCode::new("legacy.unrecorded").unwrap_or(ended.reason.clone());
+                }
+            }
+        }
+        self
+    }
+
     /// Reads bytes written at `version`, bringing an older one up to date.
     pub fn decode(version: u32, bytes: &[u8]) -> Result<Self, ImageError> {
         if version == 0 || version > STATE_VERSION {
@@ -255,7 +276,23 @@ impl StateImage {
             object.insert("handles".into(), Value::Array(Vec::new()));
         }
         // 5 -> 6: no agent's credential had been issued.
-        object.insert("agents".into(), Value::Array(Vec::new()));
+        if version < 6 {
+            object.insert("agents".into(), Value::Array(Vec::new()));
+        }
+        // 6 -> 7: no job's reason was kept, and no job had returned values.
+        let jobs = object
+            .get_mut("jobs")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| ImageError::Decode("the state has no list of jobs".into()))?;
+        for job in jobs {
+            let job = job
+                .as_object_mut()
+                .ok_or_else(|| ImageError::Decode("a job is not an object".into()))?;
+            job.insert("values".into(), Value::Null);
+            if let Some(ended) = job.get_mut("ended").and_then(Value::as_object_mut) {
+                ended.insert("reason".into(), Value::String("legacy.unrecorded".into()));
+            }
+        }
         serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()))
     }
 }
@@ -357,7 +394,9 @@ mod tests {
                 ended: Some(JobEndImage {
                     at: 3_000,
                     outcome: JobOutcome::Held,
+                    reason: ReasonCode::unavailable(),
                 }),
+                values: Some(vec![TypedValue::Bool(true)]),
             }],
             holds: vec![HoldImage {
                 id: HoldId::from_seq(5),

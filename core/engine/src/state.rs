@@ -11,9 +11,11 @@ use hyalos_types::snapshot::{
     AgentImage, CancelledImage, HandleImage, HoldImage, JobEndImage, JobImage, PolicyImage,
     PrunedImage, ResolvedImage, RevokedImage, StateImage, TaskImage,
 };
+use hyalos_types::workflow::MAX_FIELDS;
 use hyalos_types::{
     AgentId, AgentName, Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome,
     MAX_POLICY_DOCUMENT, Origin, ReasonCode, Resolution, Sensitive, Stakes, TaskId, Timestamp,
+    TypedValue,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +64,11 @@ pub struct Job {
     pub task: TaskId,
     pub started_at: Timestamp,
     pub ended: Option<(Timestamp, JobOutcome)>,
+    /// Why it ended, once it has (ADR-0053). A job from an image older than version 7 says
+    /// `legacy.unrecorded`.
+    pub reason: Option<ReasonCode>,
+    /// The typed values it returned, if any (ADR-0069).
+    pub values: Option<Vec<TypedValue>>,
 }
 
 impl Job {
@@ -207,6 +214,9 @@ pub enum RuleViolation {
     AgentAlreadyRevoked(AgentId),
     /// A revocation is a decision, never a gate's re-evaluation.
     RevokeNotADecision,
+    /// A job returns its values once, while it runs, and no more of them than an output has fields.
+    JobValuesTwice(JobId),
+    TooManyValues(JobId),
 }
 
 impl fmt::Display for RuleViolation {
@@ -282,6 +292,13 @@ impl fmt::Display for RuleViolation {
             ),
             RuleViolation::UnknownAgent(a) => write!(f, "agent {a} does not exist"),
             RuleViolation::AgentAlreadyRevoked(a) => write!(f, "agent {a} is already revoked"),
+            RuleViolation::JobValuesTwice(j) => {
+                write!(f, "job {j} has already returned its values")
+            }
+            RuleViolation::TooManyValues(j) => write!(
+                f,
+                "job {j} returned more values than an output has fields ({MAX_FIELDS})"
+            ),
             RuleViolation::RevokeNotADecision => {
                 write!(f, "a credential is revoked by a decision, not by a gate")
             }
@@ -587,6 +604,13 @@ impl State {
                 Some(j) if !j.is_running() => Err(RuleViolation::JobNotRunning(*job)),
                 Some(_) => Ok(()),
             },
+            Event::JobValues { job, values } => match self.jobs.get(job) {
+                None => Err(RuleViolation::UnknownJob(*job)),
+                Some(j) if !j.is_running() => Err(RuleViolation::JobNotRunning(*job)),
+                Some(j) if j.values.is_some() => Err(RuleViolation::JobValuesTwice(*job)),
+                Some(_) if values.len() > MAX_FIELDS => Err(RuleViolation::TooManyValues(*job)),
+                Some(_) => Ok(()),
+            },
             Event::HoldOpened { task, .. } => {
                 match self.task(*task)?.status() {
                     TaskStatus::Completed => return Err(RuleViolation::TaskCompleted(*task)),
@@ -779,6 +803,8 @@ impl State {
                         task: *task,
                         started_at: at,
                         ended: None,
+                        reason: None,
+                        values: None,
                     },
                 );
             }
@@ -801,9 +827,14 @@ impl State {
                     });
                 }
             }
-            Event::JobEnded { job, outcome, .. } => {
+            Event::JobEnded {
+                job,
+                outcome,
+                reason,
+            } => {
                 if let Some(j) = self.jobs.get_mut(job) {
                     j.ended = Some((at, *outcome));
+                    j.reason = Some(reason.clone());
                 }
                 if let Some(p) = self.pending.as_mut() {
                     p.job_ended = true;
@@ -922,6 +953,11 @@ impl State {
                 last_seq: *last_seq,
                 last_hash: *last_hash,
             }),
+            Event::JobValues { job, values } => {
+                if let Some(j) = self.jobs.get_mut(job) {
+                    j.values = Some(values.clone());
+                }
+            }
         }
         self.last_seq = seq;
         self.last_at = Some(at);
@@ -986,6 +1022,8 @@ impl State {
                         task,
                         started_at,
                         ended,
+                        reason,
+                        values,
                     } = j;
                     JobImage {
                         id: *id,
@@ -994,7 +1032,9 @@ impl State {
                         ended: ended.map(|(at, outcome)| JobEndImage {
                             at: at.as_millis(),
                             outcome,
+                            reason: reason.clone().unwrap_or_else(legacy_reason),
                         }),
+                        values: values.clone(),
                     }
                 })
                 .collect(),
@@ -1152,7 +1192,12 @@ impl State {
             let job = Job {
                 task: j.task,
                 started_at: Timestamp::from_millis(j.started_at),
-                ended: j.ended.map(|e| (Timestamp::from_millis(e.at), e.outcome)),
+                ended: j
+                    .ended
+                    .as_ref()
+                    .map(|e| (Timestamp::from_millis(e.at), e.outcome)),
+                reason: j.ended.as_ref().map(|e| e.reason.clone()),
+                values: j.values,
             };
             if state.jobs.insert(j.id, job).is_some() {
                 return Err(format!("job {} appears twice", j.id));
@@ -1376,4 +1421,9 @@ impl State {
         }
         out
     }
+}
+
+/// The reason a job from before version 7 of the image is read with.
+fn legacy_reason() -> ReasonCode {
+    ReasonCode::new("legacy.unrecorded").unwrap_or_else(ReasonCode::unavailable)
 }

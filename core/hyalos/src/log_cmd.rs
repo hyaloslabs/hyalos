@@ -277,7 +277,14 @@ fn parse_prune(args: &[String], env: Env<'_>) -> Result<PruneOptions, String> {
     })
 }
 
+/// The runs beside the log at `db`, which a compaction or prune must not change under (ADR-0069).
+fn runs_beside(db: &std::path::Path) -> crate::runs::Runs {
+    let dir = db.parent().unwrap_or(std::path::Path::new("."));
+    crate::runs::Runs::at(dir.join(crate::runs::RUNS_DIR))
+}
+
 fn run_prune(options: &PruneOptions) -> Result<Vec<String>, String> {
+    runs_beside(&options.db).none_running()?;
     let archive = &options.archive;
     let key = keys::load(&options.key_file).map_err(|e| e.to_string())?;
     let public = key.public();
@@ -449,6 +456,7 @@ fn parse_compact(args: &[String], env: Env<'_>) -> Result<CompactOptions, String
 }
 
 fn run_compact(options: &CompactOptions) -> Result<Vec<String>, String> {
+    runs_beside(&options.db).none_running()?;
     let key = keys::load(&options.key_file).map_err(|e| e.to_string())?;
     let public = key.public();
     let mut engine = Engine::open(&options.db, key).map_err(|e| e.to_string())?;

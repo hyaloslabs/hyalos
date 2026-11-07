@@ -226,6 +226,23 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
                 reason: why(),
             }
         }
+        "job.values" => {
+            let task = TaskId::from_seq(go(&mut e, 1, Event::TaskCreated { request: d(1) })?);
+            let job = JobId::from_seq(go(
+                &mut e,
+                2,
+                Event::JobStarted {
+                    task,
+                    substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                    credentials: hyalos_types::CredentialTier::BrokerHeld,
+                    attestation: hyalos_types::Attestation::no_hardware_root(),
+                },
+            )?);
+            Event::JobValues {
+                job,
+                values: vec![hyalos_types::TypedValue::Bool(true)],
+            }
+        }
         "archive.pruned" => {
             // Only an archive the log made can be named, so compact first and name where it ended.
             go(&mut e, 1, Event::TaskCreated { request: d(1) })?;

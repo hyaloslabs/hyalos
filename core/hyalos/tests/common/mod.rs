@@ -530,6 +530,7 @@ impl World {
             detect,
             detect_timeout: timeout,
             interrupt,
+            on_task: None,
         }
     }
 

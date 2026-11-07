@@ -139,10 +139,13 @@ pub fn audit(
                 reason: format!("its state ends at event {}", claimed.last_seq),
             });
         }
-        let replayed = state.to_image().map_err(|job| AuditError::Mismatch {
-            seq: anchor.seq,
-            difference: format!("the replay has job {job}'s unknown answer with no hold yet"),
-        })?;
+        let replayed = state
+            .to_image()
+            .map_err(|job| AuditError::Mismatch {
+                seq: anchor.seq,
+                difference: format!("the replay has job {job}'s unknown answer with no hold yet"),
+            })?
+            .as_kept_at(anchor.state_version);
         if let Some(difference) = replayed.first_difference(&claimed) {
             return Err(AuditError::Mismatch {
                 seq: anchor.seq,

@@ -1,8 +1,13 @@
 # The MCP server
 
-`hyalos mcp` is the engine's MCP server, on revision 2026-07-28 ([ADR-0010](../adr/0010-mcp-primary-interface-two-principals.md), [ADR-0067](../adr/0067-the-mcp-server-and-the-conformance-suite.md)). For now it has one tool, `list_tasks`. It returns the newest tasks in the event log, with each task's status and the outcome of each of its jobs. Starting work and approvals come in later stories.
+`hyalos mcp` is the engine's MCP server, on revision 2026-07-28 ([ADR-0010](../adr/0010-mcp-primary-interface-two-principals.md), [ADR-0067](../adr/0067-the-mcp-server-and-the-conformance-suite.md)). Its tools:
+- `start_job` runs the fix-issue workflow on a GitHub issue, as `hyalos run --issue-number` does ([ADR-0069](../adr/0069-jobs-the-driving-agent-starts-as-mcp-tasks.md)).
+- `job_status` and `job_result` read that job, for clients without the Tasks extension.
+- `list_tasks` returns the newest tasks in the event log, with each task's status and the outcome of each of its jobs.
 
-It reads the log with the engine's public key only. It never opens `engine.key`, so it runs while `hyalos run` writes. Run `hyalos init` first.
+Approvals come in a later story.
+
+The server reads the log with the engine's public key only. It never opens `engine.key`, so it runs while `hyalos run` writes. Run `hyalos init` first, and set up everything `hyalos run` needs (see [Running a job](running-a-job.md)) before the agent starts a job.
 
 ## Issuing the agent a credential
 
@@ -45,6 +50,43 @@ This serves Streamable HTTP at `http://127.0.0.1:8765/mcp`. Only a loopback addr
 
 Each request needs `Authorization: Bearer <credential>`. Without a credential in force it is 401 with `WWW-Authenticate: Bearer`. Any process on the machine can reach the port, so the credential is what keeps it out. Turn HTTP on only while you need it.
 
+## Jobs the agent starts
+
+The agent gives `start_job` a repository (`owner/name`) and an issue number. Nothing else: no text of its own reaches the job. The pull request's base branch is yours, set with `--base` (default `main`). Everything else comes from options you give `hyalos mcp`, as for `hyalos run`:
+
+```
+hyalos mcp --harness claude-code --minutes 30 --budget-tokens 200000 --base main
+```
+
+The other options are `--image` and `--step-model`.
+
+The server does not run the job itself. It starts `hyalos run` as a process of its own, which holds the keys and writes the log, and answers once the task is in the log. That runner outlives the server: closing the client does not stop the job. Its files are in `runs/` in the data directory:
+- `task-<id>.json`: the request, which the log records the digest of.
+- `task-<id>.log`: what the runner printed. Read it when a job fails.
+- `task-<id>.lock`: held while a runner has it.
+- `task-<id>.failed`: the error its last runner stopped with, if it did.
+
+`hyalos log compact` and `hyalos log prune` refuse while a runner holds its lock. Wait for the run to end, or stop its runner, first.
+
+The answer is a task:
+- **A client with the Tasks extension** polls it with `tasks/get` and stops it with `tasks/cancel`.
+- **A client without it** gets the task's id and status from `start_job` and polls with `job_status` and `job_result`.
+
+The task is `working` while the steps run, then:
+- `completed` with the result the harness submitted (`outcome`, `tests_added`), or
+- `completed` as a tool error with the last job's outcome and reason code, or
+- `cancelled`.
+
+A job that ends held stays `completed` with its reason until you decide the hold.
+
+If a runner stops (a crash, a reboot), the task resumes from the log:
+- Finished steps are not run again; the step that was cut off runs in a new job.
+- The server starts `hyalos run --resume <task>` when it starts, and whenever the agent asks about such a task. You can run it yourself too.
+- The cut job's GitHub token was not revoked and stays live until GitHub expires it (one hour). Check the repository for a branch or pull request it left behind.
+- A runner that stopped with an error (not a crash) is not resumed by itself: the task says it waits for you, and `runs/task-<id>.failed` and `task-<id>.log` say why. Fix that, then run `hyalos run --resume <task>`.
+
+If `start_job` fails at once, its message is the runner's reason, as `hyalos run` would print it. Nothing is written to the log in that case.
+
 ## Conformance
 
 CI runs the official MCP conformance suite against the protocol layer on every pull request (job `mcp conformance`). To run it locally:
@@ -54,4 +96,4 @@ npm ci --ignore-scripts --prefix crates/mcp-conformance
 HYALOS_REQUIRE_MCP_CONFORMANCE=1 cargo test -p hyalos-mcp-conformance
 ```
 
-`crates/mcp-conformance/expected-failures.yml` lists the features the server does not offer: completions, resources, prompts and input-required results. Every other scenario the revision requires must pass.
+`crates/mcp-conformance/expected-failures.yml` lists the features the server does not offer: completions, resources, prompts and input-required results. Every other scenario the revision requires must pass. The Tasks extension's scenarios run one at a time, with `expected-failures-tasks.yml`, which lists the four checks of a task asking the client for input.

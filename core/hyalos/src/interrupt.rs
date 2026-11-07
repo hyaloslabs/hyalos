@@ -7,6 +7,7 @@
 //! calls `again`, which in the binary says what was left undone and exits at once.
 
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread::JoinHandle;
@@ -19,7 +20,13 @@ pub struct Interrupt {
     /// The first signal taken, or 0 for none.
     first: Arc<AtomicI32>,
     taking: Option<(Handle, JoinHandle<()>)>,
+    /// A file whose appearance cancels the run as the first signal would (ADR-0069): the MCP
+    /// server's `tasks/cancel` makes it, which needs no signal, so asking twice is harmless.
+    cancel: Option<PathBuf>,
 }
+
+/// What [`Interrupt::signal`] names a cancel by the driving agent.
+pub const CANCELLED: &str = "tasks/cancel";
 
 impl Interrupt {
     /// Takes no signal and is never set: the signals keep their default action.
@@ -27,6 +34,7 @@ impl Interrupt {
         Self {
             first: Arc::default(),
             taking: None,
+            cancel: None,
         }
     }
 
@@ -50,12 +58,23 @@ impl Interrupt {
         Ok(Self {
             first,
             taking: Some((handle, thread)),
+            cancel: None,
         })
     }
 
-    /// The first signal taken, by name, or `None` if there has been none.
+    /// Also stops the run once `cancel` exists.
+    pub fn watch(&mut self, cancel: PathBuf) {
+        self.cancel = Some(cancel);
+    }
+
+    /// The first signal taken, by name, or [`CANCELLED`] once the cancel file exists, or `None`.
     pub fn signal(&self) -> Option<&'static str> {
-        name(self.first.load(Ordering::SeqCst))
+        name(self.first.load(Ordering::SeqCst)).or_else(|| {
+            self.cancel
+                .as_ref()
+                .is_some_and(|file| file.exists())
+                .then_some(CANCELLED)
+        })
     }
 
     pub fn is_set(&self) -> bool {

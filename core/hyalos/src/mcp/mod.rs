@@ -10,6 +10,11 @@
 //! rest of the order is the revision's: a message that is not JSON-RPC, then `_meta` (`-32602`), then
 //! on HTTP the headers against the body (`-32020`), then the version (`-32022`), then the method
 //! (`-32601`), then the tool and the capabilities it needs (`-32602`, `-32021`).
+//!
+//! It offers the Tasks extension (SEP-2663, ADR-0069) for tools that say so: a call from a request
+//! that declares the extension may be answered with a task, which `tasks/get` polls and `tasks/cancel`
+//! stops. A request that does not declare it never gets a task: such a call runs as a plain tool, or
+//! is refused `-32021` if the tool runs only as a task.
 
 pub mod http;
 pub mod stdio;
@@ -27,6 +32,8 @@ pub const TTL_MS: u64 = 300_000;
 const META_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
 const META_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
 const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
+/// The Tasks extension's name, in a capability's `extensions` (SEP-2663).
+pub const TASKS_EXTENSION: &str = "io.modelcontextprotocol/tasks";
 
 /// The JSON-RPC error codes this server sends. Nothing else in the reserved range is ever sent.
 pub mod codes {
@@ -73,6 +80,45 @@ pub struct Tool {
     /// Client capabilities a call needs. A call whose request did not declare one is refused with
     /// `-32021` before the tool runs.
     pub requires: &'static [&'static str],
+    /// Whether a call runs as a task when its request declares the Tasks extension.
+    pub task: TaskSupport,
+}
+
+/// How a tool takes part in the Tasks extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskSupport {
+    /// Always a plain call.
+    Never,
+    /// A task for a request that declares the extension, else a plain call.
+    Optional,
+    /// Only a task: a request that does not declare the extension is refused `-32021`.
+    Required,
+}
+
+/// A task as `tasks/get` shows it. Times are milliseconds since the epoch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskView {
+    pub id: String,
+    pub created_ms: u64,
+    pub updated_ms: u64,
+    /// How long it is kept after it ends; `None` for as long as the server lasts.
+    pub ttl_ms: Option<u64>,
+    pub poll_ms: Option<u64>,
+    pub message: Option<String>,
+    pub state: TaskState,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskState {
+    Working,
+    /// Finished with the tool's result, which may be a tool error.
+    Completed(Called),
+    /// A protocol error, not a tool error.
+    Failed {
+        code: i64,
+        message: String,
+    },
+    Cancelled,
 }
 
 /// What a tool returns: its content blocks, structured content if it has an output schema, and
@@ -122,6 +168,19 @@ pub trait Tools: Send + Sync {
         arguments: &Map<String, Value>,
         progress: &mut Progress<'_>,
     ) -> Called;
+    /// Starts a listed tool that supports tasks, as a task, which must be retrievable by the time
+    /// this returns. `Err` is the call's result at once, such as a tool error.
+    fn start(&self, _name: &str, _arguments: &Map<String, Value>) -> Result<TaskView, Called> {
+        Err(Called::error("this tool does not run as a task"))
+    }
+    /// A task this server started, or `None` if there is no such task.
+    fn task(&self, _id: &str) -> Option<TaskView> {
+        None
+    }
+    /// Asks a task to stop. `false` if there is no such task; a task that ended is left as it is.
+    fn cancel(&self, _id: &str) -> bool {
+        false
+    }
 }
 
 /// Reports a call's progress, if its request asked with a `progressToken`; otherwise it does nothing.
@@ -329,9 +388,14 @@ impl<T: Tools> Server<T> {
             "server/discover" => self.discover(),
             "tools/list" => self.list(params)?,
             "tools/call" => self.call(params, capabilities, emit)?,
+            "tasks/get" | "tasks/update" | "tasks/cancel" => {
+                self.task_request(method, params, capabilities)?
+            }
             _ => return Err(fail(codes::METHOD_NOT_FOUND, "Method not found")),
         };
-        result.insert("resultType".into(), "complete".into());
+        if !result.contains_key("resultType") {
+            result.insert("resultType".into(), "complete".into());
+        }
         result.insert(
             "_meta".into(),
             json!({(META_SERVER_INFO): {"name": self.name, "version": self.version}}),
@@ -340,9 +404,18 @@ impl<T: Tools> Server<T> {
     }
 
     fn discover(&self) -> Map<String, Value> {
+        let mut capabilities = json!({"tools": {}});
+        let tasks = self
+            .tools
+            .tools()
+            .iter()
+            .any(|t| t.task != TaskSupport::Never);
+        if let (true, Some(map)) = (tasks, capabilities.as_object_mut()) {
+            map.insert("extensions".into(), json!({(TASKS_EXTENSION): {}}));
+        }
         object(json!({
             "supportedVersions": [PROTOCOL_VERSION],
-            "capabilities": {"tools": {}},
+            "capabilities": capabilities,
             "instructions": self.instructions,
             "ttlMs": TTL_MS,
             "cacheScope": "public",
@@ -391,6 +464,17 @@ impl<T: Tools> Server<T> {
                 )
             });
         }
+        // Only a request that declares the extension gets a task; a legacy `task` param is ignored.
+        match (tool.task, declares_tasks(capabilities)) {
+            (TaskSupport::Required, false) => return Err(needs_tasks()),
+            (TaskSupport::Optional | TaskSupport::Required, true) => {
+                return Ok(match self.tools.start(tool.name, arguments) {
+                    Ok(task) => created(&task),
+                    Err(called) => result_of(called),
+                });
+            }
+            _ => {}
+        }
         let token = params
             .get("_meta")
             .and_then(|m| m.get("progressToken"))
@@ -399,12 +483,125 @@ impl<T: Tools> Server<T> {
         let called = self
             .tools
             .call(tool.name, arguments, &mut Progress { token, emit });
-        let mut result = object(json!({"content": called.content, "isError": called.is_error}));
-        if let Some(structured) = called.structured {
-            result.insert("structuredContent".into(), structured);
-        }
-        Ok(result)
+        Ok(result_of(called))
     }
+
+    /// `tasks/get`, `tasks/update` and `tasks/cancel`. The extension must be declared before the
+    /// task is looked up. No task asks for input, so an update is acknowledged and changes nothing.
+    fn task_request(
+        &self,
+        method: &str,
+        params: &Map<String, Value>,
+        capabilities: &Map<String, Value>,
+    ) -> Result<Map<String, Value>, Failure> {
+        if !declares_tasks(capabilities) {
+            return Err(needs_tasks());
+        }
+        let Some(id) = params.get("taskId").and_then(Value::as_str) else {
+            return Err(fail(codes::INVALID_PARAMS, "taskId must be a string"));
+        };
+        let unknown = || fail(codes::INVALID_PARAMS, "Unknown task");
+        match method {
+            "tasks/get" => self.tools.task(id).map(|t| shown(&t)).ok_or_else(unknown),
+            "tasks/cancel" if self.tools.cancel(id) => Ok(Map::new()),
+            "tasks/update" if self.tools.task(id).is_some() => Ok(Map::new()),
+            _ => Err(unknown()),
+        }
+    }
+}
+
+fn declares_tasks(capabilities: &Map<String, Value>) -> bool {
+    capabilities
+        .get("extensions")
+        .and_then(|e| e.get(TASKS_EXTENSION))
+        .is_some_and(Value::is_object)
+}
+
+fn needs_tasks() -> Failure {
+    Failure {
+        data: Some(json!({"requiredCapabilities": {"extensions": {(TASKS_EXTENSION): {}}}})),
+        ..fail(
+            codes::MISSING_CAPABILITY,
+            "Missing required client capability: the Tasks extension",
+        )
+    }
+}
+
+/// A call's result: its content, whether it failed, and its structured content if any.
+fn result_of(called: Called) -> Map<String, Value> {
+    let mut result = object(json!({"content": called.content, "isError": called.is_error}));
+    if let Some(structured) = called.structured {
+        result.insert("structuredContent".into(), structured);
+    }
+    result
+}
+
+/// The fields every view of a task has.
+fn task_fields(task: &TaskView) -> Map<String, Value> {
+    let status = match task.state {
+        TaskState::Working => "working",
+        TaskState::Completed(_) => "completed",
+        TaskState::Failed { .. } => "failed",
+        TaskState::Cancelled => "cancelled",
+    };
+    let mut fields = object(json!({
+        "taskId": task.id,
+        "status": status,
+        "createdAt": rfc3339(task.created_ms),
+        "lastUpdatedAt": rfc3339(task.updated_ms),
+        "ttlMs": task.ttl_ms,
+    }));
+    if let Some(poll) = task.poll_ms {
+        fields.insert("pollIntervalMs".into(), poll.into());
+    }
+    if let Some(message) = &task.message {
+        fields.insert("statusMessage".into(), message.clone().into());
+    }
+    fields
+}
+
+/// The answer to a call that started a task (CreateTaskResult): the task's fields alone.
+fn created(task: &TaskView) -> Map<String, Value> {
+    let mut fields = task_fields(task);
+    fields.insert("resultType".into(), "task".into());
+    fields
+}
+
+/// `tasks/get`'s answer: the task, and its result or error once it has one.
+pub fn shown(task: &TaskView) -> Map<String, Value> {
+    let mut fields = task_fields(task);
+    match &task.state {
+        TaskState::Completed(called) => {
+            fields.insert("result".into(), Value::Object(result_of(called.clone())));
+        }
+        TaskState::Failed { code, message } => {
+            fields.insert("error".into(), json!({"code": code, "message": message}));
+        }
+        TaskState::Working | TaskState::Cancelled => {}
+    }
+    fields
+}
+
+/// `ms` since the epoch as an RFC 3339 time in UTC, to the millisecond.
+pub fn rfc3339(ms: u64) -> String {
+    let (secs, millis) = (ms / 1000, ms % 1000);
+    let (days, rest) = (secs / 86_400, secs % 86_400);
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z % 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + u64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{millis:03}Z",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
 }
 
 /// The revision's header rules (ADR-0067): `MCP-Protocol-Version` and `Mcp-Method` always, and
@@ -424,10 +621,19 @@ fn check_headers(
     if headers.method.as_deref() != Some(method) {
         return Err(fail(codes::HEADER_MISMATCH, "Header mismatch: Mcp-Method"));
     }
-    if matches!(method, "tools/call" | "resources/read" | "prompts/get") {
+    if matches!(
+        method,
+        "tools/call"
+            | "resources/read"
+            | "prompts/get"
+            | "tasks/get"
+            | "tasks/update"
+            | "tasks/cancel"
+    ) {
         let named = params
             .get("name")
             .or_else(|| params.get("uri"))
+            .or_else(|| params.get("taskId"))
             .and_then(Value::as_str);
         if named.is_none() || headers.name.as_deref() != named {
             return Err(fail(codes::HEADER_MISMATCH, "Header mismatch: Mcp-Name"));
@@ -532,6 +738,7 @@ mod tests {
             input_schema: json!({"type": "object"}),
             output_schema: None,
             requires,
+            task: TaskSupport::Never,
         }
     }
 
@@ -1113,5 +1320,211 @@ mod tests {
             &list,
         );
         assert!(ok.starts_with("HTTP/1.1 200 OK"), "{ok}");
+    }
+
+    /// A tool that runs as a task when asked, one that runs only as one, and the one task they make.
+    struct Tasked {
+        tools: Vec<Tool>,
+    }
+
+    fn the_task(state: TaskState) -> TaskView {
+        TaskView {
+            id: "t1".into(),
+            created_ms: 951_782_400_000,
+            updated_ms: 951_782_400_500,
+            ttl_ms: None,
+            poll_ms: Some(5_000),
+            message: Some("1 of 3".into()),
+            state,
+        }
+    }
+
+    impl Tools for Tasked {
+        fn tools(&self) -> &[Tool] {
+            &self.tools
+        }
+
+        fn call(&self, _: &str, _: &Map<String, Value>, _: &mut Progress<'_>) -> Called {
+            Called::text("ran as a plain call")
+        }
+
+        fn start(&self, _: &str, arguments: &Map<String, Value>) -> Result<TaskView, Called> {
+            match arguments.get("refuse") {
+                Some(_) => Err(Called::error("refused before a task")),
+                None => Ok(the_task(TaskState::Working)),
+            }
+        }
+
+        fn task(&self, id: &str) -> Option<TaskView> {
+            (id == "t1").then(|| the_task(TaskState::Completed(Called::text("done"))))
+        }
+
+        fn cancel(&self, id: &str) -> bool {
+            id == "t1"
+        }
+    }
+
+    fn tasked(method: &str, mut params: Value, declares: bool) -> Reply {
+        let capabilities = if declares {
+            json!({"extensions": {(TASKS_EXTENSION): {}}})
+        } else {
+            json!({})
+        };
+        if let Some(map) = params.as_object_mut() {
+            map.insert(
+                "_meta".into(),
+                json!({(META_VERSION): PROTOCOL_VERSION, (META_CAPABILITIES): capabilities}),
+            );
+        }
+        let task_tool = |name, task| Tool {
+            task,
+            ..tool(name, &[])
+        };
+        let server = Server::new(
+            Tasked {
+                tools: vec![
+                    task_tool("maybe", TaskSupport::Optional),
+                    task_tool("only", TaskSupport::Required),
+                    task_tool("never", TaskSupport::Never),
+                ],
+            },
+            Box::new(Only),
+            "test",
+            "1.2.3",
+            "",
+        );
+        let message = json!({"jsonrpc": "2.0", "id": 9, "method": method, "params": params});
+        server.handle(
+            message.to_string().as_bytes(),
+            None,
+            Some("good"),
+            &mut |_| {},
+        )
+    }
+
+    fn result(reply: &Reply) -> Value {
+        reply
+            .body
+            .as_ref()
+            .and_then(|b| b.get("result"))
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    #[test]
+    fn a_tool_that_supports_tasks_answers_a_declaring_request_with_a_task_and_others_plainly() {
+        let discovered = result(&tasked("server/discover", json!({}), false));
+        assert_eq!(
+            discovered["capabilities"]["extensions"][TASKS_EXTENSION],
+            json!({})
+        );
+        assert!(discovered["capabilities"].get("tasks").is_none());
+
+        let created = result(&tasked("tools/call", json!({"name": "maybe"}), true));
+        assert_eq!(
+            created,
+            json!({
+                "resultType": "task", "taskId": "t1", "status": "working",
+                "createdAt": "2000-02-29T00:00:00.000Z", "lastUpdatedAt": "2000-02-29T00:00:00.500Z",
+                "ttlMs": null, "pollIntervalMs": 5000, "statusMessage": "1 of 3",
+                "_meta": {(META_SERVER_INFO): {"name": "test", "version": "1.2.3"}},
+            })
+        );
+        // A legacy `task` param asks for nothing; a tool that never runs as a task answers plainly.
+        let plain = result(&tasked(
+            "tools/call",
+            json!({"name": "never", "task": {"ttl": 1}}),
+            true,
+        ));
+        assert_eq!(plain["resultType"], "complete");
+        assert_eq!(plain["content"][0]["text"], "ran as a plain call");
+        // A start refused at once is the call's result.
+        let refused = result(&tasked(
+            "tools/call",
+            json!({"name": "maybe", "arguments": {"refuse": true}}),
+            true,
+        ));
+        assert_eq!(
+            (refused["resultType"].clone(), refused["isError"].clone()),
+            (json!("complete"), json!(true))
+        );
+
+        // Not declared: a plain call, or for a task-only tool the missing capability, with its data.
+        let plain = result(&tasked("tools/call", json!({"name": "maybe"}), false));
+        assert_eq!(plain["content"][0]["text"], "ran as a plain call");
+        assert!(plain.get("taskId").is_none());
+        let only = tasked("tools/call", json!({"name": "only"}), false);
+        assert_eq!(code(&only), Some(codes::MISSING_CAPABILITY));
+        assert_eq!(
+            only.body.as_ref().and_then(|b| b.pointer("/error/data")),
+            Some(&json!({"requiredCapabilities": {"extensions": {(TASKS_EXTENSION): {}}}}))
+        );
+    }
+
+    #[test]
+    fn tasks_are_polled_cancelled_and_updated_only_by_a_declaring_request() {
+        // The capability is checked before the task is looked up.
+        for method in ["tasks/get", "tasks/update", "tasks/cancel"] {
+            let reply = tasked(method, json!({"taskId": "nonesuch"}), false);
+            assert_eq!(code(&reply), Some(codes::MISSING_CAPABILITY), "{method}");
+            let reply = tasked(method, json!({"taskId": "nonesuch"}), true);
+            assert_eq!(code(&reply), Some(codes::INVALID_PARAMS), "{method}");
+            let reply = tasked(method, json!({}), true);
+            assert_eq!(code(&reply), Some(codes::INVALID_PARAMS), "{method}");
+        }
+        let got = result(&tasked("tasks/get", json!({"taskId": "t1"}), true));
+        assert_eq!(got["resultType"], "complete");
+        assert_eq!(got["status"], "completed");
+        assert_eq!(got["result"]["content"][0]["text"], "done");
+        assert!(got.get("requestState").is_none());
+        for method in ["tasks/cancel", "tasks/update"] {
+            let ack = result(&tasked(
+                method,
+                json!({"taskId": "t1", "inputResponses": {}}),
+                true,
+            ));
+            // Sorted: nothing may rely on a map's key order (`preserve_order` is on in this build).
+            let mut keys: Vec<_> = ack
+                .as_object()
+                .map(|m| m.keys().cloned().collect())
+                .unwrap_or_default();
+            keys.sort();
+            assert_eq!(keys, ["_meta", "resultType"], "{method}");
+        }
+        // Removed and never offered.
+        for method in ["tasks/result", "tasks/list"] {
+            let reply = tasked(method, json!({"taskId": "t1"}), true);
+            assert_eq!(code(&reply), Some(codes::METHOD_NOT_FOUND), "{method}");
+        }
+    }
+
+    #[test]
+    fn on_http_a_tasks_method_names_its_task_in_mcp_name() {
+        let headers = |name: &str| Headers {
+            protocol_version: Some(PROTOCOL_VERSION.into()),
+            method: Some("tasks/get".into()),
+            name: Some(name.into()),
+        };
+        let params = json!({"taskId": "t1", "_meta": {(META_VERSION): PROTOCOL_VERSION, (META_CAPABILITIES): {}}});
+        let message = json!({"jsonrpc": "2.0", "id": 1, "method": "tasks/get", "params": params});
+        let mut same = Map::new();
+        check_headers(
+            &headers("t1"),
+            "tasks/get",
+            PROTOCOL_VERSION,
+            message["params"].as_object().unwrap_or(&same),
+        )
+        .unwrap();
+        same.insert("taskId".into(), json!("t1"));
+        let wrong = check_headers(&headers("t2"), "tasks/get", PROTOCOL_VERSION, &same);
+        assert_eq!(wrong.map_err(|f| f.code), Err(codes::HEADER_MISMATCH));
+    }
+
+    #[test]
+    fn times_are_rfc_3339_in_utc() {
+        assert_eq!(rfc3339(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(rfc3339(951_782_400_000), "2000-02-29T00:00:00.000Z");
+        assert_eq!(rfc3339(1_700_000_000_123), "2023-11-14T22:13:20.123Z");
+        assert_eq!(rfc3339(4_102_444_799_999), "2099-12-31T23:59:59.999Z");
     }
 }
