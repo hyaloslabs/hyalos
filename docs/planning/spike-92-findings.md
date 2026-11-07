@@ -34,7 +34,7 @@ The Python SDK 2.3.0 supports 2026-07-28, but `initialize()` is still the old ha
 
 - **Neither client renders MCP Apps.** Approvals and results show as plain text in both (S5.3, #31). Read-only views stay the right design, since no client would show anything else.
 - **Neither client runs Hyalos's jobs as MCP tasks.** Claude Code sends every `tools/call` with no Tasks extension and no task parameter, so it would get `start_job`'s plain answer and use `job_status` and `job_result`: the plain-tool fallback ADR-0010 provides.
-- **What was seen, and what was not.** Against a real `hyalos mcp`, Claude Code was seen to call `list_tasks` and `job_status` and read their answers. No client called `start_job` or `job_result` here, and no job was completed, because that needs a GitHub App and a provider. What the plain path guarantees is shown by tests, not by a client:
+- **What was seen, and what was not.** Against a real `hyalos mcp`, Claude Code was seen to call `list_tasks` and `job_status` and read their answers. The world was fresh, so those were an empty list and a "there is no such task" tool error: they show the plain call path and the credential working, not a task being read. No client called `start_job` or `job_result` here, and no job was completed, because that needs a GitHub App and a provider. What the plain path guarantees is shown by tests, not by a client:
   - `start_job` takes only identifiers;
   - `job_status` and `job_result` read the same task as `tasks/get` (`core/hyalos/tests/mcp.rs`, `a_runs_task_is_polled_with_the_tasks_extension_or_its_plain_tools_and_reads_the_same`, which writes the run's events itself);
   - with PR #237 (S5.10), the result is marked untrusted in the text as well.

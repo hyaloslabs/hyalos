@@ -48,6 +48,8 @@ EOF
 claude -p 'Use the hyalos MCP server: call list_tasks once, then job_status with task "1", and report exactly what each returned.' --mcp-config hyalos-mcp.json --strict-mcp-config --allowedTools "mcp__hyalos__list_tasks mcp__hyalos__job_status" < /dev/null
 ```
 
+In a fresh world the answers are an empty list and a "there is no such task" tool error. That shows the plain call path and the credential working, not a task being read.
+
 ### The Python SDK clients
 
 In a virtualenv with `mcp==1.26.0` (Hermes 0.19.0's pin) or `mcp==2.3.0`:
