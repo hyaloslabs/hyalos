@@ -1,6 +1,6 @@
 # ADR-0067: The MCP server, its two transports, and the conformance suite it passes
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
