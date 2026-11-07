@@ -6,7 +6,7 @@ use std::io::{self, BufRead, Read, Write};
 
 use serde_json::{Value, json};
 
-use super::{MAX_MESSAGE, Server, Tools, codes};
+use super::{MAX_MESSAGE, Reply, Server, Tools, codes};
 
 /// Serves messages from `input` until it ends. `credential` is the one the server was started with,
 /// put to the server's admission with every message. A line longer than [`MAX_MESSAGE`] is answered
@@ -30,6 +30,15 @@ pub fn serve<T: Tools>(
         if line.len() - usize::from(complete) > MAX_MESSAGE {
             if !complete {
                 skip_line(&mut input)?;
+            }
+            // A caller who is not admitted is told that, as for any other message (ADR-0068).
+            if let Some(Reply {
+                body: Some(refusal),
+                ..
+            }) = server.refuse(&[], credential)
+            {
+                write_line(&mut output, &refusal)?;
+                continue;
             }
             let too_long = json!({"jsonrpc": "2.0", "error": {"code": codes::INVALID_REQUEST, "message": "Message too large"}});
             write_line(&mut output, &too_long)?;

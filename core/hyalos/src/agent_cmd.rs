@@ -33,7 +33,7 @@ pub fn run(args: &[String]) -> ExitCode {
     let env = |name: &str| std::env::var(name).ok();
     match run_with(args, &env) {
         Ok(Output { out, note }) => {
-            print!("{out}");
+            print!("{}", out.as_str());
             eprint!("{note}");
             ExitCode::SUCCESS
         }
@@ -45,9 +45,10 @@ pub fn run(args: &[String]) -> ExitCode {
 }
 
 /// What the command prints: `out` on stdout (the credential alone, for `issue`), `note` on stderr.
+/// `out` is wiped when dropped, since it may hold the credential.
 #[derive(Debug, Default)]
 pub struct Output {
-    pub out: String,
+    pub out: Zeroizing<String>,
     pub note: String,
 }
 
@@ -82,7 +83,11 @@ pub fn run_with(args: &[String], env: Env<'_>) -> Result<Output, (u8, String)> {
                 )
                 .map_err(|e| failed(e.to_string()))?;
             Ok(Output {
-                out: format!("{}\n", credential.as_str()),
+                out: {
+                    let mut out = credential;
+                    out.push('\n');
+                    out
+                },
                 note: format!(
                     "issued agent {} ({name}). The credential above is shown only now; the log keeps its SHA-256.\nGive it to the agent: {CREDENTIAL_VAR} for hyalos mcp on stdio, or Authorization: Bearer on HTTP.\n",
                     head.seq
@@ -101,10 +106,10 @@ pub fn run_with(args: &[String], env: Env<'_>) -> Result<Output, (u8, String)> {
                 .revoke_agent(at, agent, Decider::Human, reason)
                 .map_err(|e| failed(e.to_string()))?;
             Ok(Output {
-                out: format!(
+                out: Zeroizing::new(format!(
                     "revoked agent {agent} at event {}: the MCP server refuses it from its next call\n",
                     head.seq
-                ),
+                )),
                 note: String::new(),
             })
         }
@@ -116,7 +121,7 @@ pub fn run_with(args: &[String], env: Env<'_>) -> Result<Output, (u8, String)> {
             let state = log.read().map_err(failed)?;
             if state.agents().is_empty() {
                 return Ok(Output {
-                    out: "no credential has been issued\n".into(),
+                    out: Zeroizing::new("no credential has been issued\n".into()),
                     note: String::new(),
                 });
             }
@@ -133,7 +138,7 @@ pub fn run_with(args: &[String], env: Env<'_>) -> Result<Output, (u8, String)> {
                 ));
             }
             Ok(Output {
-                out,
+                out: Zeroizing::new(out),
                 note: String::new(),
             })
         }

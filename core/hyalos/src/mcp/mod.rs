@@ -203,6 +203,13 @@ impl<T: Tools> Server<T> {
         }
     }
 
+    /// The answer to a caller the admission does not let in, or `None` if it does. Every message is
+    /// put through this before anything in it is read, including one a transport will not read whole.
+    pub fn refuse(&self, message: &[u8], credential: Option<&str>) -> Option<Reply> {
+        let refusal = self.admit.admit(credential).err()?;
+        Some(refused(message, &refusal))
+    }
+
     /// Answers one message. `headers` are the request's MCP headers on HTTP and `None` on stdio, and
     /// `credential` is what the caller presented. Notifications the call sends before its result, such
     /// as progress, go to `emit`.
@@ -213,8 +220,8 @@ impl<T: Tools> Server<T> {
         credential: Option<&str>,
         emit: &mut dyn FnMut(Value),
     ) -> Reply {
-        if let Err(refusal) = self.admit.admit(credential) {
-            return refused(message, &refusal);
+        if let Some(refusal) = self.refuse(message, credential) {
+            return refusal;
         }
         let Ok(Value::Object(mut message)) = serde_json::from_slice::<Value>(message) else {
             let code = match serde_json::from_slice::<Value>(message) {
@@ -1050,6 +1057,26 @@ mod tests {
         .unwrap();
         let line: Value = serde_json::from_slice(&output).unwrap();
         assert_eq!(line["error"]["code"], codes::UNAUTHORIZED);
+
+        // A line too long to read is refused by the admission too, not answered as too large.
+        let huge = "x".repeat(MAX_MESSAGE + 10);
+        let mut output = Vec::new();
+        stdio::serve(
+            &server(),
+            None,
+            format!("{huge}\n{list}\n").as_bytes(),
+            &mut output,
+        )
+        .unwrap();
+        let codes_seen: Vec<Value> = String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap()["error"]["code"].clone())
+            .collect();
+        assert_eq!(
+            codes_seen,
+            [json!(codes::UNAUTHORIZED), json!(codes::UNAUTHORIZED)]
+        );
     }
 
     #[test]

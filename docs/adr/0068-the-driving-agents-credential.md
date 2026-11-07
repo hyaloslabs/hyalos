@@ -37,7 +37,7 @@ What shapes the decision:
 
 **The server admits a caller on every message, from the log.**
 - `hyalos::mcp::Server` now takes an `Admit`. `Server::handle(message, headers, credential, emit)` puts the presented credential to it before reading anything else in the message, even before checking that the message is JSON-RPC.
-- A refusal is HTTP 401 with JSON-RPC error `-32030`. That code is Hyalos's own, from the range JSON-RPC leaves to servers. The answer says the same thing for a missing credential, an unknown one and a revoked one.
+- A refusal is HTTP 401 with JSON-RPC error `-32030`. On stdio, a line too long to read is refused the same way (`Server::refuse`), never answered as too large. That code is Hyalos's own, from the range JSON-RPC leaves to servers. The answer says the same thing for a missing credential, an unknown one and a revoked one.
 - If the credentials cannot be checked, the answer is 503 with `-32603` and no one is admitted. The cause, such as a missing log, goes to the operator on stderr, never to the caller.
 - The engine's `Admit` (`mcp_cmd::LogAdmission`) reads the log with `engine.pub` on each message, hashes the credential, and admits it only if `State::admitted_agent` finds an agent with that digest that is not revoked. So a revocation written by `hyalos agent revoke` fails the very next call, on a server that is already running.
 - The core holds no admission that lets everyone in. The conformance crate defines its own for its fixtures, since the suite presents no credential.
@@ -66,8 +66,8 @@ The server has a front door. A process that can start `hyalos mcp`, or reach its
 - `core/hyalos/src/mcp/mod.rs`: refusal before anything is read, 401 and 503 with no detail, stdio, bearer parsing.
 - `core/hyalos/tests/mcp.rs`: the binary on stdio and HTTP, a revocation while the HTTP server runs, and the log scanned for the secret.
 
-**Costs.** 564 more lines of trusted core:
+**Costs.** 580 more lines of trusted core:
 - the state, the engine calls and the types (types +92, engine +225);
-- `hyalos agent` and the admission (hyalos +247, of which 52 are in `core/hyalos/src/mcp`).
+- `hyalos agent` and the admission (hyalos +263, of which 64 are in `core/hyalos/src/mcp`).
 
-Trusted core goes from 17,337 to 17,901 lines of 30,000.
+Trusted core goes from 17,337 to 17,917 lines of 30,000.
