@@ -1018,5 +1018,45 @@ fn approvals_are_shown_with_the_operators_commands_and_the_server_cannot_decide_
     assert_eq!(got["total"], 1, "{got}");
     assert_eq!(got["approvals"][0]["hold"], first);
     assert!(text(&after[0]).starts_with("1 approval is waiting for the operator."));
+
+    // When the run's own hold is decided too, its view says nothing is waiting and names no command.
+    let out = m.signed(&["approve", &first.to_string()]).unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let decided = calls(&[
+        request(
+            1,
+            "tools/call",
+            json!({"name": "job_status", "arguments": {"task": run.seq().to_string()}}),
+        ),
+        request(
+            2,
+            "tools/call",
+            json!({"name": "list_approvals", "arguments": {}}),
+        ),
+    ]);
+    let status = &decided[0]["result"]["structuredContent"];
+    assert_eq!(
+        status["statusMessage"],
+        "ended held (content.pack_unreadable); nothing is waiting"
+    );
+    assert_eq!(
+        status["result"]["structuredContent"]["approvals"],
+        json!([])
+    );
+    let inner = status["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        inner.contains("nothing is waiting for the operator now"),
+        "{inner}"
+    );
+    assert!(!inner.contains("hyalos approve"), "{inner}");
+    assert!(!inner.contains("commands below"), "{inner}");
+    assert_eq!(decided[1]["result"]["structuredContent"]["total"], 0);
+    assert!(text(&decided[1]).starts_with("No approval is waiting"));
     drop(lock);
 }

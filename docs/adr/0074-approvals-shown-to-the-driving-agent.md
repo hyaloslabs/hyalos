@@ -21,7 +21,7 @@ Spike #92 found that neither target client renders MCP Apps (Claude Code 2.1.318
 - `opened_at_ms`;
 - the operator's commands, `hyalos approve <hold>` and `hyalos cancel <task>`.
 
-**A held run shows its own holds.** Its `tasks/get` and `job_status` result carries the same details, and its status message names the command.
+**A held run shows its own holds.** Its `tasks/get` and `job_status` result carries the same details, and its status message names the command. Once none is open (decided by the operator, policy or the gate answering again), the view says nothing is waiting and names no command, since a held run does not continue on its own.
 
 **Every field is a typed value from the log.** Ids, closed enums, a digest, a time and two commands Hyalos writes itself, so no text from the forge or a model is in an approval, and none is marked untrusted. Results that do carry such values stay marked as ADR-0072 says.
 

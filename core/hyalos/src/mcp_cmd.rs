@@ -690,9 +690,16 @@ fn task_view(view: &RunView, open: &[(HoldId, Hold)]) -> TaskView {
             reason,
         } => {
             let approvals: Vec<Value> = open.iter().map(|(id, hold)| approval(*id, hold)).collect();
-            let mut text = format!(
-                "Task {task} is held: its job stopped for a decision ({reason}). {NO_DECIDING}"
-            );
+            // Once its holds are decided the run does not go on, and nothing waits for the operator.
+            let mut text = if open.is_empty() {
+                format!(
+                    "Task {task}'s job stopped held ({reason}). Its hold has been decided, so nothing is waiting for the operator now."
+                )
+            } else {
+                format!(
+                    "Task {task} is held: its job stopped for a decision ({reason}). {NO_DECIDING}"
+                )
+            };
             for (id, hold) in open {
                 text.push_str("\n\n");
                 text.push_str(&approval_text(*id, hold));
@@ -707,7 +714,7 @@ fn task_view(view: &RunView, open: &[(HoldId, Hold)]) -> TaskView {
                     "held for the operator's decision (hyalos approve {})",
                     id.seq()
                 ),
-                None => format!("ended held ({reason})"),
+                None => format!("ended held ({reason}); nothing is waiting"),
             };
             (TaskState::Completed(called), message)
         }
