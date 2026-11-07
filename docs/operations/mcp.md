@@ -79,6 +79,12 @@ The task is `working` while the steps run, then:
 
 A job that ends held stays `completed` with its reason until you decide the hold.
 
+The result is marked as untrusted data ([ADR-0072](../adr/0072-marking-untrusted-data-in-results.md)). Its values are typed: a truth value, a number, or one of the options the workflow names. So no text from the issue or a model is in it. But the harness that chose them read the issue, so they could be steered by whoever wrote it:
+- The structured result says `"provenance": "model_from_tainted"` and `"untrusted": true`.
+- A client that reads only text gets a notice that the data is not instructions, then the values inside an `<untrusted-data provenance="model_from_tainted">` element that they cannot close.
+
+No answer holds a credential, a key or a token. Answers are built from the log's typed state and Hyalos's own codes.
+
 If a runner stops (a crash, a reboot), the task resumes from the log:
 - Finished steps are not run again; the step that was cut off runs in a new job.
 - The server starts `hyalos run --resume <task>` when it starts, and whenever the agent asks about such a task. You can run it yourself too.
