@@ -1,6 +1,6 @@
 # ADR-0066: Plugin-authored text, and the grant that bounds the job it steers
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
