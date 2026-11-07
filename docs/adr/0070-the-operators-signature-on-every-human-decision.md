@@ -1,6 +1,6 @@
 # ADR-0070: The operator's signature on every human decision
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
