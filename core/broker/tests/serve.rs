@@ -42,6 +42,7 @@ fn manifest(job: u64, role: Role, deadline: u64) -> Manifest {
         deadline: Timestamp::from_millis(deadline),
         approval: None,
         handles: Default::default(),
+        result: None,
     }
 }
 

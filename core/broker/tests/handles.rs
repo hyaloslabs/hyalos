@@ -60,6 +60,7 @@ fn manifest(job: u64, role: Role, actions: &[&str], handles: &[Digest]) -> Manif
         deadline: Timestamp::from_millis(10_000),
         approval: None,
         handles: handles.iter().copied().collect(),
+        result: None,
     }
 }
 

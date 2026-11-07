@@ -1,11 +1,14 @@
 //! `hyalos-submit [<json>]`: posts a job's result (the argument, or standard input) to the broker
 //! through the forwarder, prints the broker's answer, and succeeds only if the broker accepted it
-//! (ADR-0016). `HYALOS_FORWARDER` overrides the forwarder's address.
+//! (ADR-0016, ADR-0064). The broker reads one JSON object with exactly the fields the job's manifest
+//! names, takes only the first submission, and fails the job on one it refuses. Exits 1 if the broker
+//! refuses, 2 if the result cannot be read or is larger than the broker reads.
+//! `HYALOS_FORWARDER` overrides the forwarder's address.
 
 use std::io::Read;
 use std::process::ExitCode;
 
-use hyalos_sandbox_tools::{FORWARDER, MAX_SUBMISSION, submit};
+use hyalos_sandbox_tools::{FORWARDER, RESULT_LIMIT, submit};
 
 fn main() -> ExitCode {
     let body = match std::env::args().nth(1) {
@@ -13,7 +16,7 @@ fn main() -> ExitCode {
         None => {
             let mut body = Vec::new();
             let read = std::io::stdin()
-                .take(MAX_SUBMISSION as u64 + 1)
+                .take(RESULT_LIMIT as u64 + 1)
                 .read_to_end(&mut body);
             if let Err(e) = read {
                 eprintln!("hyalos-submit: cannot read the result: {e}");
@@ -22,6 +25,11 @@ fn main() -> ExitCode {
             body
         }
     };
+    // Refused here rather than sent: the broker would refuse it and fail the job all the same.
+    if body.len() > RESULT_LIMIT {
+        eprintln!("hyalos-submit: a result is at most {RESULT_LIMIT} bytes");
+        return ExitCode::from(2);
+    }
     let forwarder = std::env::var("HYALOS_FORWARDER").unwrap_or_else(|_| FORWARDER.into());
     match submit(&forwarder, &body) {
         Ok((status, answer)) => {

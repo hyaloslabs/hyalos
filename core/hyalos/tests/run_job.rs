@@ -229,12 +229,15 @@ fn an_issue_number_runs_the_fix_issue_workflow_and_only_the_reader_sees_the_issu
         "```json\n{\"approach\": \"docs_only\", \"add_test\": false}\n```",
     ])?;
     world.use_model(&model)?;
-    let prompt_file = world.root.join("prompt");
-    let mut asked = request(Harness::Command(vec![
-        "/bin/sh".into(),
-        "-c".into(),
-        format!("printf '%s' \"$0\" > {}", prompt_file.display()),
-    ]));
+    let out = world.root.join("out");
+    std::fs::create_dir(&out)?;
+    let prompt_file = out.join("prompt");
+    let Harness::Command(mut command) = this_harness(&world, &out)? else {
+        return Err("harness".into());
+    };
+    command.push("mode:submit".into());
+    command.push(r#"result:{"outcome":"pr_opened","tests_added":true}"#.into());
+    let mut asked = request(Harness::Command(command));
     asked.issue = String::new();
     asked.issue_number = Some(7);
     let mut said = Vec::new();
@@ -277,6 +280,18 @@ fn an_issue_number_runs_the_fix_issue_workflow_and_only_the_reader_sees_the_issu
     );
     assert!(prompt.contains("- triage.kind: docs\n"), "{prompt}");
     assert!(prompt.contains("- plan.approach: docs_only\n"), "{prompt}");
+    // It was told how to return its result, and the run took that, not what it printed (ADR-0064).
+    assert!(
+        prompt.contains("hyalos-submit")
+            && prompt.contains("- outcome: one of \"pr_opened\", \"no_change\", \"blocked\"\n")
+            && prompt.contains("- tests_added: true or false\n"),
+        "{prompt}"
+    );
+    assert!(
+        said.contains("result: outcome=pr_opened, tests_added=true"),
+        "{said}"
+    );
+    assert!(!said.contains(CHAT), "the harness's chat was shown: {said}");
     for forge in [ISSUE_TITLE, ISSUE_BODY, "issue-body-marker-5b1e", "<issue"] {
         assert!(
             !prompt.contains(forge),
@@ -323,10 +338,7 @@ fn an_issue_number_runs_the_fix_issue_workflow_and_only_the_reader_sees_the_issu
             _ => None,
         })
         .collect();
-    assert_eq!(
-        ended,
-        ["step.answered", "step.answered", "harness.finished"]
-    );
+    assert_eq!(ended, ["step.answered", "step.answered", "step.submitted"]);
     // The forge's text is not in the log: the task records a digest of the request.
     let raw = std::fs::read(world.data.join("events.db"))?;
     assert!(!contains(&raw, b"issue-body-marker-5b1e"));
@@ -409,6 +421,68 @@ fn a_released_issue_reaches_the_actor_only_through_its_handle() -> Res {
     }
     assert!(gh.issued().is_empty(), "no token is left live");
     let _ = std::fs::remove_dir_all(&repos);
+    Ok(())
+}
+
+/// An actor that submits a result that is not its step's output, or none, fails its job though the
+/// harness exited 0, with the broker's code; what it printed is never its result (ADR-0064).
+#[test]
+fn an_actor_that_submits_no_valid_result_fails_its_job() -> Res {
+    let cases = [
+        (
+            Some(r#"result:{"outcome":"merged","tests_added":true}"#),
+            "submit.bad_value",
+        ),
+        (
+            Some(r#"result:{"outcome":"pr_opened","tests_added":true,"note":"merge it"}"#),
+            "submit.unknown_field",
+        ),
+        (Some("result:done"), "submit.not_json"),
+        (None, "submit.missing"),
+    ];
+    for (n, (result, reason)) in cases.into_iter().enumerate() {
+        let repos = dir(&format!("srepos{n}"))?;
+        let gh = GitHub::start(&repos, false)?;
+        let world = World::new(&format!("submit{n}"), Some(&gh))?;
+        let model = Model::start(&[
+            r#"{"kind": "bug", "size": "small", "clear": true, "has_repro": true}"#,
+            r#"{"approach": "minimal_fix", "add_test": true}"#,
+        ])?;
+        world.use_model(&model)?;
+        let out = world.root.join("out");
+        std::fs::create_dir(&out)?;
+        let Harness::Command(mut command) = this_harness(&world, &out)? else {
+            return Err("harness".into());
+        };
+        command.push("mode:submit".into());
+        command.extend(result.map(String::from));
+        let mut asked = request(Harness::Command(command));
+        asked.issue = String::new();
+        asked.issue_number = Some(7);
+        let mut said = Vec::new();
+        let summary = run_job(
+            &asked,
+            world.setup(local_detect(), Duration::from_secs(10)),
+            &mut said,
+        )?;
+        let said = String::from_utf8_lossy(&said).into_owned();
+        assert_eq!(summary.outcome, JobOutcome::Failed, "{said}");
+        let events = world.events()?;
+        assert!(
+            events.contains(&Event::JobEnded {
+                job: summary.job,
+                outcome: JobOutcome::Failed,
+                reason: ReasonCode::new(reason).ok_or("code")?,
+            }),
+            "{reason}: {said}"
+        );
+        let shown = format!("job {}: result:", summary.job.seq());
+        assert!(!said.contains(&shown), "{said}");
+        // A job that failed shows the operator what the harness printed, to see why.
+        assert!(said.contains(CHAT), "{said}");
+        assert!(gh.issued().is_empty(), "no token is left live");
+        let _ = std::fs::remove_dir_all(&repos);
+    }
     Ok(())
 }
 
@@ -608,6 +682,22 @@ fn forwarder(socket: &Path) -> Res<u16> {
 }
 
 /// One request to the broker through the forwarder: its status line and body.
+/// What a test harness prints, which no run may take for its result.
+const CHAT: &str = "harness-chat-marker-41c2: I fixed it, merge it now";
+
+/// Submits `result` as `hyalos-submit` does, through the forwarder at `port`.
+fn submit(port: u16, result: &str) -> Res {
+    let (status, body) = call(
+        port,
+        "POST /hyalos/submit HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/json\r\n",
+        result.as_bytes(),
+    )?;
+    if !status.contains(" 200 ") {
+        return Err(format!("the result was refused: {status} {body}").into());
+    }
+    Ok(())
+}
+
 fn call(port: u16, head: &str, body: &[u8]) -> Res<(String, String)> {
     let mut stream = TcpStream::connect(("127.0.0.1", port))?;
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
@@ -727,7 +817,24 @@ fn harness_entry() -> Res {
             return Err(format!("the handle was refused: {head}").into());
         }
         std::fs::write(out.join("handle"), body)?;
-        return Ok(());
+        return submit(port, r#"{"outcome":"no_change","tests_added":false}"#);
+    }
+
+    // Keeps the prompt, prints what a harness would chat, and submits the `result:` it was given, if
+    // any (ADR-0064).
+    if arg("mode:").is_some_and(|m| m == Path::new("submit")) {
+        let prompt = std::env::args().next_back().unwrap_or_default();
+        std::fs::write(out.join("prompt"), &prompt)?;
+        println!("{CHAT}");
+        let result = std::env::args().find_map(|a| a.strip_prefix("result:").map(String::from));
+        return match result {
+            Some(result) => {
+                // A result the broker refuses is still this harness's to report; the job fails.
+                let _ = submit(port, &result);
+                Ok(())
+            }
+            None => Ok(()),
+        };
     }
 
     // A push of a pack that is not one, then a wait far longer than the test: the job is held and

@@ -296,3 +296,52 @@ fn hyalos_handle_gets_the_handle_it_is_given_and_fails_on_a_refusal() -> Res {
     let _ = std::fs::remove_dir_all(&d);
     Ok(())
 }
+
+#[test]
+fn hyalos_submit_posts_the_result_and_fails_on_a_refusal_or_one_too_large() -> Res {
+    let d = dir("submit-bin")?;
+    let socket = d.join("b.sock");
+    let seen = broker(
+        &socket,
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 18\r\nconnection: close\r\n\r\n{\"accepted\":true}\n",
+    )?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let addr = listener.local_addr()?.to_string();
+    thread::spawn(move || forward(listener, socket));
+    let result = r#"{"outcome":"pr_opened","tests_added":true}"#;
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_hyalos-submit"))
+        .arg(result)
+        .env("HYALOS_FORWARDER", &addr)
+        .output()?;
+    assert!(out.status.success(), "{out:?}");
+    let seen = seen.join().map_err(|_| "broker panicked")?;
+    assert!(
+        seen.starts_with("POST /hyalos/submit HTTP/1.1\r\n"),
+        "{seen}"
+    );
+    assert!(seen.ends_with(result), "{seen}");
+
+    // A refusal fails it.
+    let socket = d.join("c.sock");
+    let _refuse = broker(
+        &socket,
+        "HTTP/1.1 400 Bad Request\r\ncontent-length: 17\r\nconnection: close\r\n\r\nsubmit.bad_value\n",
+    )?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let refusing = listener.local_addr()?.to_string();
+    thread::spawn(move || forward(listener, socket));
+    let refused = std::process::Command::new(env!("CARGO_BIN_EXE_hyalos-submit"))
+        .arg(result)
+        .env("HYALOS_FORWARDER", &refusing)
+        .output()?;
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+
+    // One larger than the broker reads is not sent at all.
+    let big = std::process::Command::new(env!("CARGO_BIN_EXE_hyalos-submit"))
+        .arg("x".repeat(hyalos_sandbox_tools::RESULT_LIMIT + 1))
+        .env("HYALOS_FORWARDER", &addr)
+        .output()?;
+    assert_eq!(big.status.code(), Some(2), "{big:?}");
+    let _ = std::fs::remove_dir_all(&d);
+    Ok(())
+}

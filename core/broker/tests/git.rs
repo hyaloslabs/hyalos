@@ -313,6 +313,7 @@ fn manifest(job: u64, actions: &[&str]) -> Manifest {
         deadline: Timestamp::from_millis(10_000),
         approval: None,
         handles: Default::default(),
+        result: None,
     }
 }
 

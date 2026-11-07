@@ -50,6 +50,7 @@ fn manifest(job: u64, deadline: Timestamp) -> Manifest {
         deadline,
         approval: None,
         handles: Default::default(),
+        result: None,
     }
 }
 

@@ -29,6 +29,7 @@ use crate::model::{
     Sleep, refusal,
 };
 use crate::pulls;
+use crate::submit::{self, Submission, Submitted};
 
 pub use hyalos_types::wire::MAX_SOCKET_PATH;
 /// Calls one job may have open at once. Another connection is closed unanswered.
@@ -275,6 +276,8 @@ impl fmt::Debug for Sandboxes {
 pub(crate) struct JobSocket {
     path: PathBuf,
     stop: Arc<AtomicBool>,
+    /// What the job's harness has submitted (ADR-0064).
+    submitted: Submission,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -320,10 +323,12 @@ impl JobSocket {
             ),
             role: Reports::for_gate(manifest.job, Gate::Role, "role.too_many_refusals", reports),
         });
+        let submitted = Submission::default();
         let manifest = Arc::new(Job {
             manifest,
             forge_token,
             held,
+            submitted: Arc::clone(&submitted),
         });
         let thread = ready.and_then(|()| {
             std::thread::Builder::new().spawn(move || {
@@ -369,8 +374,17 @@ impl JobSocket {
         Ok(Self {
             path: path.to_path_buf(),
             stop,
+            submitted,
             thread: Some(thread),
         })
+    }
+
+    /// What the job's harness has submitted so far.
+    pub(crate) fn submitted(&self) -> Submitted {
+        self.submitted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -391,6 +405,8 @@ struct Job {
     forge_token: Option<ForgeToken>,
     /// The handles its manifest names, as the broker held them at admission.
     held: Held,
+    /// Where its result goes when the harness submits one.
+    submitted: Submission,
 }
 
 /// Where one job's gate refusals are reported.
@@ -440,6 +456,7 @@ fn connection(
         manifest,
         forge_token,
         held,
+        submitted,
     } = job;
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
@@ -484,6 +501,17 @@ fn connection(
             egress::refused(403, "admission.expired")
         } else {
             handles::answer(&head, manifest, held, &reports.manifest, ended)
+        };
+        return write_response(&mut &*stream, response);
+    }
+    // The job's result, from `hyalos-submit` (ADR-0064). It goes to the engine as typed values only.
+    if head.method != "CONNECT" && head.target.starts_with(submit::PREFIX) {
+        let response = if ended.load(Ordering::SeqCst) {
+            egress::refused(403, "admission.ended")
+        } else if sandboxes.clock.now() > manifest.deadline {
+            egress::refused(403, "admission.expired")
+        } else {
+            submit::answer(&head, &mut reader, &mut &*stream, manifest, submitted)
         };
         return write_response(&mut &*stream, response);
     }

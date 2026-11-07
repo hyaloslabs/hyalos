@@ -27,6 +27,7 @@ use crate::git::Git;
 use crate::handles::{self, Held};
 use crate::reader;
 use crate::sandbox::{JobSocket, Sandboxes};
+use crate::submit::Submitted;
 use crate::{Admission, Credential, LiveJobs};
 
 /// The jobs the engine has started and not ended.
@@ -187,6 +188,32 @@ impl Broker {
                     }
                 }
             }
+            ToBroker::TakeResult { job } => {
+                let Some(manifest) = self.admitted.get(&job) else {
+                    return Ok(Some(vec![ToEngine::Refused {
+                        job,
+                        reason: code("admission.not_live"),
+                    }]));
+                };
+                let submitted = match (&manifest.result, self.sockets.get(&job)) {
+                    (None, _) => Submitted::Refused("submit.not_expected"),
+                    (Some(_), None) => Submitted::Nothing,
+                    (Some(_), Some(socket)) => socket.submitted(),
+                };
+                // No result, or one the broker refused, fails the job (ADR-0064).
+                let reason = match submitted {
+                    Submitted::Accepted(values) => {
+                        return Ok(Some(vec![ToEngine::Values { job, values }]));
+                    }
+                    Submitted::Refused(reason) => reason,
+                    Submitted::Nothing => "submit.missing",
+                };
+                self.end(job);
+                Ok(Some(vec![ToEngine::Refused {
+                    job,
+                    reason: code(reason),
+                }]))
+            }
             ToBroker::Read { job, call } => {
                 let Some(manifest) = self.admitted.get(&job) else {
                     return Ok(Some(vec![ToEngine::Refused {
@@ -242,6 +269,15 @@ impl Broker {
                             self.jobs.0.remove(&job);
                             return refuse(code("handle.not_held"));
                         };
+                        // A result the broker could not read a submission as (ADR-0064).
+                        if manifest
+                            .result
+                            .as_ref()
+                            .is_some_and(|r| !hyalos_types::workflow::output_is_valid(r))
+                        {
+                            self.jobs.0.remove(&job);
+                            return refuse(code("admission.bad_result"));
+                        }
                         if let Some(sandboxes) = &self.sandboxes {
                             match JobSocket::open(
                                 Path::new(&socket),

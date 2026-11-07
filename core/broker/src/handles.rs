@@ -137,6 +137,7 @@ mod tests {
             deadline: hyalos_types::Timestamp::from_millis(1),
             approval: None,
             handles: handles.iter().copied().collect(),
+            result: None,
         };
         assert_eq!(
             for_manifest(&held, &manifest(&[a])).map(|h| h.len()),
