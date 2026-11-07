@@ -147,8 +147,10 @@ pub fn approvals(
                 ),
                 None => None,
             };
-            last_signed = image.as_ref().and_then(|i| i.last_approval);
-            signed_era = image.is_some_and(|i| i.signed_since.is_some());
+            // Never forgets what an earlier file showed: a gap with no snapshot cannot reopen the
+            // unsigned era or let an approval go back past one already checked.
+            last_signed = last_signed.max(image.as_ref().and_then(|i| i.last_approval));
+            signed_era |= image.is_some_and(|i| i.signed_since.is_some());
         }
         previous = Some(seq);
         let decision = DECISIONS.contains(&e.kind.as_str());

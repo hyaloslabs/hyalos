@@ -850,7 +850,7 @@ impl State {
     }
 
     /// Applies `event`, which was appended at `seq` at time `at`. A refused event changes nothing.
-    pub fn apply(
+    fn apply(
         &mut self,
         seq: u64,
         at: Timestamp,

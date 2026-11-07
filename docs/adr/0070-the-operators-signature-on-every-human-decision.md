@@ -27,7 +27,8 @@ characters; the seal is bound to the format and the public key written beside it
 from `ring`, already in the `hyalos` crate. The public half is `operator.pub` (0444). A file asking for
 fewer than 100,000 or more than 10,000,000 iterations is refused. The key is never replaced: `init`
 refuses if either file exists. The passphrase is read from `/dev/tty` with echo off (rustix's
-`termios`; a signal during the read puts echo back before the command exits), or as one line from stdin with `--passphrase-stdin` for a script the operator runs and for
+`termios`; keys are read raw, so Ctrl-C cancels the read as a key and no signal can end the
+command while echo is off), or as one line from stdin with `--passphrase-stdin` for a script the operator runs and for
 tests; never from an argument, the environment or a file. An agent that can read every file still
 cannot sign without the passphrase.
 
