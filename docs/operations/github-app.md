@@ -15,6 +15,8 @@ On GitHub, go to your account's or organization's **Settings → Developer setti
   - **Pull requests**: Read and write
   - **Metadata**: Read-only (GitHub requires it)
 
+  Merging uses only Contents and Pull requests (step 6 covers branch protection).
+
   Leave everything else at **No access**, including Workflows, Administration and every organization and account permission. A job's token can only narrow what the App has, never widen it, and no job is ever given those.
 - **Where can this GitHub App be installed?**: **Only on this account**.
 
@@ -60,6 +62,19 @@ hyalos github check owner/repo
 It mints a read-only token for the repository, shows the installation and when the token would expire, and revokes it at once. It never prints the token. It exits 0 when the App can mint for that repository. If it fails, the message says which step:
 - **not installed on owner/repo**: go back to step 4.
 - **status 401**: `app_id` does not match the key, the key was replaced on GitHub, or this machine's clock is off by more than a minute.
+
+## 6. Let the App merge (optional)
+
+`hyalos merge` ([approvals](approvals.md#merging)) merges a pull request after you approve it, with a token minted for that merge alone. GitHub treats the App as any other actor, so the repository's rules decide whether its merge goes through. If you never use `hyalos merge`, skip this step.
+
+- **Merge methods**: in the repository's **Settings → General → Pull Requests**, allow the methods you will use (`--method merge`, `squash` or `rebase`). A method the repository does not allow fails as `merge.not_mergeable`.
+- **Required status checks**: keep them. The App's merge waits for them like anyone's, and a pull request whose checks have not passed fails as `merge.not_mergeable`. Never add the App to a bypass list for status checks.
+- **Required reviews**: your approval in Hyalos is not a GitHub review, and the App cannot review its own merge. Choose one:
+  - keep required reviews and approve the pull request on GitHub as well before running `hyalos merge`; or
+  - let the App bypass **only** the pull request review rule. In a ruleset (**Settings → Rules → Rulesets**), add the App to **Bypass list** with **For pull requests only**; with classic branch protection, add it under **Allow specified actors to bypass required pull requests**. Your signed approval in Hyalos is then the review.
+- **Restrict who can push** (classic) or **Restrict updates** (rulesets): if set, add the App to the actors allowed, or its merge fails as `forge.upstream_refused`.
+
+Do not give the App **Administration** or let it bypass every rule. A merge is refused by GitHub, not by Hyalos, when the pull request's head is no longer the commit you approved; a rule the App bypasses is no longer checked for its merges.
 
 ## Rotating or revoking
 

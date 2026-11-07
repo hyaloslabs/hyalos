@@ -8,14 +8,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use hyalos_types::snapshot::{
-    AgentImage, CancelledImage, HandleImage, HoldImage, JobEndImage, JobImage, PolicyImage,
-    PrunedImage, ResolvedImage, RevokedImage, StateImage, TaskImage,
+    AgentImage, CancelledImage, HandleImage, HoldImage, JobEndImage, JobImage, MergeImage,
+    PolicyImage, PrunedImage, ResolvedImage, RevokedImage, StateImage, TaskImage,
 };
 use hyalos_types::workflow::MAX_FIELDS;
 use hyalos_types::{
-    AgentId, AgentName, Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome,
-    MAX_POLICY_DOCUMENT, Origin, ReasonCode, Resolution, SIGNED_SINCE, Sensitive, Signed, Stakes,
-    TaskId, Timestamp, TypedValue,
+    AgentId, AgentName, Answer, CommitSha, Digest, Event, Gate, HoldId, HoldReason, JobId,
+    JobOutcome, MAX_POLICY_DOCUMENT, MergeMethod, Origin, ReasonCode, Resolution, SIGNED_SINCE,
+    Sensitive, Signed, Stakes, TaskId, Timestamp, TypedValue,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +202,14 @@ pub enum RuleViolation {
         task: TaskId,
         handle: Digest,
     },
+    /// A merge is irreversible, so only a human approves one (ADR-0012, ADR-0071).
+    MergeNeedsAHuman {
+        by: Resolution,
+    },
+    /// A task holds one merge approval, made before any job runs on it.
+    MergeAlreadyApproved(TaskId),
+    /// The repository or pull request number is not one an approval may name.
+    MergeTargetInvalid,
     /// Issuing a credential grants a capability, so only a human does it (ADR-0012, ADR-0068).
     AgentNeedsAHuman {
         by: Resolution,
@@ -292,6 +300,17 @@ impl fmt::Display for RuleViolation {
             RuleViolation::HandleAlreadyReleased { task, handle } => {
                 write!(f, "handle {handle} is already released to task {task}")
             }
+            RuleViolation::MergeNeedsAHuman { by } => write!(
+                f,
+                "a merge needs a human's approval; {by:?} may not approve one (ADR-0012, ADR-0071)"
+            ),
+            RuleViolation::MergeAlreadyApproved(task) => write!(
+                f,
+                "task {task} already has a merge approved, or has started a job; a merge approval opens its own task"
+            ),
+            RuleViolation::MergeTargetInvalid => f.write_str(
+                "a merge approval names an owner/name repository and a pull request number",
+            ),
             RuleViolation::AgentNeedsAHuman { by } => write!(
                 f,
                 "issuing an agent's credential needs a human; {by:?} may not issue one (ADR-0012, ADR-0068)"
@@ -391,6 +410,7 @@ pub struct State {
     policy: Option<PolicyApproval>,
     handles: Vec<ReleasedHandle>,
     agents: BTreeMap<AgentId, Agent>,
+    merges: Vec<ApprovedMerge>,
     pending: Option<Pending>,
     /// The event of the last decision the operator signed (ADR-0070).
     last_approval: Option<u64>,
@@ -420,6 +440,22 @@ pub struct ReleasedHandle {
     pub at: Timestamp,
     pub task: TaskId,
     pub handle: Digest,
+    pub by: Resolution,
+    pub reason: ReasonCode,
+}
+
+/// A merge a human approved for a task (ADR-0071): pull request `pr` of `repo` by `method`, only while
+/// its head is `head`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovedMerge {
+    /// The event that approved it.
+    pub seq: u64,
+    pub at: Timestamp,
+    pub task: TaskId,
+    pub repo: String,
+    pub pr: u64,
+    pub head: CommitSha,
+    pub method: MergeMethod,
     pub by: Resolution,
     pub reason: ReasonCode,
 }
@@ -470,6 +506,16 @@ impl State {
     /// Every handle released, in the order it was recorded (ADR-0063).
     pub fn handles(&self) -> &[ReleasedHandle] {
         &self.handles
+    }
+
+    /// Every merge approved, in the order it was recorded (ADR-0071).
+    pub fn merges(&self) -> &[ApprovedMerge] {
+        &self.merges
+    }
+
+    /// The merge approved for `task`, if one was.
+    pub fn merge_of(&self, task: TaskId) -> Option<&ApprovedMerge> {
+        self.merges.iter().find(|m| m.task == task)
     }
 
     /// Whether `handle` was released to `task`.
@@ -756,6 +802,30 @@ impl State {
                 }
                 Ok(())
             }
+            Event::MergeApproved {
+                task, repo, pr, by, ..
+            } => {
+                let status = self.task(*task)?.status();
+                if status != TaskStatus::Open {
+                    return Err(RuleViolation::TaskNotOpen {
+                        task: *task,
+                        status,
+                    });
+                }
+                // The authority table (ADR-0025) at the irreversible tier: a human only.
+                if !Stakes::irreversible().may_be_resolved_by(*by) {
+                    return Err(RuleViolation::MergeNeedsAHuman { by: *by });
+                }
+                if !hyalos_types::merge::valid_repo(repo) || !hyalos_types::merge::valid_pr(*pr) {
+                    return Err(RuleViolation::MergeTargetInvalid);
+                }
+                // One approval a task, recorded before the task's merge job, so the job's manifest has
+                // exactly one approval to be minted from.
+                if self.merge_of(*task).is_some() || self.jobs.values().any(|j| j.task == *task) {
+                    return Err(RuleViolation::MergeAlreadyApproved(*task));
+                }
+                Ok(())
+            }
             Event::AgentIssued {
                 name,
                 credential,
@@ -1009,6 +1079,26 @@ impl State {
                 by: *by,
                 reason: reason.clone(),
             }),
+            Event::MergeApproved {
+                task,
+                repo,
+                pr,
+                head,
+                method,
+                by,
+                reason,
+                ..
+            } => self.merges.push(ApprovedMerge {
+                seq,
+                at,
+                task: *task,
+                repo: repo.clone(),
+                pr: *pr,
+                head: head.clone(),
+                method: *method,
+                by: *by,
+                reason: reason.clone(),
+            }),
             Event::AgentIssued {
                 name,
                 credential,
@@ -1076,6 +1166,7 @@ impl State {
             policy,
             handles,
             agents,
+            merges,
             pending,
             last_approval,
             signed_since,
@@ -1090,6 +1181,33 @@ impl State {
             last_at: last_at.map(Timestamp::as_millis),
             last_approval: *last_approval,
             signed_since: *signed_since,
+            merges: merges
+                .iter()
+                .map(|m| {
+                    let ApprovedMerge {
+                        seq,
+                        at,
+                        task,
+                        repo,
+                        pr,
+                        head,
+                        method,
+                        by,
+                        reason,
+                    } = m;
+                    MergeImage {
+                        seq: *seq,
+                        at: at.as_millis(),
+                        task: *task,
+                        repo: repo.clone(),
+                        pr: *pr,
+                        head: head.clone(),
+                        method: *method,
+                        by: *by,
+                        reason: reason.clone(),
+                    }
+                })
+                .collect(),
             tasks: tasks
                 .iter()
                 .map(|(id, t)| {
@@ -1270,10 +1388,25 @@ impl State {
             agents,
             last_approval,
             signed_since,
+            merges,
         } = image;
         let mut state = State {
             last_approval,
             signed_since,
+            merges: merges
+                .into_iter()
+                .map(|m| ApprovedMerge {
+                    seq: m.seq,
+                    at: Timestamp::from_millis(m.at),
+                    task: m.task,
+                    repo: m.repo,
+                    pr: m.pr,
+                    head: m.head,
+                    method: m.method,
+                    by: m.by,
+                    reason: m.reason,
+                })
+                .collect(),
             last_seq,
             last_at: last_at.map(Timestamp::from_millis),
             ..State::default()
@@ -1463,6 +1596,20 @@ impl State {
                     "handle {} is released to task {} twice",
                     h.handle, h.task
                 ));
+            }
+        }
+        for (i, m) in self.merges.iter().enumerate() {
+            if !self.tasks.contains_key(&m.task) {
+                out.push(format!(
+                    "merge {} belongs to missing task {}",
+                    m.seq, m.task
+                ));
+            }
+            if m.by != Resolution::Human {
+                out.push(format!("merge {} was approved by {:?}", m.seq, m.by));
+            }
+            if self.merges[..i].iter().any(|n| n.task == m.task) {
+                out.push(format!("task {} has two merges approved", m.task));
             }
         }
         for (id, a) in &self.agents {

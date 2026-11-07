@@ -79,6 +79,17 @@ fn accept(e: &mut Engine, n: u64, event: Event) -> Res {
         Event::AgentRevoked { agent, reason, .. } => {
             e.revoke_agent(at(n), agent, Decider::Human, reason)?;
         }
+        Event::MergeApproved {
+            task,
+            repo,
+            pr,
+            head,
+            method,
+            reason,
+            ..
+        } => {
+            e.approve_merge(at(n), task, &repo, pr, head, method, Decider::Human, reason)?;
+        }
         other => {
             e.submit(at(n), Origin::Engine, other)?;
         }
@@ -228,6 +239,20 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
             )?;
             Event::AgentRevoked {
                 agent: hyalos_types::AgentId::from_seq(head.seq),
+                by: Resolution::Human,
+                reason: why(),
+                signed: hyalos_types::Signed::Unrecorded,
+            }
+        }
+        "merge.approved" => {
+            let task = TaskId::from_seq(go(&mut e, 1, Event::TaskCreated { request: d(1) })?);
+            Event::MergeApproved {
+                task,
+                repo: "octo/repo".into(),
+                pr: 1,
+                head: hyalos_types::CommitSha::new("0123456789abcdef0123456789abcdef01234567")
+                    .ok_or("sha")?,
+                method: hyalos_types::MergeMethod::Merge,
                 by: Resolution::Human,
                 reason: why(),
                 signed: hyalos_types::Signed::Unrecorded,

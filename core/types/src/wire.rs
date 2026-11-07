@@ -22,11 +22,12 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::workflow::{Output, TypedValue};
 use crate::{
-    Answer, Digest, ForgeIssue, ForgeToken, Gate, JobId, ManifestPublicKey, ReasonCode, Role, hex,
+    Answer, CommitSha, Digest, ForgeIssue, ForgeToken, Gate, JobId, ManifestPublicKey, ReasonCode,
+    Role, hex,
 };
 
 /// The version of this protocol. Both sides say theirs first and stop on a mismatch.
-pub const WIRE_VERSION: u32 = 8;
+pub const WIRE_VERSION: u32 = 9;
 
 /// The longest job socket path the engine makes and the broker binds (ADR-0038). A Unix socket
 /// path is limited to about 107 bytes; this leaves room.
@@ -123,6 +124,10 @@ pub enum ToBroker {
     /// answer is `Values`, checked against the manifest's result, or `Refused` when there was no
     /// submission or it was invalid, which fails the job.
     TakeResult { job: JobId },
+    /// Merge the pull request the job's manifest approval names (wire version 9, ADR-0071), by its
+    /// method and only at its head commit. Nothing about what to merge is in the message: all of it
+    /// is in the signed manifest. The answer is `Merged`, or `Refused`, which fails the job.
+    Merge { job: JobId },
     /// A job has ended, so a manifest for it is no longer admitted.
     EndJob { job: JobId },
     /// Stop serving.
@@ -148,6 +153,8 @@ pub enum ToEngine {
     /// A reader step's answer, or a submitted result (`TakeResult`): one typed value per field of
     /// its output, in the output's order. No text: a choice is its option's index (ADR-0061).
     Values { job: JobId, values: Vec<TypedValue> },
+    /// The pull request was merged, as commit `sha` (wire version 9, ADR-0071).
+    Merged { job: JobId, sha: CommitSha },
     /// A gate answered for a job. This is the one fact the broker reports that the engine records
     /// (`gate.answered`, ADR-0024): a verdict, the digest of what was asked, and a code.
     Gate {
@@ -308,7 +315,7 @@ mod tests {
                     forge: None,
                 },
                 format!(
-                    r#"{{"kind":"hello","version":8,"manifest_key":"{}"}}"#,
+                    r#"{{"kind":"hello","version":9,"manifest_key":"{}"}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -322,7 +329,7 @@ mod tests {
                     }),
                 },
                 format!(
-                    r#"{{"kind":"hello","version":8,"manifest_key":"{}","forge":{{"api":"https://api.github.com","git":"https://github.com"}}}}"#,
+                    r#"{{"kind":"hello","version":9,"manifest_key":"{}","forge":{{"api":"https://api.github.com","git":"https://github.com"}}}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -387,6 +394,12 @@ mod tests {
                 r#"{"kind":"take_result","job":3}"#.to_string(),
             ),
             (
+                ToBroker::Merge {
+                    job: JobId::from_seq(3),
+                },
+                r#"{"kind":"merge","job":3}"#.to_string(),
+            ),
+            (
                 ToBroker::EndJob {
                     job: JobId::from_seq(3),
                 },
@@ -417,6 +430,13 @@ mod tests {
                     handle: Digest::from_bytes([9; 32]),
                 },
                 format!(r#"{{"kind":"held","job":3,"handle":"{}"}}"#, "09".repeat(32)),
+            ),
+            (
+                ToEngine::Merged {
+                    job: JobId::from_seq(3),
+                    sha: CommitSha::new(&"ab".repeat(20)).ok_or("sha")?,
+                },
+                format!(r#"{{"kind":"merged","job":3,"sha":"{}"}}"#, "ab".repeat(20)),
             ),
             (
                 ToEngine::Values {

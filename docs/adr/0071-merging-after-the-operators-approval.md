@@ -1,0 +1,33 @@
+# ADR-0071: Merging a pull request after the operator's approval
+
+**Status:** Proposed
+
+## Context
+
+[ADR-0012](0012-humans-approve-only-irreversible-actions.md) says Hyalos performs merges in v1, that a merge to a protected branch always needs a human, and that the approval is bound to the pull request's head commit, so a push after it voids it. The merge uses a per-job token from the GitHub App, and no standing merge credential exists. [ADR-0004](0004-one-signed-manifest-per-job.md) says the approval reaches the broker inside the job's manifest, the broker refuses a merge without one, and a tainted manifest can never merge. The pieces are in place: the operator's signature on every human decision ([ADR-0070](0070-the-operators-signature-on-every-human-decision.md)), the `Manifest.approval` field (until now only a commit id and an event number, and never minted), the baseline policy's `baseline.irreversible_needs_approval` and `baseline.tainted_no_merge`, and the App's `merge` permissions ([ADR-0044](0044-minting-per-job-github-tokens-from-the-app.md)). What was missing was the event, the command, how minting decides an approval is real, and the broker's call.
+
+Hyalos cannot tell from the manifest whether the base branch is protected without asking the forge, and an answer from the forge is not something to sign on. A merge into an unprotected branch is no less irreversible for the people who rely on it.
+
+## Decision
+
+**Every merge needs the operator's approval.** Hyalos treats every merge as a merge to a protected branch: the policy question for `merge` always says `protected` and is `approved` only with the approval below.
+
+**The operator names what they reviewed.** `hyalos merge <owner/repo> <pr> --head <commit> [--method merge|squash|rebase] [--reason <code>]` takes the full commit id (40 or 64 lowercase hex digits, as `git rev-parse` prints it) and the merge method (default `merge`). It prints those four things and nothing the forge wrote, asks for the passphrase, and records them.
+
+**The approval is an event.** `merge.approved { task, repo, pr, head, method, by, reason, signed }` (`hyalos_types::CommitSha`, `MergeMethod`; schema version 14) is written only by `Engine::approve_merge`, only by a human (the ADR-0025 table for an irreversible action), and signed by the operator as every human decision is. `submit` refuses it raw and the broker may not send it. It is checked on write and on replay: the task is open and has no job yet, the repository is `owner/name` as GitHub spells it, the number is a pull request's, and a task has at most one. Each merge is a task of its own (`task.created` with the SHA-256 of what was asked, then the approval, one job, `task.completed`). The state keeps approvals (`State::merges`, `merge_of(task)`; `StateImage` version 9, `MergeImage`), so compaction keeps them, and `hyalos log verify` checks their signatures with the other decisions.
+
+**The manifest carries the approval, and minting checks it against the log.** `Manifest.approval` is `{ event, pr, head_sha, method }` (manifest version 2, `deny_unknown_fields`). `Engine::mint_manifest` refuses a manifest with `merge` and no approval or an approval and no `merge` (`mint.merge_unapproved`), a merge that is tainted or asks for anything else (`mint.merge_not_alone`: `merge` is its only action, with no tool, host, flow, handle, result, base or branch prefix), and an approval that is not exactly the job's task's `merge.approved` event: same sequence number, repository, pull request, commit and method (`mint.merge_unapproved`). Only then does it ask the policy, with `approved` set for `merge`. The operator's policy must still permit `merge`.
+
+**The broker merges with the job's token.** At admission the broker refuses a manifest whose `merge` and approval do not come together, or a tainted one with `merge` (`admission.merge_unapproved`). `ToBroker::Merge { job }` (wire version 9) has the broker check the deadline and call `PUT /repos/{owner}/{repo}/pulls/{pr}/merge` with `{"sha": head, "merge_method": method}` and the job's token (`hyalos_broker::forge::Forge::merge`; `HttpTransport::request` takes `PUT`). GitHub refuses the merge itself if the head is no longer that commit, so the binding is enforced at the moment of the merge, not at a check before it. The answer is `ToEngine::Merged { job, sha }` (the merge commit's id, read only if `merged` is true) or `Refused` with a code: `merge.head_moved` (409), `merge.not_mergeable` (405), `merge.rejected` (422), `forge.upstream_refused`, `forge.upstream_not_found`, `forge.upstream_status`, `merge.not_merged`, `forge.malformed`. Nothing GitHub wrote is relayed. One merge ends the job in the broker. A sandbox never merges: the socket's `/forge/` routes still serve only opening a pull request.
+
+**The merge job runs in the broker alone.** `hyalos merge` (`merge_cmd`) records `job.started` with substrate `broker` and attestation `none (attestation.no_sandbox)`, mints the manifest (role deterministic, untainted, 10 minutes), mints the token from the App (`contents` and `pull_requests` write), starts the broker, admits the job, asks for the merge, ends the job in the broker, revokes the token on every path, and writes `job.ended` (`succeeded` `merge.merged`, or `failed` with the broker's or its own code) and `task.completed`. A failed revoke is printed and fails the command.
+
+**Branch protection stays the repository's.** The App merges as itself, so the repository's rules apply to it: required status checks, required reviews and merge methods allowed. The setup procedure ([github-app.md](../operations/github-app.md)) says how to let the App merge without weakening the checks.
+
+## Consequences
+
+The operator's approval is bound three times: by their signature over the event, by minting refusing any manifest that does not repeat it exactly, and by GitHub refusing a head that moved. A push after the approval makes the merge fail with `merge.head_moved`; the operator reviews again and runs `hyalos merge` with the new head, which is a new task.
+
+The command shows no title or branch names, since they are forge-authored text; the operator reviews the pull request on GitHub and gives its number and head. The MCP server has no merge tool, so the driving agent cannot ask for a merge it would then approve itself.
+
+What the forge enforces is still the forge's. If the App is allowed to bypass a rule, the bypass is the operator's choice in the repository's settings, not something Hyalos can see. Merging is GitHub only; GitLab is not built. A merge is not run as a step of a workflow: an actor's job is always tainted and can never merge, so merging stays a separate command after a human review.

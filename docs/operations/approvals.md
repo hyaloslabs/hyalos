@@ -34,6 +34,7 @@ hyalos policy approve <file>
 hyalos agent issue <name>
 hyalos agent revoke <id>
 hyalos run ... --issue-number <n> --release-issue
+hyalos merge <owner/repo> <pr> --head <commit>   # see Merging below
 ```
 
 Each takes `--reason <code>` where it did before. A hold's id and a task's id are the numbers `hyalos log verify`, the MCP server's `job_status` and the run's own output show.
@@ -41,6 +42,18 @@ Each takes `--reason <code>` where it did before. A hold's id and a task's id ar
 In a script you run yourself, `--passphrase-stdin` reads one line from standard input instead of the terminal. Do not give the agent a script that holds the passphrase.
 
 The MCP server has no tool that decides, never opens `operator.key`, and the runs the agent starts cannot release an issue's text. The agent's credential is not a key and opens nothing.
+
+## Merging
+
+Hyalos merges a pull request only after you approve it ([ADR-0071](../adr/0071-merging-after-the-operators-approval.md)). Review the pull request on GitHub, note the full id of its head commit (the commits tab, or `git rev-parse` on the fetched branch), then:
+
+```
+hyalos merge owner/repo 42 --head 0123456789abcdef0123456789abcdef01234567 [--method merge|squash|rebase]
+```
+
+It prints the repository, number, head and method, asks for the passphrase, records your signed approval in a task of its own, and merges with a token minted for this merge and revoked after it. The default method is `merge` and the default reason `merge.operator` (`--reason <code>`). Exit 0 means GitHub merged it, and it prints the merge commit.
+
+If anyone pushed after you reviewed, GitHub refuses (`merge.head_moved`) and nothing is merged: review the new commits and run it again with the new head. Other refusals are codes too, never GitHub's text: `merge.not_mergeable` (a conflict, a required check not passed, the method not allowed in the repository, or the pull request closed), `merge.rejected`, `forge.upstream_refused` (the App may not merge here; see [the GitHub App setup](github-app.md#6-let-the-app-merge-optional)). Your operator policy must permit the `merge` action. The driving agent has no tool that merges.
 
 ## Checking
 

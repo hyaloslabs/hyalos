@@ -128,15 +128,16 @@ impl Transport for HttpTransport {
 }
 
 impl HttpTransport {
-    /// Sends `request` with `method`, one of `GET`, `POST` and `DELETE`. Model calls are all `POST`;
-    /// the engine's calls to the forge's API need the others (ADR-0044).
+    /// Sends `request` with `method`, one of `GET`, `POST`, `PUT` and `DELETE`. Model calls are all
+    /// `POST`; the engine's calls to the forge's API need the others (ADR-0044), and a merge is a
+    /// `PUT` (ADR-0071).
     pub fn request(
         &self,
         method: &str,
         request: &Upstream,
     ) -> Result<UpstreamResponse, TransportError> {
         let bad = TransportError("transport.bad_request");
-        if !["GET", "POST", "DELETE"].contains(&method)
+        if !["GET", "POST", "PUT", "DELETE"].contains(&method)
             || !request.target.starts_with('/')
             || !clean(&request.target)
         {

@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use hyalos::{
     agent_cmd, broker_cmd, doctor_cmd, github_cmd, hardening, init_cmd, log_cmd, mcp_cmd,
-    operator_cmd, policy_cmd, run_cmd, workflow_cmd,
+    merge_cmd, operator_cmd, policy_cmd, run_cmd, workflow_cmd,
 };
 
 fn main() -> ExitCode {
@@ -29,13 +29,14 @@ fn main() -> ExitCode {
         Some("operator") => operator_cmd::run(args.get(1..).unwrap_or_default()),
         Some("approve") => operator_cmd::approve(args.get(1..).unwrap_or_default()),
         Some("cancel") => operator_cmd::cancel(args.get(1..).unwrap_or_default()),
+        Some("merge") => merge_cmd::run(args.get(1..).unwrap_or_default()),
         Some("run") => run_cmd::run(args.get(1..).unwrap_or_default()),
         Some("workflow") => workflow_cmd::run(args.get(1..).unwrap_or_default()),
         // Started by the engine, never by hand; it refuses any other parent (ADR-0035).
         Some("broker") => broker_cmd::run(args.get(1..).unwrap_or_default()),
         Some(other) => {
             eprintln!(
-                "hyalos: unknown command {other}\nusage: hyalos [--version | init | doctor [--image <image>] | github check <owner/repo> | run --repo <owner/name> --issue <text> ... | operator init|show | approve <hold> | cancel <task> | policy check|approve|show ... | workflow check <file> | agent issue|revoke|list ... | mcp [--listen <127.0.0.1:port>] | log verify|audit|backup|restore|compact|prune ...]"
+                "hyalos: unknown command {other}\nusage: hyalos [--version | init | doctor [--image <image>] | github check <owner/repo> | run --repo <owner/name> --issue <text> ... | operator init|show | approve <hold> | cancel <task> | merge <owner/repo> <pr> --head <commit> | policy check|approve|show ... | workflow check <file> | agent issue|revoke|list ... | mcp [--listen <127.0.0.1:port>] | log verify|audit|backup|restore|compact|prune ...]"
             );
             ExitCode::from(2)
         }

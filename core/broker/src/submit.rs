@@ -109,7 +109,7 @@ mod tests {
 
     fn manifest(result: bool) -> Manifest {
         Manifest {
-            version: 1,
+            version: hyalos_types::MANIFEST_VERSION,
             job: hyalos_types::JobId::from_seq(1),
             role: hyalos_types::Role::Actor,
             tainted: true,

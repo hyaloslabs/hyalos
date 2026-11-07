@@ -23,7 +23,13 @@ pub const EXE: &str = env!("CARGO_BIN_EXE_hyalos");
 /// The passphrase each world's operator key is sealed under.
 pub const PASSPHRASE: &str = "the operator's own passphrase";
 const PEM: &[u8] = include_bytes!("../fixtures/github-app-test.pem");
-const POLICY: &str = r#"permit (principal, action in [Action::"read", Action::"push", Action::"open_pr", Action::"request_host", Action::"data_flow"], resource);"#;
+// `merge` is permitted, as an operator who wants `hyalos merge` must; the baseline still forbids a
+// tainted job's and any unapproved merge (ADR-0004, ADR-0071).
+const POLICY: &str = r#"permit (principal, action in [Action::"read", Action::"push", Action::"open_pr", Action::"request_host", Action::"data_flow", Action::"merge"], resource);"#;
+
+/// The head of the stand-in's pull request 42 of `octo/repo`, and the commit merging it makes.
+pub const PR_HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+pub const MERGE_COMMIT: &str = "abababababababababababababababababababab";
 
 /// Issue 7 of the stand-in's `octo/repo`.
 pub const ISSUE_TITLE: &str = "Add a CHANGES file";
@@ -264,6 +270,22 @@ fn serve(
             "201 Created",
             r#"{"number":1,"html_url":"https://github.example/octo/repo/pull/1"}"#,
         ),
+        // Pull request 42 merges only at its head, as GitHub's `sha` does.
+        ("PUT", "/repos/octo/repo/pulls/42/merge") if tokens.iter().any(|t| t == bearer) => {
+            let asked: serde_json::Value = serde_json::from_slice(&body)?;
+            if asked["sha"] == PR_HEAD {
+                reply(
+                    "200 OK",
+                    &serde_json::json!({ "sha": MERGE_COMMIT, "merged": true, "message": "merged" })
+                        .to_string(),
+                )
+            } else {
+                reply(
+                    "409 Conflict",
+                    r#"{"message":"Head branch was modified. Review and try the merge again."}"#,
+                )
+            }
+        }
         ("DELETE", "/installation/token") if revoke_fails => reply("500 Oops", "{}"),
         ("DELETE", "/installation/token") if tokens.iter().any(|t| t == bearer) => {
             if let Ok(mut issued) = issued.lock() {

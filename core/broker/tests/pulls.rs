@@ -427,12 +427,10 @@ fn a_pull_request_needs_the_action_a_base_and_a_token() -> Res {
     job.clock.0.store(20_000, Ordering::SeqCst);
     let (status, answer) = job.open(&request)?;
     assert_eq!((status, reason(&answer)), (403, "admission.expired"));
-    // Only a create is served: merging, issues and anything else under /forge/ are not.
-    let job = start(
-        &api,
-        &manifest(7, &["open_pr", "merge"], Some("main")),
-        Some(TOKEN),
-    )?;
+    // Only a create is served: merging, issues and anything else under /forge/ are not. A sandbox
+    // never merges; a merge is the engine's `merge` message for an approved, untainted job alone
+    // (ADR-0071), and a manifest asking for one without its approval is not even admitted.
+    let job = start(&api, &manifest(7, &["open_pr"], Some("main")), Some(TOKEN))?;
     for path in [
         "/forge/repos/octo/repo/pulls/5/merge",
         "/forge/repos/octo/repo/issues",

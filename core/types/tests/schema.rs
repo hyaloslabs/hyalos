@@ -411,6 +411,35 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             signed: Signed::Operator(approval),
         },
     ));
+
+    // Version 14 added `merge.approved` (ADR-0071) and changed no payload, so the fifteen older kinds
+    // read as they did at version 13.
+    let at_13: Vec<_> = all.iter().filter(|g| g.0 == 13).cloned().collect();
+    for (_, kind, json, event) in at_13 {
+        all.push((14, kind, json, event));
+    }
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    let approval = hyalos_types::OperatorKey::from_seed(&[7; 32]).approve(&[1; 32], 2, d(3), b"y");
+    all.push((
+        14,
+        "merge.approved",
+        format!(
+            r#"{{"kind":"merge.approved","task":1,"repo":"octo/repo","pr":42,"head":"{head}","method":"merge","by":"human","reason":"merge.operator","signed":{{"operator":{{"operator":"{}","after":2,"after_hash":"{}","signature":"{}"}}}}}}"#,
+            approval.operator,
+            hex(3),
+            hyalos_types::hex::to_hex(approval.signature.as_bytes())
+        ),
+        Event::MergeApproved {
+            task: TaskId::from_seq(1),
+            repo: "octo/repo".into(),
+            pr: 42,
+            head: hyalos_types::CommitSha::new(head).ok_or("head")?,
+            method: hyalos_types::MergeMethod::Merge,
+            by: Resolution::Human,
+            reason: ReasonCode::new("merge.operator").ok_or("reason")?,
+            signed: Signed::Operator(approval),
+        },
+    ));
     Ok(all)
 }
 
@@ -423,6 +452,7 @@ fn introduced(kind: &str) -> u32 {
         "handle.released" => 10,
         "agent.issued" | "agent.revoked" => 11,
         "job.values" => 12,
+        "merge.approved" => 14,
         _ => 1,
     }
 }
