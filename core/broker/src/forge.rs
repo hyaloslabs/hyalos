@@ -200,7 +200,11 @@ impl Forge {
             ],
             body: serde_json::to_vec(&body).map_err(|_| "forge.bad_request")?,
         };
-        let response = transport.request("PUT", &request).map_err(|e| e.0)?;
+        // Only an error before anything was sent means GitHub did not merge; after that it may have.
+        let response = transport.request("PUT", &request).map_err(|e| match e.0 {
+            "transport.unreachable" | "transport.tls_refused" | "transport.bad_request" => e.0,
+            _ => "merge.unconfirmed",
+        })?;
         match response.status {
             200 => {}
             401 | 403 => return Err("forge.upstream_refused"),

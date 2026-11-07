@@ -68,7 +68,7 @@ It mints a read-only token for the repository, shows the installation and when t
 `hyalos merge` ([approvals](approvals.md#merging)) merges a pull request after you approve it, with a token minted for that merge alone. GitHub treats the App as any other actor, so the repository's rules decide whether its merge goes through. If you never use `hyalos merge`, skip this step.
 
 - **Merge methods**: in the repository's **Settings → General → Pull Requests**, allow the methods you will use (`--method merge`, `squash` or `rebase`). A method the repository does not allow fails as `merge.not_mergeable`.
-- **Required status checks**: keep them. The App's merge waits for them like anyone's, and a pull request whose checks have not passed fails as `merge.not_mergeable`. Never add the App to a bypass list for status checks.
+- **Required status checks**: keep them. A pull request whose required checks have not passed yet is refused at once (`merge.not_mergeable`); run `hyalos merge` again once they have. Never add the App to a bypass list for status checks.
 - **Required reviews**: your approval in Hyalos is not a GitHub review, and the App cannot review its own merge. Choose one:
   - keep required reviews and approve the pull request on GitHub as well before running `hyalos merge`; or
   - let the App bypass **only** the pull request review rule. Your signed approval in Hyalos is then the review.
