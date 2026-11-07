@@ -1,4 +1,4 @@
-//! Identifiers for tasks, jobs and holds.
+//! Identifiers for tasks, jobs, holds and agents' credentials.
 //!
 //! An id is the sequence number of the event that created the thing: a task's id is the sequence of
 //! its `task.created` event. Ids therefore need no randomness, cannot collide, and are the same on
@@ -44,6 +44,10 @@ id!(
 id!(
     /// An open question that stops a task until it is answered (ADR-0009).
     HoldId
+);
+id!(
+    /// A credential the operator issued to a driving agent (ADR-0068).
+    AgentId
 );
 
 #[cfg(test)]

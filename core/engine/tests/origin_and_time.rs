@@ -68,6 +68,17 @@ fn accept(e: &mut Engine, n: u64, event: Event) -> Res {
         } => {
             e.release_handle(at(n), task, handle, Decider::Human, reason)?;
         }
+        Event::AgentIssued {
+            name,
+            credential,
+            reason,
+            ..
+        } => {
+            e.issue_agent(at(n), name, credential, Decider::Human, reason)?;
+        }
+        Event::AgentRevoked { agent, reason, .. } => {
+            e.revoke_agent(at(n), agent, Decider::Human, reason)?;
+        }
         other => {
             e.submit(at(n), Origin::Engine, other)?;
         }
@@ -191,6 +202,26 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
             Event::HandleReleased {
                 task,
                 handle: d(9),
+                by: Resolution::Human,
+                reason: why(),
+            }
+        }
+        "agent.issued" => Event::AgentIssued {
+            name: hyalos_types::AgentName::new("claude-code").ok_or("name")?,
+            credential: d(9),
+            by: Resolution::Human,
+            reason: why(),
+        },
+        "agent.revoked" => {
+            let head = e.issue_agent(
+                at(1),
+                hyalos_types::AgentName::new("claude-code").ok_or("name")?,
+                d(9),
+                Decider::Human,
+                why(),
+            )?;
+            Event::AgentRevoked {
+                agent: hyalos_types::AgentId::from_seq(head.seq),
                 by: Resolution::Human,
                 reason: why(),
             }

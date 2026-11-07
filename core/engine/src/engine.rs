@@ -11,8 +11,8 @@ use hyalos_policy::{GateRequest, LoadError, Outcome, Policies};
 use hyalos_types::event::SCHEMA;
 use hyalos_types::snapshot::{STATE_VERSION, StateImage};
 use hyalos_types::{
-    Answer, Digest, Event, EventError, HoldId, JobId, Origin, ReasonCode, Resolution, Schema,
-    TaskId, Timestamp,
+    AgentId, AgentName, Answer, Digest, Event, EventError, HoldId, JobId, Origin, ReasonCode,
+    Resolution, Schema, TaskId, Timestamp,
 };
 
 use crate::state::{Pruned, RuleViolation, State};
@@ -291,7 +291,9 @@ fn through_the_api(origin: Origin, event: &Event) -> Option<RuleViolation> {
         Event::TaskCancelled { .. }
         | Event::HoldRefused { .. }
         | Event::PolicyApproved { .. }
-        | Event::HandleReleased { .. } => {
+        | Event::HandleReleased { .. }
+        | Event::AgentIssued { .. }
+        | Event::AgentRevoked { .. } => {
             Some(RuleViolation::ThroughTheEngineApi { kind: event.kind() })
         }
         _ => None,
@@ -721,6 +723,52 @@ impl Engine {
             Origin::Engine,
             Event::PolicyApproved {
                 document: document.to_string(),
+                by: decider.resolution(),
+                reason,
+            },
+        )
+    }
+
+    /// Records a human issuing a credential to a driving agent (ADR-0010, ADR-0068). `credential` is
+    /// the SHA-256 of the secret the caller drew and gives the agent; the secret never reaches the
+    /// log. Issuing grants a capability, so any decider but a human is refused, as is a credential
+    /// issued before (revoked or not) and a name a credential in force already has. The new agent's
+    /// id is the returned head's sequence number. Nothing is written if refused.
+    pub fn issue_agent(
+        &mut self,
+        at: Timestamp,
+        name: AgentName,
+        credential: Digest,
+        decider: Decider,
+        reason: ReasonCode,
+    ) -> Result<Head, EngineError> {
+        self.submit_checked(
+            at,
+            Origin::Engine,
+            Event::AgentIssued {
+                name,
+                credential,
+                by: decider.resolution(),
+                reason,
+            },
+        )
+    }
+
+    /// Records the revocation of an agent's credential: the MCP server refuses it from this event on
+    /// (ADR-0068). Revoking only takes a capability away, so any decider may. An unknown or already
+    /// revoked agent is refused and nothing is written.
+    pub fn revoke_agent(
+        &mut self,
+        at: Timestamp,
+        agent: AgentId,
+        decider: Decider,
+        reason: ReasonCode,
+    ) -> Result<Head, EngineError> {
+        self.submit_checked(
+            at,
+            Origin::Engine,
+            Event::AgentRevoked {
+                agent,
                 by: decider.resolution(),
                 reason,
             },

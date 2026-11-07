@@ -13,8 +13,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Digest, Gate, HoldId, HoldReason, JobId, JobOutcome, ReasonCode, Resolution, Stakes, TaskId,
-    Value,
+    AgentId, AgentName, Digest, Gate, HoldId, HoldReason, JobId, JobOutcome, ReasonCode,
+    Resolution, Stakes, TaskId, Value,
 };
 
 /// The layout [`StateImage`] is written in today.
@@ -22,8 +22,9 @@ use crate::{
 /// Version 2 added the archives that were pruned (ADR-0027). A version 1 image has none. Version 3 added
 /// the cancelling of a task (ADR-0029). Earlier images have no task cancelled. Version 4 added the policy
 /// in force (ADR-0034). Earlier images have none, which is the baseline alone. Version 5 added the
-/// handles released (ADR-0063). Earlier images have none.
-pub const STATE_VERSION: u32 = 5;
+/// handles released (ADR-0063). Earlier images have none. Version 6 added the agents' credentials
+/// (ADR-0068). Earlier images have none.
+pub const STATE_VERSION: u32 = 6;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +45,30 @@ pub struct StateImage {
     pub policy: Option<PolicyImage>,
     /// Every handle released, in the order it was recorded (ADR-0063).
     pub handles: Vec<HandleImage>,
+    /// Every agent's credential issued, revoked ones too, in id order (ADR-0068).
+    pub agents: Vec<AgentImage>,
+}
+
+/// An `agent.issued` event and, if one followed, its `agent.revoked`: whether the MCP server admits
+/// the credential depends on both, so both travel with the state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentImage {
+    pub id: AgentId,
+    pub at: u64,
+    pub name: AgentName,
+    pub credential: Digest,
+    pub by: Resolution,
+    pub reason: ReasonCode,
+    pub revoked: Option<RevokedImage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokedImage {
+    pub at: u64,
+    pub by: Resolution,
+    pub reason: ReasonCode,
 }
 
 /// A `handle.released` event, kept: a manifest may name the handle only while its task stands.
@@ -226,7 +251,11 @@ impl StateImage {
             object.insert("policy".into(), Value::Null);
         }
         // 4 -> 5: no handle had been released.
-        object.insert("handles".into(), Value::Array(Vec::new()));
+        if version < 5 {
+            object.insert("handles".into(), Value::Array(Vec::new()));
+        }
+        // 5 -> 6: no agent's credential had been issued.
+        object.insert("agents".into(), Value::Array(Vec::new()));
         serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()))
     }
 }
@@ -360,6 +389,19 @@ mod tests {
                 handle: d(4),
                 by: Resolution::Human,
                 reason: ReasonCode::unavailable(),
+            }],
+            agents: vec![AgentImage {
+                id: AgentId::from_seq(14),
+                at: 4_800,
+                name: AgentName::new("claude-code").unwrap(),
+                credential: d(6),
+                by: Resolution::Human,
+                reason: ReasonCode::unavailable(),
+                revoked: Some(RevokedImage {
+                    at: 4_900,
+                    by: Resolution::Human,
+                    reason: ReasonCode::unavailable(),
+                }),
             }],
         }
     }

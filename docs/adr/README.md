@@ -81,3 +81,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0065](0065-the-content-gate-on-what-a-tainted-job-publishes.md) | The content gate on what a tainted job publishes, and the ported red-team corpus | Accepted |
 | [0066](0066-plugin-authored-text-and-the-grant-that-bounds-it.md) | Plugin-authored text, and the grant that bounds the job it steers | Accepted |
 | [0067](0067-the-mcp-server-and-the-conformance-suite.md) | The MCP server, its two transports, and the conformance suite it passes | Accepted |
+| [0068](0068-the-driving-agents-credential.md) | The driving agent's credential, issued and revoked in the log | Proposed |

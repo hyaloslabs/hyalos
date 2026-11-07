@@ -10,15 +10,15 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Answer, Attestation, Digest, HoldId, JobId, Origin, ReasonCode, Schema, Stakes, SubstrateName,
-    TaskId, Upcast, Value,
+    AgentId, AgentName, Answer, Attestation, Digest, HoldId, JobId, Origin, ReasonCode, Schema,
+    Stakes, SubstrateName, TaskId, Upcast, Value,
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 
-/// What this build reads: version 10, and versions 1 to 9 upcast to it (ADR-0023, ADR-0025, ADR-0027,
-/// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063).
+/// What this build reads: version 11, and versions 1 to 10 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068).
 ///
 /// Version 2 added the stakes of a hold and the reason for resolving one. A version 1 hold is given the
 /// most cautious stakes, so only a human can release it; a version 1 resolution is given an explicit
@@ -28,7 +28,8 @@ pub const SCHEMA_VERSION: u32 = 10;
 /// `job.started`; an older one reads as `unrecorded`. Version 7 added the credential tier to
 /// `job.started`; an older one reads as `unrecorded` too. Version 8 added the reason to `job.ended`;
 /// an older one reads as `legacy.unrecorded`. Version 9 added the attestation to `job.started`; an
-/// older one reads as `unrecorded`. Version 10 added `handle.released` and changed no payload.
+/// older one reads as `unrecorded`. Version 10 added `handle.released` and changed no payload. Version 11
+/// added `agent.issued` and `agent.revoked` and changed no payload.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -254,6 +255,25 @@ pub enum Event {
         by: Resolution,
         reason: ReasonCode,
     },
+    /// A human issued a credential to a driving agent, which the engine's MCP server admits from this
+    /// event on (ADR-0010, ADR-0068). `credential` is the SHA-256 of the secret the agent presents;
+    /// the secret is never in the log. Issuing one grants a capability, so it needs a human (ADR-0012),
+    /// and the state refuses anyone else. Its id is this event's sequence number.
+    #[serde(rename = "agent.issued")]
+    AgentIssued {
+        name: AgentName,
+        credential: Digest,
+        by: Resolution,
+        reason: ReasonCode,
+    },
+    /// A credential was revoked: the MCP server refuses it from this event on (ADR-0068). Revoking
+    /// only takes a capability away, so any decider may.
+    #[serde(rename = "agent.revoked")]
+    AgentRevoked {
+        agent: AgentId,
+        by: Resolution,
+        reason: ReasonCode,
+    },
 }
 
 /// The largest policy document an event may hold, in bytes. Events are read whole into memory by
@@ -329,7 +349,9 @@ impl Event {
             | Event::TaskCancelled { .. }
             | Event::HoldRefused { .. }
             | Event::PolicyApproved { .. }
-            | Event::HandleReleased { .. } => origin == Origin::Engine,
+            | Event::HandleReleased { .. }
+            | Event::AgentIssued { .. }
+            | Event::AgentRevoked { .. } => origin == Origin::Engine,
         }
     }
 
@@ -348,6 +370,8 @@ impl Event {
             Event::HoldRefused { .. } => "hold.refused",
             Event::PolicyApproved { .. } => "policy.approved",
             Event::HandleReleased { .. } => "handle.released",
+            Event::AgentIssued { .. } => "agent.issued",
+            Event::AgentRevoked { .. } => "agent.revoked",
         }
     }
 
@@ -357,7 +381,7 @@ impl Event {
     }
 
     /// Every `kind` value, for checking tables and test coverage.
-    pub const KINDS: [&'static str; 12] = [
+    pub const KINDS: [&'static str; 14] = [
         "task.created",
         "task.completed",
         "job.started",
@@ -370,6 +394,8 @@ impl Event {
         "hold.refused",
         "policy.approved",
         "handle.released",
+        "agent.issued",
+        "agent.revoked",
     ];
 
     /// Reads an event back from a log row's `kind`, `schema_version` and `payload`, as this build's
@@ -529,6 +555,27 @@ mod tests {
                     r#"{{"kind":"handle.released","task":3,"handle":"{}","by":"human","reason":"handle.operator"}}"#,
                     h(9)
                 ),
+            ),
+            (
+                Event::AgentIssued {
+                    name: crate::AgentName::new("claude-code").unwrap(),
+                    credential: d(5),
+                    by: Resolution::Human,
+                    reason: ReasonCode::new("agent.issued").unwrap(),
+                },
+                format!(
+                    r#"{{"kind":"agent.issued","name":"claude-code","credential":"{}","by":"human","reason":"agent.issued"}}"#,
+                    h(5)
+                ),
+            ),
+            (
+                Event::AgentRevoked {
+                    agent: crate::AgentId::from_seq(4),
+                    by: Resolution::Human,
+                    reason: ReasonCode::new("agent.revoked").unwrap(),
+                },
+                r#"{"kind":"agent.revoked","agent":4,"by":"human","reason":"agent.revoked"}"#
+                    .to_string(),
             ),
         ]
     }

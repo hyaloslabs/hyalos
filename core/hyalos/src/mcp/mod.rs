@@ -5,8 +5,10 @@
 //! [`http`] (Streamable HTTP on loopback only). What the server offers is a [`Tools`]; the engine's are
 //! in `mcp_cmd`, and the conformance suite's fixtures are in `crates/mcp-conformance`, never here.
 //!
-//! The order of checks is the revision's: a message that is not JSON-RPC, then `_meta` (`-32602`),
-//! then on HTTP the headers against the body (`-32020`), then the version (`-32022`), then the method
+//! Every message is first put to the server's [`Admit`], with the credential the caller presented
+//! (ADR-0068): a refusal is answered `-32030` (HTTP 401) and nothing in the message is acted on. The
+//! rest of the order is the revision's: a message that is not JSON-RPC, then `_meta` (`-32602`), then
+//! on HTTP the headers against the body (`-32020`), then the version (`-32022`), then the method
 //! (`-32601`), then the tool and the capabilities it needs (`-32602`, `-32021`).
 
 pub mod http;
@@ -35,6 +37,28 @@ pub mod codes {
     pub const HEADER_MISMATCH: i64 = -32020;
     pub const MISSING_CAPABILITY: i64 = -32021;
     pub const UNSUPPORTED_VERSION: i64 = -32022;
+    /// Hyalos's own, from the range JSON-RPC leaves to servers (ADR-0068): the caller presented no
+    /// credential the operator issued, or one that is revoked.
+    pub const UNAUTHORIZED: i64 = -32030;
+    pub const INTERNAL_ERROR: i64 = -32603;
+}
+
+/// Who may call the server (ADR-0068). It is asked on every message, so a credential revoked between
+/// two calls fails the second. The engine's is in `mcp_cmd`; there is no admission here that lets
+/// everyone in.
+pub trait Admit: Send + Sync {
+    /// `credential` is what the caller presented: a bearer token on HTTP, the server's environment on
+    /// stdio.
+    fn admit(&self, credential: Option<&str>) -> Result<(), Refusal>;
+}
+
+/// Why a caller was not admitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// No credential, or none in force. The answer does not say which.
+    Unauthorized,
+    /// The credentials could not be checked, so no one is admitted. The text is for the operator.
+    Unavailable(String),
 }
 
 /// One tool, as `tools/list` shows it.
@@ -156,6 +180,7 @@ fn supported() -> Value {
 
 pub struct Server<T> {
     tools: T,
+    admit: Box<dyn Admit>,
     name: &'static str,
     version: &'static str,
     instructions: &'static str,
@@ -164,26 +189,33 @@ pub struct Server<T> {
 impl<T: Tools> Server<T> {
     pub fn new(
         tools: T,
+        admit: Box<dyn Admit>,
         name: &'static str,
         version: &'static str,
         instructions: &'static str,
     ) -> Self {
         Self {
             tools,
+            admit,
             name,
             version,
             instructions,
         }
     }
 
-    /// Answers one message. `headers` are the request's MCP headers on HTTP and `None` on stdio.
-    /// Notifications the call sends before its result, such as progress, go to `emit`.
+    /// Answers one message. `headers` are the request's MCP headers on HTTP and `None` on stdio, and
+    /// `credential` is what the caller presented. Notifications the call sends before its result, such
+    /// as progress, go to `emit`.
     pub fn handle(
         &self,
         message: &[u8],
         headers: Option<&Headers>,
+        credential: Option<&str>,
         emit: &mut dyn FnMut(Value),
     ) -> Reply {
+        if let Err(refusal) = self.admit.admit(credential) {
+            return refused(message, &refusal);
+        }
         let Ok(Value::Object(mut message)) = serde_json::from_slice::<Value>(message) else {
             let code = match serde_json::from_slice::<Value>(message) {
                 Ok(_) => codes::INVALID_REQUEST,
@@ -417,6 +449,35 @@ fn object(value: Value) -> Map<String, Value> {
     }
 }
 
+/// The answer to a caller who was not admitted: the request's id if it has a readable one, and
+/// nothing else from it.
+fn refused(message: &[u8], refusal: &Refusal) -> Reply {
+    let id = serde_json::from_slice::<Value>(message)
+        .ok()
+        .and_then(|m| m.get("id").cloned())
+        .filter(|id| id.is_string() || id.is_number());
+    let (status, failure) = match refusal {
+        Refusal::Unauthorized => (
+            401,
+            fail(
+                codes::UNAUTHORIZED,
+                "Unauthorized: present a credential the operator issued with hyalos agent issue",
+            ),
+        ),
+        Refusal::Unavailable(_) => (
+            503,
+            fail(
+                codes::INTERNAL_ERROR,
+                "The server cannot check credentials now, so it admits no one",
+            ),
+        ),
+    };
+    Reply {
+        status,
+        ..error(id, &failure)
+    }
+}
+
 /// An error response. Its id is left out only when the request's could not be read. The HTTP status
 /// is the revision's: 404 for an unknown method, 400 for everything else this server refuses.
 fn error(id: Option<Value>, failure: &Failure) -> Reply {
@@ -486,11 +547,25 @@ mod tests {
         }
     }
 
+    /// Admits exactly the credential `good`; `broken` stands for a log that cannot be read.
+    struct Only;
+
+    impl Admit for Only {
+        fn admit(&self, credential: Option<&str>) -> Result<(), Refusal> {
+            match credential {
+                Some("good") => Ok(()),
+                Some("broken") => Err(Refusal::Unavailable("the log is gone".into())),
+                _ => Err(Refusal::Unauthorized),
+            }
+        }
+    }
+
     fn server() -> Server<Two> {
         Server::new(
             Two {
                 tools: vec![tool("echo", &[]), tool("sample", &["sampling"])],
             },
+            Box::new(Only),
             "test",
             "1.2.3",
             "Test instructions.",
@@ -507,7 +582,12 @@ mod tests {
         }
         let message = json!({"jsonrpc": "2.0", "id": 7, "method": method, "params": params});
         let mut notes = Vec::new();
-        let reply = server().handle(message.to_string().as_bytes(), None, &mut |n| notes.push(n));
+        let reply = server().handle(
+            message.to_string().as_bytes(),
+            None,
+            Some("good"),
+            &mut |n| notes.push(n),
+        );
         (reply, notes)
     }
 
@@ -561,7 +641,12 @@ mod tests {
             }
             let message =
                 json!({"jsonrpc": "2.0", "id": "a", "method": "server/discover", "params": params});
-            let reply = server().handle(message.to_string().as_bytes(), None, &mut |_| {});
+            let reply = server().handle(
+                message.to_string().as_bytes(),
+                None,
+                Some("good"),
+                &mut |_| {},
+            );
             assert_eq!(
                 (reply.status, code(&reply)),
                 (400, Some(codes::INVALID_PARAMS))
@@ -606,7 +691,12 @@ mod tests {
             );
         }
         let message = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}});
-        let reply = server().handle(message.to_string().as_bytes(), None, &mut |_| {});
+        let reply = server().handle(
+            message.to_string().as_bytes(),
+            None,
+            Some("good"),
+            &mut |_| {},
+        );
         assert_eq!(
             (reply.status, code(&reply)),
             (404, Some(codes::METHOD_NOT_FOUND))
@@ -620,26 +710,29 @@ mod tests {
     #[test]
     fn what_is_not_a_request_is_refused_without_an_id_and_a_notification_gets_no_answer() {
         let mut nothing = |_| {};
-        let reply = server().handle(b"{not json", None, &mut nothing);
+        let reply = server().handle(b"{not json", None, Some("good"), &mut nothing);
         assert_eq!(code(&reply), Some(codes::PARSE_ERROR));
         assert!(reply.body.unwrap().get("id").is_none());
-        let reply = server().handle(b"[]", None, &mut nothing);
+        let reply = server().handle(b"[]", None, Some("good"), &mut nothing);
         assert_eq!(code(&reply), Some(codes::INVALID_REQUEST));
         let reply = server().handle(
             br#"{"jsonrpc":"2.0","id":null,"method":"tools/list"}"#,
             None,
+            Some("good"),
             &mut nothing,
         );
         assert_eq!(code(&reply), Some(codes::INVALID_REQUEST));
         let reply = server().handle(
             br#"{"jsonrpc":"1.0","id":1,"method":"tools/list"}"#,
             None,
+            Some("good"),
             &mut nothing,
         );
         assert_eq!(code(&reply), Some(codes::INVALID_REQUEST));
         let reply = server().handle(
             br#"{"jsonrpc":"2.0","method":"notifications/cancelled"}"#,
             None,
+            Some("good"),
             &mut nothing,
         );
         assert_eq!(
@@ -717,7 +810,12 @@ mod tests {
             method: Some("tools/call".into()),
             name: Some("echo".into()),
         };
-        let reply = server().handle(call.to_string().as_bytes(), Some(&good), &mut |_| {});
+        let reply = server().handle(
+            call.to_string().as_bytes(),
+            Some(&good),
+            Some("good"),
+            &mut |_| {},
+        );
         assert_eq!(reply.status, 200);
         let wrong = [
             Headers {
@@ -742,7 +840,12 @@ mod tests {
             },
         ];
         for headers in wrong {
-            let reply = server().handle(call.to_string().as_bytes(), Some(&headers), &mut |_| {});
+            let reply = server().handle(
+                call.to_string().as_bytes(),
+                Some(&headers),
+                Some("good"),
+                &mut |_| {},
+            );
             assert_eq!(
                 (reply.status, code(&reply)),
                 (400, Some(codes::HEADER_MISMATCH)),
@@ -761,7 +864,7 @@ mod tests {
             "\n{call}\n{huge}\n{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\"}}\n"
         );
         let mut output = Vec::new();
-        stdio::serve(&server(), input.as_bytes(), &mut output).unwrap();
+        stdio::serve(&server(), Some("good"), input.as_bytes(), &mut output).unwrap();
         let lines: Vec<Value> = String::from_utf8(output)
             .unwrap()
             .lines()
@@ -784,7 +887,7 @@ mod tests {
         let over_cap = pad(request(3), MAX_MESSAGE + 1);
         let input = format!("{at_cap}\n{}\n{over_cap}\n{}\n", request(2), request(4));
         let mut output = Vec::new();
-        stdio::serve(&server(), input.as_bytes(), &mut output).unwrap();
+        stdio::serve(&server(), Some("good"), input.as_bytes(), &mut output).unwrap();
         let ids: Vec<Value> = String::from_utf8(output)
             .unwrap()
             .lines()
@@ -804,10 +907,14 @@ mod tests {
     }
 
     fn post(port: u16, host: &str, extra: &str, body: &str) -> String {
+        post_as(port, host, "Authorization: Bearer good\r\n", extra, body)
+    }
+
+    fn post_as(port: u16, host: &str, auth: &str, extra: &str, body: &str) -> String {
         http(
             port,
             &format!(
-                "POST /mcp HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\n{extra}Content-Length: {}\r\n\r\n{body}",
+                "POST /mcp HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\n{auth}{extra}Content-Length: {}\r\n\r\n{body}",
                 body.len()
             ),
         )
@@ -894,5 +1001,90 @@ mod tests {
             mismatch.starts_with("HTTP/1.1 400") && mismatch.contains("-32020"),
             "{mismatch}"
         );
+    }
+
+    #[test]
+    fn a_caller_not_admitted_is_answered_unauthorized_and_nothing_in_the_message_runs() {
+        let call = json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "echo", "_meta": meta()}});
+        for credential in [None, Some("revoked"), Some("")] {
+            let mut notes = Vec::new();
+            let reply = server().handle(call.to_string().as_bytes(), None, credential, &mut |n| {
+                notes.push(n)
+            });
+            assert_eq!(reply.status, 401, "{credential:?}");
+            assert_eq!(code(&reply), Some(codes::UNAUTHORIZED));
+            assert_eq!(reply.body.as_ref().unwrap()["id"], 5);
+            assert!(notes.is_empty(), "the tool never ran");
+        }
+        // Not even a malformed message or an older client's `initialize` is looked at first.
+        for message in [
+            &b"{not json"[..],
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
+        ] {
+            let reply = server().handle(message, None, None, &mut |_| {});
+            assert_eq!(code(&reply), Some(codes::UNAUTHORIZED));
+        }
+        // When credentials cannot be checked, no one is admitted, and the operator's detail stays out.
+        let reply = server().handle(
+            call.to_string().as_bytes(),
+            None,
+            Some("broken"),
+            &mut |_| {},
+        );
+        assert_eq!(reply.status, 503);
+        assert_eq!(code(&reply), Some(codes::INTERNAL_ERROR));
+        assert!(!reply.body.unwrap().to_string().contains("the log is gone"));
+    }
+
+    #[test]
+    fn stdio_checks_its_credential_on_every_message() {
+        let list =
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": meta()}});
+        let mut output = Vec::new();
+        stdio::serve(
+            &server(),
+            Some("revoked"),
+            format!("{list}\n").as_bytes(),
+            &mut output,
+        )
+        .unwrap();
+        let line: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(line["error"]["code"], codes::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn http_needs_a_bearer_credential_and_says_so() {
+        let listener = http::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || http::serve(listener, Arc::new(server())));
+        let host = format!("127.0.0.1:{port}");
+        let list =
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {"_meta": meta()}})
+                .to_string();
+        let headers =
+            format!("MCP-Protocol-Version: {PROTOCOL_VERSION}\r\nMcp-Method: tools/list\r\n");
+        for auth in [
+            "",
+            "Authorization: Bearer nope\r\n",
+            "Authorization: Basic Z29vZA==\r\n",
+            "Authorization: good\r\n",
+        ] {
+            let refused = post_as(port, &host, auth, &headers, &list);
+            assert!(
+                refused.starts_with("HTTP/1.1 401 Unauthorized")
+                    && refused.contains("WWW-Authenticate: Bearer")
+                    && refused.contains("-32030"),
+                "{auth}: {refused}"
+            );
+        }
+        // The scheme's case does not matter (RFC 9110).
+        let ok = post_as(
+            port,
+            &host,
+            "Authorization: bearer good\r\n",
+            &headers,
+            &list,
+        );
+        assert!(ok.starts_with("HTTP/1.1 200 OK"), "{ok}");
     }
 }
