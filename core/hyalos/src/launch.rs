@@ -19,7 +19,7 @@ use hyalos_types::wire::{
     read_frame, write_frame,
 };
 use hyalos_types::workflow::{TypedValue, values_fit};
-use hyalos_types::{Digest, JobId, ManifestKey, ManifestPublicKey, ReasonCode};
+use hyalos_types::{CommitSha, Digest, JobId, ManifestKey, ManifestPublicKey, ReasonCode};
 use std::os::unix::net::UnixStream;
 use zeroize::Zeroizing;
 
@@ -439,6 +439,34 @@ impl BrokerProcess {
                 Err(code("handle.bad_answer"))
             }
             Ok(Incoming::Closed) | Err(_) => Err(code("handle.broker_unavailable")),
+        }
+    }
+
+    /// Asks the broker to merge the pull request `job`'s manifest approval names (ADR-0071) and waits
+    /// up to `wait` for the merge commit. `Err` is why there is none: the broker's refusal (it has
+    /// ended the job), or one of the engine's own codes. A broker that answers something else has
+    /// broken the protocol and is stopped.
+    pub fn merge(&mut self, job: JobId, wait: Duration) -> Result<CommitSha, ReasonCode> {
+        let code = |text: &str| ReasonCode::new(text).unwrap_or_else(ReasonCode::unavailable);
+        self.send(&ToBroker::Merge { job })
+            .map_err(|_| code("merge.broker_unavailable"))?;
+        match self.poll(wait) {
+            Ok(Incoming::Message(ToEngine::Merged { job: merged, sha })) if merged == job => {
+                Ok(sha)
+            }
+            Ok(Incoming::Message(ToEngine::Refused {
+                job: merged,
+                reason,
+            })) if merged == job => Err(reason),
+            Ok(Incoming::Nothing) => {
+                self.close();
+                Err(code("merge.no_answer"))
+            }
+            Ok(Incoming::Message(_)) => {
+                self.close();
+                Err(code("merge.bad_answer"))
+            }
+            Ok(Incoming::Closed) | Err(_) => Err(code("merge.broker_unavailable")),
         }
     }
 

@@ -19,12 +19,14 @@ use serde::{Deserialize, Serialize};
 use crate::Digest;
 use crate::hex;
 use crate::ids::JobId;
+use crate::merge::{CommitSha, MergeMethod};
 use crate::time::Timestamp;
 use crate::workflow::Output;
 
 /// The only manifest schema this build writes and reads. A field that widens authority needs an ADR
-/// and a new version (ADR-0004).
-pub const MANIFEST_VERSION: u32 = 1;
+/// and a new version (ADR-0004). Version 2 gave the approval its pull request and merge method
+/// (ADR-0071).
+pub const MANIFEST_VERSION: u32 = 2;
 
 /// What a manifest signature is made under, so it cannot be replayed as any other signature the
 /// engine makes (an event's, a snapshot's).
@@ -58,14 +60,19 @@ pub struct Budget {
     pub tokens: u64,
 }
 
-/// A human approval, carried inside the manifest so the broker, which enforces only the manifest,
-/// can see it (ADR-0004, ADR-0012). It is bound to one commit: a merge is allowed only for that head.
+/// A human's merge approval, carried inside the manifest so the broker, which enforces only the
+/// manifest, can see it (ADR-0004, ADR-0012, ADR-0071). It names the `merge.approved` event and
+/// repeats what that event approved: pull request `pr` of the manifest's repository, merged by
+/// `method`, only while its head is `head_sha`. The engine mints it only from the event itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Approval {
-    /// The head commit of the pull request the approval is for.
-    pub head_sha: String,
     /// The sequence number of the approval event in the log.
     pub event: u64,
+    pub pr: u64,
+    /// The head commit of the pull request the approval is for.
+    pub head_sha: CommitSha,
+    pub method: MergeMethod,
 }
 
 /// One job's authority.

@@ -18,13 +18,14 @@ use hyalos_types::snapshot::StateImage;
 use hyalos_types::{Event, EventError, OperatorPublic, Resolution, SIGNED_SINCE, Signed};
 
 /// The kinds that record a decision.
-const DECISIONS: [&str; 6] = [
+const DECISIONS: [&str; 7] = [
     "hold.resolved",
     "task.cancelled",
     "policy.approved",
     "handle.released",
     "agent.issued",
     "agent.revoked",
+    "merge.approved",
 ];
 
 /// The human decisions in a log that passed.

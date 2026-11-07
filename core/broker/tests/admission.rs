@@ -200,7 +200,7 @@ fn a_document_that_says_another_version_than_it_was_sent_under_is_refused() -> R
     // Properly signed, as the engine's own signing call never would: it refuses to.
     let r = rig();
     let mut m = manifest(Role::Actor);
-    m.version = 2;
+    m.version = MANIFEST_VERSION + 1;
     let payload = serde_json::to_vec(&m)?;
     let signed = SignedManifest::from_parts(
         MANIFEST_VERSION,
@@ -211,7 +211,7 @@ fn a_document_that_says_another_version_than_it_was_sent_under_is_refused() -> R
         r.admit(&signed, &credential(Role::Actor)),
         Err(Refusal::Manifest(OpenError::VersionMismatch {
             envelope: MANIFEST_VERSION,
-            document: 2
+            document: MANIFEST_VERSION + 1
         }))
     );
     Ok(())

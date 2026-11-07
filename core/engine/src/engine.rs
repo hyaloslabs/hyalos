@@ -11,8 +11,8 @@ use hyalos_policy::{GateRequest, LoadError, Outcome, Policies};
 use hyalos_types::event::SCHEMA;
 use hyalos_types::snapshot::{STATE_VERSION, StateImage};
 use hyalos_types::{
-    AgentId, AgentName, Answer, Digest, Event, EventError, HoldId, JobId, OperatorKey,
-    OperatorPublic, Origin, ReasonCode, Resolution, Schema, Signed, TaskId, Timestamp,
+    AgentId, AgentName, Answer, CommitSha, Digest, Event, EventError, HoldId, JobId, MergeMethod,
+    OperatorKey, OperatorPublic, Origin, ReasonCode, Resolution, Schema, Signed, TaskId, Timestamp,
 };
 
 use crate::state::{Pruned, RuleViolation, State};
@@ -300,7 +300,8 @@ fn through_the_api(origin: Origin, event: &Event) -> Option<RuleViolation> {
         | Event::PolicyApproved { .. }
         | Event::HandleReleased { .. }
         | Event::AgentIssued { .. }
-        | Event::AgentRevoked { .. } => {
+        | Event::AgentRevoked { .. }
+        | Event::MergeApproved { .. } => {
             Some(RuleViolation::ThroughTheEngineApi { kind: event.kind() })
         }
         _ => None,
@@ -942,6 +943,39 @@ impl Engine {
             Event::HandleReleased {
                 task,
                 handle,
+                by: decider.resolution(),
+                reason,
+                signed: Signed::None,
+            },
+        )
+    }
+
+    /// Records a human's approval to merge pull request `pr` of `repo` at commit `head`, by `method`,
+    /// as `task`'s one merge (ADR-0012, ADR-0071). The task must be open and have no job yet: the
+    /// merge job that follows is minted from this approval, and only from it. A merge is
+    /// irreversible, so any decider but a human is refused, and a human's needs the operator's key
+    /// (ADR-0070). Nothing is written if refused. `reason` is a short code, never free text.
+    #[allow(clippy::too_many_arguments)]
+    pub fn approve_merge(
+        &mut self,
+        at: Timestamp,
+        task: TaskId,
+        repo: &str,
+        pr: u64,
+        head: CommitSha,
+        method: MergeMethod,
+        decider: Decider,
+        reason: ReasonCode,
+    ) -> Result<Head, EngineError> {
+        self.submit_checked(
+            at,
+            Origin::Engine,
+            Event::MergeApproved {
+                task,
+                repo: repo.to_string(),
+                pr,
+                head,
+                method,
                 by: decider.resolution(),
                 reason,
                 signed: Signed::None,

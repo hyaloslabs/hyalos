@@ -86,7 +86,7 @@ fn engine(name: &str) -> Res<(Engine, TaskId, PathBuf)> {
 
 fn manifest(job: JobId, handles: &[Digest]) -> Manifest {
     Manifest {
-        version: 1,
+        version: hyalos_types::MANIFEST_VERSION,
         job,
         role: Role::Actor,
         tainted: true,

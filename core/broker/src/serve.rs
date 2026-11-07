@@ -188,6 +188,28 @@ impl Broker {
                     }
                 }
             }
+            ToBroker::Merge { job } => {
+                let Some(manifest) = self.admitted.get(&job) else {
+                    return Ok(Some(vec![ToEngine::Refused {
+                        job,
+                        reason: code("admission.not_live"),
+                    }]));
+                };
+                let result = if clock.now() > manifest.deadline {
+                    Err("admission.expired")
+                } else {
+                    self.forge.merge(manifest, self.forge_tokens.get(&job))
+                };
+                // One merge a job: done or refused, the job is over in the broker (ADR-0071).
+                self.end(job);
+                match result {
+                    Ok(sha) => Ok(Some(vec![ToEngine::Merged { job, sha }])),
+                    Err(reason) => Ok(Some(vec![ToEngine::Refused {
+                        job,
+                        reason: code(reason),
+                    }])),
+                }
+            }
             ToBroker::TakeResult { job } => {
                 let Some(manifest) = self.admitted.get(&job) else {
                     return Ok(Some(vec![ToEngine::Refused {
@@ -269,6 +291,13 @@ impl Broker {
                             self.jobs.0.remove(&job);
                             return refuse(code("handle.not_held"));
                         };
+                        // A merge only with its approval, and never for a tainted job (ADR-0004,
+                        // ADR-0071). An approval with no merge is as wrong.
+                        let merging = manifest.actions.contains("merge");
+                        if merging != manifest.approval.is_some() || (merging && manifest.tainted) {
+                            self.jobs.0.remove(&job);
+                            return refuse(code("admission.merge_unapproved"));
+                        }
                         // A result the broker could not read a submission as (ADR-0064).
                         if manifest
                             .result

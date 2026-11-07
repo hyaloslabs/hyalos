@@ -11,6 +11,7 @@ pub mod forge;
 pub mod hex;
 pub mod ids;
 pub mod manifest;
+pub mod merge;
 pub mod origin;
 pub mod plugin;
 pub mod prompt;
@@ -38,6 +39,7 @@ pub use manifest::{
     Approval, Budget, MANIFEST_VERSION, Manifest, ManifestError, ManifestKey, ManifestPublicKey,
     OpenError, Role, SignedManifest, flow,
 };
+pub use merge::{CommitSha, MergeMethod};
 pub use origin::Origin;
 pub use plugin::Grant;
 pub use prompt::{ActorPrompt, Choice, Choices, ReaderPrompt, Sourced, Typed};

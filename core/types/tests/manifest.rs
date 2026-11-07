@@ -4,8 +4,8 @@
 use std::collections::BTreeSet;
 
 use hyalos_types::{
-    Approval, Budget, Digest, JobId, MANIFEST_VERSION, Manifest, ManifestKey, OpenError, Role,
-    SignedManifest, Timestamp,
+    Approval, Budget, CommitSha, Digest, JobId, MANIFEST_VERSION, Manifest, ManifestKey,
+    MergeMethod, OpenError, Role, SignedManifest, Timestamp,
 };
 
 type Res = Result<(), Box<dyn std::error::Error>>;
@@ -31,19 +31,22 @@ fn manifest() -> Manifest {
         budget: Budget { tokens: 200_000 },
         deadline: Timestamp::from_millis(1_800_000_000_000),
         approval: Some(Approval {
-            head_sha: "0123456789abcdef0123456789abcdef01234567".into(),
             event: 77,
+            pr: 42,
+            head_sha: CommitSha::new("0123456789abcdef0123456789abcdef01234567")
+                .unwrap_or_else(|| unreachable!()),
+            method: MergeMethod::Merge,
         }),
         handles: Default::default(),
         result: None,
     }
 }
 
-const PINNED_PAYLOAD: &str = r#"{"version":1,"job":12,"role":"actor","tainted":true,"repo":"hyaloslabs/hyalos","branch_prefix":"hyalos/","actions":["open_pr","push"],"egress_hosts":["api.github.com","github.com"],"tools":["Bash","Edit","Read"],"data_flows":["repo->model"],"budget":{"tokens":200000},"deadline":1800000000000,"approval":{"head_sha":"0123456789abcdef0123456789abcdef01234567","event":77}}"#;
+const PINNED_PAYLOAD: &str = r#"{"version":2,"job":12,"role":"actor","tainted":true,"repo":"hyaloslabs/hyalos","branch_prefix":"hyalos/","actions":["open_pr","push"],"egress_hosts":["api.github.com","github.com"],"tools":["Bash","Edit","Read"],"data_flows":["repo->model"],"budget":{"tokens":200000},"deadline":1800000000000,"approval":{"event":77,"pr":42,"head_sha":"0123456789abcdef0123456789abcdef01234567","method":"merge"}}"#;
 
 /// Computed independently (Python `cryptography`, Ed25519 over the tag, the version as 4 big-endian
 /// bytes and the payload above), so it checks the code and not only itself.
-const PINNED_SIGNATURE: &str = "b247298149739dd959e70e3d0bfefacff14235eed2fc8fbecb004d88c30839a120c1c6c4babbe637bf9fb6e75803363dd2d5c0aec8031654ecdb2f24d8261b05";
+const PINNED_SIGNATURE: &str = "eede4e478b2e546e6e7a8f95ce2ee83f2d614bc6d580fda72fbb7041f329c4c718d2e14fe1052e5454835e28284f81c7a405c873c38e99cb442e8a4246cc4302";
 
 fn key() -> ManifestKey {
     ManifestKey::from_seed([7; 32])
@@ -56,7 +59,7 @@ fn the_signed_payload_is_pinned() -> Res {
         String::from_utf8(signed.payload().to_vec())?,
         PINNED_PAYLOAD
     );
-    assert_eq!(signed.version(), 1);
+    assert_eq!(signed.version(), 2);
     Ok(())
 }
 
@@ -106,7 +109,7 @@ fn handles_are_signed_when_present_and_absent_otherwise() -> Res {
     let signed = key().sign(&with)?;
     let payload = String::from_utf8(signed.payload().to_vec())?;
     let sorted = format!(
-        r#""approval":{{"head_sha":"0123456789abcdef0123456789abcdef01234567","event":77}},"handles":["{}","{}"]}}"#,
+        r#""approval":{{"event":77,"pr":42,"head_sha":"0123456789abcdef0123456789abcdef01234567","method":"merge"}},"handles":["{}","{}"]}}"#,
         "01".repeat(32),
         "02".repeat(32)
     );
@@ -170,7 +173,7 @@ fn the_public_key_is_not_the_seed_and_debug_prints_neither_secret() {
 fn an_unknown_version_is_refused_before_the_signature_is_looked_at() -> Res {
     let signed = key().sign(&manifest())?;
     // The signature is garbage and the version unknown: the version is what is reported.
-    for version in [0, 2, u32::MAX] {
+    for version in [0, 1, 3, u32::MAX] {
         let relabelled = SignedManifest::from_parts(version, signed.payload().to_vec(), [0; 64]);
         assert_eq!(
             relabelled.open(&key().public()),

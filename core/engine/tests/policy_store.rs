@@ -85,7 +85,7 @@ fn set(items: &[&str]) -> BTreeSet<String> {
 
 fn manifest(job: JobId) -> Manifest {
     Manifest {
-        version: 1,
+        version: hyalos_types::MANIFEST_VERSION,
         job,
         role: Role::Actor,
         // An actor reads its repository, so it is always tainted (ADR-0005).
@@ -123,6 +123,17 @@ fn violation(result: Result<Head, EngineError>) -> Res<RuleViolation> {
 }
 
 // ---- storing a policy -----------------------------------------------------------------------
+
+/// An approval as a manifest carries one, naming event 5, which is no `merge.approved` event.
+fn approval() -> hyalos_types::Approval {
+    hyalos_types::Approval {
+        event: 5,
+        pr: 1,
+        head_sha: hyalos_types::CommitSha::new("0123456789abcdef0123456789abcdef01234567")
+            .unwrap_or_else(|| unreachable!()),
+        method: hyalos_types::MergeMethod::Merge,
+    }
+}
 
 #[test]
 fn a_human_approves_a_policy_and_it_becomes_the_policy_in_force() -> Res {
@@ -408,9 +419,8 @@ fn the_baseline_holds_whatever_the_operator_permits() -> Res {
         Decider::Human,
         why(),
     )?;
-    // Irreversible actions need an approval, and no approval event exists yet to set the fact.
+    // Irreversible actions need an approval, and only a merge has one to be minted from (ADR-0071).
     for action in [
-        "merge",
         "publish",
         "change_policy",
         "spend_over_cap",
@@ -418,13 +428,33 @@ fn the_baseline_holds_whatever_the_operator_permits() -> Res {
     ] {
         let mut m = manifest(job);
         m.actions = set(&[action]);
-        m.approval = Some(hyalos_types::Approval {
-            head_sha: "0123456789abcdef0123456789abcdef01234567".into(),
-            event: 5,
-        });
         match refusal(e.mint_manifest(&m, &StepInputs::default(), &manifest_key(), at(20)))? {
             MintRefusal::Denied { reason, .. } => assert_eq!(reason, codes::denied(), "{action}"),
             other => return Err(format!("{action}: {other:?}").into()),
+        }
+        // An approval does not stand in for one: it is a merge's, and only from its event.
+        m.approval = Some(approval());
+        match refusal(e.mint_manifest(&m, &StepInputs::default(), &manifest_key(), at(20)))? {
+            MintRefusal::Invalid { reason } => {
+                assert_eq!(reason.as_str(), "mint.merge_unapproved", "{action}")
+            }
+            other => return Err(format!("{action}: {other:?}").into()),
+        }
+    }
+    // A merge with no approval, or one no `merge.approved` event of the task made, is not minted.
+    for approval in [None, Some(approval())] {
+        let mut m = manifest(job);
+        m.role = Role::Deterministic;
+        m.tainted = false;
+        m.actions = set(&["merge"]);
+        m.branch_prefix = String::new();
+        m.egress_hosts.clear();
+        m.tools.clear();
+        m.data_flows.clear();
+        m.approval = approval;
+        match refusal(e.mint_manifest(&m, &StepInputs::default(), &manifest_key(), at(20)))? {
+            MintRefusal::Invalid { reason } => assert_eq!(reason.as_str(), "mint.merge_unapproved"),
+            other => return Err(format!("{other:?}").into()),
         }
     }
     // And a tainted job cannot merge, with or without anything else.
@@ -433,7 +463,7 @@ fn the_baseline_holds_whatever_the_operator_permits() -> Res {
     tainted.actions = set(&["merge"]);
     assert!(matches!(
         refusal(e.mint_manifest(&tainted, &StepInputs::default(), &manifest_key(), at(20)))?,
-        MintRefusal::Denied { .. }
+        MintRefusal::Denied { .. } | MintRefusal::Invalid { .. }
     ));
     // Under a permit-all, an ordinary manifest is minted.
     assert!(
@@ -744,12 +774,18 @@ fn a_tainted_manifest_cannot_merge_even_when_the_operator_permits_everything() -
     )?;
     let mut m = manifest(job);
     m.actions = set(&["merge", "read"]);
-    m.approval = Some(hyalos_types::Approval {
-        head_sha: "0123456789abcdef0123456789abcdef01234567".into(),
-        event: 5,
-    });
+    m.approval = Some(approval());
+    // A merge job is untainted and does nothing else; this one is neither (ADR-0071).
     match refusal(e.mint_manifest(&m, &StepInputs::default(), &manifest_key(), at(20)))? {
-        MintRefusal::Denied { ask, .. } => assert_eq!(ask, "merge"),
+        MintRefusal::Invalid { reason } => assert_eq!(reason.as_str(), "mint.merge_not_alone"),
+        other => return Err(format!("{other:?}").into()),
+    }
+    m.actions = set(&["merge"]);
+    m.branch_prefix = String::new();
+    m.data_flows.clear();
+    m.tainted = true;
+    match refusal(e.mint_manifest(&m, &StepInputs::default(), &manifest_key(), at(20)))? {
+        MintRefusal::Invalid { reason } => assert_eq!(reason.as_str(), "mint.merge_not_alone"),
         other => return Err(format!("{other:?}").into()),
     }
     // Every policy question minting asks of a tainted job says so, so the baseline's taint rules see it.

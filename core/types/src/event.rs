@@ -10,16 +10,16 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, AgentName, Answer, Attestation, Digest, HoldId, JobId, Origin, ReasonCode, Schema,
-    Signed, Stakes, SubstrateName, TaskId, TypedValue, Upcast, Value,
+    AgentId, AgentName, Answer, Attestation, CommitSha, Digest, HoldId, JobId, MergeMethod, Origin,
+    ReasonCode, Schema, Signed, Stakes, SubstrateName, TaskId, TypedValue, Upcast, Value,
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 13;
+pub const SCHEMA_VERSION: u32 = 14;
 
-/// What this build reads: version 13, and versions 1 to 12 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// What this build reads: version 14, and versions 1 to 13 upcast to it (ADR-0023, ADR-0025, ADR-0027,
 /// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069,
-/// ADR-0070).
+/// ADR-0070, ADR-0071).
 ///
 /// Version 2 added the stakes of a hold and the reason for resolving one. A version 1 hold is given the
 /// most cautious stakes, so only a human can release it; a version 1 resolution is given an explicit
@@ -33,7 +33,8 @@ pub const SCHEMA_VERSION: u32 = 13;
 /// added `agent.issued` and `agent.revoked` and changed no payload. Version 12 added `job.values` and
 /// changed no payload. Version 13 added `signed` to every decision (`hold.resolved`, `task.cancelled`,
 /// `policy.approved`, `handle.released`, `agent.issued`, `agent.revoked`): an older human decision
-/// reads as `unrecorded`, any other as `none`.
+/// reads as `unrecorded`, any other as `none`. Version 14 added `merge.approved` and changed no
+/// payload.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -321,6 +322,22 @@ pub enum Event {
         reason: ReasonCode,
         signed: Signed,
     },
+    /// A human approved merging pull request `pr` of `repo` at commit `head`, by `method`, as task
+    /// `task`'s one merge (ADR-0012, ADR-0071). The approval names the commit the operator reviewed:
+    /// the broker merges only if the pull request's head is still that commit, so a push after it
+    /// voids it. A merge is irreversible, so the state refuses anyone but a human, and a task holds at
+    /// most one. `repo` is an `owner/name` identifier, not forge text.
+    #[serde(rename = "merge.approved")]
+    MergeApproved {
+        task: TaskId,
+        repo: String,
+        pr: u64,
+        head: CommitSha,
+        method: MergeMethod,
+        by: Resolution,
+        reason: ReasonCode,
+        signed: Signed,
+    },
     /// The typed values a running job returned: a reader's or planner's answer, or an actor's submitted
     /// result (ADR-0062, ADR-0064, ADR-0069). A choice is its option's index, so no text is stored. It
     /// is written together with the job's ending, so a resumed run finds every finished step's values
@@ -405,11 +422,12 @@ impl Event {
             | Event::HandleReleased { .. }
             | Event::AgentIssued { .. }
             | Event::AgentRevoked { .. }
+            | Event::MergeApproved { .. }
             | Event::JobValues { .. } => origin == Origin::Engine,
         }
     }
 
-    /// Who decided, for the six kinds that record a decision (ADR-0070).
+    /// Who decided, for the seven kinds that record a decision (ADR-0070, ADR-0071).
     pub fn decided_by(&self) -> Option<Resolution> {
         match self {
             Event::HoldResolved { by, .. }
@@ -417,7 +435,8 @@ impl Event {
             | Event::PolicyApproved { by, .. }
             | Event::HandleReleased { by, .. }
             | Event::AgentIssued { by, .. }
-            | Event::AgentRevoked { by, .. } => Some(*by),
+            | Event::AgentRevoked { by, .. }
+            | Event::MergeApproved { by, .. } => Some(*by),
             _ => None,
         }
     }
@@ -430,7 +449,8 @@ impl Event {
             | Event::PolicyApproved { signed, .. }
             | Event::HandleReleased { signed, .. }
             | Event::AgentIssued { signed, .. }
-            | Event::AgentRevoked { signed, .. } => Some(signed),
+            | Event::AgentRevoked { signed, .. }
+            | Event::MergeApproved { signed, .. } => Some(signed),
             _ => None,
         }
     }
@@ -443,7 +463,8 @@ impl Event {
             | Event::PolicyApproved { signed, .. }
             | Event::HandleReleased { signed, .. }
             | Event::AgentIssued { signed, .. }
-            | Event::AgentRevoked { signed, .. } => *signed = value,
+            | Event::AgentRevoked { signed, .. }
+            | Event::MergeApproved { signed, .. } => *signed = value,
             _ => {}
         }
         self
@@ -472,6 +493,7 @@ impl Event {
             Event::HandleReleased { .. } => "handle.released",
             Event::AgentIssued { .. } => "agent.issued",
             Event::AgentRevoked { .. } => "agent.revoked",
+            Event::MergeApproved { .. } => "merge.approved",
             Event::JobValues { .. } => "job.values",
         }
     }
@@ -482,7 +504,7 @@ impl Event {
     }
 
     /// Every `kind` value, for checking tables and test coverage.
-    pub const KINDS: [&'static str; 15] = [
+    pub const KINDS: [&'static str; 16] = [
         "task.created",
         "task.completed",
         "job.started",
@@ -497,6 +519,7 @@ impl Event {
         "handle.released",
         "agent.issued",
         "agent.revoked",
+        "merge.approved",
         "job.values",
     ];
 
@@ -695,6 +718,20 @@ mod tests {
                     signed: Signed::None,
                 },
                 r#"{"kind":"agent.revoked","agent":4,"by":"policy","reason":"agent.revoked","signed":"none"}"#
+                    .to_string(),
+            ),
+            (
+                Event::MergeApproved {
+                    task: TaskId::from_seq(1),
+                    repo: "octo/repo".into(),
+                    pr: 42,
+                    head: CommitSha::new("0123456789abcdef0123456789abcdef01234567").unwrap(),
+                    method: MergeMethod::Squash,
+                    by: Resolution::Human,
+                    reason: ReasonCode::new("merge.operator").unwrap(),
+                    signed: Signed::Unrecorded,
+                },
+                r#"{"kind":"merge.approved","task":1,"repo":"octo/repo","pr":42,"head":"0123456789abcdef0123456789abcdef01234567","method":"squash","by":"human","reason":"merge.operator","signed":"unrecorded"}"#
                     .to_string(),
             ),
             (

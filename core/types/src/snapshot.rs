@@ -13,8 +13,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, AgentName, Digest, Gate, HoldId, HoldReason, JobId, JobOutcome, ReasonCode,
-    Resolution, Stakes, TaskId, TypedValue, Value,
+    AgentId, AgentName, CommitSha, Digest, Gate, HoldId, HoldReason, JobId, JobOutcome,
+    MergeMethod, ReasonCode, Resolution, Stakes, TaskId, TypedValue, Value,
 };
 
 /// The layout [`StateImage`] is written in today.
@@ -24,8 +24,10 @@ use crate::{
 /// in force (ADR-0034). Earlier images have none, which is the baseline alone. Version 5 added the
 /// handles released (ADR-0063). Earlier images have none. Version 6 added the agents' credentials
 /// (ADR-0068). Earlier images have none. Version 7 added why each job ended and the values it returned
-/// (ADR-0069). An earlier job ended for an unrecorded reason and returned none.
-pub const STATE_VERSION: u32 = 8;
+/// (ADR-0069). An earlier job ended for an unrecorded reason and returned none. Version 8 added the
+/// last decision the operator signed and the first event at the signed schema version (ADR-0070).
+/// Version 9 added the merges approved (ADR-0071); earlier images have none.
+pub const STATE_VERSION: u32 = 9;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +56,24 @@ pub struct StateImage {
     /// The first event written at schema version 13 or later: from it on, a human decision without
     /// the operator's signature is refused (ADR-0070).
     pub signed_since: Option<u64>,
+    /// Every merge approved, in the order it was recorded (ADR-0071).
+    pub merges: Vec<MergeImage>,
+}
+
+/// A `merge.approved` event, kept: a merge job's manifest is minted only from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergeImage {
+    /// The sequence number of the event that approved it.
+    pub seq: u64,
+    pub at: u64,
+    pub task: TaskId,
+    pub repo: String,
+    pub pr: u64,
+    pub head: CommitSha,
+    pub method: MergeMethod,
+    pub by: Resolution,
+    pub reason: ReasonCode,
 }
 
 /// An `agent.issued` event and, if one followed, its `agent.revoked`: whether the MCP server admits
@@ -290,8 +310,12 @@ impl StateImage {
             object.insert("agents".into(), Value::Array(Vec::new()));
         }
         // 7 -> 8: no decision had been signed by the operator.
-        object.insert("last_approval".into(), Value::Null);
-        object.insert("signed_since".into(), Value::Null);
+        if version < 8 {
+            object.insert("last_approval".into(), Value::Null);
+            object.insert("signed_since".into(), Value::Null);
+        }
+        // 8 -> 9: no merge had been approved.
+        object.insert("merges".into(), Value::Array(Vec::new()));
         // 6 -> 7: no job's reason was kept, and no job had returned values.
         if version >= 7 {
             return serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()));
@@ -460,6 +484,7 @@ mod tests {
             }],
             last_approval: Some(3),
             signed_since: Some(2),
+            merges: vec![],
         }
     }
 

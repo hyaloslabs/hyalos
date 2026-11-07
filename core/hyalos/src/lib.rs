@@ -17,6 +17,7 @@ pub mod launch;
 pub mod log_cmd;
 pub mod mcp;
 pub mod mcp_cmd;
+pub mod merge_cmd;
 pub mod microvm_conf;
 pub mod operator;
 pub mod operator_cmd;

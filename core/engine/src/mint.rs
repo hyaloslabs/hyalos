@@ -8,9 +8,12 @@
 //!
 //! **Fails closed.** Nothing is allowed by default: with no operator policy the baseline alone applies,
 //! and it permits nothing. A policy that errors, or that no longer validates against the schema, holds
-//! the request instead of allowing it. The approval fact is never set here: it is the operator's
-//! signature on an approval event for this exact action (ADR-0012), approvals have no event yet
-//! (S5.4), and so an irreversible action cannot be minted, which is the safe way to be incomplete.
+//! the request instead of allowing it.
+//!
+//! **Approval.** The policy's `approved` fact is set for one question only: `merge`, in a manifest
+//! whose approval names the `merge.approved` event of the job's own task and repeats exactly what it
+//! approved (ADR-0012, ADR-0071). That event carries the operator's signature (ADR-0070). A merge job
+//! does nothing else, and is untainted. No other irreversible action is ever minted approved.
 
 use std::fmt;
 
@@ -71,6 +74,19 @@ pub mod mint_codes {
     /// not granted (ADR-0006, ADR-0066).
     pub fn plugin_widens() -> ReasonCode {
         code("mint.plugin_widens")
+    }
+
+    /// The manifest merges without an approval, carries an approval without merging, or its
+    /// approval is not the `merge.approved` event of the job's task as that event approved it
+    /// (ADR-0071).
+    pub fn merge_unapproved() -> ReasonCode {
+        code("mint.merge_unapproved")
+    }
+
+    /// A merge job's manifest asks for something besides the merge, or is tainted (ADR-0004,
+    /// ADR-0071).
+    pub fn merge_not_alone() -> ReasonCode {
+        code("mint.merge_not_alone")
     }
 }
 
@@ -165,7 +181,8 @@ impl Engine {
         {
             return Err(invalid(mint_codes::bad_result()));
         }
-        let asks = asks(manifest)?;
+        let approved = self.merge_approval(manifest, task)?;
+        let asks = asks(manifest, approved)?;
         let policies = self.policies().map_err(|_| MintRefusal::Held {
             ask: "the policy".into(),
             reason: codes::invalid(),
@@ -191,6 +208,48 @@ impl Engine {
         key.sign(manifest).map_err(MintRefusal::Unsignable)
     }
 
+    /// Whether the manifest's merge is approved: `false` for a manifest that neither merges nor
+    /// carries an approval, `true` only for one whose approval is exactly the job's task's
+    /// `merge.approved` event, and a refusal for anything in between.
+    fn merge_approval(
+        &self,
+        manifest: &Manifest,
+        task: Option<hyalos_types::TaskId>,
+    ) -> Result<bool, MintRefusal> {
+        let invalid = |reason: ReasonCode| MintRefusal::Invalid { reason };
+        let merging = manifest.actions.contains(Action::Merge.id());
+        let approval = match (merging, &manifest.approval) {
+            (false, None) => return Ok(false),
+            (true, Some(approval)) => approval,
+            _ => return Err(invalid(mint_codes::merge_unapproved())),
+        };
+        // The merge and nothing else, untainted: tainted text never steers what is merged.
+        let alone = manifest.actions.len() == 1
+            && manifest.tools.is_empty()
+            && manifest.egress_hosts.is_empty()
+            && manifest.data_flows.is_empty()
+            && manifest.handles.is_empty()
+            && manifest.result.is_none()
+            && manifest.pr_base.is_none()
+            && manifest.branch_prefix.is_empty();
+        if !alone || manifest.tainted {
+            return Err(invalid(mint_codes::merge_not_alone()));
+        }
+        let matches = task
+            .and_then(|t| self.state().merge_of(t))
+            .is_some_and(|m| {
+                m.seq == approval.event
+                    && m.repo == manifest.repo
+                    && m.pr == approval.pr
+                    && m.head == approval.head_sha
+                    && m.method == approval.method
+            });
+        if !matches {
+            return Err(invalid(mint_codes::merge_unapproved()));
+        }
+        Ok(true)
+    }
+
     fn job_is_running(&self, job: JobId) -> bool {
         self.state()
             .jobs()
@@ -200,7 +259,9 @@ impl Engine {
 }
 
 /// Every question a manifest puts to the policy, in a fixed order: actions, tools, data flows, hosts.
-fn asks(manifest: &Manifest) -> Result<Vec<(String, PolicyRequest)>, MintRefusal> {
+/// `approved` is set for the merge question alone, and only when [`Engine::merge_approval`] found
+/// the operator's approval for it.
+fn asks(manifest: &Manifest, approved: bool) -> Result<Vec<(String, PolicyRequest)>, MintRefusal> {
     let request = |action: Action, name: &str| PolicyRequest {
         action,
         job: JobFacts {
@@ -212,12 +273,13 @@ fn asks(manifest: &Manifest) -> Result<Vec<(String, PolicyRequest)>, MintRefusal
             repo: manifest.repo.clone(),
             name: name.to_string(),
             // Minting asks whether the job may be given a capability on its own branches. Whether a
-            // particular branch is protected is a fact of the moment of the action, not of the grant.
+            // particular branch is protected is a fact of the moment of the action, not of the grant,
+            // so a merge is asked as if its base were protected: the stricter answer.
             in_branch_prefix: true,
-            protected: false,
+            protected: action == Action::Merge,
         },
-        // Never set here; see the module comment.
-        approved: false,
+        // See the module comment.
+        approved: approved && action == Action::Merge,
         subscription_token: false,
     };
     let mut asks = Vec::new();
