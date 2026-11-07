@@ -1,6 +1,6 @@
 # ADR-0069: Jobs the driving agent starts, as MCP tasks that outlive the server
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
