@@ -139,6 +139,16 @@ pub fn submit(forwarder: &str, body: &[u8]) -> io::Result<(u16, Vec<u8>)> {
 /// Posts a JSON `body` to `path` on the broker through the forwarder at `forwarder`, and returns the
 /// status and the body of the answer.
 pub fn post(forwarder: &str, path: &str, body: &[u8]) -> io::Result<(u16, Vec<u8>)> {
+    request(forwarder, "POST", path, body)
+}
+
+/// Gets `path` from the broker through the forwarder at `forwarder`, and returns the status and the
+/// body of the answer.
+pub fn get(forwarder: &str, path: &str) -> io::Result<(u16, Vec<u8>)> {
+    request(forwarder, "GET", path, b"")
+}
+
+fn request(forwarder: &str, method: &str, path: &str, body: &[u8]) -> io::Result<(u16, Vec<u8>)> {
     if body.len() > MAX_SUBMISSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -150,7 +160,7 @@ pub fn post(forwarder: &str, path: &str, body: &[u8]) -> io::Result<(u16, Vec<u8
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     write!(
         stream,
-        "POST {path} HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;

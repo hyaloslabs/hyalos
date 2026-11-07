@@ -26,7 +26,7 @@ use crate::{
 };
 
 /// The version of this protocol. Both sides say theirs first and stop on a mismatch.
-pub const WIRE_VERSION: u32 = 6;
+pub const WIRE_VERSION: u32 = 7;
 
 /// The longest job socket path the engine makes and the broker binds (ADR-0038). A Unix socket
 /// path is limited to about 107 bytes; this leaves room.
@@ -110,6 +110,11 @@ pub enum ToBroker {
     /// Read issue `number` of the job's repository from the forge, with the job's forge token
     /// (ADR-0047). The answer is `Issue`, or `Refused` when the read failed, which fails the job.
     ReadIssue { job: JobId, number: u64 },
+    /// Read issue `number` of the job's repository and hold it as a handle (wire version 7, ADR-0063).
+    /// The broker keeps the issue for the rest of the run and answers `Held` with its digest, which is
+    /// all the engine learns; the text is served only to a later job whose manifest lists the digest.
+    /// `Refused` when the read failed, which fails the job.
+    HoldIssue { job: JobId, number: u64 },
     /// Run a reader step for the job (wire version 6, ADR-0061). The answer is `Values`, or `Refused`
     /// when anything about it failed, which fails the job.
     Read { job: JobId, call: ReaderCall },
@@ -132,6 +137,9 @@ pub enum ToEngine {
     Refused { job: JobId, reason: ReasonCode },
     /// The issue asked for with `ReadIssue`, as typed forge-authored values (ADR-0047).
     Issue { job: JobId, issue: ForgeIssue },
+    /// The issue asked for with `HoldIssue` is held as `handle`, the SHA-256 of the bytes the broker
+    /// keeps (ADR-0063).
+    Held { job: JobId, handle: Digest },
     /// A reader step's answer: one typed value per field of its output, in the output's order. No
     /// text: a choice is its option's index (ADR-0061).
     Values { job: JobId, values: Vec<TypedValue> },
@@ -295,7 +303,7 @@ mod tests {
                     forge: None,
                 },
                 format!(
-                    r#"{{"kind":"hello","version":6,"manifest_key":"{}"}}"#,
+                    r#"{{"kind":"hello","version":7,"manifest_key":"{}"}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -309,7 +317,7 @@ mod tests {
                     }),
                 },
                 format!(
-                    r#"{{"kind":"hello","version":6,"manifest_key":"{}","forge":{{"api":"https://api.github.com","git":"https://github.com"}}}}"#,
+                    r#"{{"kind":"hello","version":7,"manifest_key":"{}","forge":{{"api":"https://api.github.com","git":"https://github.com"}}}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -339,6 +347,13 @@ mod tests {
                     number: 12,
                 },
                 r#"{"kind":"read_issue","job":3,"number":12}"#.to_string(),
+            ),
+            (
+                ToBroker::HoldIssue {
+                    job: JobId::from_seq(3),
+                    number: 12,
+                },
+                r#"{"kind":"hold_issue","job":3,"number":12}"#.to_string(),
             ),
             (
                 ToBroker::Read {
@@ -384,6 +399,13 @@ mod tests {
                     issue,
                 },
                 r#"{"kind":"issue","job":3,"issue":{"number":12,"state":"open","title":"t","body":"b","author":null,"labels":[]}}"#.to_string(),
+            ),
+            (
+                ToEngine::Held {
+                    job: JobId::from_seq(3),
+                    handle: Digest::from_bytes([9; 32]),
+                },
+                format!(r#"{{"kind":"held","job":3,"handle":"{}"}}"#, "09".repeat(32)),
             ),
             (
                 ToEngine::Values {

@@ -87,6 +87,7 @@ fn manifest(job: u64) -> Manifest {
         budget: Budget { tokens: 10_000 },
         deadline: Timestamp::from_millis(u64::MAX / 2),
         approval: None,
+        handles: Default::default(),
     }
 }
 

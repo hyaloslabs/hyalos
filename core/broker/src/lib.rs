@@ -7,6 +7,7 @@ pub mod content;
 pub mod egress;
 pub mod forge;
 pub mod git;
+pub mod handles;
 pub mod model;
 pub mod pack;
 pub mod pulls;

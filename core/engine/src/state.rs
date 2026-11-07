@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use hyalos_types::snapshot::{
-    CancelledImage, HoldImage, JobEndImage, JobImage, PolicyImage, PrunedImage, ResolvedImage,
-    StateImage, TaskImage,
+    CancelledImage, HandleImage, HoldImage, JobEndImage, JobImage, PolicyImage, PrunedImage,
+    ResolvedImage, StateImage, TaskImage,
 };
 use hyalos_types::{
     Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, MAX_POLICY_DOCUMENT,
@@ -186,6 +186,15 @@ pub enum RuleViolation {
     PolicyTooLarge {
         len: usize,
     },
+    /// Raw forge text reaches an actor only by a human's decision (ADR-0012, ADR-0063).
+    HandleNeedsAHuman {
+        by: Resolution,
+    },
+    /// That handle was already released to that task.
+    HandleAlreadyReleased {
+        task: TaskId,
+        handle: Digest,
+    },
 }
 
 impl fmt::Display for RuleViolation {
@@ -241,6 +250,13 @@ impl fmt::Display for RuleViolation {
                 f,
                 "a policy change needs a human's approval; {by:?} may not approve one (ADR-0012, ADR-0034)"
             ),
+            RuleViolation::HandleNeedsAHuman { by } => write!(
+                f,
+                "releasing a handle's text to an actor needs a human's decision; {by:?} may not make one (ADR-0012, ADR-0063)"
+            ),
+            RuleViolation::HandleAlreadyReleased { task, handle } => {
+                write!(f, "handle {handle} is already released to task {task}")
+            }
             RuleViolation::PolicyTooLarge { len } => write!(
                 f,
                 "a policy document of {len} bytes is larger than the {MAX_POLICY_DOCUMENT} bytes allowed"
@@ -304,6 +320,7 @@ pub struct State {
     holds: BTreeMap<HoldId, Hold>,
     pruned: Vec<Pruned>,
     policy: Option<PolicyApproval>,
+    handles: Vec<ReleasedHandle>,
     pending: Option<Pending>,
     last_seq: u64,
     last_at: Option<Timestamp>,
@@ -319,6 +336,18 @@ pub struct PolicyApproval {
     pub by: Resolution,
     pub reason: ReasonCode,
     pub document: String,
+}
+
+/// A handle a human released to a task's jobs (ADR-0063).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleasedHandle {
+    /// The event that released it.
+    pub seq: u64,
+    pub at: Timestamp,
+    pub task: TaskId,
+    pub handle: Digest,
+    pub by: Resolution,
+    pub reason: ReasonCode,
 }
 
 /// An archive that was deleted from the machine, as the log recorded it (ADR-0026).
@@ -343,6 +372,18 @@ impl State {
 
     pub fn holds(&self) -> &BTreeMap<HoldId, Hold> {
         &self.holds
+    }
+
+    /// Every handle released, in the order it was recorded (ADR-0063).
+    pub fn handles(&self) -> &[ReleasedHandle] {
+        &self.handles
+    }
+
+    /// Whether `handle` was released to `task`.
+    pub fn handle_is_released(&self, task: TaskId, handle: &Digest) -> bool {
+        self.handles
+            .iter()
+            .any(|h| h.task == task && h.handle == *handle)
     }
 
     /// Every archive recorded as pruned, in the order it was recorded.
@@ -552,6 +593,26 @@ impl State {
                 }
                 Ok(())
             }
+            Event::HandleReleased {
+                task, handle, by, ..
+            } => {
+                match self.task(*task)?.status() {
+                    TaskStatus::Completed => return Err(RuleViolation::TaskCompleted(*task)),
+                    TaskStatus::Cancelled => return Err(RuleViolation::TaskCancelled(*task)),
+                    TaskStatus::Open | TaskStatus::Held => {}
+                }
+                // The authority table of a hold (ADR-0025) at the irreversible tier: a human only.
+                if !Stakes::irreversible().may_be_resolved_by(*by) {
+                    return Err(RuleViolation::HandleNeedsAHuman { by: *by });
+                }
+                if self.handle_is_released(*task, handle) {
+                    return Err(RuleViolation::HandleAlreadyReleased {
+                        task: *task,
+                        handle: *handle,
+                    });
+                }
+                Ok(())
+            }
             Event::ArchivePruned {
                 last_seq,
                 last_hash,
@@ -713,6 +774,19 @@ impl State {
                     document: document.clone(),
                 })
             }
+            Event::HandleReleased {
+                task,
+                handle,
+                by,
+                reason,
+            } => self.handles.push(ReleasedHandle {
+                seq,
+                at,
+                task: *task,
+                handle: *handle,
+                by: *by,
+                reason: reason.clone(),
+            }),
             Event::ArchivePruned {
                 last_seq,
                 last_hash,
@@ -740,6 +814,7 @@ impl State {
             holds,
             pruned,
             policy,
+            handles,
             pending,
             last_seq,
             last_at,
@@ -860,6 +935,27 @@ impl State {
                     document: document.clone(),
                 }
             }),
+            handles: handles
+                .iter()
+                .map(|h| {
+                    let ReleasedHandle {
+                        seq,
+                        at,
+                        task,
+                        handle,
+                        by,
+                        reason,
+                    } = h;
+                    HandleImage {
+                        seq: *seq,
+                        at: at.as_millis(),
+                        task: *task,
+                        handle: *handle,
+                        by: *by,
+                        reason: reason.clone(),
+                    }
+                })
+                .collect(),
         })
     }
 
@@ -875,6 +971,7 @@ impl State {
             holds,
             pruned,
             policy,
+            handles,
         } = image;
         let mut state = State {
             last_seq,
@@ -940,6 +1037,17 @@ impl State {
             reason: p.reason,
             document: p.document,
         });
+        state.handles = handles
+            .into_iter()
+            .map(|h| ReleasedHandle {
+                seq: h.seq,
+                at: Timestamp::from_millis(h.at),
+                task: h.task,
+                handle: h.handle,
+                by: h.by,
+                reason: h.reason,
+            })
+            .collect();
         let broken = state.invariant_violations();
         if !broken.is_empty() {
             return Err(format!(
@@ -1013,6 +1121,26 @@ impl State {
         for (id, job) in &self.jobs {
             if !self.tasks.contains_key(&job.task) {
                 out.push(format!("job {id} belongs to missing task {}", job.task));
+            }
+        }
+        for (i, h) in self.handles.iter().enumerate() {
+            if !self.tasks.contains_key(&h.task) {
+                out.push(format!(
+                    "handle {} belongs to missing task {}",
+                    h.handle, h.task
+                ));
+            }
+            if h.by != Resolution::Human {
+                out.push(format!("handle {} was released by {:?}", h.handle, h.by));
+            }
+            if self.handles[..i]
+                .iter()
+                .any(|g| g.task == h.task && g.handle == h.handle)
+            {
+                out.push(format!(
+                    "handle {} is released to task {} twice",
+                    h.handle, h.task
+                ));
             }
         }
         for (i, p) in self.pruned.iter().enumerate() {

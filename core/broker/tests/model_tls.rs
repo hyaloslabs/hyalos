@@ -185,6 +185,7 @@ fn manifest() -> Manifest {
         budget: Budget { tokens: 10_000 },
         deadline: Timestamp::from_millis(u64::MAX),
         approval: None,
+        handles: Default::default(),
     }
 }
 

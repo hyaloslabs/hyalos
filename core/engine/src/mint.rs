@@ -51,9 +51,15 @@ pub mod mint_codes {
         code("mint.expired")
     }
 
-    /// The step reads forge-authored content, or is an actor, and the manifest is not tainted.
+    /// The step reads forge-authored content, or is an actor, or the manifest names a handle, and
+    /// the manifest is not tainted.
     pub fn taint_required() -> ReasonCode {
         code("mint.taint_required")
+    }
+
+    /// The manifest names a handle no human released to its job's task (ADR-0063).
+    pub fn handle_not_released() -> ReasonCode {
+        code("mint.handle_not_released")
     }
 }
 
@@ -120,8 +126,19 @@ impl Engine {
         if manifest.deadline <= now {
             return Err(invalid(mint_codes::expired()));
         }
-        if inputs.tainted(manifest.role) && !manifest.tainted {
+        // A handle is raw forge text the job will read, so it taints the job like reading it would.
+        if (inputs.tainted(manifest.role) || !manifest.handles.is_empty()) && !manifest.tainted {
             return Err(invalid(mint_codes::taint_required()));
+        }
+        // Each handle must have been released to this job's task by a human, which binds the
+        // decision to the digest the manifest names (ADR-0063).
+        let task = self.state().jobs().get(&manifest.job).map(|j| j.task);
+        if !manifest
+            .handles
+            .iter()
+            .all(|h| task.is_some_and(|t| self.state().handle_is_released(t, h)))
+        {
+            return Err(invalid(mint_codes::handle_not_released()));
         }
         let asks = asks(manifest)?;
         let policies = self.policies().map_err(|_| MintRefusal::Held {

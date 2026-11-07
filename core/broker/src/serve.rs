@@ -24,6 +24,7 @@ use hyalos_types::{
 
 use crate::forge::Forge;
 use crate::git::Git;
+use crate::handles::{self, Held};
 use crate::reader;
 use crate::sandbox::{JobSocket, Sandboxes};
 use crate::{Admission, Credential, LiveJobs};
@@ -54,6 +55,9 @@ pub struct Broker {
     reports: Option<Sender<ToEngine>>,
     /// Where the broker reads forge content for a job (ADR-0047).
     forge: Forge,
+    /// The raw text the broker holds as handles, for the rest of its run (ADR-0063). The engine knows
+    /// only their digests.
+    held: Held,
 }
 
 impl Broker {
@@ -68,6 +72,7 @@ impl Broker {
             sockets: BTreeMap::new(),
             reports: None,
             forge: Forge::github(),
+            held: Held::new(),
         }
     }
 
@@ -156,6 +161,32 @@ impl Broker {
                     }
                 }
             }
+            ToBroker::HoldIssue { job, number } => {
+                let Some(manifest) = self.admitted.get(&job) else {
+                    return Ok(Some(vec![ToEngine::Refused {
+                        job,
+                        reason: code("admission.not_live"),
+                    }]));
+                };
+                let result = if clock.now() > manifest.deadline {
+                    Err("admission.expired")
+                } else {
+                    self.forge
+                        .read_issue(manifest, self.forge_tokens.get(&job), number)
+                        .and_then(|issue| handles::hold(&mut self.held, &issue))
+                };
+                // As a read: one that fails fails its job, never the broker (ADR-0002).
+                match result {
+                    Ok(handle) => Ok(Some(vec![ToEngine::Held { job, handle }])),
+                    Err(reason) => {
+                        self.end(job);
+                        Ok(Some(vec![ToEngine::Refused {
+                            job,
+                            reason: code(reason),
+                        }]))
+                    }
+                }
+            }
             ToBroker::Read { job, call } => {
                 let Some(manifest) = self.admitted.get(&job) else {
                     return Ok(Some(vec![ToEngine::Refused {
@@ -206,11 +237,17 @@ impl Broker {
                     .admit(&signed, &Credential { job, role }, &self.jobs, clock)
                 {
                     Ok(manifest) => {
+                        // A handle the manifest names must be one this broker holds (ADR-0063).
+                        let Some(held) = handles::for_manifest(&self.held, &manifest) else {
+                            self.jobs.0.remove(&job);
+                            return refuse(code("handle.not_held"));
+                        };
                         if let Some(sandboxes) = &self.sandboxes {
                             match JobSocket::open(
                                 Path::new(&socket),
                                 manifest.clone(),
                                 forge_token.clone(),
+                                held,
                                 sandboxes.clone(),
                                 self.reports.clone(),
                             ) {

@@ -163,6 +163,7 @@ fn manifest(job: u64, role: Role) -> Manifest {
         budget: Budget { tokens: 100_000 },
         deadline: Timestamp::from_millis(10_000),
         approval: None,
+        handles: Default::default(),
     }
 }
 

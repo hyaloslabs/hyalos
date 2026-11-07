@@ -23,6 +23,7 @@ use std::sync::mpsc::Sender;
 use crate::egress::{self, Egress, Gates, ProxyRequest, Reports};
 use crate::forge::Forge;
 use crate::git::{self, Git};
+use crate::handles::{self, Held};
 use crate::model::{
     Adapter, Anthropic, ApiKey, HttpTransport, MAX_BODY, Meter, OpenAi, Relay, Request, Response,
     Sleep, refusal,
@@ -278,13 +279,15 @@ pub(crate) struct JobSocket {
 }
 
 impl JobSocket {
-    /// Listens at `path` for the job `manifest` is for, whose git calls carry `forge_token`. The path
-    /// must be absolute, short, and not exist; its directory is the engine's, made for this job.
-    /// Egress and git refusals go to `reports`.
+    /// Listens at `path` for the job `manifest` is for, whose git calls carry `forge_token` and which
+    /// may read the raw text of `held`, the handles its manifest names (ADR-0063). The path must be
+    /// absolute, short, and not exist; its directory is the engine's, made for this job. Egress and
+    /// git refusals go to `reports`.
     pub(crate) fn open(
         path: &Path,
         manifest: Manifest,
         forge_token: Option<ForgeToken>,
+        held: Held,
         sandboxes: Sandboxes,
         reports: Option<Sender<ToEngine>>,
     ) -> io::Result<Self> {
@@ -317,7 +320,11 @@ impl JobSocket {
             ),
             role: Reports::for_gate(manifest.job, Gate::Role, "role.too_many_refusals", reports),
         });
-        let manifest = Arc::new((manifest, forge_token));
+        let manifest = Arc::new(Job {
+            manifest,
+            forge_token,
+            held,
+        });
         let thread = ready.and_then(|()| {
             std::thread::Builder::new().spawn(move || {
                 let active = Arc::new(AtomicUsize::new(0));
@@ -377,6 +384,15 @@ impl Drop for JobSocket {
     }
 }
 
+/// What one job's socket serves it from.
+#[derive(Debug)]
+struct Job {
+    manifest: Manifest,
+    forge_token: Option<ForgeToken>,
+    /// The handles its manifest names, as the broker held them at admission.
+    held: Held,
+}
+
 /// Where one job's gate refusals are reported.
 #[derive(Debug)]
 struct JobReports {
@@ -415,12 +431,16 @@ fn sink(head: &ProxyRequest) -> Option<&'static str> {
 
 fn connection(
     stream: &UnixStream,
-    job: &(Manifest, Option<ForgeToken>),
+    job: &Job,
     sandboxes: &Sandboxes,
     ended: &Arc<AtomicBool>,
     reports: &JobReports,
 ) -> io::Result<()> {
-    let (manifest, forge_token) = job;
+    let Job {
+        manifest,
+        forge_token,
+        held,
+    } = job;
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     let mut reader = BufReader::new(stream);
@@ -453,6 +473,17 @@ fn connection(
             )
         } else {
             egress::refused(403, FLOW_REFUSED)
+        };
+        return write_response(&mut &*stream, response);
+    }
+    // Raw text the job's manifest names a released handle for (ADR-0063). It reads; it sends nothing.
+    if head.method != "CONNECT" && head.target.starts_with(handles::PREFIX) {
+        let response = if ended.load(Ordering::SeqCst) {
+            egress::refused(403, "admission.ended")
+        } else if sandboxes.clock.now() > manifest.deadline {
+            egress::refused(403, "admission.expired")
+        } else {
+            handles::answer(&head, manifest, held, &reports.manifest, ended)
         };
         return write_response(&mut &*stream, response);
     }

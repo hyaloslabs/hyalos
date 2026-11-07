@@ -41,6 +41,7 @@ fn manifest(job: u64, role: Role, deadline: u64) -> Manifest {
         budget: Budget { tokens: 1 },
         deadline: Timestamp::from_millis(deadline),
         approval: None,
+        handles: Default::default(),
     }
 }
 

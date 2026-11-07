@@ -280,7 +280,10 @@ fn through_the_api(origin: Origin, event: &Event) -> Option<RuleViolation> {
     }
     match event {
         Event::HoldResolved { .. } => Some(RuleViolation::ResolveThroughTheEngineApi),
-        Event::TaskCancelled { .. } | Event::HoldRefused { .. } | Event::PolicyApproved { .. } => {
+        Event::TaskCancelled { .. }
+        | Event::HoldRefused { .. }
+        | Event::PolicyApproved { .. }
+        | Event::HandleReleased { .. } => {
             Some(RuleViolation::ThroughTheEngineApi { kind: event.kind() })
         }
         _ => None,
@@ -710,6 +713,32 @@ impl Engine {
             Origin::Engine,
             Event::PolicyApproved {
                 document: document.to_string(),
+                by: decider.resolution(),
+                reason,
+            },
+        )
+    }
+
+    /// Records a human's decision to release the raw text the broker holds as `handle` to `task`'s
+    /// jobs (ADR-0005, ADR-0063). The decision is bound to the digest: a manifest may then name this
+    /// handle, and the broker serves only bytes whose SHA-256 it is. Raw forge text reaching an actor
+    /// is a human's decision (ADR-0012), so any other decider is refused, as is a task that is
+    /// completed or cancelled and a handle already released to it. Nothing is written if refused.
+    /// `reason` is a short code, never free text.
+    pub fn release_handle(
+        &mut self,
+        at: Timestamp,
+        task: TaskId,
+        handle: Digest,
+        decider: Decider,
+        reason: ReasonCode,
+    ) -> Result<Head, EngineError> {
+        self.submit_checked(
+            at,
+            Origin::Engine,
+            Event::HandleReleased {
+                task,
+                handle,
                 by: decider.resolution(),
                 reason,
             },

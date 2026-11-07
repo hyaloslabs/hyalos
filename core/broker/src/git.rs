@@ -581,6 +581,7 @@ mod tests {
             budget: Budget { tokens: 1 },
             deadline: Timestamp::from_millis(1),
             approval: None,
+            handles: Default::default(),
         }
     }
 

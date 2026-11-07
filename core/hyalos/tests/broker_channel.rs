@@ -49,6 +49,7 @@ fn manifest(job: u64, deadline: Timestamp) -> Manifest {
         budget: Budget { tokens: 1 },
         deadline,
         approval: None,
+        handles: Default::default(),
     }
 }
 

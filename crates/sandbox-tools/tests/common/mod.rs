@@ -475,6 +475,7 @@ pub fn job_spec(port: u16, seq: u64, spec: Spec<'_>) -> Res<Job> {
         budget: Budget { tokens: 10_000_000 },
         deadline: Timestamp::from_millis(deadline),
         approval: None,
+        handles: Default::default(),
     };
     let answer = broker.handle(
         ToBroker::StartJob {

@@ -123,6 +123,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+use crate::Digest;
 use crate::provenance::{
     ForgeIssue, ForgeText, ModelText, OperatorText, PluginText, Provenance, StepInputs,
 };
@@ -289,6 +290,15 @@ impl ActorPrompt {
 
     pub fn value<T: Typed>(&mut self, value: &Sourced<T>) -> &mut Self {
         self.0.value(value);
+        self
+    }
+
+    /// A handle's digest, in hex (ADR-0063). It names raw text the broker holds without holding any:
+    /// the actor reads the text from the broker, which serves it only if the job's manifest lists this
+    /// handle. It adds nothing to what the prompt read, since a digest is the engine's reference; the
+    /// manifest naming the handle is what makes minting require taint.
+    pub fn handle(&mut self, handle: &Digest) -> &mut Self {
+        self.0.push(&handle.to_string(), None);
         self
     }
 
