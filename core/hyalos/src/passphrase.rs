@@ -83,7 +83,8 @@ fn from_terminal(prompt: &str) -> Result<Zeroizing<String>, String> {
 /// it, Ctrl-C, Ctrl-\\ and Ctrl-Z cancel, Ctrl-D cancels if nothing was typed. At most [`LIMIT`]
 /// bytes.
 fn keys(input: impl Read) -> Result<Zeroizing<String>, String> {
-    let mut typed = Zeroizing::new(Vec::new());
+    // Full size at once, so it never moves and leaves an unwiped copy behind.
+    let mut typed = Zeroizing::new(Vec::with_capacity(LIMIT as usize));
     let mut key = [0u8; 1];
     let mut input = input;
     loop {
