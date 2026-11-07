@@ -1,6 +1,6 @@
 # ADR-0065: The content gate on what a tainted job publishes, and the ported red-team corpus
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
