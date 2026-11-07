@@ -244,7 +244,7 @@ impl fmt::Display for RuleViolation {
             RuleViolation::TaskCancelled(t) => write!(f, "task {t} is cancelled"),
             RuleViolation::ThroughTheEngineApi { kind } => write!(
                 f,
-                "{kind} is recorded by an engine call (cancel_task or reevaluate_hold), not by submitting it"
+                "{kind} is recorded by the engine call that justifies it (cancel_task, reevaluate_hold, approve_policy or release_handle), not by submitting it"
             ),
             RuleViolation::PolicyNeedsAHuman { by } => write!(
                 f,
