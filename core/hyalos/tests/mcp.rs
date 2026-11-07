@@ -636,7 +636,15 @@ fn a_runs_task_is_polled_with_the_tasks_extension_or_its_plain_tools_and_reads_t
     let done = polls(&id);
     let got = &done[0]["result"];
     assert_eq!(got["status"], "completed", "{got}");
-    let result = json!({"task": task.seq(), "outcome": "succeeded", "result": {"outcome": "pr_opened", "tests_added": true}});
+    // The harness read the issue: its values are marked untrusted, in the structured result and in
+    // the text a client without structured content reads (ADR-0005, ADR-0010).
+    let result = json!({
+        "task": task.seq(),
+        "outcome": "succeeded",
+        "result": {"outcome": "pr_opened", "tests_added": true},
+        "provenance": "model_from_tainted",
+        "untrusted": true,
+    });
     assert_eq!(got["result"]["structuredContent"], result);
     assert_eq!(got["result"]["isError"], false);
     assert_eq!(
@@ -644,6 +652,23 @@ fn a_runs_task_is_polled_with_the_tasks_extension_or_its_plain_tools_and_reads_t
         "completed"
     );
     assert_eq!(done[2]["result"]["structuredContent"], result);
+    for plain in [&got["result"], &done[2]["result"]] {
+        let text = plain["content"][0]["text"].as_str().unwrap_or("");
+        assert!(text.contains(hyalos::mcp::UNTRUSTED_NOTICE), "{text}");
+        assert!(
+            text.contains(
+                "<untrusted-data provenance=\"model_from_tainted\">\n{\"outcome\":\"pr_opened\",\"tests_added\":true}\n</untrusted-data>"
+            ),
+            "{text}"
+        );
+    }
+    // No answer holds the agent's credential or the engine's key (its seed, as engine.key holds it).
+    let seed: String = SEED.iter().map(|b| format!("{b:02x}")).collect();
+    for answer in working.iter().chain(&done) {
+        let answer = answer.to_string();
+        assert!(!answer.contains(&credential), "{answer}");
+        assert!(!answer.contains(&seed), "{answer}");
+    }
     // Cancelling a finished task changes nothing.
     let again = m
         .stdio(

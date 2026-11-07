@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use hyalos_engine::{State, TaskStatus};
+use hyalos_types::provenance::Provenance;
 use hyalos_types::workflow::{Field, TypedValue};
 use hyalos_types::{JobOutcome, TaskId, Timestamp};
 use serde_json::{Map, Value, json};
@@ -451,8 +452,13 @@ pub enum Phase {
         stopped: bool,
         failed: bool,
     },
-    /// Every step finished: the actor's result, field by field, as the workflow names its options.
-    Succeeded(Map<String, Value>),
+    /// Every step finished: the actor's result, field by field, as the workflow names its options,
+    /// and where the values came from: a model that read tainted input unless the workflow shows
+    /// the actor's step untainted (ADR-0005, ADR-0010).
+    Succeeded {
+        result: Map<String, Value>,
+        provenance: Provenance,
+    },
     /// The run is over without a result: how its last job ended and why.
     Ended { outcome: JobOutcome, reason: String },
     /// The driving agent cancelled it, or the operator did while it was held.
@@ -520,7 +526,15 @@ pub fn view(state: &State, runs: &Runs, task: TaskId) -> Option<RunView> {
         && let Some(values) = last.and_then(|j| j.values.as_ref())
         && let Some(output) = &actor.output
     {
-        Phase::Succeeded(result(output, values))
+        // Unknown is tainted: only a step the workflow shows untainted is the operator's.
+        let provenance = match flow.tainted(&actor.id) {
+            Some(false) => Provenance::Operator,
+            _ => Provenance::ModelFromTainted,
+        };
+        Phase::Succeeded {
+            result: result(output, values),
+            provenance,
+        }
     } else {
         match last.and_then(|j| j.ended) {
             Some((_, outcome)) => Phase::Ended {
