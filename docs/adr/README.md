@@ -77,4 +77,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0061](0061-reader-steps-run-in-the-broker.md) | Reader steps run in the broker, and the engine gets typed values | Accepted |
 | [0062](0062-the-fix-issue-workflow-and-its-runner.md) | The fix-issue workflow, and the runner that mints only from the check | Accepted |
 | [0063](0063-gated-handles-for-raw-text.md) | Gated handles: the broker holds raw text, a human releases it by digest | Accepted |
-| [0064](0064-results-a-harness-submits-and-the-broker-reads.md) | Results a harness submits through `hyalos-submit`, and the broker reads as typed values | Proposed |
+| [0064](0064-results-a-harness-submits-and-the-broker-reads.md) | Results a harness submits through `hyalos-submit`, and the broker reads as typed values | Accepted |

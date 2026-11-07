@@ -1,6 +1,6 @@
 # ADR-0064: Results a harness submits through `hyalos-submit`, and the broker reads as typed values
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
