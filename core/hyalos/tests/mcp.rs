@@ -776,3 +776,247 @@ fn a_task_a_stopped_runner_recorded_is_adopted_not_lost() {
     assert!(free);
     assert!(runs.none_running().is_ok());
 }
+
+/// S5.3: what waits for the operator is shown to the driving agent as read-only details and the
+/// command the operator runs, as structured content and as plain text, and nothing it can call
+/// decides it (ADR-0010, ADR-0012, ADR-0074).
+#[test]
+fn approvals_are_shown_with_the_operators_commands_and_the_server_cannot_decide_them() {
+    use hyalos_types::{Gate, HoldReason, Sensitive, Stakes};
+    let m = Machine::new("approvals").unwrap();
+    m.install_key().unwrap();
+    let credential = m.issue("claude-code").unwrap();
+    let args: Vec<String> = ["--repo", "octo/repo", "--issue-number", "7"]
+        .map(String::from)
+        .to_vec();
+    let asked = hyalos::run_cmd::parse(&args).unwrap();
+    let mut engine = Engine::open(&m.root.join("data/events.db"), LogKey::from_seed(SEED)).unwrap();
+    // After the credential's issue and before the operator's approval, which the binary stamps
+    // with the real time.
+    let mut at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let mut write = |engine: &mut Engine, events: Vec<Event>| {
+        at += 1;
+        let events: Vec<_> = events.into_iter().map(|e| (Origin::Engine, e)).collect();
+        engine
+            .submit_all(Timestamp::from_millis(at), &events)
+            .unwrap()
+    };
+    // A run the server started, whose job stopped for the content gate at irreversible stakes.
+    let run = TaskId::from_seq(
+        write(
+            &mut engine,
+            vec![Event::TaskCreated {
+                request: hyalos::run_cmd::request_digest(&asked),
+            }],
+        )
+        .seq,
+    );
+    let runs = m.root.join("data/runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    std::fs::write(
+        runs.join(format!("task-{}.json", run.seq())),
+        serde_json::to_vec(&asked.stored()).unwrap(),
+    )
+    .unwrap();
+    let lock = std::fs::File::create(runs.join(format!("task-{}.lock", run.seq()))).unwrap();
+    lock.lock().unwrap();
+    let job = JobId::from_seq(
+        write(
+            &mut engine,
+            vec![Event::JobStarted {
+                task: run,
+                substrate: SubstrateName::new("local-process").unwrap(),
+                credentials: CredentialTier::BrokerHeld,
+                attestation: Attestation::no_hardware_root(),
+            }],
+        )
+        .seq,
+    );
+    let held = write(
+        &mut engine,
+        vec![
+            Event::JobEnded {
+                job,
+                outcome: JobOutcome::Held,
+                reason: ReasonCode::new("content.pack_unreadable").unwrap(),
+            },
+            Event::HoldOpened {
+                task: run,
+                gate: Gate::Content,
+                inputs: Digest::from_bytes([3; 32]),
+                reason: HoldReason::Unknown,
+                stakes: Stakes::irreversible().touching(Sensitive::Credentials),
+            },
+        ],
+    );
+    let first = held.seq;
+    // A second task, held at routine stakes after a gate timed out.
+    let other = TaskId::from_seq(
+        write(
+            &mut engine,
+            vec![Event::TaskCreated {
+                request: Digest::from_bytes([4; 32]),
+            }],
+        )
+        .seq,
+    );
+    let second = write(
+        &mut engine,
+        vec![Event::HoldOpened {
+            task: other,
+            gate: Gate::Egress,
+            inputs: Digest::from_bytes([5; 32]),
+            reason: HoldReason::TimedOut,
+            stakes: Stakes::routine(),
+        }],
+    )
+    .seq;
+    drop(engine);
+
+    let calls = |messages: &[Value]| m.stdio(Some(&credential), messages).unwrap();
+    let before = events(&m).unwrap();
+    let answers = calls(&[
+        request(1, "tools/list", json!({})),
+        request(
+            2,
+            "tools/call",
+            json!({"name": "list_approvals", "arguments": {}}),
+        ),
+        request(
+            3,
+            "tools/call",
+            json!({"name": "job_status", "arguments": {"task": run.seq().to_string()}}),
+        ),
+        request(
+            4,
+            "tools/call",
+            json!({"name": "list_approvals", "arguments": {"limit": 0}}),
+        ),
+    ]);
+    // Asking changed nothing in the log.
+    assert_eq!(events(&m).unwrap(), before);
+
+    // No tool decides: the server offers only these, and none releases, cancels or merges.
+    let names: Vec<&str> = answers[0]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "list_tasks",
+            "start_job",
+            "job_status",
+            "job_result",
+            "list_approvals"
+        ]
+    );
+
+    let listed = &answers[1]["result"];
+    assert_eq!(listed["isError"], false, "{listed}");
+    let got = &listed["structuredContent"];
+    assert_eq!(got["total"], 2, "{got}");
+    // Newest first.
+    assert_eq!(
+        got["approvals"][0],
+        json!({
+            "hold": second,
+            "task": other.seq(),
+            "gate": "egress",
+            "reason": "timed_out",
+            "inputs": Digest::from_bytes([5; 32]).to_string(),
+            "tier": "routine",
+            "touches": [],
+            "may_decide": ["policy", "operator"],
+            "opened_at_ms": at,
+            "approve": format!("hyalos approve {second}"),
+            "cancel": format!("hyalos cancel {}", other.seq()),
+        })
+    );
+    let held_one = &got["approvals"][1];
+    assert_eq!(held_one["hold"], first);
+    assert_eq!(held_one["tier"], "irreversible");
+    assert_eq!(held_one["touches"], json!(["credentials"]));
+    assert_eq!(held_one["may_decide"], json!(["operator"]));
+    // The same details as sentences, for a client that reads only text.
+    let plain = text(&answers[1]);
+    assert!(
+        plain.starts_with("2 approvals are waiting for the operator."),
+        "{plain}"
+    );
+    assert!(
+        plain.contains("Nothing in this server can release a hold"),
+        "{plain}"
+    );
+    assert!(
+        plain.contains(&format!(
+            "Hold {first} on task {}: the content gate could not decide, so its job stopped. Stakes: irreversible, touching credentials. Who may release it: operator.",
+            run.seq()
+        )),
+        "{plain}"
+    );
+    assert!(
+        plain.contains(&format!("  To release it: hyalos approve {first}\n")),
+        "{plain}"
+    );
+    assert!(
+        plain.contains(&format!(
+            "  To cancel the task instead: hyalos cancel {}",
+            run.seq()
+        )),
+        "{plain}"
+    );
+    assert!(
+        plain.contains("the egress gate did not answer in time"),
+        "{plain}"
+    );
+    assert!(!plain.trim_start().starts_with('{'), "{plain}");
+
+    // The held run shows its own hold and command, in job_status's task and its result's text.
+    let status = &answers[2]["result"]["structuredContent"];
+    assert_eq!(status["status"], "completed", "{status}");
+    assert_eq!(
+        status["statusMessage"],
+        format!("held for the operator's decision (hyalos approve {first})")
+    );
+    let result = &status["result"];
+    assert_eq!(result["isError"], true);
+    assert_eq!(result["structuredContent"]["outcome"], "held");
+    assert_eq!(result["structuredContent"]["approvals"], json!([held_one]));
+    let inner = result["content"][0]["text"].as_str().unwrap_or("");
+    assert!(
+        inner.starts_with(&format!(
+            "Task {} is held: its job stopped for a decision (content.pack_unreadable).",
+            run.seq()
+        )),
+        "{inner}"
+    );
+    assert!(
+        inner.contains(&format!("hyalos approve {first}")),
+        "{inner}"
+    );
+    assert_eq!(answers[3]["result"]["isError"], true);
+
+    // Once the operator decides at their own terminal, the hold is no longer listed.
+    let out = m.signed(&["approve", &second.to_string()]).unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let after = calls(&[request(
+        1,
+        "tools/call",
+        json!({"name": "list_approvals", "arguments": {}}),
+    )]);
+    let got = &after[0]["result"]["structuredContent"];
+    assert_eq!(got["total"], 1, "{got}");
+    assert_eq!(got["approvals"][0]["hold"], first);
+    assert!(text(&after[0]).starts_with("1 approval is waiting for the operator."));
+    drop(lock);
+}
