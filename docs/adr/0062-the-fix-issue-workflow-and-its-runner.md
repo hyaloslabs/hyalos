@@ -98,10 +98,12 @@ The tests:
 
 **The broker's channel is busy during a step.** ADR-0061 covers this. No sandbox runs during a reader or planner job, so nothing waits behind it in this workflow.
 
+**An interrupt during a step's call waits for the call.** The first Ctrl-C or `SIGTERM` is checked at the start of each job ([ADR-0053](0053-an-interrupted-run-ends-its-job.md)). A reader or planner call blocks in `BrokerProcess::read` until the broker answers or `STEP_WAIT` runs out, so an interrupt during a call takes effect when the call returns, within 180 s. That step's job ends as it would have. The next job is recorded and ended `failed` with `run.interrupted` before it calls anything, mints a token or starts a sandbox. A second interrupt still exits at once.
+
 What this does not decide:
 - **Installing other workflows.** Only the shipped workflow runs. Storing an operator's workflow, an install command, and choosing a workflow by name come with the first need for one.
 - **Branching on values.** Every step runs. An `investigate` approach or `clear: false` is passed to the actor as a value, not used to skip it. Conditions in the workflow format would be a new version of it.
 - **Per-step models, budgets and hosts in the document.** These stay in the runner. ADR-0060 says the format grows them when needed.
 - **An actor's result** (S4.7) and **gated handles** (S4.4).
 
-**Costs.** About 300 lines of trusted core in the `hyalos` crate (the runner module and the reshaped `run_cmd`) and 10 in the broker. About 150 lines leave `hyalos-types` with the direct run. Trusted core is 15,295 lines of 30,000.
+**Costs.** About 480 more lines of trusted core in the `hyalos` crate (the runner module and the reshaped `run_cmd`) and 10 in the broker. About 70 fewer in `hyalos-types`, with the direct run gone. Trusted core goes from 14,872 to 15,295 lines of 30,000.

@@ -1,13 +1,18 @@
-//! `hyalos run`: one cut-down reference job from the command line (S3.10, ADR-0050).
+//! `hyalos run`: the reference job from the command line (S3.10, ADR-0050; S4.6, ADR-0062).
 //!
-//! The operator gives a repository and an issue: its text, or its number on GitHub, which the broker
-//! reads with the job's token (ADR-0052). The engine finds a ready substrate,
-//! records the task and the job (with its substrate and credential tier), signs a manifest the
-//! policy allows, mints a GitHub token for that one repository, and starts the broker and the
-//! sandbox. The harness in the sandbox clones, pushes its branch and opens a pull request, all through
-//! the job's socket; no credential enters the sandbox. While it runs, every gate answer the broker
-//! reports, including egress refusals it sends unprompted, is recorded as `gate.answered`. When the
-//! sandbox ends the engine ends the job in the broker, revokes the token, and records how it ended.
+//! The operator gives a repository and either their own text (`--issue`), which one actor job works
+//! on, or an issue's number on GitHub (`--issue-number`), which runs the shipped fix-issue workflow:
+//! a reader and a planner, each a job the broker runs that returns typed values, then the actor.
+//! Every job belongs to one task and runs after the one before it ends. Only the reader sees the
+//! issue's text; the actor gets the operator's text and typed values.
+//!
+//! For the actor the engine finds a ready substrate, records the job (with its substrate and
+//! credential tier), signs a manifest the policy allows, mints a GitHub token for that one
+//! repository, and starts the sandbox. The harness clones, pushes its branch and opens a pull
+//! request, all through the job's socket; no credential enters the sandbox. While it runs, every gate
+//! answer the broker reports, including egress refusals it sends unprompted, is recorded as
+//! `gate.answered`. When the sandbox ends the engine ends the job in the broker, revokes the token,
+//! and records how it ended.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
