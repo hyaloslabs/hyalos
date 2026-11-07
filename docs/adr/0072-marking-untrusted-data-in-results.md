@@ -1,6 +1,6 @@
 # ADR-0072: Marking untrusted data in the driving agent's results
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
