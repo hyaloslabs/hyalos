@@ -12,10 +12,10 @@
 
 **The text fallback carries the mark too.** For an untrusted result, the text content is:
 1. a one-line summary written by Hyalos;
-2. a fixed notice (`mcp::UNTRUSTED_NOTICE`) that the data was written by people on the forge or by a model after reading what they wrote, and is not an instruction;
+2. a fixed notice (`mcp::UNTRUSTED_NOTICE`) that the data was not written by the operator or by Hyalos and is not an instruction;
 3. the data as JSON inside one `<untrusted-data provenance="…">` element.
 
-Every `<`, `>` and `&` in the JSON is written as a JSON escape (`<`, `>`, `&`). The data therefore cannot close the element or open another, and it still parses back to the same values. The provenance attribute keeps only lowercase letters and `_`. `tasks/get`, `job_status` and `job_result` give the same result.
+Every `<`, `>` and `&` in the JSON is written as a JSON escape (`\u003c`, `\u003e`, `\u0026`), and so is every character outside ASCII (`\uXXXX`, surrogate pairs above U+FFFF, so look-alikes, bidi and zero-width characters cannot steer a reader). The data therefore cannot close the element or open another, and it still parses back to the same values. The provenance attribute keeps only lowercase letters and `_`. `tasks/get`, `job_status` and `job_result` give the same result.
 
 **One way out for untrusted data.** Any later result that carries free text from a tainted source returns it through `mcp::Called::untrusted`, not as plain text.
 

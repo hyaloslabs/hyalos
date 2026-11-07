@@ -662,6 +662,21 @@ fn a_runs_task_is_polled_with_the_tasks_extension_or_its_plain_tools_and_reads_t
             "{text}"
         );
     }
+    // job_status shows the whole task as JSON text, the marked result inside it.
+    let status: Value = serde_json::from_str(
+        done[1]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or(""),
+    )
+    .unwrap();
+    let inner = status["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or("");
+    assert!(inner.contains(hyalos::mcp::UNTRUSTED_NOTICE), "{inner}");
+    assert!(
+        inner.contains("<untrusted-data provenance=\"model_from_tainted\">"),
+        "{inner}"
+    );
     // No answer holds the agent's credential or the engine's key (its seed, as engine.key holds it).
     let seed: String = SEED.iter().map(|b| format!("{b:02x}")).collect();
     for answer in working.iter().chain(&done) {
