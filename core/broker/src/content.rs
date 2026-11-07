@@ -329,23 +329,38 @@ fn entities_decoded(text: &str) -> String {
     while let Some(at) = rest.find('&') {
         out.push_str(&rest[..at]);
         rest = &rest[at + 1..];
-        let name: String = rest
-            .chars()
-            .take(10)
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '#')
-            .collect();
-        let decoded = match name.strip_prefix('#') {
-            Some(n) => match n.strip_prefix(['x', 'X']) {
-                Some(h) => u32::from_str_radix(h, 16).ok(),
-                None => n.parse().ok(),
+        // A numeric reference ends at its last digit, as a browser reads it: `&#x2Fwww` is `/www`.
+        let (decoded, used) = match rest.strip_prefix('#') {
+            Some(n) => {
+                let (radix, skip) = if n.starts_with(['x', 'X']) {
+                    (16, 2)
+                } else {
+                    (10, 1)
+                };
+                let digits: String = rest[skip..]
+                    .chars()
+                    .take(8)
+                    .take_while(|c| c.is_digit(radix))
+                    .collect();
+                let c = u32::from_str_radix(&digits, radix)
+                    .ok()
+                    .and_then(char::from_u32);
+                (c, skip + digits.len())
             }
-            .and_then(char::from_u32),
-            None => NAMED.iter().find(|(n, _)| *n == name).map(|(_, c)| *c),
+            None => {
+                let name: String = rest
+                    .chars()
+                    .take(10)
+                    .take_while(char::is_ascii_alphanumeric)
+                    .collect();
+                let c = NAMED.iter().find(|(n, _)| *n == name).map(|(_, c)| *c);
+                (c, name.len())
+            }
         };
         match decoded {
             Some(c) => {
                 out.push(c);
-                rest = &rest[name.len()..];
+                rest = &rest[used..];
                 rest = rest.strip_prefix(';').unwrap_or(rest);
             }
             None => out.push('&'),
@@ -651,6 +666,8 @@ mod tests {
             "<img src=\"&#47;&#47;exfil.example/p.png\">",
             "[r](https&colon;//exfil.example/x)",
             "[r](&#x68;ttps://exfil.example/x)",
+            "[r](&#x2F;&#x2Fwww.exfil.example/x)",
+            "[r](&#47&#47exfil.example/x)",
             "https://github.com@exfil.example/x",
             "DATA:text/plain,hi",
             "javascript://exfil.example/%0aalert(1)",

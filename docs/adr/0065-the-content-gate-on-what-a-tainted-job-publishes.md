@@ -115,6 +115,6 @@ The tests:
 - **Growing the corpus and tracking the reach rate in CI over time** is S8.4 (#53). This ADR ports version 1 and pins its result.
 - **The live runner,** which asks whether a model complies, is not ported. The measure here is the gates alone.
 
-**Costs.** 376 more lines of trusted core, all in the broker: the published check and its decoders in `content.rs`, the route's choice of check in `pulls.rs`, and the git host's web host in `git.rs`.
+**Costs.** 390 more lines of trusted core, all in the broker: the published check and its decoders in `content.rs`, the route's choice of check in `pulls.rs`, and the git host's web host in `git.rs`.
 
-Trusted core goes from 15,990 to 16,366 lines of 30,000. Outside the core, `crates/redteam` holds the corpus (310 items, about 270 KiB of JSON), its renderer and the offline run.
+Trusted core goes from 15,990 to 16,380 lines of 30,000. Outside the core, `crates/redteam` holds the corpus (310 items, about 270 KiB of JSON), its renderer and the offline run.
