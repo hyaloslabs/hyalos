@@ -1,0 +1,18 @@
+[package]
+name = "hyalos-redteam"
+description = "The red-team corpus, ported from hivrr, and the offline run of each item's steered write against the real broker's routes and gates (ADR-0013, ADR-0065). Not part of the trusted core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+hyalos-types = { path = "../../core/types" }
+hyalos-broker = { path = "../../core/broker" }

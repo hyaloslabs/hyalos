@@ -60,7 +60,8 @@ pub fn route(method: &str, target: &str) -> Option<String> {
 }
 
 /// Answers one forge call for the job whose manifest is `manifest`. `secrets` are the credentials the
-/// content gate looks for: the job's forge token and the provider keys.
+/// content gate looks for: the job's forge token and the provider keys. `web` is the forge's web
+/// host, the one a tainted job's text may link to (ADR-0065).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn answer<R: BufRead, W: Write>(
     request: &ProxyRequest,
@@ -69,6 +70,7 @@ pub(crate) fn answer<R: BufRead, W: Write>(
     manifest: &Manifest,
     token: Option<&ForgeToken>,
     forge: &Forge,
+    web: Option<&str>,
     secrets: &[&str],
     gates: Gates<'_>,
     ended: &AtomicBool,
@@ -124,8 +126,14 @@ pub(crate) fn answer<R: BufRead, W: Write>(
     }
     let mut checked = secrets.to_vec();
     checked.push(token.expose());
+    // A tainted job's text is published where people and their browsers render it (ADR-0065).
     for part in [pull.title.as_str(), text] {
-        if let Err(code) = content::check(part, &checked) {
+        let checked = if manifest.tainted {
+            content::check_published(part, &checked, web)
+        } else {
+            content::check(part, &checked)
+        };
+        if let Err(code) = checked {
             return deny(gates.content, code, &format!("{}\n{text}", pull.title));
         }
     }

@@ -551,6 +551,7 @@ fn connection(
                 manifest,
                 forge_token.as_ref(),
                 &sandboxes.forge,
+                sandboxes.git.web_host(),
                 &sandboxes.models.keys(),
                 Gates {
                     manifest: &reports.manifest,
