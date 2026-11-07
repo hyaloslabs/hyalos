@@ -10,7 +10,7 @@
 use std::net::TcpListener;
 use std::sync::Arc;
 
-use hyalos::mcp::{self, Called, Progress, Server, Tool, Tools};
+use hyalos::mcp::{self, Admit, Called, Progress, Refusal, Server, Tool, Tools};
 use serde_json::{Map, Value, json};
 
 pub const IMAGE_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
@@ -119,6 +119,16 @@ impl Tools for Fixtures {
     }
 }
 
+/// Admits every caller. The suite presents no credential, and these fixtures hold nothing; the
+/// engine's server admits only a credential the operator issued (ADR-0068), and lives in `mcp_cmd`.
+struct Anyone;
+
+impl Admit for Anyone {
+    fn admit(&self, _: Option<&str>) -> Result<(), Refusal> {
+        Ok(())
+    }
+}
+
 /// Serves the fixtures on a free loopback port and returns the endpoint's URL.
 pub fn serve_fixtures() -> std::io::Result<String> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -129,6 +139,7 @@ pub fn serve_fixtures() -> std::io::Result<String> {
     );
     let server = Arc::new(Server::new(
         Fixtures::default(),
+        Box::new(Anyone),
         "hyalos-mcp-fixtures",
         "0.0.0",
         "Conformance fixtures.",

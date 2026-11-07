@@ -2,6 +2,7 @@
 //!
 //! Layout rule (ADR-0017): this crate depends on no other workspace crate.
 
+pub mod agent;
 pub mod digest;
 pub mod entropy;
 pub mod event;
@@ -22,6 +23,7 @@ pub mod time;
 pub mod wire;
 pub mod workflow;
 
+pub use agent::AgentName;
 pub use digest::Digest;
 pub use entropy::{Entropy, SeededRng};
 pub use event::{
@@ -29,7 +31,7 @@ pub use event::{
     Resolution,
 };
 pub use forge::ForgeToken;
-pub use ids::{HoldId, JobId, TaskId};
+pub use ids::{AgentId, HoldId, JobId, TaskId};
 pub use manifest::{
     Approval, Budget, MANIFEST_VERSION, Manifest, ManifestError, ManifestKey, ManifestPublicKey,
     OpenError, Role, SignedManifest, flow,
@@ -42,7 +44,9 @@ pub use provenance::{
 };
 pub use reason::{Answer, ReasonCode};
 pub use schema::{Schema, Upcast, UpcastFn, Value};
-pub use snapshot::{HandleImage, ImageError, PolicyImage, STATE_VERSION, StateImage};
+pub use snapshot::{
+    AgentImage, HandleImage, ImageError, PolicyImage, RevokedImage, STATE_VERSION, StateImage,
+};
 pub use stakes::{Sensitive, Stakes, Tier, Touches};
 pub use substrate::{Attestation, SubstrateName};
 pub use time::{Clock, Timestamp};

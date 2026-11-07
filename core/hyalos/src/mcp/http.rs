@@ -5,7 +5,8 @@
 //! the call sends notifications before its result and the client accepts a stream. The connection is
 //! closed after each answer. There is no session and no GET stream: GET and DELETE are 405. A Host or
 //! Origin that is not this loopback address and port is 403, which is the defence against DNS
-//! rebinding. There is no authentication yet: the driving agent's credential is S5.8's.
+//! rebinding. Every message needs `Authorization: Bearer <credential>` with a credential the operator
+//! issued, or it is 401 with `WWW-Authenticate: Bearer` (ADR-0068).
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -107,10 +108,15 @@ fn connection<T: Tools>(stream: TcpStream, server: &Server<T>, port: u16) -> io:
         method: header("mcp-method").map(str::to_string),
         name: header("mcp-name").and_then(decode_name),
     };
+    // The scheme is case-insensitive (RFC 9110); anything but a bearer credential is none.
+    let credential = header("authorization").and_then(|value| {
+        let (scheme, token) = value.split_once(' ')?;
+        scheme.eq_ignore_ascii_case("bearer").then(|| token.trim())
+    });
     let streams = header("accept").is_some_and(|a| a.contains("text/event-stream"));
     let mut streaming = false;
     let mut failed = false;
-    let reply = server.handle(&body, Some(&headers), &mut |note: Value| {
+    let reply = server.handle(&body, Some(&headers), credential, &mut |note: Value| {
         if !streams || failed {
             return;
         }
@@ -228,6 +234,7 @@ fn respond(out: &mut TcpStream, status: u16, body: Option<&Value>) -> io::Result
         200 => "OK",
         202 => "Accepted",
         400 => "Bad Request",
+        401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
@@ -247,6 +254,9 @@ fn respond(out: &mut TcpStream, status: u16, body: Option<&Value>) -> io::Result
     }
     if status == 405 {
         head.push_str("Allow: POST\r\n");
+    }
+    if status == 401 {
+        head.push_str("WWW-Authenticate: Bearer realm=\"hyalos\"\r\n");
     }
     out.write_all(format!("{head}\r\n{body}").as_bytes())?;
     out.flush()

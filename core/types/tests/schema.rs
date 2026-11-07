@@ -309,6 +309,37 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             reason: ReasonCode::new("handle.operator").ok_or("reason")?,
         },
     ));
+
+    // Version 11 added `agent.issued` and `agent.revoked` and changed no payload, so the twelve older
+    // kinds read as they did at version 10.
+    let at_10: Vec<_> = all.iter().filter(|g| g.0 == 10).cloned().collect();
+    for (_, kind, json, event) in at_10 {
+        all.push((11, kind, json, event));
+    }
+    all.push((
+        11,
+        "agent.issued",
+        format!(
+            r#"{{"kind":"agent.issued","name":"claude-code","credential":"{}","by":"human","reason":"agent.issued"}}"#,
+            hex(5)
+        ),
+        Event::AgentIssued {
+            name: hyalos_types::AgentName::new("claude-code").ok_or("name")?,
+            credential: d(5),
+            by: Resolution::Human,
+            reason: ReasonCode::new("agent.issued").ok_or("reason")?,
+        },
+    ));
+    all.push((
+        11,
+        "agent.revoked",
+        r#"{"kind":"agent.revoked","agent":4,"by":"human","reason":"agent.revoked"}"#.into(),
+        Event::AgentRevoked {
+            agent: hyalos_types::AgentId::from_seq(4),
+            by: Resolution::Human,
+            reason: ReasonCode::new("agent.revoked").ok_or("reason")?,
+        },
+    ));
     Ok(all)
 }
 
@@ -319,6 +350,7 @@ fn introduced(kind: &str) -> u32 {
         "task.cancelled" | "hold.refused" => 4,
         "policy.approved" => 5,
         "handle.released" => 10,
+        "agent.issued" | "agent.revoked" => 11,
         _ => 1,
     }
 }

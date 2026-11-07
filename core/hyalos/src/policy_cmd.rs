@@ -98,7 +98,8 @@ fn read(file: &str) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| format!("{file} is not text"))
 }
 
-fn open(env: Env<'_>) -> Result<Engine, String> {
+/// The engine on the operator's log, with the engine's key: for a command that writes an event.
+pub(crate) fn open(env: Env<'_>) -> Result<Engine, String> {
     let key_file = paths::config_dir(env)?.join(paths::ENGINE_KEY_FILE);
     let key = keys::load(&key_file).map_err(|e| e.to_string())?;
     // The first event creates the log, as it does for the engine.

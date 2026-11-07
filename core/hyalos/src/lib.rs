@@ -2,6 +2,7 @@
 //! `main.rs` only picks the command. They are a library so tests can reach the launcher and the
 //! channel without going through the command line.
 
+pub mod agent_cmd;
 pub mod broker_cmd;
 pub mod channel;
 pub mod clock;

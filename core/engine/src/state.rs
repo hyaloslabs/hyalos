@@ -1,4 +1,4 @@
-//! Tasks, jobs and holds, rebuilt from events (ADR-0003, ADR-0019).
+//! Tasks, jobs, holds and agents' credentials, rebuilt from events (ADR-0003, ADR-0019, ADR-0068).
 //!
 //! [`State`] is a pure fold over events. [`State::apply`] checks that an event is legal for the state it
 //! lands on and refuses it otherwise, so an engine bug or a damaged log shows up as an error, not as
@@ -8,12 +8,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use hyalos_types::snapshot::{
-    CancelledImage, HandleImage, HoldImage, JobEndImage, JobImage, PolicyImage, PrunedImage,
-    ResolvedImage, StateImage, TaskImage,
+    AgentImage, CancelledImage, HandleImage, HoldImage, JobEndImage, JobImage, PolicyImage,
+    PrunedImage, ResolvedImage, RevokedImage, StateImage, TaskImage,
 };
 use hyalos_types::{
-    Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome, MAX_POLICY_DOCUMENT,
-    Origin, ReasonCode, Resolution, Sensitive, Stakes, TaskId, Timestamp,
+    AgentId, AgentName, Answer, Digest, Event, Gate, HoldId, HoldReason, JobId, JobOutcome,
+    MAX_POLICY_DOCUMENT, Origin, ReasonCode, Resolution, Sensitive, Stakes, TaskId, Timestamp,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,6 +195,18 @@ pub enum RuleViolation {
         task: TaskId,
         handle: Digest,
     },
+    /// Issuing a credential grants a capability, so only a human does it (ADR-0012, ADR-0068).
+    AgentNeedsAHuman {
+        by: Resolution,
+    },
+    /// Two credentials never share a secret, revoked or not, so a revoked one cannot come back.
+    AgentCredentialReused,
+    /// A credential that is not revoked already has that name.
+    AgentNameInUse(AgentName),
+    UnknownAgent(AgentId),
+    AgentAlreadyRevoked(AgentId),
+    /// A revocation is a decision, never a gate's re-evaluation.
+    RevokeNotADecision,
 }
 
 impl fmt::Display for RuleViolation {
@@ -244,7 +256,7 @@ impl fmt::Display for RuleViolation {
             RuleViolation::TaskCancelled(t) => write!(f, "task {t} is cancelled"),
             RuleViolation::ThroughTheEngineApi { kind } => write!(
                 f,
-                "{kind} is recorded by the engine call that justifies it (cancel_task, reevaluate_hold, approve_policy or release_handle), not by submitting it"
+                "{kind} is recorded by the engine call that justifies it (cancel_task, reevaluate_hold, approve_policy, release_handle, issue_agent or revoke_agent), not by submitting it"
             ),
             RuleViolation::PolicyNeedsAHuman { by } => write!(
                 f,
@@ -256,6 +268,22 @@ impl fmt::Display for RuleViolation {
             ),
             RuleViolation::HandleAlreadyReleased { task, handle } => {
                 write!(f, "handle {handle} is already released to task {task}")
+            }
+            RuleViolation::AgentNeedsAHuman { by } => write!(
+                f,
+                "issuing an agent's credential needs a human; {by:?} may not issue one (ADR-0012, ADR-0068)"
+            ),
+            RuleViolation::AgentCredentialReused => {
+                write!(f, "that credential was already issued")
+            }
+            RuleViolation::AgentNameInUse(name) => write!(
+                f,
+                "an agent's credential named {name} is already in force; revoke it first"
+            ),
+            RuleViolation::UnknownAgent(a) => write!(f, "agent {a} does not exist"),
+            RuleViolation::AgentAlreadyRevoked(a) => write!(f, "agent {a} is already revoked"),
+            RuleViolation::RevokeNotADecision => {
+                write!(f, "a credential is revoked by a decision, not by a gate")
             }
             RuleViolation::PolicyTooLarge { len } => write!(
                 f,
@@ -321,6 +349,7 @@ pub struct State {
     pruned: Vec<Pruned>,
     policy: Option<PolicyApproval>,
     handles: Vec<ReleasedHandle>,
+    agents: BTreeMap<AgentId, Agent>,
     pending: Option<Pending>,
     last_seq: u64,
     last_at: Option<Timestamp>,
@@ -346,6 +375,25 @@ pub struct ReleasedHandle {
     pub at: Timestamp,
     pub task: TaskId,
     pub handle: Digest,
+    pub by: Resolution,
+    pub reason: ReasonCode,
+}
+
+/// A credential a human issued to a driving agent (ADR-0068). The MCP server admits a caller who
+/// presents a secret whose SHA-256 is `credential`, until it is revoked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Agent {
+    pub at: Timestamp,
+    pub name: AgentName,
+    pub credential: Digest,
+    pub by: Resolution,
+    pub reason: ReasonCode,
+    pub revoked: Option<Revoked>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revoked {
+    pub at: Timestamp,
     pub by: Resolution,
     pub reason: ReasonCode,
 }
@@ -386,12 +434,26 @@ impl State {
             .any(|h| h.task == task && h.handle == *handle)
     }
 
-    /// Every archive recorded as pruned, in the order it was recorded.
+    /// Every agent's credential ever issued, revoked ones too (ADR-0068).
+    pub fn agents(&self) -> &BTreeMap<AgentId, Agent> {
+        &self.agents
+    }
+
+    /// The agent whose credential has this SHA-256 and is not revoked, if there is one. This is the
+    /// whole of the MCP server's admission (ADR-0068).
+    pub fn admitted_agent(&self, credential: &Digest) -> Option<AgentId> {
+        self.agents
+            .iter()
+            .find(|(_, a)| a.revoked.is_none() && a.credential == *credential)
+            .map(|(id, _)| *id)
+    }
+
     /// The operator policy in force, if one was ever approved.
     pub fn policy(&self) -> Option<&PolicyApproval> {
         self.policy.as_ref()
     }
 
+    /// Every archive recorded as pruned, in the order it was recorded.
     pub fn pruned(&self) -> &[Pruned] {
         &self.pruned
     }
@@ -613,6 +675,43 @@ impl State {
                 }
                 Ok(())
             }
+            Event::AgentIssued {
+                name,
+                credential,
+                by,
+                ..
+            } => {
+                // The authority table (ADR-0025) for an irreversible capability grant: a human only.
+                if !Stakes::irreversible()
+                    .touching(Sensitive::CapabilityGrant)
+                    .may_be_resolved_by(*by)
+                {
+                    return Err(RuleViolation::AgentNeedsAHuman { by: *by });
+                }
+                if self.agents.values().any(|a| a.credential == *credential) {
+                    return Err(RuleViolation::AgentCredentialReused);
+                }
+                if self
+                    .agents
+                    .values()
+                    .any(|a| a.revoked.is_none() && a.name == *name)
+                {
+                    return Err(RuleViolation::AgentNameInUse(name.clone()));
+                }
+                Ok(())
+            }
+            Event::AgentRevoked { agent, by, .. } => {
+                if *by == Resolution::Reevaluated {
+                    return Err(RuleViolation::RevokeNotADecision);
+                }
+                match self.agents.get(agent) {
+                    None => Err(RuleViolation::UnknownAgent(*agent)),
+                    Some(a) if a.revoked.is_some() => {
+                        Err(RuleViolation::AgentAlreadyRevoked(*agent))
+                    }
+                    Some(_) => Ok(()),
+                }
+            }
             Event::ArchivePruned {
                 last_seq,
                 last_hash,
@@ -787,6 +886,33 @@ impl State {
                 by: *by,
                 reason: reason.clone(),
             }),
+            Event::AgentIssued {
+                name,
+                credential,
+                by,
+                reason,
+            } => {
+                self.agents.insert(
+                    AgentId::from_seq(seq),
+                    Agent {
+                        at,
+                        name: name.clone(),
+                        credential: *credential,
+                        by: *by,
+                        reason: reason.clone(),
+                        revoked: None,
+                    },
+                );
+            }
+            Event::AgentRevoked { agent, by, reason } => {
+                if let Some(a) = self.agents.get_mut(agent) {
+                    a.revoked = Some(Revoked {
+                        at,
+                        by: *by,
+                        reason: reason.clone(),
+                    });
+                }
+            }
             Event::ArchivePruned {
                 last_seq,
                 last_hash,
@@ -815,6 +941,7 @@ impl State {
             pruned,
             policy,
             handles,
+            agents,
             pending,
             last_seq,
             last_at,
@@ -956,6 +1083,32 @@ impl State {
                     }
                 })
                 .collect(),
+            agents: agents
+                .iter()
+                .map(|(id, a)| {
+                    let Agent {
+                        at,
+                        name,
+                        credential,
+                        by,
+                        reason,
+                        revoked,
+                    } = a;
+                    AgentImage {
+                        id: *id,
+                        at: at.as_millis(),
+                        name: name.clone(),
+                        credential: *credential,
+                        by: *by,
+                        reason: reason.clone(),
+                        revoked: revoked.as_ref().map(|r| RevokedImage {
+                            at: r.at.as_millis(),
+                            by: r.by,
+                            reason: r.reason.clone(),
+                        }),
+                    }
+                })
+                .collect(),
         })
     }
 
@@ -972,6 +1125,7 @@ impl State {
             pruned,
             policy,
             handles,
+            agents,
         } = image;
         let mut state = State {
             last_seq,
@@ -1048,6 +1202,23 @@ impl State {
                 reason: h.reason,
             })
             .collect();
+        for a in agents {
+            let agent = Agent {
+                at: Timestamp::from_millis(a.at),
+                name: a.name,
+                credential: a.credential,
+                by: a.by,
+                reason: a.reason,
+                revoked: a.revoked.map(|r| Revoked {
+                    at: Timestamp::from_millis(r.at),
+                    by: r.by,
+                    reason: r.reason,
+                }),
+            };
+            if state.agents.insert(a.id, agent).is_some() {
+                return Err(format!("agent {} appears twice", a.id));
+            }
+        }
         let broken = state.invariant_violations();
         if !broken.is_empty() {
             return Err(format!(
@@ -1141,6 +1312,36 @@ impl State {
                     "handle {} is released to task {} twice",
                     h.handle, h.task
                 ));
+            }
+        }
+        for (id, a) in &self.agents {
+            if a.by != Resolution::Human {
+                out.push(format!("agent {id} was issued by {:?}", a.by));
+            }
+            if self
+                .agents
+                .range(..id)
+                .any(|(_, b)| b.credential == a.credential)
+            {
+                out.push(format!(
+                    "agent {id} shares a credential with an earlier one"
+                ));
+            }
+            if a.revoked.is_none()
+                && self
+                    .agents
+                    .iter()
+                    .any(|(other, b)| other != id && b.revoked.is_none() && b.name == a.name)
+            {
+                out.push(format!(
+                    "agent {id} and another credential in force are both named {}",
+                    a.name
+                ));
+            }
+            if let Some(r) = &a.revoked
+                && (r.at < a.at || r.by == Resolution::Reevaluated)
+            {
+                out.push(format!("agent {id} has an impossible revocation"));
             }
         }
         for (i, p) in self.pruned.iter().enumerate() {

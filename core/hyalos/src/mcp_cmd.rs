@@ -4,22 +4,32 @@
 //! Streamable HTTP at `http://<address:port>/mcp`, loopback only. Its one tool so far is `list_tasks`,
 //! which reads the event log with the engine's public key alone and returns ids and statuses, never
 //! text from a task. Starting work and approvals come in later stories (S5.2, S5.4).
+//!
+//! Every message needs a credential the operator issued with `hyalos agent issue` and has not
+//! revoked (ADR-0068): on stdio the server's `HYALOS_AGENT_CREDENTIAL`, on HTTP each request's bearer
+//! token. It is checked against the log on every message, so a revocation fails the next call.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use hyalos_engine::{TaskStatus, read_state};
+use hyalos_engine::{State, TaskStatus, read_state};
 use hyalos_log::PublicKey;
 use hyalos_types::JobOutcome;
 use serde_json::{Map, Value, json};
 
-use crate::mcp::{self, Called, Progress, Server, Tool, Tools};
+use crate::agent_cmd::credential_digest;
+use crate::mcp::{self, Admit, Called, Progress, Refusal, Server, Tool, Tools};
 use crate::paths;
 
 const USAGE: &str = "usage: hyalos mcp [--listen <loopback address:port>]
   serves the engine's MCP server on stdio, or with --listen on http://<address:port>/mcp (loopback
-  only). It reads the event log with the engine's public key and writes nothing";
+  only). It reads the event log with the engine's public key and writes nothing.
+  Every call needs a credential from hyalos agent issue: on stdio in HYALOS_AGENT_CREDENTIAL, on
+  HTTP as Authorization: Bearer <credential>";
+
+/// Where the stdio server takes the driving agent's credential from.
+pub const CREDENTIAL_VAR: &str = "HYALOS_AGENT_CREDENTIAL";
 
 const INSTRUCTIONS: &str = "Hyalos runs agent jobs contained, within a signed manifest. list_tasks shows the tasks in its event log and the state of each one's jobs.";
 
@@ -28,19 +38,42 @@ pub const MAX_TASKS: u64 = 100;
 
 pub fn run(args: &[String]) -> ExitCode {
     let env = |name: &str| std::env::var(name).ok();
-    let tools = match (paths::log_file(&env), paths::engine_public_key(&env)) {
-        (Ok(log), Ok(public_key)) => EngineTools::new(log, public_key),
+    let log = match (paths::log_file(&env), paths::engine_public_key(&env)) {
+        (Ok(log), Ok(public_key)) => EngineLog { log, public_key },
         (Err(e), _) | (_, Err(e)) => {
             eprintln!("hyalos: {e}");
             return ExitCode::from(1);
         }
     };
-    let server = Server::new(tools, "hyalos", env!("CARGO_PKG_VERSION"), INSTRUCTIONS);
+    let server = Server::new(
+        EngineTools::new(log.clone()),
+        Box::new(LogAdmission(log.clone())),
+        "hyalos",
+        env!("CARGO_PKG_VERSION"),
+        INSTRUCTIONS,
+    );
     let served = match args {
-        [] => mcp::stdio::serve(&server, std::io::stdin().lock(), std::io::stdout().lock()),
+        [] => {
+            // Checked once here so a wrong setup says so at start, and again on every message.
+            let credential = env(CREDENTIAL_VAR);
+            if let Err(e) = log.admits(credential.as_deref()) {
+                eprintln!("hyalos: {e}");
+                return ExitCode::from(1);
+            }
+            mcp::stdio::serve(
+                &server,
+                credential.as_deref(),
+                std::io::stdin().lock(),
+                std::io::stdout().lock(),
+            )
+        }
         [flag, addr] if flag == "--listen" => match mcp::http::bind(addr) {
             Ok(listener) => {
-                eprintln!("hyalos: MCP server on http://{addr}{}", mcp::http::PATH);
+                // The address bound, so port 0 says which port it got.
+                let bound = listener
+                    .local_addr()
+                    .map_or_else(|_| addr.clone(), |a| a.to_string());
+                eprintln!("hyalos: MCP server on http://{bound}{}", mcp::http::PATH);
                 mcp::http::serve(listener, Arc::new(server))
             }
             Err(e) => {
@@ -62,15 +95,68 @@ pub fn run(args: &[String]) -> ExitCode {
     }
 }
 
+/// The event log and the engine's public key, read afresh for each message: the server keeps nothing.
+#[derive(Debug, Clone)]
+pub struct EngineLog {
+    pub log: PathBuf,
+    pub public_key: PathBuf,
+}
+
+impl EngineLog {
+    /// The state the log replays to, checked against the engine's public key.
+    pub fn read(&self) -> Result<State, String> {
+        let text = std::fs::read_to_string(&self.public_key)
+            .map_err(|_| "there is no engine public key yet: run hyalos init".to_string())?;
+        let key = PublicKey::from_hex(text.trim())
+            .ok_or("the engine's public key is not 64 hexadecimal characters")?;
+        if !self.log.exists() {
+            return Err("there is no event log yet: run hyalos init".into());
+        }
+        read_state(&self.log, &key).map_err(|e| format!("the event log does not check out: {e}"))
+    }
+
+    /// Whether `credential` is one the operator issued and has not revoked (ADR-0068). The error says
+    /// why not, for the operator.
+    pub fn admits(&self, credential: Option<&str>) -> Result<(), String> {
+        let Some(credential) = credential.filter(|c| !c.is_empty()) else {
+            return Err(format!(
+                "no credential: set {CREDENTIAL_VAR} to one from hyalos agent issue"
+            ));
+        };
+        match self.read()?.admitted_agent(&credential_digest(credential)) {
+            Some(_) => Ok(()),
+            None => Err("that credential was not issued, or it was revoked".into()),
+        }
+    }
+}
+
+/// Admits a caller whose credential is in force in the log, read on every message.
+pub struct LogAdmission(pub EngineLog);
+
+impl Admit for LogAdmission {
+    fn admit(&self, credential: Option<&str>) -> Result<(), Refusal> {
+        let Some(credential) = credential.filter(|c| !c.is_empty()) else {
+            return Err(Refusal::Unauthorized);
+        };
+        let state = self.0.read().map_err(|e| {
+            eprintln!("hyalos: no credential can be checked: {e}");
+            Refusal::Unavailable(e)
+        })?;
+        match state.admitted_agent(&credential_digest(credential)) {
+            Some(_) => Ok(()),
+            None => Err(Refusal::Unauthorized),
+        }
+    }
+}
+
 /// The engine's tools.
 pub struct EngineTools {
-    log: PathBuf,
-    public_key: PathBuf,
+    log: EngineLog,
     tools: Vec<Tool>,
 }
 
 impl EngineTools {
-    pub fn new(log: PathBuf, public_key: PathBuf) -> Self {
+    pub fn new(log: EngineLog) -> Self {
         let list_tasks = Tool {
             name: "list_tasks",
             title: "List tasks",
@@ -108,7 +194,6 @@ impl EngineTools {
         };
         Self {
             log,
-            public_key,
             tools: vec![list_tasks],
         }
     }
@@ -124,23 +209,9 @@ impl EngineTools {
                 None => return Called::error("limit must be an integer from 1 to 100"),
             },
         };
-        let key = match std::fs::read_to_string(&self.public_key) {
-            Ok(text) => match PublicKey::from_hex(text.trim()) {
-                Some(key) => key,
-                None => {
-                    return Called::error(
-                        "the engine's public key is not 64 hexadecimal characters",
-                    );
-                }
-            },
-            Err(_) => return Called::error("there is no engine public key yet: run hyalos init"),
-        };
-        if !self.log.exists() {
-            return Called::error("there is no event log yet: run hyalos init");
-        }
-        let state = match read_state(&self.log, &key) {
+        let state = match self.log.read() {
             Ok(state) => state,
-            Err(e) => return Called::error(&format!("the event log does not check out: {e}")),
+            Err(e) => return Called::error(&e),
         };
         let tasks: Vec<Value> = state
             .tasks()
