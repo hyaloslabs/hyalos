@@ -53,7 +53,8 @@ What shapes the decision:
 - It runs the step that was cut off in a new job, then the rest, with the same deadline.
 - A run with `--release-issue` is not resumed: its handle lived in the broker that stopped. Neither is one with no issue number.
 - The server starts `--resume` for every unfinished task of its runs whose lock no one holds, when it starts and whenever `tasks/get`, `job_status` or `tasks/cancel` asks about one. The output goes to the end of `task-<id>.log`.
-- The operator may run `--resume` by hand.
+- A runner that exits with an error once its task exists writes `task-<id>.failed`, with the error, before it lets go of the lock. The server never resumes such a task by itself. The same error would stop every resume, and a step that was running would run, and spend, again on every poll. The task stays `working`, saying it waits for the operator. A cancel of it is recorded in its file and takes effect when the run is resumed.
+- The operator may run `--resume` by hand, which clears `task-<id>.failed`.
 
 **Cancelling is a file the runner watches.**
 - `tasks/cancel` creates `task-<id>.cancel` for an unfinished task. `Interrupt::watch` makes its appearance count as the first signal does (ADR-0053), named `tasks/cancel`.

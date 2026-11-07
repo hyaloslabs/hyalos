@@ -64,6 +64,7 @@ The server does not run the job itself. It starts `hyalos run` as a process of i
 - `task-<id>.json`: the request, which the log records the digest of.
 - `task-<id>.log`: what the runner printed. Read it when a job fails.
 - `task-<id>.lock`: held while a runner has it.
+- `task-<id>.failed`: the error its last runner stopped with, if it did.
 
 The answer is a task:
 - **A client with the Tasks extension** polls it with `tasks/get` and stops it with `tasks/cancel`.
@@ -80,7 +81,7 @@ If a runner stops (a crash, a reboot), the task resumes from the log:
 - Finished steps are not run again; the step that was cut off runs in a new job.
 - The server starts `hyalos run --resume <task>` when it starts, and whenever the agent asks about such a task. You can run it yourself too.
 - The cut job's GitHub token was not revoked and stays live until GitHub expires it (one hour). Check the repository for a branch or pull request it left behind.
-- A run with `--release-issue` is never resumed.
+- A runner that stopped with an error (not a crash) is not resumed by itself: the task says it waits for you, and `runs/task-<id>.failed` and `task-<id>.log` say why. Fix that, then run `hyalos run --resume <task>`.
 
 If `start_job` fails at once, its message is the runner's reason, as `hyalos run` would print it. Nothing is written to the log in that case.
 

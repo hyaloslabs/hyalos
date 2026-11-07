@@ -19,7 +19,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use hyalos_engine::{State, TaskStatus};
@@ -58,7 +58,7 @@ impl Runs {
     }
 
     /// `task-<id>.<ext>`: `json` the request, `lock` held by its runner, `log` what the runner
-    /// printed, `cancel` the driving agent's cancel.
+    /// printed, `cancel` the driving agent's cancel, `failed` a runner that stopped with an error.
     pub fn file(&self, task: TaskId, ext: &str) -> PathBuf {
         self.dir.join(format!("task-{}.{ext}", task.seq()))
     }
@@ -75,6 +75,11 @@ impl Runs {
         (request_digest(&request) == recorded).then_some(request)
     }
 
+    /// Whether `task`'s last runner stopped with an error, and nothing has retried it since.
+    pub fn has_failed(&self, task: TaskId) -> bool {
+        self.file(task, "failed").exists()
+    }
+
     /// Whether a runner holds `task`'s lock. A lock file that cannot be opened counts as held, so the
     /// server never starts a second runner on a guess.
     pub fn is_running(&self, task: TaskId) -> bool {
@@ -83,6 +88,13 @@ impl Runs {
             Err(e) => e.kind() != std::io::ErrorKind::NotFound,
         }
     }
+}
+
+/// Records that `task`'s runner stopped with an error, before it lets go of the lock, so the server
+/// never starts it again by itself: the same error would stop each one, and a step that was running
+/// would run, and spend, again on every poll. `hyalos run --resume` by hand clears it.
+fn mark_failed(runs: &Runs, task: TaskId, message: &str) {
+    let _ = std::fs::write(runs.file(task, "failed"), format!("{message}\n"));
 }
 
 fn read_request(path: &Path) -> Result<Request, String> {
@@ -132,7 +144,12 @@ pub fn start(nonce: &str) -> ExitCode {
         let mut setup = run_cmd::setup(&env)?;
         let named = runs.clone();
         let nonce = nonce.to_string();
+        let recorded = Arc::new(Mutex::new(None));
+        let heard = recorded.clone();
         setup.on_task = Some(Box::new(move |task| {
+            if let Ok(mut heard) = heard.lock() {
+                *heard = Some(task);
+            }
             // The lock first, so the request never stands under its task's name unlocked.
             for ext in ["lock", "log", "json"] {
                 std::fs::rename(named.starting(&nonce, ext), named.file(task, ext))
@@ -144,9 +161,12 @@ pub fn start(nonce: &str) -> ExitCode {
                 .map_err(|e| format!("cannot tell the server task {task} started: {e}"))?;
             Ok(Some(named.file(task, "cancel")))
         }));
-        let summary = run_cmd::run_job(&request, setup, &mut std::io::stderr())?;
+        let summary = run_cmd::run_job(&request, setup, &mut std::io::stderr());
+        if let (Err(message), Ok(Some(task))) = (&summary, recorded.lock().map(|t| *t)) {
+            mark_failed(&runs, task, message);
+        }
         drop(held);
-        Ok::<_, String>(summary.ok())
+        Ok::<_, String>(summary?.ok())
     })();
     match started {
         Ok(true) => ExitCode::SUCCESS,
@@ -177,12 +197,19 @@ pub fn resume(task: &str) -> ExitCode {
             println!("task {task} is being run already");
             return Ok(true);
         };
-        let request = read_request(&runs.file(task, "json"))?;
-        let mut setup = run_cmd::setup(&env)?;
-        setup.interrupt.watch(runs.file(task, "cancel"));
-        let summary = run_cmd::resume_job(&request, task, setup, &mut std::io::stdout())?;
+        // Asked again by hand: the error a runner stopped with is this one's to meet.
+        let _ = std::fs::remove_file(runs.file(task, "failed"));
+        let summary = (|| {
+            let request = read_request(&runs.file(task, "json"))?;
+            let mut setup = run_cmd::setup(&env)?;
+            setup.interrupt.watch(runs.file(task, "cancel"));
+            run_cmd::resume_job(&request, task, setup, &mut std::io::stdout())
+        })();
+        if let Err(message) = &summary {
+            mark_failed(&runs, task, message);
+        }
         drop(held);
-        Ok::<_, String>(summary.is_none_or(|s| s.ok()))
+        Ok::<_, String>(summary?.is_none_or(|s| s.ok()))
     })();
     match resumed {
         Ok(true) => ExitCode::SUCCESS,
@@ -283,7 +310,11 @@ impl Launcher {
             .tasks()
             .get(&task)
             .is_some_and(|t| t.status() == TaskStatus::Open);
-        if !unfinished || self.runs.request(state, task).is_none() || self.runs.is_running(task) {
+        if !unfinished
+            || self.runs.request(state, task).is_none()
+            || self.runs.has_failed(task)
+            || self.runs.is_running(task)
+        {
             return;
         }
         let Ok(log) = OpenOptions::new()
@@ -337,11 +368,13 @@ impl Launcher {
 /// Where a run stands, as the agent is told.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Phase {
-    /// `done` of `of` steps have returned their values. `stopped`: no runner holds it.
+    /// `done` of `of` steps have returned their values. `stopped`: no runner holds it; `failed`: its
+    /// last runner stopped with an error, so only the operator starts another.
     Working {
         done: usize,
         of: usize,
         stopped: bool,
+        failed: bool,
     },
     /// Every step finished: the actor's result, field by field, as the workflow names its options.
     Succeeded(Map<String, Value>),
@@ -404,6 +437,7 @@ pub fn view(state: &State, runs: &Runs, task: TaskId) -> Option<RunView> {
             done,
             of,
             stopped: false,
+            failed: false,
         }
     } else if reason.as_deref() == Some(why::CANCELLED) {
         Phase::Cancelled
@@ -429,6 +463,7 @@ pub fn view(state: &State, runs: &Runs, task: TaskId) -> Option<RunView> {
             done,
             of,
             stopped: !runs.is_running(task),
+            failed: runs.has_failed(task),
         },
         other => other,
     };

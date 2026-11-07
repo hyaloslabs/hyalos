@@ -477,17 +477,24 @@ fn parse_task(id: &str) -> Option<TaskId> {
 fn task_view(view: &RunView) -> TaskView {
     let task = view.task.seq();
     let (state, message) = match &view.phase {
-        Phase::Working { done, of, stopped } => (
-            TaskState::Working,
-            format!(
-                "{done} of {of} steps done{}",
-                if *stopped {
-                    "; its runner stopped, so it is resuming"
-                } else {
-                    ""
-                }
-            ),
-        ),
+        Phase::Working {
+            done,
+            of,
+            stopped,
+            failed,
+        } => {
+            let note = match (failed, stopped) {
+                (true, _) => format!(
+                    "; its runner stopped with an error, so it waits for the operator (hyalos run --resume {task})"
+                ),
+                (false, true) => "; its runner stopped, so it is resuming".into(),
+                (false, false) => String::new(),
+            };
+            (
+                TaskState::Working,
+                format!("{done} of {of} steps done{note}"),
+            )
+        }
         Phase::Succeeded(result) => (
             TaskState::Completed(Called::structured(
                 json!({"task": task, "outcome": "succeeded", "result": result}),

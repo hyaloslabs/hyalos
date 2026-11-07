@@ -572,6 +572,23 @@ fn a_runs_task_is_polled_with_the_tasks_extension_or_its_plain_tools_and_reads_t
     assert!(text(&working[2]).contains("still working"));
     assert_eq!(working[3]["error"]["code"], -32021);
 
+    // A runner that stopped with an error is never started again by the server: the task says it
+    // waits for the operator, and no resume wrote to its log.
+    lock.unlock().unwrap();
+    let failed = runs.join(format!("task-{}.failed", task.seq()));
+    std::fs::write(&failed, "hyalos: the log could not be written\n").unwrap();
+    let waiting = m
+        .stdio(
+            Some(&credential),
+            &[declaring(1, "tasks/get", json!({"taskId": id}))],
+        )
+        .unwrap();
+    let message = waiting[0]["result"]["statusMessage"].as_str().unwrap_or("");
+    assert!(message.contains("waits for the operator"), "{message}");
+    assert!(!runs.join(format!("task-{}.log", task.seq())).exists());
+    std::fs::remove_file(&failed).unwrap();
+    lock.lock().unwrap();
+
     // A cancel is asked for in a file the runner watches.
     let cancelled = m
         .stdio(
