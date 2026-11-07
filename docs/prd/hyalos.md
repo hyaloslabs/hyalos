@@ -69,7 +69,7 @@ Every requirement above should be traceable through one real job: "From Claude C
 | M3 | E6 Plugin runtime; E7 Marketplace and supply chain | Open to skills and plugins |
 | M4 | E8 Verification and release gates; E9 Learnings and self-improvement; E10 Launch | Public release |
 
-**M2 client support** (spike #92, November 2026): of the target clients, Claude Code speaks the 2026-07-28 MCP revision but calls tools plainly and renders no MCP Apps, and Hermes Agent speaks only the 2025-11-25 revision. M2 therefore depends on the plain-tool fallback and plain-text approval views (ADR-0010), not on the extensions. Whether Hyalos also serves the older revision for Hermes is a decision of its own. Evidence: `docs/planning/spike-92-findings.md`.
+**M2 client support:** M2 works through the plain tools and plain-text approval views (ADR-0010) and does not depend on the Tasks or MCP Apps extensions. Whether clients on the older 2025-11-25 MCP revision, such as Hermes, are in M2's scope is decided in S5.12 (#239).
 
 Epic and story detail is tracked in GitHub issues: each epic is a parent issue (#1, #8, #15, #22, #28, #35, #41, #49, #56, #60) with its stories as sub-issues, grouped by milestone.
 

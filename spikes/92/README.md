@@ -10,7 +10,11 @@ Throwaway tooling that produced the evidence in [`docs/planning/spike-92-finding
 
 ## Running it
 
-Claude Code against the probe, without touching your own MCP settings:
+Run everything from this directory (`cd spikes/92`), with `hyalos` built by `cargo build` at the repository root.
+
+### Claude Code against the probe
+
+This does not touch your own MCP settings:
 
 ```
 cat > mcp.json <<EOF
@@ -19,16 +23,38 @@ EOF
 claude -p "Call the probe_echo tool once with text hello." --mcp-config mcp.json --strict-mcp-config --allowedTools mcp__probe__probe_echo < /dev/null
 ```
 
-`cc.log` then holds each request with the client's `_meta` (its revision and declared capabilities).
+`cc.log` then holds each request with the client's `_meta`: its revision and declared capabilities.
 
-The SDK clients need a throwaway Hyalos world:
-- `$SPIKE/c` and `$SPIKE/d`, each mode 0700, with `HYALOS_CONFIG_DIR`, `HYALOS_DATA_DIR` and `HYALOS_RUNTIME_DIR` pointing into `$SPIKE`;
-- `hyalos init`, `hyalos operator init`, then `hyalos agent issue spike`;
-- the printed credential written to `$SPIKE/cred`.
-
-Then, in a virtualenv with `mcp==1.26.0` (Hermes 0.19.0's pin) or `mcp==2.3.0`:
+### A throwaway Hyalos world
 
 ```
-SPIKE=$SPIKE python -I sdk_initialize.py path/to/hyalos
-SPIKE=$SPIKE python -I sdk_discover.py path/to/hyalos   # mcp 2.x only
+export SPIKE=$(mktemp -d) HYALOS=$(realpath ../../target/debug/hyalos)
+mkdir -m 0700 $SPIKE/c $SPIKE/d $SPIKE/r
+export HYALOS_CONFIG_DIR=$SPIKE/c HYALOS_DATA_DIR=$SPIKE/d HYALOS_RUNTIME_DIR=$SPIKE/r
+PASS='a throwaway spike passphrase'
+$HYALOS init
+printf '%s\n%s\n' "$PASS" "$PASS" | $HYALOS operator init --passphrase-stdin
+printf '%s\n' "$PASS" | $HYALOS agent issue spike --passphrase-stdin | grep -o 'hyalos-agent-[0-9a-f]*' > $SPIKE/cred
 ```
+
+The scripts below read `$SPIKE/c`, `$SPIKE/d`, `$SPIKE/r` and `$SPIKE/cred` themselves.
+
+### Claude Code against `hyalos mcp`
+
+```
+cat > hyalos-mcp.json <<EOF
+{"mcpServers": {"hyalos": {"type": "stdio", "command": "$HYALOS", "args": ["mcp"], "env": {"HYALOS_CONFIG_DIR": "$SPIKE/c", "HYALOS_DATA_DIR": "$SPIKE/d", "HYALOS_RUNTIME_DIR": "$SPIKE/r", "HYALOS_AGENT_CREDENTIAL": "$(cat $SPIKE/cred)"}}}}
+EOF
+claude -p 'Use the hyalos MCP server: call list_tasks once, then job_status with task "1", and report exactly what each returned.' --mcp-config hyalos-mcp.json --strict-mcp-config --allowedTools "mcp__hyalos__list_tasks mcp__hyalos__job_status" < /dev/null
+```
+
+### The Python SDK clients
+
+In a virtualenv with `mcp==1.26.0` (Hermes 0.19.0's pin) or `mcp==2.3.0`:
+
+```
+python -I sdk_initialize.py $HYALOS
+python -I sdk_discover.py $HYALOS   # mcp 2.x only
+```
+
+Delete `$SPIKE`, `mcp.json`, `hyalos-mcp.json` and `cc.log` afterwards.

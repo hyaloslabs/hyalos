@@ -14,5 +14,5 @@ async def main():
                 print("discover ok:", s.protocol_version)
                 print("tools:", [t.name for t in (await s.list_tools()).tools])
             except Exception as e:
-                print("initialize failed:", type(e).__name__, e)
+                print("discover failed:", type(e).__name__, e)
 asyncio.run(main())
