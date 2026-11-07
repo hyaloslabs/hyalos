@@ -11,7 +11,7 @@ mod state;
 pub use audit::{Audit, AuditError, Gap, audit};
 pub use engine::{
     Compaction, Decider, Engine, EngineError, PolicyUnavailable, Reevaluation, Ruling,
-    pruned_archives, replay, replay_from, replay_with,
+    pruned_archives, read_state, replay, replay_from, replay_with,
 };
 pub use mint::{MintRefusal, mint_codes};
 pub use state::{

@@ -66,6 +66,25 @@ jobs:
         with:
           command: check
 
+  # The official MCP conformance suite against the engine's MCP protocol layer (ADR-0067). The suite
+  # is pinned with its lockfile and installed without install scripts; it runs on the runner's Node.
+  mcp-conformance:
+    name: mcp conformance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Install the pinned conformance suite
+        run: npm ci --ignore-scripts --prefix crates/mcp-conformance
+      - name: Run every scenario 2026-07-28 requires
+        run: cargo test -p hyalos-mcp-conformance --locked
+        env:
+          HYALOS_REQUIRE_MCP_CONFORMANCE: "1"
+
   # The baseline's proofs (ADR-0008, ADR-0033). The solver runs here and nowhere else: it is never part
   # of the binary. cvc5 is the release cedar-policy-symcc documents, checked against a pinned checksum.
   policy-proofs:

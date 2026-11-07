@@ -1,0 +1,41 @@
+# The scenarios and checks the 2026-07-28 requirements list that the engine's MCP server does not
+# pass, each because it is a feature the server does not offer (ADR-0067). Every other required
+# scenario must pass. A SHOULD the server misses is a warning, and warnings count here too. The suite also fails a run if an entry here starts passing, so this list stays
+# exact: offering a feature means deleting its entries.
+server:
+  # Completions: no prompt or resource arguments to complete.
+  - completion-complete
+  # Resources: the engine offers tools only.
+  - resources-list
+  - resources-read-text
+  - resources-read-binary
+  - resources-templates-read
+  # Warns that an unknown resource is -32601, not -32602 with its uri: there are no resources at all.
+  - sep-2164-resource-not-found
+  - caching:sep-2549-resources-list-caching-hints
+  - caching:sep-2549-resources-templates-list-caching-hints
+  # Prompts: the engine offers tools only.
+  - prompts-list
+  - prompts-get-simple
+  - prompts-get-with-args
+  - prompts-get-embedded-resource
+  - prompts-get-with-image
+  - caching:sep-2549-prompts-list-caching-hints
+  # Input-required results (the revision's replacement for sampling, elicitation and roots requests
+  # from the server): no engine tool asks the client for anything. Approvals go through the operator
+  # channel, never the client (ADR-0012).
+  - input-required-result-basic-elicitation
+  - input-required-result-basic-sampling
+  - input-required-result-basic-list-roots
+  - input-required-result-request-state
+  - input-required-result-multiple-input-requests
+  - input-required-result-multi-round
+  - input-required-result-non-tool-request
+  - input-required-result-result-type
+  - input-required-result-tampered-state
+  - input-required-result-capability-check
+  # These two warn rather than fail, since the fixture tool they call does not exist.
+  - input-required-result-missing-input-response
+  - input-required-result-ignore-extra-params
+  # Needs the input-required fixture `test_streaming_elicitation` to open a response stream.
+  - server-stateless:sep-2575-http-server-no-independent-requests-on-stream

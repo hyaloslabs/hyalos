@@ -3,7 +3,7 @@
 use std::process::ExitCode;
 
 use hyalos::{
-    broker_cmd, doctor_cmd, github_cmd, hardening, init_cmd, log_cmd, policy_cmd, run_cmd,
+    broker_cmd, doctor_cmd, github_cmd, hardening, init_cmd, log_cmd, mcp_cmd, policy_cmd, run_cmd,
     workflow_cmd,
 };
 
@@ -23,6 +23,7 @@ fn main() -> ExitCode {
         Some("doctor") => doctor_cmd::run(args.get(1..).unwrap_or_default()),
         Some("github") => github_cmd::run(args.get(1..).unwrap_or_default()),
         Some("log") => log_cmd::run(args.get(1..).unwrap_or_default()),
+        Some("mcp") => mcp_cmd::run(args.get(1..).unwrap_or_default()),
         Some("policy") => policy_cmd::run(args.get(1..).unwrap_or_default()),
         Some("run") => run_cmd::run(args.get(1..).unwrap_or_default()),
         Some("workflow") => workflow_cmd::run(args.get(1..).unwrap_or_default()),
@@ -30,7 +31,7 @@ fn main() -> ExitCode {
         Some("broker") => broker_cmd::run(args.get(1..).unwrap_or_default()),
         Some(other) => {
             eprintln!(
-                "hyalos: unknown command {other}\nusage: hyalos [--version | init | doctor [--image <image>] | github check <owner/repo> | run --repo <owner/name> --issue <text> ... | policy check|approve|show ... | workflow check <file> | log verify|audit|backup|restore|compact|prune ...]"
+                "hyalos: unknown command {other}\nusage: hyalos [--version | init | doctor [--image <image>] | github check <owner/repo> | run --repo <owner/name> --issue <text> ... | policy check|approve|show ... | workflow check <file> | mcp [--listen <127.0.0.1:port>] | log verify|audit|backup|restore|compact|prune ...]"
             );
             ExitCode::from(2)
         }

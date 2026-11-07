@@ -18,6 +18,8 @@ const BUDGET: usize = 30_000;
 const PART_BUDGETS: &[(&str, usize)] = &[
     // The model protocols: both adapters, the relay, metering and the loopback transport (S3.8, ADR-0037).
     ("broker/src/model", 1_200),
+    // The MCP protocol layer and its two transports (S5.1, ADR-0067). MCP revises yearly.
+    ("hyalos/src/mcp", 1_000),
 ];
 
 /// For each crate in `core/`, the workspace crates it may depend on outside dev-dependencies.
