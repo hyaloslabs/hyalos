@@ -84,4 +84,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0068](0068-the-driving-agents-credential.md) | The driving agent's credential, issued and revoked in the log | Accepted |
 | [0069](0069-jobs-the-driving-agent-starts-as-mcp-tasks.md) | Jobs the driving agent starts, as MCP tasks that outlive the server | Accepted |
 | [0070](0070-the-operators-signature-on-every-human-decision.md) | The operator's signature on every human decision | Accepted |
-| [0071](0071-merging-after-the-operators-approval.md) | Merging a pull request after the operator's approval | Proposed |
+| [0071](0071-merging-after-the-operators-approval.md) | Merging a pull request after the operator's approval | Accepted |

@@ -1,6 +1,6 @@
 # ADR-0071: Merging a pull request after the operator's approval
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
