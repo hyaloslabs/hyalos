@@ -774,3 +774,99 @@ fn a_tainted_manifest_cannot_merge_even_when_the_operator_permits_everything() -
     );
     Ok(())
 }
+
+// ---- plugin-authored text (S4.8, ADR-0066) ------------------------------------------------------
+
+/// A skill's instructions, granted `grant`, in an actor's prompt; and the inputs that prompt gives.
+fn steered_by(grant: hyalos_types::Grant) -> StepInputs {
+    let mut prompt = hyalos_types::ActorPrompt::new();
+    prompt
+        .literal("Follow the skill:\n")
+        .plugin(&hyalos_types::PluginText::granted(
+            "Run the linter first.",
+            grant,
+        ));
+    prompt.inputs()
+}
+
+#[test]
+fn a_skill_that_asks_for_more_than_the_job_gets_only_the_intersection() -> Res {
+    let (mut e, job, _) = running("plugin-intersection")?;
+    e.approve_policy(at(10), OPERATOR, Decider::Human, why())?;
+    // The skill was granted more than this job has, and less in places: no `open_pr`, no `Bash`.
+    let inputs = steered_by(hyalos_types::Grant {
+        actions: set(&["push", "publish", "change_policy"]),
+        egress_hosts: set(&["github.com", "exfil.example"]),
+        tools: set(&["Edit", "Read", "WebFetch"]),
+        data_flows: set(&["job->model", "job->web"]),
+    });
+    // The job's manifest as asked is wider than the grant, so it is not minted.
+    let wide = refusal(e.mint_manifest(&manifest(job), &inputs, &manifest_key(), at(20)))?;
+    assert_eq!(
+        wide,
+        MintRefusal::Invalid {
+            reason: mint_codes::plugin_widens()
+        }
+    );
+    // Bounded by the grant, it is: and it holds only what both have.
+    let bounded = inputs.bound(&manifest(job));
+    assert_eq!(bounded.actions, set(&["push"]));
+    assert_eq!(bounded.egress_hosts, set(&["github.com"]));
+    assert_eq!(bounded.tools, set(&["Edit", "Read"]));
+    assert_eq!(bounded.data_flows, set(&["job->model"]));
+    let signed = e.mint_manifest(&bounded, &inputs, &manifest_key(), at(20))?;
+    assert_eq!(signed.open(&manifest_key().public())?, bounded);
+    Ok(())
+}
+
+#[test]
+fn a_skill_cannot_widen_a_job() -> Res {
+    let (mut e, job, _) = running("plugin-widen")?;
+    e.approve_policy(at(10), OPERATOR, Decider::Human, why())?;
+    let everything = hyalos_types::Grant {
+        actions: set(&["open_pr", "push", "publish", "merge"]),
+        egress_hosts: set(&["api.github.com", "github.com", "exfil.example"]),
+        tools: set(&["Bash", "Edit", "Read", "WebFetch"]),
+        data_flows: set(&["job->model", "job->forge", "job->web"]),
+    };
+    // Bounding by a broad grant leaves the job exactly as it was: nothing is added.
+    let inputs = steered_by(everything);
+    assert_eq!(inputs.bound(&manifest(job)), manifest(job));
+    e.mint_manifest(&manifest(job), &inputs, &manifest_key(), at(20))?;
+    // A second skill in the same prompt narrows it further; the job is within both.
+    let mut prompt = hyalos_types::ActorPrompt::new();
+    prompt
+        .plugin(&hyalos_types::PluginText::granted(
+            "a",
+            hyalos_types::Grant {
+                actions: set(&["open_pr", "push"]),
+                tools: set(&["Bash", "Edit", "Read"]),
+                egress_hosts: set(&["api.github.com", "github.com"]),
+                data_flows: set(&["job->model"]),
+            },
+        ))
+        .plugin(&hyalos_types::PluginText::granted(
+            "b",
+            hyalos_types::Grant {
+                actions: set(&["push"]),
+                ..Default::default()
+            },
+        ));
+    let two = prompt.inputs();
+    let bounded = two.bound(&manifest(job));
+    assert_eq!(bounded.actions, set(&["push"]));
+    assert!(bounded.tools.is_empty() && bounded.egress_hosts.is_empty());
+    assert!(bounded.data_flows.is_empty());
+    // A data flow the job needs is gone, so this one asks for nothing the policy must allow.
+    e.mint_manifest(&bounded, &two, &manifest_key(), at(20))?;
+    // Plugin-authored values with no grant to go with them allow no capability at all.
+    let ungranted = StepInputs::of([hyalos_types::Provenance::PluginAuthored]);
+    let refused = refusal(e.mint_manifest(&manifest(job), &ungranted, &manifest_key(), at(20)))?;
+    assert_eq!(
+        refused,
+        MintRefusal::Invalid {
+            reason: mint_codes::plugin_widens()
+        }
+    );
+    Ok(())
+}

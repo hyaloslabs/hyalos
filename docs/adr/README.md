@@ -79,3 +79,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0063](0063-gated-handles-for-raw-text.md) | Gated handles: the broker holds raw text, a human releases it by digest | Accepted |
 | [0064](0064-results-a-harness-submits-and-the-broker-reads.md) | Results a harness submits through `hyalos-submit`, and the broker reads as typed values | Accepted |
 | [0065](0065-the-content-gate-on-what-a-tainted-job-publishes.md) | The content gate on what a tainted job publishes, and the ported red-team corpus | Accepted |
+| [0066](0066-plugin-authored-text-and-the-grant-that-bounds-it.md) | Plugin-authored text, and the grant that bounds the job it steers | Proposed |

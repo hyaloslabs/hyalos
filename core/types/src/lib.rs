@@ -10,6 +10,7 @@ pub mod hex;
 pub mod ids;
 pub mod manifest;
 pub mod origin;
+pub mod plugin;
 pub mod prompt;
 pub mod provenance;
 pub mod reason;
@@ -34,6 +35,7 @@ pub use manifest::{
     OpenError, Role, SignedManifest, flow,
 };
 pub use origin::Origin;
+pub use plugin::Grant;
 pub use prompt::{ActorPrompt, Choice, Choices, ReaderPrompt, Sourced, Typed};
 pub use provenance::{
     ForgeIssue, ForgeText, IssueState, ModelText, OperatorText, PluginText, Provenance, StepInputs,
