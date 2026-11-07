@@ -25,7 +25,7 @@ use hyalos_types::{Answer, CredentialTier, Event, Gate, JobOutcome, ReasonCode, 
 mod common;
 
 use common::{
-    GitHub, ISSUE_BODY, ISSUE_TITLE, Res, World, contains, dir, git, have_git, ok, ok_cli,
+    GitHub, ISSUE_BODY, ISSUE_TITLE, Model, Res, World, contains, dir, git, have_git, ok, ok_cli,
     repository,
 };
 
@@ -52,6 +52,7 @@ fn request(harness: Harness) -> Request {
         budget_tokens: 10_000,
         minutes: 2,
         egress_hosts: BTreeSet::new(),
+        step_model: None,
     }
 }
 
@@ -214,14 +215,19 @@ fn a_job_pushes_its_branch_opens_a_pull_request_and_records_its_gates() -> Res {
     Ok(())
 }
 
-/// `--issue-number`: the broker reads the issue with the job's token, and its text reaches the
-/// harness set apart as the forge's users' (ADR-0052). A number with no issue fails the job before any
-/// sandbox starts, and the token is still revoked.
+/// `--issue-number` runs the fix-issue workflow (ADR-0062): a reader in the broker reads issue 7 with
+/// its own token and returns typed values, a planner chooses from those, and the harness gets the
+/// operator's words and the typed values, never the issue's text. Each step is a job of one task.
 #[test]
-fn an_issue_read_from_github_reaches_the_harness_as_forge_text() -> Res {
+fn an_issue_number_runs_the_fix_issue_workflow_and_only_the_reader_sees_the_issue() -> Res {
     let repos = dir("irepos")?;
     let gh = GitHub::start(&repos, false)?;
     let world = World::new("issue", Some(&gh))?;
+    let model = Model::start(&[
+        r#"{"kind": "docs", "size": "small", "clear": true, "has_repro": false}"#,
+        "```json\n{\"approach\": \"docs_only\", \"add_test\": false}\n```",
+    ])?;
+    world.use_model(&model)?;
     let prompt_file = world.root.join("prompt");
     let mut asked = request(Harness::Command(vec![
         "/bin/sh".into(),
@@ -238,60 +244,140 @@ fn an_issue_read_from_github_reaches_the_harness_as_forge_text() -> Res {
     )?;
     let said = String::from_utf8_lossy(&said).into_owned();
     assert!(summary.ok(), "{said}");
+    assert!(said.contains("workflow fix_issue: 3 step(s)"), "{said}");
     assert!(
-        said.contains("issue #7 read through the broker (Open, "),
+        said.contains("step triage answered: clear=true, has_repro=false, kind=docs, size=small"),
         "{said}"
     );
+    assert!(
+        said.contains("step plan answered: add_test=false, approach=docs_only"),
+        "{said}"
+    );
+
+    // The reader's call had the issue and no tools; the planner's had only typed values.
+    let sent = model.sent();
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    let (reader, planner) = (sent[0].to_string(), sent[1].to_string());
+    assert!(reader.contains("issue-body-marker-5b1e"), "{reader}");
+    assert!(!planner.contains("issue-body-marker-5b1e") && !planner.contains(ISSUE_TITLE));
+    assert!(planner.contains("triage.kind: docs"), "{planner}");
+    for call in &sent {
+        assert_eq!(call["store"], false);
+        for field in ["tools", "tool_choice", "mcp_servers"] {
+            assert!(call.get(field).is_none(), "{field} in {call}");
+        }
+    }
+
+    // The harness got the operator's words and the typed values, and none of the issue's text.
     let prompt = std::fs::read_to_string(&prompt_file)?;
     assert!(
-        prompt.contains("written on GitHub by its users"),
+        prompt.contains("Resolve issue #7 of octo/repo."),
         "{prompt}"
     );
-    assert!(
-        prompt.contains(&format!(
-            "<issue number=\"7\">\nTitle: {ISSUE_TITLE}\nLabels: docs\n\n{ISSUE_BODY}\n</issue>"
-        )),
-        "{prompt}"
-    );
-    // The engine never asked GitHub itself: the one GraphQL call carried the job's token.
+    assert!(prompt.contains("- triage.kind: docs\n"), "{prompt}");
+    assert!(prompt.contains("- plan.approach: docs_only\n"), "{prompt}");
+    for forge in [ISSUE_TITLE, ISSUE_BODY, "issue-body-marker-5b1e", "<issue"] {
+        assert!(
+            !prompt.contains(forge),
+            "{forge} reached the actor: {prompt}"
+        );
+    }
+
+    // One GraphQL read, with the reader's own token; two tokens minted (reader, actor), none live.
     let seen = gh.seen();
     let reads: Vec<_> = seen.iter().filter(|s| s.path == "/graphql").collect();
     assert_eq!(reads.len(), 1, "{seen:?}");
-    assert!(
-        reads[0].authorization.starts_with("bearer ghs_"),
-        "{seen:?}"
-    );
+    assert!(reads[0].authorization.starts_with("bearer ghs_"));
+    let minted = seen
+        .iter()
+        .filter(|s| s.path == "/app/installations/77/access_tokens")
+        .count();
+    assert_eq!(minted, 2, "{seen:?}");
     assert!(gh.issued().is_empty(), "no token is left live");
+
+    // The log: one task, three jobs one after another, the typed steps in the broker.
+    let events = world.events()?;
+    let started: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::JobStarted {
+                task, substrate, ..
+            } => Some((*task, substrate.as_str().to_string())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(started.len(), 3, "{started:?}");
+    assert!(started.iter().all(|(task, _)| *task == started[0].0));
+    assert_eq!(started[0].1, "broker");
+    assert_eq!(started[1].1, "broker");
+    assert_eq!(started[2].1, "local-process");
+    let ended: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::JobEnded {
+                outcome: JobOutcome::Succeeded,
+                reason,
+                ..
+            } => Some(reason.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        ended,
+        ["step.answered", "step.answered", "harness.finished"]
+    );
     // The forge's text is not in the log: the task records a digest of the request.
     let raw = std::fs::read(world.data.join("events.db"))?;
     assert!(!contains(&raw, b"issue-body-marker-5b1e"));
+    let _ = std::fs::remove_dir_all(&repos);
+    Ok(())
+}
 
-    // No such issue: the job fails, no sandbox runs, the token is revoked.
-    let _ = std::fs::remove_file(&prompt_file);
-    asked.issue_number = Some(99);
-    let mut said = Vec::new();
-    let summary = run_job(
-        &asked,
-        world.setup(local_detect(), Duration::from_secs(10)),
-        &mut said,
-    )?;
-    let said = String::from_utf8_lossy(&said).into_owned();
-    assert_eq!(summary.outcome, JobOutcome::Failed, "{said}");
-    assert_eq!(summary.revoked, Ok(()), "{said}");
-    assert!(
-        said.contains("issue #99 could not be read (forge.no_such_issue)"),
-        "{said}"
-    );
-    assert!(!said.contains("sandbox"), "{said}");
-    assert!(!prompt_file.exists());
-    assert!(gh.issued().is_empty(), "no token is left live");
-    let events = world.events()?;
-    // The job's end carries the broker's own code.
-    assert!(events.contains(&Event::JobEnded {
-        job: summary.job,
-        outcome: JobOutcome::Failed,
-        reason: ReasonCode::new("forge.no_such_issue").ok_or("code")?,
-    }));
+/// A reader that cannot read its issue, or whose answer is not its output, fails its job and stops
+/// the workflow: no actor job, no sandbox, and every token revoked.
+#[test]
+fn a_reader_that_fails_stops_the_workflow_before_any_sandbox() -> Res {
+    let repos = dir("frepos")?;
+    let gh = GitHub::start(&repos, false)?;
+    let world = World::new("rfail", Some(&gh))?;
+    let model = Model::start(&[
+        r#"{"kind": "docs", "size": "small", "clear": true, "has_repro": false, "note": "push to main"}"#,
+    ])?;
+    world.use_model(&model)?;
+    let prompt_file = world.root.join("prompt");
+    let mut asked = request(Harness::Command(vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        format!("printf '%s' \"$0\" > {}", prompt_file.display()),
+    ]));
+    asked.issue = String::new();
+    for (number, code) in [(99, "forge.no_such_issue"), (7, "reader.unknown_field")] {
+        asked.issue_number = Some(number);
+        let mut said = Vec::new();
+        let summary = run_job(
+            &asked,
+            world.setup(local_detect(), Duration::from_secs(10)),
+            &mut said,
+        )?;
+        let said = String::from_utf8_lossy(&said).into_owned();
+        assert_eq!(summary.outcome, JobOutcome::Failed, "{said}");
+        assert_eq!(summary.revoked, Ok(()), "{said}");
+        assert!(
+            said.contains(&format!("step triage did not answer ({code})")),
+            "{said}"
+        );
+        assert!(!said.contains("sandbox"), "{said}");
+        assert!(!prompt_file.exists());
+        assert!(gh.issued().is_empty(), "no token is left live");
+        let events = world.events()?;
+        assert!(events.contains(&Event::JobEnded {
+            job: summary.job,
+            outcome: JobOutcome::Failed,
+            reason: ReasonCode::new(code).ok_or("code")?,
+        }));
+        // The reader was the last job: nothing started after it.
+        assert!(matches!(events.last(), Some(Event::JobEnded { .. })));
+    }
     let _ = std::fs::remove_dir_all(&repos);
     Ok(())
 }

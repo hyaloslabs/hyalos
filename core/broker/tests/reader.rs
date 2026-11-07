@@ -407,6 +407,50 @@ fn an_answer_that_is_not_the_output_fails_the_job_and_the_broker_serves_on() -> 
     Ok(())
 }
 
+/// A planner runs the same call with no tools, from typed values the engine rendered, and may not
+/// read an issue (ADR-0062).
+#[test]
+fn a_planner_runs_from_typed_values_and_reads_no_issue() -> Res {
+    let mut r = rig()?;
+    start(&mut r, &manifest(50, Role::Planner))?;
+    r.provider.answer(
+        Protocol::OpenAi,
+        r#"{"has_repro":true,"kind":"feature","severity":2}"#,
+    );
+    let planned = ReaderCall {
+        instructions: "Choose an approach.".into(),
+        context: vec!["triage.kind: bug".into()],
+        issue: None,
+        ..call(Protocol::OpenAi)
+    };
+    assert_eq!(
+        read(&mut r, 50, planned)?,
+        [ToEngine::Values {
+            job: JobId::from_seq(50),
+            values: vec![
+                TypedValue::Bool(true),
+                TypedValue::Choice(1),
+                TypedValue::Integer(2)
+            ],
+        }]
+    );
+    let sent = r.provider.sent();
+    let text = sent[0].to_string();
+    assert!(text.contains("You plan from the values"), "{text}");
+    assert!(text.contains("triage.kind: bug") && !text.contains("<issue"));
+    for field in ["tools", "tool_choice", "mcp_servers"] {
+        assert!(sent[0].get(field).is_none(), "{field}");
+    }
+    // A planner that names an issue is refused before anything is read or called.
+    start(&mut r, &manifest(51, Role::Planner))?;
+    assert_eq!(
+        read(&mut r, 51, call(Protocol::OpenAi))?,
+        refused(51, "reader.planner_reads_issue")
+    );
+    assert_eq!(r.provider.sent().len(), 1);
+    Ok(())
+}
+
 fn text(answer: &str) -> Vec<u8> {
     json!({"content": [{"type": "text", "text": answer}], "usage": {"input_tokens": 1, "output_tokens": 1}})
         .to_string()

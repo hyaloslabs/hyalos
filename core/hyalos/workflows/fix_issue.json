@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "name": "fix_issue",
+  "inputs": {
+    "issue": "forge_issue",
+    "task": "operator_text"
+  },
+  "steps": [
+    {
+      "id": "triage",
+      "role": "reader",
+      "reads": ["issue"],
+      "instructions": "Read the issue and classify it. kind is what the issue asks for. size is how much code a change for it would likely touch. clear is true only if the issue says specifically what is wrong or what is wanted. has_repro is true only if it gives steps, input or output that show the problem.",
+      "output": {
+        "kind": { "choice": ["bug", "feature", "docs", "test", "chore"] },
+        "size": { "choice": ["small", "medium", "large"] },
+        "clear": "bool",
+        "has_repro": "bool"
+      }
+    },
+    {
+      "id": "plan",
+      "role": "planner",
+      "reads": ["triage.kind", "triage.size", "triage.clear", "triage.has_repro"],
+      "instructions": "From the classification of an issue, choose how a developer should approach the change. approach: minimal_fix for a small, clear change; fix_with_tests when the change should come with a test that fails before it; docs_only when only documentation should change; investigate when the issue is not clear enough to change code, so the developer should look first and change as little as possible. add_test is true if the change should add or update a test.",
+      "output": {
+        "approach": { "choice": ["minimal_fix", "fix_with_tests", "docs_only", "investigate"] },
+        "add_test": "bool"
+      }
+    },
+    {
+      "id": "fix",
+      "role": "actor",
+      "reads": ["task", "triage.kind", "triage.size", "plan.approach", "plan.add_test"],
+      "instructions": "Make the change the task describes, following the approach below, and open a pull request for it. Keep the change as small as the approach allows."
+    }
+  ]
+}

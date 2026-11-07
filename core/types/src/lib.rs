@@ -34,9 +34,7 @@ pub use manifest::{
     OpenError, Role, SignedManifest, flow,
 };
 pub use origin::Origin;
-pub use prompt::{
-    ActorPrompt, Choice, Choices, DirectPrompt, DirectTask, ReaderPrompt, Sourced, Typed,
-};
+pub use prompt::{ActorPrompt, Choice, Choices, ReaderPrompt, Sourced, Typed};
 pub use provenance::{
     ForgeIssue, ForgeText, IssueState, ModelText, OperatorText, PluginText, Provenance, StepInputs,
 };

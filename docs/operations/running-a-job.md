@@ -32,7 +32,12 @@ hyalos run --repo octo/repo --issue "The parser drops the last line of a file wi
 ```
 
 - `--issue-file <file>` reads the issue text from a file.
-- `--issue-number <n>` works on issue `n` of `--repo` instead. The broker reads it from GitHub with the job's token, and the harness is told that its text was written by the issue's users, not by you ([ADR-0052](../adr/0052-reading-the-jobs-issue-from-github.md)). If it cannot be read (no such issue, or GitHub refuses), the job fails before a sandbox starts and the token is revoked.
+- `--issue-number <n>` runs the shipped fix-issue workflow on issue `n` of `--repo` ([ADR-0062](../adr/0062-the-fix-issue-workflow-and-its-runner.md)). It runs three jobs under one task, one after another:
+  1. **triage**, a reader: the broker reads the issue from GitHub with a read-only token of its own and asks a model to classify it (`kind`, `size`, `clear`, `has_repro`).
+  2. **plan**, a planner: the broker asks a model to choose an `approach` and whether to `add_test`, from those values only.
+  3. **fix**, the actor: the harness in the sandbox.
+
+  The harness gets the issue's number, your text and the typed values. It never gets the issue's title or body, so describe the work with `--issue` if the classification is not enough. Without `--issue`, the task is "Resolve issue #n of owner/name". The issue's text reaches the harness only through a gated handle, which is not built yet (S4.4). The reader and the planner call `--step-model`, which defaults to `gpt-5-mini` for Codex and `claude-haiku-5-5` for Claude Code, through the same `provider.keys`. Each spends at most 32,000 tokens. If a step cannot read its issue, or the model's answer is not exactly its fields, that job fails, no sandbox starts and every token is revoked. A step's job is recorded with the substrate `broker` and the attestation `none (attestation.no_sandbox)`.
 - `--base <branch>` is where the pull request goes (default `main`).
 - `--harness claude-code` runs Claude Code instead of Codex.
 - `--minutes` is the deadline (default 30); `--budget-tokens` the model budget (default 200,000).
