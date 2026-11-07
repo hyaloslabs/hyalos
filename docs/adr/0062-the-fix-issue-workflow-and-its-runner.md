@@ -1,6 +1,6 @@
 # ADR-0062: The fix-issue workflow, and the runner that mints only from the check
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
