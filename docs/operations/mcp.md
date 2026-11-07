@@ -9,14 +9,16 @@ Approvals come in a later story.
 
 ## Which clients can connect
 
-A client must speak MCP revision 2026-07-28: it starts with `server/discover` and sends `_meta` on every request. A client that opens with `initialize`, the 2025-11-25 handshake, is refused with `-32601` and told which revision this is. Hyalos does not serve older revisions ([ADR-0073](../adr/0073-clients-on-older-mcp-revisions-are-unsupported.md)).
+A client must speak MCP revision 2026-07-28: it sends `_meta` with the protocol version and its capabilities on every request (usually starting with `server/discover`), and never `initialize`. A client that opens with `initialize`, the 2025-11-25 handshake, is refused with `-32601` and told which revision this is. Hyalos does not serve older revisions ([ADR-0073](../adr/0073-clients-on-older-mcp-revisions-are-unsupported.md)).
+
+Checked November 7, 2026, in spike #92 ([findings](../planning/spike-92-findings.md)); re-check when a client changes version.
 
 | Client | Version checked | Connects |
 | --- | --- | --- |
 | Claude Code | 2.1.318 | Yes. It calls every tool plainly, so it uses `job_status` and `job_result`, not `tasks/get`. |
-| Hermes Agent | 0.19.0 | **No.** It uses the Python MCP SDK 1.26.0 and `initialize`. It will need SDK 2.x and `discover()`. |
+| Hermes Agent | 0.19.0 | **No.** It uses the Python MCP SDK 1.26.0 and `initialize`. It will need Python MCP SDK 2.3.0 or later and a change to call `discover()`. |
 
-Neither renders MCP Apps, so everything the server returns is plain text and structured content.
+Neither client renders MCP Apps, and the server offers none: everything it returns is plain text and structured content.
 
 The server reads the log with the engine's public key only. It never opens `engine.key`, so it runs while `hyalos run` writes. Run `hyalos init` first, and set up everything `hyalos run` needs (see [Running a job](running-a-job.md)) before the agent starts a job.
 

@@ -21,10 +21,10 @@ Serving 2025-11-25 as well would bring back what ADR-0067 removed:
 
 **Hyalos keeps serving only 2026-07-28.** A client on an older revision, Hermes Agent 0.19.0 included, is unsupported until it moves to 2026-07-28. Nothing is added to serve it. It is still told which revision this is, as ADR-0067 says.
 
-**The requirement is stated where operators look.** `docs/operations/mcp.md` says that a client must speak 2026-07-28 (discovery and `_meta` on every request, not `initialize`), names the clients checked and their versions, and says that Hermes 0.19.0 does not speak it.
+**The requirement is stated where operators look.** `docs/operations/mcp.md` says that a client must speak 2026-07-28 (`_meta` on every request, never `initialize`), names the clients checked and their versions, and says that Hermes 0.19.0 does not speak it.
 
 **This corrects only ADR-0067's premise.** ADR-0067's decision stands; its "no target client needs" sentence is wrong for Hermes, and this ADR records the choice made knowing that.
 
 ## Consequences
 
-Out of the target clients, Claude Code drives Hyalos in M2 and Hermes does not, until it updates its SDK and calls `discover()`. The server keeps one revision, one credential check per message and no session state. When Hermes moves, it should work unchanged; re-check it with the spike rig (`spikes/92`) then. If a target client is stuck on an older revision for long, revisit this with a new ADR.
+Out of the target clients, Claude Code drives Hyalos in M2 and Hermes does not, until it updates its SDK and calls `discover()`. The server keeps one revision, one credential check per message and no session state. When Hermes moves, it should connect with no change to Hyalos; re-check it with the spike rig (`spikes/92`) then. If a target client is stuck on an older revision for long, revisit this with a new ADR.
