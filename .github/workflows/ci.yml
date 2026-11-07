@@ -17,8 +17,42 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Whether a pull request changes only documentation (#243): files under docs/ or spikes/, or Markdown at
+  # the repository root. If it does, the jobs below are skipped, and a skipped job still reports its
+  # required check. They run unless this says "true", so if this job fails, they still run. A push to main
+  # always runs everything.
+  changes:
+    name: what changed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      # The checkout is GitHub's merge of the pull request into its base, so its first parent is the base.
+      # Without rename detection, a file moved into docs/ also lists the path it left.
+      - name: Classify the changed files
+        id: classify
+        if: github.event_name == 'pull_request'
+        run: |
+          changed="$(git diff --name-only --no-renames HEAD^1 HEAD)"
+          others="$(grep -vE '^(docs/|spikes/|[^/]+\.md$)' <<<"$changed" || true)"
+          printf 'Changed:\n%s\nNot documentation:\n%s\n' "$changed" "$others"
+          if [ -n "$changed" ] && [ -z "$others" ]; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            echo "Only documentation changed: the build, audit, conformance and proof jobs are skipped." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
   rust:
     name: build, lint, test
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -56,6 +90,8 @@ jobs:
 
   deny:
     name: dependency audit
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -70,6 +106,8 @@ jobs:
   # is pinned with its lockfile and installed without install scripts; it runs on the runner's Node.
   mcp-conformance:
     name: mcp conformance
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -89,6 +127,8 @@ jobs:
   # of the binary. cvc5 is the release cedar-policy-symcc documents, checked against a pinned checksum.
   policy-proofs:
     name: policy proofs
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
