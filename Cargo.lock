@@ -737,6 +737,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyalos-redteam"
+version = "0.0.0"
+dependencies = [
+ "hyalos-broker",
+ "hyalos-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "hyalos-sandbox-tools"
 version = "0.0.0"
 dependencies = [

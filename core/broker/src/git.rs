@@ -39,6 +39,9 @@ pub const GITHUB: &str = "https://github.com";
 #[derive(Debug, Clone)]
 pub struct Git {
     transport: Result<HttpTransport, &'static str>,
+    /// The forge's web host, the git base's: the one host a tainted job's pull request may link to
+    /// (ADR-0065).
+    web: Option<String>,
 }
 
 impl Default for Git {
@@ -57,7 +60,13 @@ impl Git {
     pub fn with_base(base: &str) -> Self {
         Self {
             transport: HttpTransport::new(base).map_err(|e| e.0),
+            web: crate::egress::base_host(base),
         }
+    }
+
+    /// The forge's web host, if its base has a host name.
+    pub fn web_host(&self) -> Option<&str> {
+        self.web.as_deref()
     }
 }
 

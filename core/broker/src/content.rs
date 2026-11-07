@@ -1,11 +1,15 @@
-//! The content gate on outbound text (ADR-0004, ADR-0008, ADR-0048; the first slice of S4.5).
+//! The content gate on outbound text (ADR-0004, ADR-0008, ADR-0048, ADR-0065).
 //!
 //! Text a job sends to the forge in clear, such as a pull request's title and body, is checked byte by
-//! byte before it leaves. It is refused if it holds a credential the broker holds, the job's forge
-//! token or a provider key, or a character that hides text from the person reading it: bidirectional
+//! byte before it leaves. [`check`] refuses a credential the broker holds, the job's forge token or a
+//! provider key, and a character that hides text from the person reading it: bidirectional
 //! controls, zero-width and other invisible characters, Unicode tags, and control characters other
-//! than tab and line breaks. What it cannot catch is a secret the job has encoded or split; the gate
-//! is a byte check, not a judge of intent.
+//! than tab and line breaks.
+//!
+//! [`check_published`] is for text a tainted job publishes where people and their browsers render it
+//! (ADR-0065). It also refuses a key of a known shape, a credential encoded or split, a link off the
+//! forge or carrying a query, and a body longer than [`MAX_PUBLISHED`]. It is still a check of the
+//! text, not a judge of intent: a secret written as prose passes.
 
 /// Credentials shorter than this are not looked for: they would match ordinary text.
 pub(crate) const MIN_SECRET: usize = 12;
@@ -22,6 +26,349 @@ pub fn check(text: &str, secrets: &[&str]) -> Result<(), &'static str> {
         return Err("content.hidden_text");
     }
     Ok(())
+}
+
+/// The longest text a tainted job may publish in one field, in characters. Past it a body can carry a
+/// payload no reviewer reads (ADR-0065).
+pub const MAX_PUBLISHED: usize = 20_000;
+
+/// Checks text a tainted job publishes on the forge (ADR-0065): what [`check`] refuses, then a body
+/// longer than [`MAX_PUBLISHED`], a key of a known shape (`content.key_shape`), a credential or key
+/// encoded, reversed or split (`content.encoded_credential`), and a link anywhere but `forge`, the
+/// forge's web host, or one there with a query (`content.link`). `None` allows no link.
+pub fn check_published(
+    text: &str,
+    secrets: &[&str],
+    forge: Option<&str>,
+) -> Result<(), &'static str> {
+    check(text, secrets)?;
+    if text.chars().count() > MAX_PUBLISHED {
+        return Err("content.too_long");
+    }
+    if key_shape(text) {
+        return Err("content.key_shape");
+    }
+    let held = |view: &str| {
+        secrets
+            .iter()
+            .any(|s| s.len() >= MIN_SECRET && view.contains(s))
+    };
+    if views(text).iter().any(|v| held(v) || issued_key(v)) {
+        return Err("content.encoded_credential");
+    }
+    if !links_allowed(text, forge) {
+        return Err("content.link");
+    }
+    Ok(())
+}
+
+/// The ways `text` could carry a key it does not show: with runs of short pieces joined (a key split
+/// by spaces), reversed, percent-decoded, and each run of base64 or hex decoded.
+fn views(text: &str) -> Vec<String> {
+    let mut views = vec![
+        joined(text),
+        text.chars().rev().collect(),
+        percent_decoded(text),
+    ];
+    let runs = |alphabet: fn(u8) -> bool| {
+        text.as_bytes()
+            .split(move |b| !alphabet(*b))
+            .filter(|run| run.len() >= MIN_ENCODED)
+            .map(<[u8]>::to_vec)
+            .collect::<Vec<_>>()
+    };
+    for run in runs(|b| b.is_ascii_alphanumeric() || b"+/=-_".contains(&b)) {
+        views.extend(base64_decoded(&run).map(|b| String::from_utf8_lossy(&b).into_owned()));
+    }
+    for run in runs(|b| b.is_ascii_hexdigit()) {
+        views.extend(hex_decoded(&run).map(|b| String::from_utf8_lossy(&b).into_owned()));
+    }
+    views
+}
+
+/// Encoded runs shorter than this are not decoded: they would decode ordinary words.
+const MIN_ENCODED: usize = 16;
+
+/// `text` with each run of pieces of at most 4 characters joined into one word, so a key split into
+/// short groups reads whole again while ordinary words stay apart.
+fn joined(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut short = false;
+    for piece in text.split_whitespace() {
+        let is_short = piece.chars().count() <= 4;
+        if !(short && is_short) && !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(piece);
+        short = is_short;
+    }
+    out
+}
+
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let pair = bytes
+            .get(i + 1..i + 3)
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
+        match (bytes[i], pair) {
+            (b'%', Some(b)) => {
+                out.push(b);
+                i += 3;
+            }
+            (b, _) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_decoded(run: &[u8]) -> Option<Vec<u8>> {
+    run.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            std::str::from_utf8(pair)
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        })
+        .collect()
+}
+
+/// `run` as standard or URL-safe base64, padded or not.
+fn base64_decoded(run: &[u8]) -> Option<Vec<u8>> {
+    let run = run
+        .strip_suffix(b"==")
+        .or(run.strip_suffix(b"="))
+        .unwrap_or(run);
+    let value = |b: u8| match b {
+        b'A'..=b'Z' => Some(b - b'A'),
+        b'a'..=b'z' => Some(b - b'a' + 26),
+        b'0'..=b'9' => Some(b - b'0' + 52),
+        b'+' | b'-' => Some(62),
+        b'/' | b'_' => Some(63),
+        _ => None,
+    };
+    if run.len() % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(run.len() * 3 / 4);
+    for chunk in run.chunks(4) {
+        let mut n = 0u32;
+        for (i, b) in chunk.iter().enumerate() {
+            n |= u32::from(value(*b)?) << (18 - 6 * i);
+        }
+        let bytes = n.to_be_bytes();
+        out.extend_from_slice(&bytes[1..chunk.len()]);
+    }
+    Some(out)
+}
+
+/// The characters a key's body is made of.
+fn key_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '-'
+}
+
+/// Whether `text` holds a key of a shape a provider or service issues, or a credential written as an
+/// assignment or inside a URL.
+fn key_shape(text: &str) -> bool {
+    if issued_key(text) {
+        return true;
+    }
+    // A password in a URL: `scheme://user:password@host`.
+    if text.match_indices("://").any(|(at, _)| {
+        let authority = text[at + 3..]
+            .split(|c: char| c.is_whitespace() || "/?#)]>\"'".contains(c))
+            .next()
+            .unwrap_or_default();
+        authority
+            .rsplit_once('@')
+            .is_some_and(|(info, _)| info.contains(':'))
+    }) {
+        return true;
+    }
+    assignment(text)
+}
+
+/// Whether `text` holds a key in a form a provider or service issues: a known prefix that starts a
+/// word and enough key characters after it, a private key block, or a JSON web token.
+fn issued_key(text: &str) -> bool {
+    /// A prefix, and how many key characters must follow it.
+    const PREFIXES: [(&str, usize); 20] = [
+        ("sk-ant-", 8),
+        ("sk-proj-", 8),
+        ("sk-svcacct-", 8),
+        ("ghp_", 20),
+        ("gho_", 20),
+        ("ghu_", 20),
+        ("ghs_", 20),
+        ("ghr_", 20),
+        ("github_pat_", 20),
+        ("glpat-", 8),
+        ("xoxa-", 8),
+        ("xoxb-", 8),
+        ("xoxp-", 8),
+        ("xoxr-", 8),
+        ("xoxs-", 8),
+        ("xapp-", 8),
+        ("sk_live_", 8),
+        ("sk_test_", 8),
+        ("rk_live_", 8),
+        ("rk_test_", 8),
+    ];
+    let starts_word = |at: usize| !text[..at].chars().next_back().is_some_and(key_char);
+    let tail = |at: usize, of: fn(char) -> bool| text[at..].chars().take_while(|c| of(*c)).count();
+    if PREFIXES.iter().any(|(prefix, need)| {
+        text.match_indices(prefix)
+            .any(|(at, _)| starts_word(at) && tail(at + prefix.len(), key_char) >= *need)
+    }) {
+        return true;
+    }
+    // An AWS access key id: `AKIA` or `ASIA` and 16 capitals or digits.
+    let aws = |c: char| c.is_ascii_uppercase() || c.is_ascii_digit();
+    if ["AKIA", "ASIA"].iter().any(|prefix| {
+        text.match_indices(prefix)
+            .any(|(at, _)| starts_word(at) && tail(at + 4, aws) >= 16)
+    }) {
+        return true;
+    }
+    if text.contains("PRIVATE KEY-----") {
+        return true;
+    }
+    // A JSON web token: two base64url segments that each start `eyJ`, joined by a dot.
+    text.match_indices("eyJ").any(|(at, _)| {
+        let first = tail(at, key_char);
+        first >= 8 && text[at + first..].starts_with(".eyJ")
+    })
+}
+
+/// Whether `text` assigns a value of 8 key characters or more, one a digit, to a name that says it is
+/// a credential: `API_TOKEN=...`, `password: ...`.
+fn assignment(text: &str) -> bool {
+    const NAMES: [&str; 8] = [
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "API_KEY",
+        "APIKEY",
+        "ACCESS_KEY",
+        "CREDENTIAL",
+    ];
+    text.match_indices(['=', ':']).any(|(at, _)| {
+        // `Token::new` is a path, not an assignment.
+        if text[..at].ends_with(':') || text[at + 1..].starts_with(':') {
+            return false;
+        }
+        let name: String = text[..at]
+            .trim_end()
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<String>()
+            .to_ascii_uppercase();
+        let value: String = text[at + 1..]
+            .trim_start()
+            .trim_start_matches(['"', '\''])
+            .chars()
+            .take_while(|c| !c.is_whitespace() && !"\"'".contains(*c))
+            .collect();
+        // A secret is made of key characters and has a digit: a number is a setting such as
+        // `max_tokens: 16384`, and `token: Option<&str>` is a type.
+        !name.is_empty()
+            && NAMES.iter().any(|n| name.contains(n))
+            && value.chars().count() >= 8
+            && value.chars().all(|c| key_char(c) || "+/=.".contains(c))
+            && value.chars().any(|c| c.is_ascii_digit())
+            && !value.chars().all(|c| c.is_ascii_digit() || c == '_')
+    })
+}
+
+/// Whether every link in `text` is to `forge` with no query. A link is a URL with a scheme, a
+/// scheme-relative `//host.name`, a `data:` URI, or a bare host name that starts `www.` or carries a
+/// query (`exfil.example/c?d=...`); a bare `Node.js/path` is not one. A reader's browser or the
+/// forge's image proxy fetches what an image link names, so a link off the forge, or a query to
+/// it, carries data out of the job (ADR-0065).
+fn links_allowed(text: &str, forge: Option<&str>) -> bool {
+    let to_forge = |rest: &str| {
+        let end = rest
+            .find(|c: char| c.is_whitespace() || "/?#)]>\"'<".contains(c))
+            .unwrap_or(rest.len());
+        let authority = &rest[..end];
+        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        let host = host.split(':').next().unwrap_or_default();
+        let query = rest[end..]
+            .split(|c: char| c.is_whitespace() || ")]>\"'<".contains(c))
+            .next()
+            .unwrap_or_default()
+            .contains('?');
+        forge.is_some_and(|f| host.eq_ignore_ascii_case(f)) && !query
+    };
+    let bytes = text.as_bytes();
+    // `//` that starts a URL: after a scheme, or where a link begins.
+    for (at, _) in text.match_indices("//") {
+        let before = at.checked_sub(1).map(|i| bytes[i]);
+        let scheme: String = text[..at]
+            .strip_suffix(':')
+            .unwrap_or_default()
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_alphanumeric() || "+.-".contains(*c))
+            .collect();
+        let starts_link = match before {
+            None => true,
+            Some(b) => b.is_ascii_whitespace() || b"(\"'=<[".contains(&b),
+        };
+        if !scheme.is_empty() {
+            let scheme: String = scheme.chars().rev().collect();
+            if !scheme.eq_ignore_ascii_case("https") && !scheme.eq_ignore_ascii_case("http") {
+                return false;
+            }
+        } else if !starts_link
+            || !text[at + 2..]
+                .split(|c: char| c.is_whitespace() || "/?#)]>\"'<".contains(c))
+                .next()
+                .is_some_and(|host| host.contains('.'))
+        {
+            // A `// comment`, or `//` in the middle of a word.
+            continue;
+        }
+        if !to_forge(&text[at + 2..]) {
+            return false;
+        }
+    }
+    for word in text.split(|c: char| c.is_whitespace() || "()[]<>\"'".contains(c)) {
+        if word.to_ascii_lowercase().starts_with("data:") {
+            return false;
+        }
+        // A bare host name followed by a path or a query: `exfil.example/c?d=...`.
+        if word.contains("//") {
+            continue;
+        }
+        let end = word.find(['/', '?']).unwrap_or(word.len());
+        let host = &word[..end];
+        let labels: Vec<&str> = host.split('.').collect();
+        let named = labels.len() >= 2
+            && labels.iter().all(|l| {
+                !l.is_empty() && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            })
+            && labels
+                .last()
+                .is_some_and(|tld| tld.len() >= 2 && tld.bytes().all(|b| b.is_ascii_alphabetic()));
+        let carries = word[end..].contains('?') || host.to_ascii_lowercase().starts_with("www.");
+        if named && carries && !to_forge(word) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Whether `c` can hide or reorder what a reader sees.
@@ -100,5 +447,132 @@ mod tests {
                 c as u32
             );
         }
+    }
+
+    const FORGE: Option<&str> = Some("github.com");
+
+    #[test]
+    fn an_ordinary_pull_request_passes_the_published_check() {
+        let body = "Fixes the retry backoff in `src/retry.rs` (closes #12).\n\n\
+            - `ForgeToken::new` now takes the expiry; `max_tokens: 16384` is unchanged.\n\
+            - Tested on Node.js/Deno and with `cargo test`, e.g. the `risk_test_cases` suite.\n\
+            - See https://github.com/octo/repo/issues/12 and \
+            [the docs](https://github.com/octo/repo/blob/main/README.md#retry).\n\n\
+            ```rust\n// a comment, not a link\nlet token: Option<&str> = None;\n```\n\
+            GitHub App tokens start with ghs_ and expire after an hour. Commit 0123456789abcdef0123456789abcdef01234567.";
+        assert_eq!(check_published(body, &[TOKEN, KEY], FORGE), Ok(()));
+        assert_eq!(check_published("修复解析器 · café", &[], None), Ok(()));
+    }
+
+    #[test]
+    fn what_check_refuses_is_refused_first() {
+        assert_eq!(
+            check_published(&format!("see {TOKEN}"), &[TOKEN], FORGE),
+            Err("content.credential")
+        );
+        assert_eq!(
+            check_published("a\u{200b}b", &[], FORGE),
+            Err("content.hidden_text")
+        );
+    }
+
+    #[test]
+    fn a_body_past_the_cap_is_refused() {
+        let at = "a".repeat(MAX_PUBLISHED);
+        assert_eq!(check_published(&at, &[], FORGE), Ok(()));
+        assert_eq!(
+            check_published(&format!("{at}a"), &[], FORGE),
+            Err("content.too_long")
+        );
+    }
+
+    #[test]
+    fn keys_of_known_shapes_are_refused() {
+        let pem = ["-----BEGIN OPENSSH ", "PRIVATE KEY-----"].concat();
+        for key in [
+            ["sk-", "ant-api03-abcdefgh"].concat(),
+            ["gh", "p_", &"a".repeat(36)].concat(),
+            ["gl", "pat-abcdefghij"].concat(),
+            ["AK", "IAABCDEFGHIJKLMNOP"].concat(),
+            pem,
+            ["xo", "xb-1234-abcdefgh"].concat(),
+            ["s", "k_live_abcdefghij"].concat(),
+            ["ey", "JhbGciOiJI.", "ey", "JzdWIiOi.sig"].concat(),
+            "https://bot:hunter2hunter2@git.example/x.git".into(),
+            "API_TOKEN=abcdef1234".into(),
+            "password: \"hunter2hunter2\"".into(),
+        ] {
+            assert_eq!(
+                check_published(&format!("key {key} here"), &[], FORGE),
+                Err("content.key_shape"),
+                "{key}"
+            );
+        }
+        // Inside a word, or with too short a tail, a prefix is ordinary text.
+        for text in [
+            "disk_test_harness_runs",
+            "the ghs_ prefix",
+            "ASIAN_PACIFIC_REGIONS",
+        ] {
+            assert_eq!(check_published(text, &[], FORGE), Ok(()), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_credential_encoded_reversed_or_split_is_refused() {
+        let held = "held-credential-0123";
+        let b64 = "aGVsZC1jcmVkZW50aWFsLTAxMjM=";
+        let hex: String = held.bytes().map(|b| format!("{b:02x}")).collect();
+        let pct: String = held.bytes().map(|b| format!("%{b:02X}")).collect();
+        let reversed: String = held.chars().rev().collect();
+        let split = "hel d-c red ent ial -01 23";
+        for text in [b64, &hex, &pct, &reversed, split] {
+            assert_eq!(
+                check_published(&format!("ref {text}"), &[held], FORGE),
+                Err("content.encoded_credential"),
+                "{text}"
+            );
+        }
+        // A key of a known shape, encoded, is refused without the broker holding it.
+        let key = ["sk-", "ant-api03-abcdefgh"].concat();
+        let hex: String = key.bytes().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            check_published(&hex, &[], FORGE),
+            Err("content.encoded_credential")
+        );
+    }
+
+    #[test]
+    fn links_off_the_forge_or_with_a_query_are_refused() {
+        for text in [
+            "![s](https://evil.example/p.png)",
+            "https://exfil.example/c?d=1",
+            "[r](//exfil.example/c)",
+            "<img src=\"//exfil.example/p.png\">",
+            "https://github.com.exfil.example/x",
+            "ftp://exfil.example/x",
+            "<https://exfil.example/a>",
+            "exfil.example/c?d=1",
+            "[1]: exfil.example/c?d=1",
+            "www.exfil.example/x",
+            "https://github.com/octo/repo/issues?q=1",
+            "![x](data:text/plain;base64,aGk=)",
+            "HTTPS://EXFIL.EXAMPLE/",
+        ] {
+            assert_eq!(
+                check_published(text, &[], FORGE),
+                Err("content.link"),
+                "{text}"
+            );
+        }
+        // With no forge host known, no link is allowed.
+        assert_eq!(
+            check_published("https://github.com/octo/repo", &[], None),
+            Err("content.link")
+        );
+        assert_eq!(
+            check_published("https://GitHub.com/octo/repo/pull/1#x", &[], FORGE),
+            Ok(())
+        );
     }
 }
