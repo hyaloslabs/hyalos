@@ -75,4 +75,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0059](0059-tainted-text-cannot-reach-an-actor-prompt-by-type.md) | Tainted text cannot reach an actor's prompt, by type | Accepted |
 | [0060](0060-the-workflow-document-and-the-check-at-install.md) | The workflow document, and the check at install | Accepted |
 | [0061](0061-reader-steps-run-in-the-broker.md) | Reader steps run in the broker, and the engine gets typed values | Accepted |
-| [0062](0062-the-fix-issue-workflow-and-its-runner.md) | The fix-issue workflow, and the runner that mints only from the check | Proposed |
+| [0062](0062-the-fix-issue-workflow-and-its-runner.md) | The fix-issue workflow, and the runner that mints only from the check | Accepted |
