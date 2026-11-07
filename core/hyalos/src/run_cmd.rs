@@ -337,6 +337,7 @@ fn plan(request: &Request) -> Result<Planned, String> {
     let supplied = Supplied {
         issue: Some(number),
         task: Some(task),
+        ..Supplied::default()
     };
     let runnable = Runnable::new(checked, &supplied)
         .map_err(|code| format!("the fix-issue workflow cannot run ({code})"))?;
@@ -394,11 +395,9 @@ fn actor_prompt(
                 .actor_prompt(supplied, values, header(request), after)
                 .map_err(|code| Failure::new(code, "the actor's prompt is not its step's"))?;
             // Minted with what the check derived for the step, which the prompt was just shown to
-            // stay within (ADR-0060, ADR-0062).
+            // stay within, and the grants of any skill in it (ADR-0060, ADR-0062, ADR-0066).
             let inputs = flow
-                .checked()
-                .inputs(&flow.actor().id)
-                .cloned()
+                .actor_inputs(&prompt)
                 .ok_or_else(|| Failure::new(workflow_run::codes::INPUTS_MISMATCH, "no inputs"))?;
             Ok((
                 format!("{}{}", prompt.into_text(), after.into_text()),
@@ -1026,6 +1025,8 @@ impl Run<'_> {
             handles: handle.into_iter().collect(),
             result: result.clone(),
         };
+        // A skill in the prompt never widens the job: its grant cuts the manifest (ADR-0066).
+        let manifest = inputs.bound(&manifest);
         let signed = match self
             .engine
             .mint_manifest(&manifest, &inputs, &self.manifest_key, now)

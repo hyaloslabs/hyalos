@@ -26,7 +26,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Role;
+use crate::plugin::Grant;
+use crate::{Manifest, Role};
 
 /// Where a value came from (ADR-0005).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -54,17 +55,54 @@ impl Provenance {
     }
 }
 
-/// What a step is given to read, by provenance.
+/// What a step is given to read, by provenance, and the grant of each plugin whose text it is given
+/// (ADR-0066).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StepInputs {
     pub reads: BTreeSet<Provenance>,
+    pub grants: Vec<Grant>,
 }
 
 impl StepInputs {
     pub fn of(reads: impl IntoIterator<Item = Provenance>) -> Self {
         Self {
             reads: reads.into_iter().collect(),
+            grants: Vec::new(),
         }
+    }
+
+    /// These inputs, also given plugin text granted `grants`.
+    pub fn with_grants(mut self, grants: impl IntoIterator<Item = Grant>) -> Self {
+        self.grants.extend(grants);
+        if !self.grants.is_empty() {
+            self.reads.insert(Provenance::PluginAuthored);
+        }
+        self
+    }
+
+    /// The grants that bound a step given these inputs: every plugin's, or, if the step reads
+    /// plugin-authored values with no grant to go with them, no capability at all (ADR-0006).
+    fn bounding(&self) -> Vec<Grant> {
+        match (
+            self.reads.contains(&Provenance::PluginAuthored),
+            self.grants.is_empty(),
+        ) {
+            (false, _) => Vec::new(),
+            (true, true) => vec![Grant::none()],
+            (true, false) => self.grants.clone(),
+        }
+    }
+
+    /// `manifest` cut to every grant that bounds these inputs, so a plugin never widens a job.
+    pub fn bound(&self, manifest: &Manifest) -> Manifest {
+        self.bounding()
+            .iter()
+            .fold(manifest.clone(), |m, grant| grant.bound(&m))
+    }
+
+    /// Whether `manifest` is within every grant that bounds these inputs.
+    pub fn within_grants(&self, manifest: &Manifest) -> bool {
+        self.bounding().iter().all(|grant| grant.allows(manifest))
     }
 
     /// Whether a step of `role` given these inputs runs tainted. An actor always does: it reads its
@@ -110,23 +148,39 @@ impl fmt::Display for OperatorText {
     }
 }
 
-/// Instructions from an installed skill or plugin. It may enter an actor's prompt, and never widens
-/// the job (ADR-0006). Made only by the plugin loader, which comes with S4.8.
+/// Instructions from an installed skill or plugin, with the capabilities a human granted it. It may
+/// enter an actor's prompt; the prompt then carries the grant, and the job is bounded by it, so the
+/// text never widens the job (ADR-0006, ADR-0066). Made by whatever loads the plugin, from what it
+/// installed and what was granted.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PluginText(String);
+pub struct PluginText {
+    text: String,
+    grant: Grant,
+}
 
 impl PluginText {
+    pub fn granted(text: impl Into<String>, grant: Grant) -> Self {
+        Self {
+            text: text.into(),
+            grant,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn new(text: impl Into<String>) -> Self {
-        Self(text.into())
+        Self::granted(text, Grant::none())
     }
 
     pub const fn provenance(&self) -> Provenance {
         Provenance::PluginAuthored
     }
 
+    pub fn grant(&self) -> &Grant {
+        &self.grant
+    }
+
     pub(crate) fn text(&self) -> &str {
-        &self.0
+        &self.text
     }
 }
 

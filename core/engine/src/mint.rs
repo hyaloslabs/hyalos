@@ -66,6 +66,12 @@ pub mod mint_codes {
     pub fn bad_result() -> ReasonCode {
         code("mint.bad_result")
     }
+
+    /// The step is given plugin-authored input and the manifest holds a capability the plugin was
+    /// not granted (ADR-0006, ADR-0066).
+    pub fn plugin_widens() -> ReasonCode {
+        code("mint.plugin_widens")
+    }
 }
 
 /// Why no manifest was minted.
@@ -115,7 +121,8 @@ impl Engine {
     /// is after `now`, it is tainted whenever the step's role or inputs taint it, and the policy in
     /// force allows every capability it asks for (ADR-0004, ADR-0005, ADR-0008). Taint is derived, not
     /// requested: an actor, or a step given forge-authored content, gets only a tainted manifest. A
-    /// tainted manifest for a step that does not need one is allowed, since it can do less. Nothing
+    /// tainted manifest for a step that does not need one is allowed, since it can do less. A step
+    /// given plugin text is minted only within the plugin's grant (`StepInputs::bound`). Nothing
     /// is written to the log: no event records a manifest yet, so this is a decision and a signature.
     pub fn mint_manifest(
         &self,
@@ -134,6 +141,11 @@ impl Engine {
         // A handle is raw forge text the job will read, so it taints the job like reading it would.
         if (inputs.tainted(manifest.role) || !manifest.handles.is_empty()) && !manifest.tainted {
             return Err(invalid(mint_codes::taint_required()));
+        }
+        // A plugin steering the step never widens it: the manifest must be within every plugin's
+        // grant, and plugin-authored input with no grant allows no capability (ADR-0066).
+        if !inputs.within_grants(manifest) {
+            return Err(invalid(mint_codes::plugin_widens()));
         }
         // Each handle must have been released to this job's task by a human, which binds the
         // decision to the digest the manifest names (ADR-0063).

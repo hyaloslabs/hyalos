@@ -17,7 +17,8 @@ use std::collections::BTreeMap;
 use hyalos_types::wire::{Protocol, ReaderCall};
 use hyalos_types::workflow::{Checked, Field, InputKind, Output, Step, TypedValue, WorkflowError};
 use hyalos_types::{
-    ActorPrompt, Choice, Choices, OperatorText, Provenance, Role, Sourced, Workflow,
+    ActorPrompt, Choice, Choices, OperatorText, PluginText, Provenance, Role, Sourced, StepInputs,
+    Workflow,
 };
 
 /// The shipped fix-issue workflow: a reader classifies the issue, a planner chooses an approach from
@@ -35,6 +36,9 @@ pub mod codes {
     /// this runner runs: an actor's result goes back to the operator, not to a later step
     /// (ADR-0064).
     pub const NOT_RUNNABLE: &str = "workflow.not_runnable";
+    /// A reader or planner that reads plugin text. Those run in the broker, which is given only
+    /// operator text and typed values; only the actor takes a skill's instructions here (ADR-0066).
+    pub const PLUGIN_TEXT_IN_BROKER: &str = "workflow.plugin_text_in_broker";
     /// A workflow input the run did not supply.
     pub const INPUT_MISSING: &str = "workflow.input_missing";
     /// An actor's prompt read something its checked inputs do not hold.
@@ -42,11 +46,13 @@ pub mod codes {
 }
 
 /// What the operator gave the run, for the workflow's inputs: the issue every `forge_issue` input
-/// names, and the text every `operator_text` input is.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// names, the text every `operator_text` input is, and each `plugin_text` input's skill text with its
+/// grant, by input name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Supplied {
     pub issue: Option<u64>,
     pub task: Option<String>,
+    pub plugins: BTreeMap<String, PluginText>,
 }
 
 /// A checked workflow this runner can run.
@@ -73,6 +79,10 @@ impl Runnable {
                 let given = match checked.workflow().inputs.get(reference) {
                     Some(InputKind::ForgeIssue) => supplied.issue.is_some(),
                     Some(InputKind::OperatorText) => supplied.task.is_some(),
+                    Some(InputKind::PluginText) if step.role != Role::Actor => {
+                        return Err(codes::PLUGIN_TEXT_IN_BROKER);
+                    }
+                    Some(InputKind::PluginText) => supplied.plugins.contains_key(reference),
                     None => true,
                 };
                 if !given {
@@ -119,6 +129,8 @@ impl Runnable {
         for reference in &step.reads {
             match self.checked.workflow().inputs.get(reference) {
                 Some(InputKind::ForgeIssue) => issue = supplied.issue,
+                // `Runnable::new` refuses a reader or planner that reads plugin text.
+                Some(InputKind::PluginText) => {}
                 Some(InputKind::OperatorText) => {
                     if let Some(task) = &supplied.task {
                         context.push(format!("The operator's task:\n{task}"));
@@ -213,6 +225,15 @@ impl Runnable {
                             .operator(&OperatorText::new(task.trim_end()));
                     }
                 }
+                Some(InputKind::PluginText) => {
+                    let text = supplied
+                        .plugins
+                        .get(reference)
+                        .ok_or(codes::INPUTS_MISMATCH)?;
+                    prompt
+                        .literal("\n\nAn installed skill's instructions:\n\n")
+                        .plugin(text);
+                }
                 // The check refuses an actor that reads raw forge text, so this is never reached.
                 Some(InputKind::ForgeIssue) => return Err(codes::INPUTS_MISMATCH),
                 None => fields.push(reference),
@@ -245,6 +266,13 @@ impl Runnable {
             return Err(codes::INPUTS_MISMATCH);
         }
         Ok((prompt, after))
+    }
+
+    /// What the actor's manifest is minted with: the inputs the check derived for it, and the grant
+    /// of every plugin whose text `prompt` holds, which bound the manifest (ADR-0066).
+    pub fn actor_inputs(&self, prompt: &ActorPrompt) -> Option<StepInputs> {
+        let checked = self.checked.inputs(&self.actor().id)?.clone();
+        Some(checked.with_grants(prompt.inputs().grants))
     }
 }
 
@@ -358,6 +386,7 @@ mod tests {
         Supplied {
             issue: Some(7),
             task: Some("Add a CHANGES file.".into()),
+            ..Supplied::default()
         }
     }
 
@@ -456,6 +485,7 @@ mod tests {
         let no_task = Supplied {
             issue: Some(7),
             task: None,
+            ..Supplied::default()
         };
         assert_eq!(
             Runnable::new(fix_issue().unwrap(), &no_task).err(),
@@ -563,6 +593,90 @@ mod tests {
             )
             .err(),
             Some(codes::INPUTS_MISMATCH)
+        );
+    }
+
+    #[test]
+    fn a_skill_reaches_the_actor_and_its_grant_bounds_the_manifest() {
+        let checked = Workflow::parse(
+            r#"{"version":1,"name":"w","inputs":{"skill":"plugin_text","task":"operator_text"},
+                "steps":[{"id":"a","role":"actor","reads":["task","skill"],"instructions":"Work."}]}"#,
+        )
+        .unwrap();
+        let grant = hyalos_types::Grant {
+            actions: ["read", "push", "publish"].map(String::from).into(),
+            ..Default::default()
+        };
+        let mut given = Supplied {
+            task: Some("Add a CHANGES file.".into()),
+            ..Supplied::default()
+        };
+        // Not supplied, it is missing; supplied, it runs.
+        assert_eq!(
+            Runnable::new(checked.clone(), &given).err(),
+            Some(codes::INPUT_MISSING)
+        );
+        given.plugins.insert(
+            "skill".into(),
+            PluginText::granted("Run the linter before you push.", grant.clone()),
+        );
+        let run = Runnable::new(checked, &given).unwrap();
+        let (prompt, _) = run
+            .actor_prompt(
+                &given,
+                &Values::default(),
+                ActorPrompt::new(),
+                ActorPrompt::new(),
+            )
+            .unwrap();
+        let inputs = run.actor_inputs(&prompt).unwrap();
+        assert!(inputs.reads.contains(&Provenance::PluginAuthored));
+        assert_eq!(inputs.grants, vec![grant]);
+        assert!(
+            prompt
+                .into_text()
+                .contains("An installed skill's instructions:\n\nRun the linter before you push.")
+        );
+        // The grant cuts what the actor may do to what both it and the job have.
+        let manifest = hyalos_types::Manifest {
+            version: hyalos_types::MANIFEST_VERSION,
+            job: hyalos_types::JobId::from_seq(3),
+            role: Role::Actor,
+            tainted: true,
+            repo: "octo/repo".into(),
+            branch_prefix: "hyalos/job-3".into(),
+            pr_base: Some("main".into()),
+            actions: ["read", "push", "open_pr"].map(String::from).into(),
+            egress_hosts: BTreeSet::new(),
+            tools: BTreeSet::new(),
+            data_flows: ["job->model"].map(String::from).into(),
+            budget: hyalos_types::Budget { tokens: 10 },
+            deadline: hyalos_types::Timestamp::from_millis(9),
+            approval: None,
+            handles: BTreeSet::new(),
+            result: None,
+        };
+        let bounded = inputs.bound(&manifest);
+        assert_eq!(bounded.actions, ["push", "read"].map(String::from).into());
+        assert!(bounded.data_flows.is_empty());
+    }
+
+    #[test]
+    fn a_reader_or_planner_that_reads_a_skill_does_not_run_here() {
+        let checked = Workflow::parse(
+            r#"{"version":1,"name":"w","inputs":{"skill":"plugin_text"},"steps":[
+                {"id":"p","role":"planner","reads":["skill"],"instructions":"","output":{"k":"bool"}},
+                {"id":"a","role":"actor","reads":["p.k"],"instructions":""}]}"#,
+        )
+        .unwrap();
+        let mut given = Supplied::default();
+        given.plugins.insert(
+            "skill".into(),
+            PluginText::granted("x", hyalos_types::Grant::none()),
+        );
+        assert_eq!(
+            Runnable::new(checked, &given).err(),
+            Some(codes::PLUGIN_TEXT_IN_BROKER)
         );
     }
 }

@@ -243,6 +243,8 @@ impl<T> Sourced<T> {
 struct Built {
     text: String,
     reads: BTreeSet<Provenance>,
+    /// The grant of each plugin whose text the prompt holds (ADR-0066).
+    grants: Vec<crate::Grant>,
 }
 
 impl fmt::Debug for Built {
@@ -255,6 +257,17 @@ impl Built {
     fn push(&mut self, text: &str, from: Option<Provenance>) {
         self.text.push_str(text);
         self.reads.extend(from);
+    }
+
+    fn plugin(&mut self, text: &PluginText) {
+        self.push(text.text(), Some(text.provenance()));
+        if !self.grants.contains(text.grant()) {
+            self.grants.push(text.grant().clone());
+        }
+    }
+
+    fn inputs(&self) -> StepInputs {
+        StepInputs::of(self.reads.iter().copied()).with_grants(self.grants.iter().cloned())
     }
 
     fn value<T: Typed>(&mut self, value: &Sourced<T>) {
@@ -284,7 +297,7 @@ impl ActorPrompt {
     }
 
     pub fn plugin(&mut self, text: &PluginText) -> &mut Self {
-        self.0.push(text.text(), Some(text.provenance()));
+        self.0.plugin(text);
         self
     }
 
@@ -304,7 +317,7 @@ impl ActorPrompt {
 
     /// What the prompt was given, for minting its manifest.
     pub fn inputs(&self) -> StepInputs {
-        StepInputs::of(self.0.reads.iter().copied())
+        self.0.inputs()
     }
 
     pub fn into_text(self) -> String {
@@ -333,7 +346,7 @@ impl ReaderPrompt {
     }
 
     pub fn plugin(&mut self, text: &PluginText) -> &mut Self {
-        self.0.push(text.text(), Some(text.provenance()));
+        self.0.plugin(text);
         self
     }
 
@@ -372,7 +385,7 @@ impl ReaderPrompt {
     }
 
     pub fn inputs(&self) -> StepInputs {
-        StepInputs::of(self.0.reads.iter().copied())
+        self.0.inputs()
     }
 
     pub fn into_text(self) -> String {

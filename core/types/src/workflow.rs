@@ -46,6 +46,9 @@ pub enum InputKind {
     ForgeIssue,
     /// Text the operator gives when the workflow runs: raw text, the operator's.
     OperatorText,
+    /// An installed skill's or plugin's instructions: raw text, plugin-authored. An actor may read it
+    /// untainted; the plugin's grant then bounds the job (ADR-0006, ADR-0066).
+    PluginText,
 }
 
 impl InputKind {
@@ -53,6 +56,7 @@ impl InputKind {
         match self {
             InputKind::ForgeIssue => Provenance::ForgeAuthored,
             InputKind::OperatorText => Provenance::Operator,
+            InputKind::PluginText => Provenance::PluginAuthored,
         }
     }
 
@@ -718,6 +722,43 @@ mod tests {
             Some(true),
             "an actor reads its repository"
         );
+    }
+
+    #[test]
+    fn plugin_text_reaches_an_actor_and_tainted_text_still_does_not() {
+        let checked = Workflow::parse(
+            r#"{"version":1,"name":"w","inputs":{"skill":"plugin_text","issue":"forge_issue"},"steps":[
+                {"id":"r","role":"reader","reads":["issue","skill"],"instructions":"","output":{"k":"bool"}},
+                {"id":"p","role":"planner","reads":["skill","r.k"],"instructions":"","output":{"k":"bool"}},
+                {"id":"a","role":"actor","reads":["skill","p.k"],"instructions":""}]}"#,
+        )
+        .unwrap();
+        // Plugin text does not taint: a planner reads it, and the actor gets it as plugin-authored.
+        assert_eq!(
+            checked.tainted("p"),
+            Some(true),
+            "p reads the tainted reader's field"
+        );
+        assert_eq!(
+            checked.inputs("a").unwrap().reads,
+            BTreeSet::from([
+                Provenance::Operator,
+                Provenance::PluginAuthored,
+                Provenance::ModelFromTainted
+            ])
+        );
+        let untainted = Workflow::parse(
+            r#"{"version":1,"name":"w","inputs":{"skill":"plugin_text"},"steps":[
+                {"id":"p","role":"planner","reads":["skill"],"instructions":"","output":{"k":"bool"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(untainted.tainted("p"), Some(false));
+        // The same workflow with the issue given to the actor does not install.
+        let raw = Workflow::parse(
+            r#"{"version":1,"name":"w","inputs":{"skill":"plugin_text","issue":"forge_issue"},"steps":[
+                {"id":"a","role":"actor","reads":["skill","issue"],"instructions":""}]}"#,
+        );
+        assert_eq!(raw.unwrap_err().code(), "workflow.raw_text_to_actor");
     }
 
     #[test]
