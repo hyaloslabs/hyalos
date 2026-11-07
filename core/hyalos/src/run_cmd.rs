@@ -103,6 +103,9 @@ pub struct Request {
     /// The operator releases the issue's text to the actor (ADR-0063): the broker holds it as a
     /// handle and the release is recorded against its digest. Needs [`Request::issue_number`].
     pub release_issue: bool,
+    /// The MCP server's start nonce (ADR-0069), so each run it starts has a request of its own and
+    /// [`request_digest`] names exactly one task. `None` from the command line.
+    pub nonce: Option<String>,
 }
 
 /// The program the sandbox runs.
@@ -256,6 +259,7 @@ pub fn parse(args: &[String]) -> Result<Request, String> {
         egress_hosts: BTreeSet::new(),
         step_model: None,
         release_issue: false,
+        nonce: None,
     };
     let mut args = args.iter();
     while let Some(flag) = args.next() {
@@ -1660,6 +1664,7 @@ pub struct Stored {
     pub egress_hosts: BTreeSet<String>,
     pub step_model: Option<String>,
     pub release_issue: bool,
+    pub nonce: Option<String>,
 }
 
 /// The version of [`Stored`] written today.
@@ -1685,6 +1690,7 @@ impl Request {
             egress_hosts: self.egress_hosts.clone(),
             step_model: self.step_model.clone(),
             release_issue: self.release_issue,
+            nonce: self.nonce.clone(),
         }
     }
 
@@ -1713,6 +1719,7 @@ impl Request {
             egress_hosts: stored.egress_hosts,
             step_model: stored.step_model,
             release_issue: stored.release_issue,
+            nonce: stored.nonce,
         };
         check(&request)?;
         Ok(request)

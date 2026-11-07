@@ -273,11 +273,15 @@ pub struct Launcher {
 impl Launcher {
     /// A runner for `request`, detached from the server, and the task it recorded. `Err` says why
     /// nothing was started, in the runner's own words; then nothing is in the log.
-    pub fn start(&self, request: &Request) -> Result<TaskId, String> {
+    ///
+    /// The nonce is set on `request` too, so its digest is this call's alone and [`Launcher::adopt`]
+    /// with the same request can only find the task this call's runner recorded.
+    pub fn start(&self, request: &mut Request) -> Result<TaskId, String> {
         paths::make_private_dir(&self.runs.dir)?;
         let mut nonce = [0u8; 16];
         getrandom::fill(&mut nonce).map_err(|e| format!("the system gave no randomness: {e}"))?;
         let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+        request.nonce = Some(nonce.clone());
         let document = self.runs.starting(&nonce, "json");
         let log = self.runs.starting(&nonce, "log");
         let failed = |e: std::io::Error| format!("cannot write the run's request: {e}");
@@ -342,8 +346,9 @@ impl Launcher {
         }
     }
 
-    /// The task a runner that was stopped before it answered may still have recorded for `request`:
-    /// the newest open one with its digest, created since `since`. Its request document is written if
+    /// The task a runner that was stopped before it answered may still have recorded for `request`
+    /// (as [`Launcher::start`] left it, with its nonce): the open one with its digest, created since
+    /// `since`. The nonce makes the digest this call's alone, so no other run's task matches. Its request document is written if
     /// the runner had not named it yet, so the run resumes like any other (ADR-0069).
     pub fn adopt(&self, state: &State, request: &Request, since: Timestamp) -> Option<TaskId> {
         let digest = request_digest(request);

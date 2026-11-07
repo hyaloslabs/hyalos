@@ -336,9 +336,9 @@ impl EngineTools {
     }
 
     fn start_job(&self, arguments: &Map<String, Value>) -> Result<TaskView, Called> {
-        let request = self.request(arguments).map_err(|e| Called::error(&e))?;
+        let mut request = self.request(arguments).map_err(|e| Called::error(&e))?;
         let began = SystemClock.now();
-        let task = match self.launcher.start(&request) {
+        let task = match self.launcher.start(&mut request) {
             Ok(task) => task,
             Err(e) => {
                 // A runner stopped after it recorded its task is still a job the log will carry on.

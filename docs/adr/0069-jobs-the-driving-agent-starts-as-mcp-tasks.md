@@ -25,7 +25,7 @@ What shapes the decision:
 - The runner locks `start-<nonce>.lock` (`flock`, held for the whole run) and reads the request. It then runs as `hyalos run` does.
 - Once `task.created` is in the log, `Setup::on_task` renames the lock, log and request to `task-<id>.*` (lock first, request last). Only then does it print `task <id>` on stdout. So the task the server answers with is always in the log, and `tasks/get` resolves it at once.
 - The server waits at most 90 s for that line, which covers substrate detection's 60 s. Without it, the server kills the runner and removes its `start-*` files.
-- The runner may have recorded its task just before it was killed. So the server then looks in the log for the newest open task with this request's digest, created since the call began (`Launcher::adopt`). If there is one, it writes that task's request document if the runner had not, and answers with the task, which resumes like any other.
+- The runner may have recorded its task just before it was killed. So the server then looks in the log for the open task with this request's digest, created since the call began (`Launcher::adopt`). The request carries the call's nonce, so its digest is this call's alone, and no other run's task, even one asked for in the same words, can match. If there is one, it writes that task's request document if the runner had not, and answers with the task, which resumes like any other.
 - Otherwise the call is a tool error: `the job did not start:` followed by the runner's last `hyalos:` line, and the log is unchanged.
 - A thread reaps the runner, which outlives the server.
 - `hyalos run --mcp-start` is for the server; operators do not use it.
@@ -37,7 +37,7 @@ What shapes the decision:
 - `run_cmd::check` checks the request. `is_repo` allows letters, digits, `-`, `_` and `.`, with an owner of at most 39 characters and a name of at most 100, as GitHub does.
 - The run is the fix-issue workflow with no text of the operator's, so its task line stays "Resolve issue #n of owner/name". No free text the agent chose reaches a prompt, a manifest or the log.
 - The repository is the one value of the agent's in the prompt. It is an identifier held to GitHub's grammar, not free text. It enters the actor's prompt only after the reader's job has minted a token for it, so it names a repository the App is installed on. It still enters the prompt as `OperatorText`; a type for identifiers the engine checks is left to later work.
-- The request document is `run_cmd::Stored` (version 1; it never holds the `command` test harness). `task.created.request` is the SHA-256 of its JSON (`request_digest`), so a document that does not match its task is never used, to resume it or to show it.
+- The request document is `run_cmd::Stored` (version 1; it never holds the `command` test harness), with the server's start nonce (`None` from the command line). `task.created.request` is the SHA-256 of its JSON (`request_digest`), so a document that does not match its task is never used, to resume it or to show it.
 
 **Several processes may write one log.**
 - An engine now remembers the head it has seen. Before it checks an event of its own, `Engine::catch_up` reads what was appended after that head (`Log::events_after`, which verifies sequence, chain, hash and signature) and replays it into its state.

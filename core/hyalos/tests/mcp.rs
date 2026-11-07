@@ -656,7 +656,8 @@ fn a_task_a_stopped_runner_recorded_is_adopted_not_lost() {
     let args: Vec<String> = ["--repo", "octo/repo", "--issue-number", "7"]
         .map(String::from)
         .to_vec();
-    let asked = hyalos::run_cmd::parse(&args).unwrap();
+    let mut asked = hyalos::run_cmd::parse(&args).unwrap();
+    asked.nonce = Some("0123456789abcdef0123456789abcdef".into());
     let mut engine = Engine::open(&m.root.join("data/events.db"), LogKey::from_seed(SEED)).unwrap();
     let created = |engine: &mut Engine, at, request| {
         engine
@@ -685,7 +686,10 @@ fn a_task_a_stopped_runner_recorded_is_adopted_not_lost() {
     assert_eq!(adopted.seq(), recorded);
     assert!(runs.request(&state, adopted).is_some());
     assert!(runs.request(&state, TaskId::from_seq(earlier)).is_none());
-    // Nothing of another request, or from before the call.
+    // Nothing of another call's request, though it asks the same, or from before the call.
+    let mut again = asked.clone();
+    again.nonce = Some("fedcba9876543210fedcba9876543210".into());
+    assert!(launcher.adopt(&state, &again, since).is_none());
     assert!(
         launcher
             .adopt(&state, &asked, Timestamp::from_millis(3_001))
@@ -704,6 +708,14 @@ fn a_task_a_stopped_runner_recorded_is_adopted_not_lost() {
         "{said}"
     );
     drop(lock);
-    assert!(runs.held().is_empty());
+    // Another test's child, forked while the lock was open, shares it until it execs: wait for that.
+    let free = (0..100).any(|_| {
+        let free = runs.held().is_empty();
+        if !free {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        free
+    });
+    assert!(free);
     assert!(runs.none_running().is_ok());
 }
