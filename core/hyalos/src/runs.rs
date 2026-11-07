@@ -80,6 +80,40 @@ impl Runs {
         self.file(task, "failed").exists()
     }
 
+    /// The runs a runner holds now. Compaction and pruning refuse while there are any, since a runner's
+    /// engine reads the log from where it last looked (ADR-0069).
+    pub fn held(&self) -> Vec<u64> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        let mut held: Vec<u64> = entries
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter_map(|name| {
+                name.strip_prefix("task-")?
+                    .strip_suffix(".lock")?
+                    .parse()
+                    .ok()
+            })
+            .filter(|seq| self.is_running(TaskId::from_seq(*seq)))
+            .collect();
+        held.sort_unstable();
+        held
+    }
+
+    /// Refuses while any run is held, naming them.
+    pub fn none_running(&self) -> Result<(), String> {
+        match self.held().as_slice() {
+            [] => Ok(()),
+            held => Err(format!(
+                "a run is in progress (task {}); wait for it to end, or stop its runner, first",
+                held.iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", task ")
+            )),
+        }
+    }
+
     /// Whether a runner holds `task`'s lock. A lock file that cannot be opened counts as held, so the
     /// server never starts a second runner on a guess.
     pub fn is_running(&self, task: TaskId) -> bool {
@@ -178,9 +212,10 @@ pub fn start(nonce: &str) -> ExitCode {
     }
 }
 
-/// `hyalos run --resume <task>`: carries on a run whose runner stopped, from the log. Exits 0 at once
-/// if another runner holds it.
-pub fn resume(task: &str) -> ExitCode {
+/// `hyalos run --resume <task> [--auto]`: carries on a run whose runner stopped, from the log. Exits 0
+/// at once if another runner holds it. `--auto` is the server's: it leaves alone a run whose last
+/// runner stopped with an error, which only a resume by hand retries.
+pub fn resume(task: &str, auto: bool) -> ExitCode {
     let env = |name: &str| std::env::var(name).ok();
     let Some(task) = task
         .parse::<u64>()
@@ -197,6 +232,10 @@ pub fn resume(task: &str) -> ExitCode {
             println!("task {task} is being run already");
             return Ok(true);
         };
+        if auto && runs.has_failed(task) {
+            println!("task {task} waits for the operator: its last runner stopped with an error");
+            return Ok(true);
+        }
         // Asked again by hand: the error a runner stopped with is this one's to meet.
         let _ = std::fs::remove_file(runs.file(task, "failed"));
         let summary = (|| {
@@ -303,6 +342,23 @@ impl Launcher {
         }
     }
 
+    /// The task a runner that was stopped before it answered may still have recorded for `request`:
+    /// the newest open one with its digest, created since `since`. Its request document is written if
+    /// the runner had not named it yet, so the run resumes like any other (ADR-0069).
+    pub fn adopt(&self, state: &State, request: &Request, since: Timestamp) -> Option<TaskId> {
+        let digest = request_digest(request);
+        let (task, _) = state.tasks().iter().rev().find(|(_, t)| {
+            t.request == digest && t.created_at >= since && t.status() == TaskStatus::Open
+        })?;
+        let bytes = serde_json::to_vec(&request.stored()).ok()?;
+        match create_private(&self.runs.file(*task, "json")) {
+            Ok(mut file) => file.write_all(&bytes).ok()?,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return None,
+        }
+        Some(*task)
+    }
+
     /// Starts `hyalos run --resume <task>` if `task` is one of these runs, unfinished in `state`, and
     /// no runner holds it. Its output is added to the run's log.
     pub fn resume_if_stopped(&self, state: &State, task: TaskId) {
@@ -311,6 +367,7 @@ impl Launcher {
             .get(&task)
             .is_some_and(|t| t.status() == TaskStatus::Open);
         if !unfinished
+            || last_job_held(state, task)
             || self.runs.request(state, task).is_none()
             || self.runs.has_failed(task)
             || self.runs.is_running(task)
@@ -327,7 +384,7 @@ impl Launcher {
         };
         let Ok(err) = log.try_clone() else { return };
         let spawned = Command::new(&self.exe)
-            .args(["run", "--resume", &task.seq().to_string()])
+            .args(["run", "--resume", &task.seq().to_string(), "--auto"])
             .env_remove(crate::mcp_cmd::CREDENTIAL_VAR)
             .stdin(Stdio::null())
             .stdout(log)
@@ -363,6 +420,19 @@ impl Launcher {
         }
         Ok(())
     }
+}
+
+/// Whether `task`'s last job ended held. Its run stopped there, and only a decision on the hold, never
+/// a resume, carries it on (ADR-0029), though the task reads as open again once the hold is released.
+fn last_job_held(state: &State, task: TaskId) -> bool {
+    state
+        .jobs()
+        .values()
+        .rfind(|job| job.task == task)
+        .is_some_and(|job| {
+            job.ended
+                .is_some_and(|(_, outcome)| outcome == JobOutcome::Held)
+        })
 }
 
 /// Where a run stands, as the agent is told.
@@ -428,7 +498,7 @@ pub fn view(state: &State, runs: &Runs, task: TaskId) -> Option<RunView> {
     let reason = last
         .and_then(|j| j.reason.as_ref())
         .map(|r| r.as_str().to_string());
-    let held = last.is_some_and(|j| j.ended.is_some_and(|e| e.1 == JobOutcome::Held));
+    let held = last_job_held(state, task);
     let phase = if let Some(cancelled) = &recorded.cancelled {
         updated = updated.max(cancelled.at);
         Phase::Cancelled

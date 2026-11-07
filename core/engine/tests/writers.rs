@@ -170,3 +170,20 @@ fn a_job_returns_values_once_while_it_runs_and_no_more_than_an_output_holds() ->
     assert_eq!(Engine::open(&path, key())?.state(), &before);
     Ok(())
 }
+
+#[test]
+fn an_engine_that_stamps_forward_follows_another_processes_later_event() -> Res {
+    let path = log("forward")?;
+    let mut a = Engine::open(&path, key())?;
+    let mut b = Engine::open(&path, key())?;
+    b.stamp_forward();
+    task(&mut a, 10)?;
+    // B's clock says 5: it is stamped at A's 10 instead of refused.
+    let head = task(&mut b, 5)?;
+    let all = Log::open(&path, key())?.events()?;
+    assert_eq!(all.len(), 2);
+    assert_eq!(head.seq(), 2);
+    assert_eq!(b.state().last_at(), Some(at(10)));
+    replay(&all)?;
+    Ok(())
+}

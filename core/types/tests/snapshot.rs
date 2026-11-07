@@ -275,6 +275,17 @@ const PINNED_V6: &str = r#"{"last_seq":17,"last_at":4000,"tasks":[{"id":1,"creat
 
 const PINNED_V3: &str = r#"{"last_seq":17,"last_at":4000,"tasks":[{"id":1,"created_at":1000,"request":"0101010101010101010101010101010101010101010101010101010101010101","completed_at":null,"open_holds":[5],"cancelled":null},{"id":8,"created_at":2000,"request":"0303030303030303030303030303030303030303030303030303030303030303","completed_at":3000,"open_holds":[],"cancelled":null},{"id":20,"created_at":5000,"request":"0808080808080808080808080808080808080808080808080808080808080808","completed_at":null,"open_holds":[],"cancelled":{"at":5500,"by":"human","reason":"gate.unavailable"}}],"jobs":[{"id":2,"task":1,"started_at":1500,"ended":{"at":1800,"outcome":"held"}},{"id":7,"task":6,"started_at":2500,"ended":null}],"holds":[{"id":5,"task":1,"gate":"egress","inputs":"0202020202020202020202020202020202020202020202020202020202020202","reason":"unknown","stakes":{"tier":"irreversible","touches":["credentials"]},"opened_at":1800,"resolved":null},{"id":16,"task":12,"gate":"content","inputs":"0404040404040404040404040404040404040404040404040404040404040404","reason":"timed_out","stakes":{"tier":"routine","touches":[]},"opened_at":3500,"resolved":{"at":3900,"by":"policy","reason":"gate.unavailable"}}],"pruned":[{"seq":10,"at":4100,"last_seq":3,"last_hash":"0505050505050505050505050505050505050505050505050505050505050505"},{"seq":18,"at":4800,"last_seq":9,"last_hash":"0606060606060606060606060606060606060606060606060606060606060606"}]}"#;
 
+/// A replay knows why each job ended and what it returned; a snapshot written before version 7 did
+/// not keep either, so an audit compares the replay as that version keeps it (ADR-0069).
+#[test]
+fn a_replay_as_an_old_version_keeps_it_matches_that_versions_snapshot() {
+    let replay = everything(Vec::new(), true, true, true, true, true);
+    let old = everything(Vec::new(), true, true, true, true, false);
+    assert!(replay.first_difference(&old).is_some());
+    assert_eq!(replay.clone().as_kept_at(6).first_difference(&old), None);
+    assert_eq!(replay.clone().as_kept_at(7), replay);
+}
+
 #[test]
 fn an_old_image_is_refused_if_it_is_damaged_not_just_old() {
     // The step that supplies the empty list does not hide a field it does not know.

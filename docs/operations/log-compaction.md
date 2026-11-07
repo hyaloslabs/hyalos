@@ -6,7 +6,7 @@ Compaction moves every event into an archive file and leaves, in the log, a snap
 
 ## Compact
 
-Stop the engine, then:
+Stop the engine, including any run an agent started through `hyalos mcp` (both commands refuse while a run holds its lock, [ADR-0069](../adr/0069-jobs-the-driving-agent-starts-as-mcp-tasks.md)), then:
 
 ```
 hyalos log compact

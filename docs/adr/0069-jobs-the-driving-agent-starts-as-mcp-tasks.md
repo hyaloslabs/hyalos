@@ -24,14 +24,19 @@ What shapes the decision:
   - with stdout a pipe, and without `HYALOS_AGENT_CREDENTIAL` in its environment.
 - The runner locks `start-<nonce>.lock` (`flock`, held for the whole run) and reads the request. It then runs as `hyalos run` does.
 - Once `task.created` is in the log, `Setup::on_task` renames the lock, log and request to `task-<id>.*` (lock first, request last). Only then does it print `task <id>` on stdout. So the task the server answers with is always in the log, and `tasks/get` resolves it at once.
-- The server waits at most 90 s for that line, which covers substrate detection's 60 s. Without it, the call is a tool error: `the job did not start:` followed by the runner's last `hyalos:` line. The server kills the runner and removes its files, and the log is unchanged. A thread reaps the runner, which outlives the server.
+- The server waits at most 90 s for that line, which covers substrate detection's 60 s. Without it, the server kills the runner and removes its `start-*` files.
+- The runner may have recorded its task just before it was killed. So the server then looks in the log for the newest open task with this request's digest, created since the call began (`Launcher::adopt`). If there is one, it writes that task's request document if the runner had not, and answers with the task, which resumes like any other.
+- Otherwise the call is a tool error: `the job did not start:` followed by the runner's last `hyalos:` line, and the log is unchanged.
+- A thread reaps the runner, which outlives the server.
 - `hyalos run --mcp-start` is for the server; operators do not use it.
 
 **The agent gives identifiers only.**
-- `start_job` takes `repo` (`owner/name`), `issue_number` (positive) and an optional `base`. Any other field is refused.
+- `start_job` takes `repo` (`owner/name`) and `issue_number` (positive). Any other field is refused.
 - Everything else comes from the template the operator gives `hyalos mcp`: `--base`, `--harness`, `--image`, `--budget-tokens`, `--minutes` and `--step-model`, parsed as `hyalos run` parses them.
-- `run_cmd::check` checks the request; `is_branch` allows at most 100 bytes of `[A-Za-z0-9._/-]`, with no `..`, `//`, `.lock`, leading `-`, `/` or `.`, and no trailing `/` or `.`.
-- The run is the fix-issue workflow with no text of the operator's, so its task line stays "Resolve issue #n of owner/name". No text the agent chose reaches a prompt, a manifest or the log.
+- The base branch is the operator's alone. A branch name may be 100 bytes of words, and it reaches the actor's prompt.
+- `run_cmd::check` checks the request. `is_repo` allows letters, digits, `-`, `_` and `.`, with an owner of at most 39 characters and a name of at most 100, as GitHub does.
+- The run is the fix-issue workflow with no text of the operator's, so its task line stays "Resolve issue #n of owner/name". No free text the agent chose reaches a prompt, a manifest or the log.
+- The repository is the one value of the agent's in the prompt. It is an identifier held to GitHub's grammar, not free text. It enters the actor's prompt only after the reader's job has minted a token for it, so it names a repository the App is installed on. It still enters the prompt as `OperatorText`; a type for identifiers the engine checks is left to later work.
 - The request document is `run_cmd::Stored` (version 1; it never holds the `command` test harness). `task.created.request` is the SHA-256 of its JSON (`request_digest`), so a document that does not match its task is never used, to resume it or to show it.
 
 **Several processes may write one log.**
@@ -39,6 +44,7 @@ What shapes the decision:
 - It then appends only onto that head (`Log::append_all_after`). If another process got there first, the append fails with `LogError::Moved`, and the engine catches up and tries again, at most 8 times.
 - So an event is always checked against the latest state, and against the latest time. Stamping an event earlier than another process's last one is `TimeWentBackwards`, refused before anything is written. `compact` catches up first too.
 - `hyalos run` stamps its first event at the later of the system time and the state's last time.
+- A run's engine stamps forward (`Engine::stamp_forward`): after catching up, each write is stamped at the later of the time given and the last event's. A run's clock is its own, so without this, another runner writing a moment earlier would make the run's write `TimeWentBackwards`. Other callers keep the refusal.
 
 **Each step's values are in the log, and every run is recorded over.**
 - `job.values { job, values }` (engine-only, at most 16 `TypedValue`s, once, while the job runs) is written in one transaction with the `job.ended` of a reader or planner that answered, and of an actor whose submission was taken (`step.submitted`).
@@ -52,9 +58,11 @@ What shapes the decision:
 - It rebuilds the values of the steps that succeeded with values, in order, through the same `Runnable::accept` as a live run. Those steps are not run again.
 - It runs the step that was cut off in a new job, then the rest, with the same deadline.
 - A run with `--release-issue` is not resumed: its handle lived in the broker that stopped. Neither is one with no issue number.
-- The server starts `--resume` for every unfinished task of its runs whose lock no one holds, when it starts and whenever `tasks/get`, `job_status` or `tasks/cancel` asks about one. The output goes to the end of `task-<id>.log`.
+- The server starts `--resume <task> --auto` for every unfinished task of its runs whose lock no one holds, when it starts and whenever `tasks/get`, `job_status` or `tasks/cancel` asks about one. The output goes to the end of `task-<id>.log`.
+- The server never resumes a task whose last job ended held. A held job stopped its run, and only a decision on the hold carries the run on, though the task reads as open again once the hold is released.
 - A runner that exits with an error once its task exists writes `task-<id>.failed`, with the error, before it lets go of the lock. The server never resumes such a task by itself. The same error would stop every resume, and a step that was running would run, and spend, again on every poll. The task stays `working`, saying it waits for the operator. A cancel of it is recorded in its file and takes effect when the run is resumed.
-- The operator may run `--resume` by hand, which clears `task-<id>.failed`.
+- The operator may run `--resume` by hand, which clears `task-<id>.failed`. With `--auto` it refuses such a task, so two resumes the server started cannot undo the marker.
+- `hyalos log compact` and `hyalos log prune` refuse while any run holds its lock. A runner's engine reads the log from the head it last saw, and compaction would change what lies behind it.
 
 **Cancelling is a file the runner watches.**
 - `tasks/cancel` creates `task-<id>.cancel` for an unfinished task. `Interrupt::watch` makes its appearance count as the first signal does (ADR-0053), named `tasks/cancel`.
@@ -97,6 +105,8 @@ What shapes the decision:
 - A runner outlives the server and the client. A crash releases its lock, since `flock` locks die with their process, so the next `tasks/get` resumes the run. The runs directory must be on a local file system where `flock` works.
 - A runner stopped mid-job leaves that job's GitHub token live until GitHub expires it (one hour), since nothing revokes it. Its broker ends when its channel closes, and a container sandbox may run to its deadline. The resumed actor works on a new branch (`hyalos/job-<new id>`), so a cut actor may leave a branch, or a pull request, behind.
 - Two engines can now share one log safely. Each write costs a read of the events after the head the engine last saw: none, when it is the only writer.
+- `mint_manifest` reads the policy from the state as the run last caught up to it, at the job's `job.started`. A policy approved while a run is in progress applies from its next job.
+- A run's events are stamped no earlier than the latest event in the log, so a clock running behind another writer's shows as equal times, not as a refusal.
 - Runs started by the CLI also end with `task.completed`, so `list_tasks` and the state show them finished. Old logs keep their open tasks.
 - Every resume reads the same request document. Changing the template does not change a run already started, and a document edited by hand is refused by its digest.
 - `tasks/update` does nothing, since no task asks for input. When one does, approvals still go through the operator's channel, never the client ([ADR-0012](0012-humans-approve-only-irreversible-actions.md)).

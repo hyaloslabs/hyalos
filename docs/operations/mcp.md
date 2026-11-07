@@ -52,7 +52,7 @@ Each request needs `Authorization: Bearer <credential>`. Without a credential in
 
 ## Jobs the agent starts
 
-The agent gives `start_job` a repository (`owner/name`), an issue number and, optionally, a base branch. Nothing else: no text of its own reaches the job. Everything else comes from options you give `hyalos mcp`, as for `hyalos run`:
+The agent gives `start_job` a repository (`owner/name`) and an issue number. Nothing else: no text of its own reaches the job. The pull request's base branch is yours, set with `--base` (default `main`). Everything else comes from options you give `hyalos mcp`, as for `hyalos run`:
 
 ```
 hyalos mcp --harness claude-code --minutes 30 --budget-tokens 200000 --base main
@@ -65,6 +65,8 @@ The server does not run the job itself. It starts `hyalos run` as a process of i
 - `task-<id>.log`: what the runner printed. Read it when a job fails.
 - `task-<id>.lock`: held while a runner has it.
 - `task-<id>.failed`: the error its last runner stopped with, if it did.
+
+`hyalos log compact` and `hyalos log prune` refuse while a runner holds its lock. Wait for the run to end, or stop its runner, first.
 
 The answer is a task:
 - **A client with the Tasks extension** polls it with `tasks/get` and stops it with `tasks/cancel`.

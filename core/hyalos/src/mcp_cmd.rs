@@ -4,8 +4,8 @@
 //! On stdio by default, which is how a client such as Claude Code starts it; with `--listen`, on
 //! Streamable HTTP at `http://<address:port>/mcp`, loopback only. `list_tasks` reads the event log
 //! with the engine's public key alone and returns ids and statuses, never text from a task.
-//! `start_job` runs the fix-issue workflow on an issue, given only a repository, an issue number and a
-//! base branch: the server starts a runner that holds the engine's key, and never opens it itself
+//! `start_job` runs the fix-issue workflow on an issue, given only a repository and an issue number
+//! (the base branch is the operator's `--base`): the server starts a runner that holds the engine's key, and never opens it itself
 //! (`runs`). For a client that declares the Tasks extension the call answers with a task that
 //! `tasks/get` polls and `tasks/cancel` stops; for one that does not, `start_job` answers the same
 //! task's id and status at once, and `job_status` and `job_result` read it. Approvals come in S5.4.
@@ -24,20 +24,21 @@ use hyalos_types::JobOutcome;
 use serde_json::{Map, Value, json};
 
 use crate::agent_cmd::credential_digest;
+use crate::clock::SystemClock;
 use crate::mcp::{
     self, Admit, Called, Progress, Refusal, Server, TaskState, TaskSupport, TaskView, Tool, Tools,
 };
 use crate::paths;
 use crate::run_cmd::{self, Request};
 use crate::runs::{self, Launcher, Phase, RunView, Runs};
-use hyalos_types::TaskId;
+use hyalos_types::{Clock, TaskId};
 
 const USAGE: &str = "usage: hyalos mcp [--listen <loopback address:port>] [--base <branch>] [--harness codex|claude-code]
                   [--image <image>] [--budget-tokens <n>] [--minutes <n>] [--step-model <model>]
   serves the engine's MCP server on stdio, or with --listen on http://<address:port>/mcp (loopback
   only). It reads the event log with the engine's public key and writes nothing itself; start_job
   starts hyalos run as a process of its own, with these options (as for hyalos run) and the
-  repository, issue and base branch the agent gives.
+  repository and issue number the agent gives.
   Every call needs a credential from hyalos agent issue: on stdio in HYALOS_AGENT_CREDENTIAL, on
   HTTP as Authorization: Bearer <credential>";
 
@@ -266,13 +267,12 @@ impl EngineTools {
         let start_job = Tool {
             name: "start_job",
             title: "Start a job on an issue",
-            description: "Runs Hyalos's fix-issue workflow on a GitHub issue: a reader classifies it, a planner chooses an approach, and a harness in a sandbox pushes a branch and opens a pull request into the base branch. It takes minutes. Only the repository, the issue's number and the base branch can be given; the issue's text reaches only the reader. Answers with a task: poll it with tasks/get, or job_status and job_result.",
+            description: "Runs Hyalos's fix-issue workflow on a GitHub issue: a reader classifies it, a planner chooses an approach, and a harness in a sandbox pushes a branch and opens a pull request into the base branch the operator set. It takes minutes. Only the repository and the issue's number can be given; the issue's text reaches only the reader. Answers with a task: poll it with tasks/get, or job_status and job_result.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "repo": {"type": "string", "description": "owner/name on GitHub."},
                     "issue_number": {"type": "integer", "minimum": 1},
-                    "base": {"type": "string", "description": "The branch the pull request is opened into (default the server's, main unless set)."},
                 },
                 "required": ["repo", "issue_number"],
                 "additionalProperties": false,
@@ -308,13 +308,15 @@ impl EngineTools {
     }
 
     /// The request a `start_job` call asks for: the server's template with the agent's repository,
-    /// issue and base, each checked to be an identifier.
+    /// and issue, each checked to be an identifier. The repository reaches the actor's prompt, as the
+    /// task line names it, so it is held to GitHub's name grammar; the base branch is the operator's
+    /// alone, since a branch name may be 100 bytes of words (ADR-0069).
     fn request(&self, arguments: &Map<String, Value>) -> Result<Request, String> {
         if arguments
             .keys()
-            .any(|k| !["repo", "issue_number", "base"].contains(&k.as_str()))
+            .any(|k| !["repo", "issue_number"].contains(&k.as_str()))
         {
-            return Err("start_job takes only repo, issue_number and base".into());
+            return Err("start_job takes only repo and issue_number".into());
         }
         let mut request = self.template.clone();
         request.repo = arguments
@@ -329,19 +331,25 @@ impl EngineTools {
                 .filter(|n| *n > 0)
                 .ok_or("issue_number is a positive integer")?,
         );
-        if let Some(base) = arguments.get("base") {
-            request.base = base.as_str().ok_or("base is a branch name")?.to_string();
-        }
         run_cmd::check(&request)?;
         Ok(request)
     }
 
     fn start_job(&self, arguments: &Map<String, Value>) -> Result<TaskView, Called> {
         let request = self.request(arguments).map_err(|e| Called::error(&e))?;
-        let task = self
-            .launcher
-            .start(&request)
-            .map_err(|e| Called::error(&format!("the job did not start: {e}")))?;
+        let began = SystemClock.now();
+        let task = match self.launcher.start(&request) {
+            Ok(task) => task,
+            Err(e) => {
+                // A runner stopped after it recorded its task is still a job the log will carry on.
+                let adopted = self
+                    .log
+                    .read()
+                    .ok()
+                    .and_then(|state| self.launcher.adopt(&state, &request, began));
+                adopted.ok_or_else(|| Called::error(&format!("the job did not start: {e}")))?
+            }
+        };
         self.view(task)
             .ok_or_else(|| Called::error("the job started but its task cannot be read"))
     }

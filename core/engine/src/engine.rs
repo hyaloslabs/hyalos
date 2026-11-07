@@ -310,6 +310,8 @@ pub struct Engine {
     known: Option<Head>,
     schema: &'static Schema,
     poisoned: bool,
+    /// Stamp each write no earlier than the last event caught up to (ADR-0069).
+    forward: bool,
 }
 
 /// How many times a write is checked again after another process appended first.
@@ -347,6 +349,7 @@ impl Engine {
             known,
             schema,
             poisoned: false,
+            forward: false,
         })
     }
 
@@ -498,6 +501,7 @@ impl Engine {
             .map_err(|error| EngineError::Event { seq: 0, error })?;
         for _ in 0..WRITE_ATTEMPTS {
             self.catch_up()?;
+            let at = self.stamp(at);
             self.state
                 .check_stamped(at, origin, &event)
                 .map_err(EngineError::Rule)?;
@@ -520,6 +524,21 @@ impl Engine {
             return Ok(head);
         }
         Err(EngineError::Log(LogError::Moved))
+    }
+
+    /// From now on, stamps each write at the later of the time given and the last event's, read after
+    /// catching up with the other writers (ADR-0069). A process whose clock is its own, such as a run,
+    /// otherwise has its write refused as `TimeWentBackwards` whenever another process wrote a moment
+    /// later in between. Off by default, so a caller that means its time is told when it is not.
+    pub fn stamp_forward(&mut self) {
+        self.forward = true;
+    }
+
+    fn stamp(&self, at: Timestamp) -> Timestamp {
+        match (self.forward, self.state.last_at()) {
+            (true, Some(last)) => at.max(last),
+            _ => at,
+        }
     }
 
     /// Reads and projects what other processes appended since this engine last looked, each event
@@ -564,7 +583,7 @@ impl Engine {
         }
         for _ in 0..WRITE_ATTEMPTS {
             self.catch_up()?;
-            match self.write_all(at, events) {
+            match self.write_all(self.stamp(at), events) {
                 Err(EngineError::Log(LogError::Moved)) => continue,
                 written => return written,
             }

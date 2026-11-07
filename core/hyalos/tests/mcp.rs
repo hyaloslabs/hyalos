@@ -445,7 +445,9 @@ fn start_job_takes_only_identifiers_and_says_why_a_runner_could_not_start() {
         assert_eq!(answer["result"]["isError"], true, "{answer}");
         assert_eq!(answer["result"]["resultType"], "complete", "{answer}");
     }
-    assert!(text(&answers[1]).contains("only repo, issue_number and base"));
+    assert!(text(&answers[1]).contains("only repo and issue_number"));
+    // The base branch is the operator's: a branch name could carry words to the actor.
+    assert!(text(&answers[4]).contains("only repo and issue_number"));
     let refused = text(&answers[5]);
     assert!(refused.starts_with("the job did not start: "), "{refused}");
     // Nothing was written, and the runner's files are gone.
@@ -642,4 +644,66 @@ fn a_runs_task_is_polled_with_the_tasks_extension_or_its_plain_tools_and_reads_t
         assert_eq!(answers[1]["result"]["isError"], true, "{other}");
     }
     drop(lock);
+}
+
+/// A runner stopped before it answered may already have recorded its task (ADR-0069): the server
+/// adopts the newest open task with the request's digest created since the call began, and writes its
+/// request document if the runner had not, so the run resumes like any other.
+#[test]
+fn a_task_a_stopped_runner_recorded_is_adopted_not_lost() {
+    let m = Machine::new("adopt").unwrap();
+    m.install_key().unwrap();
+    let args: Vec<String> = ["--repo", "octo/repo", "--issue-number", "7"]
+        .map(String::from)
+        .to_vec();
+    let asked = hyalos::run_cmd::parse(&args).unwrap();
+    let mut engine = Engine::open(&m.root.join("data/events.db"), LogKey::from_seed(SEED)).unwrap();
+    let created = |engine: &mut Engine, at, request| {
+        engine
+            .submit(
+                Timestamp::from_millis(at),
+                Origin::Engine,
+                Event::TaskCreated { request },
+            )
+            .unwrap()
+            .seq
+    };
+    let digest = hyalos::run_cmd::request_digest(&asked);
+    let earlier = created(&mut engine, 1_000, digest);
+    created(&mut engine, 2_000, Digest::from_bytes([4; 32]));
+    let recorded = created(&mut engine, 3_000, digest);
+    let runs = hyalos::runs::Runs::at(m.root.join("data/runs"));
+    std::fs::create_dir_all(runs.dir()).unwrap();
+    let launcher = hyalos::runs::Launcher {
+        runs: runs.clone(),
+        exe: PathBuf::from("/nonexistent"),
+        wait: std::time::Duration::from_secs(1),
+    };
+    let state = engine.state().clone();
+    let since = Timestamp::from_millis(2_500);
+    let adopted = launcher.adopt(&state, &asked, since).unwrap();
+    assert_eq!(adopted.seq(), recorded);
+    assert!(runs.request(&state, adopted).is_some());
+    assert!(runs.request(&state, TaskId::from_seq(earlier)).is_none());
+    // Nothing of another request, or from before the call.
+    assert!(
+        launcher
+            .adopt(&state, &asked, Timestamp::from_millis(3_001))
+            .is_none()
+    );
+
+    // A held run stops compaction, which would change the log under its engine.
+    let lock = std::fs::File::create(runs.file(adopted, "lock")).unwrap();
+    lock.lock().unwrap();
+    assert_eq!(runs.held(), [recorded]);
+    let out = m.command(&["log", "compact"]).output().unwrap();
+    assert!(!out.status.success());
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains(&format!("a run is in progress (task {recorded})")),
+        "{said}"
+    );
+    drop(lock);
+    assert!(runs.held().is_empty());
+    assert!(runs.none_running().is_ok());
 }

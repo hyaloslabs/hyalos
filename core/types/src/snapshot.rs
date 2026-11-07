@@ -214,6 +214,24 @@ impl StateImage {
         difference("state", &a, &b)
     }
 
+    /// This state as an image written at `version` holds it: what that version did not keep reads as
+    /// [`StateImage::decode`] fills it in. An audit compares a replay with an old snapshot this way,
+    /// since the replay knows what the snapshot never recorded (ADR-0069).
+    pub fn as_kept_at(mut self, version: u32) -> Self {
+        // Before 7 no job's reason or values were kept. The earlier versions only added what could not
+        // have happened yet, so a replay has nothing more to drop for them.
+        if version < 7 {
+            for job in &mut self.jobs {
+                job.values = None;
+                if let Some(ended) = job.ended.as_mut() {
+                    ended.reason =
+                        ReasonCode::new("legacy.unrecorded").unwrap_or(ended.reason.clone());
+                }
+            }
+        }
+        self
+    }
+
     /// Reads bytes written at `version`, bringing an older one up to date.
     pub fn decode(version: u32, bytes: &[u8]) -> Result<Self, ImageError> {
         if version == 0 || version > STATE_VERSION {

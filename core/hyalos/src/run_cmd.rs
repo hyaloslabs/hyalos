@@ -184,7 +184,10 @@ pub fn run(args: &[String]) -> ExitCode {
     // The two ways the MCP server starts a run, and the operator's resume (ADR-0069).
     match args {
         [flag, nonce] if flag == "--mcp-start" => return crate::runs::start(nonce),
-        [flag, task] if flag == "--resume" => return crate::runs::resume(task),
+        [flag, task] if flag == "--resume" => return crate::runs::resume(task, false),
+        [flag, task, auto] if flag == "--resume" && auto == "--auto" => {
+            return crate::runs::resume(task, true);
+        }
         _ => {}
     }
     let request = match parse(args) {
@@ -326,8 +329,10 @@ pub fn is_repo(repo: &str) -> bool {
             && p.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
     };
-    repo.split_once('/')
-        .is_some_and(|(owner, name)| part_ok(owner) && part_ok(name))
+    // GitHub's own limits: an owner of at most 39 characters, a name of at most 100.
+    repo.split_once('/').is_some_and(|(owner, name)| {
+        part_ok(owner) && part_ok(name) && owner.len() <= 39 && name.len() <= 100
+    })
 }
 
 /// A branch git and GitHub accept, of plain characters only: at most 100, no `..`, no leading `-`,
@@ -659,7 +664,9 @@ fn drive(
     }
     let manifest_key = fresh_manifest_key().map_err(|e| format!("no manifest key: {e}"))?;
     let key = keys::load(&config_dir.join(paths::ENGINE_KEY_FILE)).map_err(|e| e.to_string())?;
-    let engine = Engine::open(&log, key).map_err(|e| e.to_string())?;
+    let mut engine = Engine::open(&log, key).map_err(|e| e.to_string())?;
+    // Other runs write the same log; each write follows the latest event, whoever wrote it.
+    engine.stamp_forward();
     // Never before the log's last event, which another process may have written.
     let mut clock = Stamps(
         SystemClock.now().max(
