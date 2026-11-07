@@ -32,7 +32,11 @@
       "id": "fix",
       "role": "actor",
       "reads": ["task", "triage.kind", "triage.size", "plan.approach", "plan.add_test"],
-      "instructions": "Make the change the task describes, following the approach below, and open a pull request for it. Keep the change as small as the approach allows."
+      "instructions": "Make the change the task describes, following the approach below, and open a pull request for it. Keep the change as small as the approach allows. Then report what happened: outcome is pr_opened if you opened a pull request, no_change if the repository needed no change, and blocked if you could not make the change. tests_added is true only if your change adds or updates a test.",
+      "output": {
+        "outcome": { "choice": ["pr_opened", "no_change", "blocked"] },
+        "tests_added": "bool"
+      }
     }
   ]
 }

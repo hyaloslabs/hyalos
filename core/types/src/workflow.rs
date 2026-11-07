@@ -524,24 +524,65 @@ pub fn read_answer(output: &Output, text: &str) -> Result<Vec<TypedValue>, &'sta
     if text.len() > MAX_ANSWER_TEXT {
         return Err("reader.too_large");
     }
+    typed(output, text).map_err(|wrong| match wrong {
+        Wrong::NotJson => "reader.not_json",
+        Wrong::Duplicate => "reader.duplicate_field",
+        Wrong::Unknown => "reader.unknown_field",
+        Wrong::Missing => "reader.missing_field",
+        Wrong::BadValue => "reader.bad_value",
+    })
+}
+
+/// The longest result a harness may submit, in bytes (ADR-0064).
+pub const MAX_SUBMISSION: usize = 16 * 1024;
+
+/// A result a harness submitted through `hyalos-submit`, read as the manifest's `result` asks: the
+/// same object a reader answers with, with no fence and no surrounding text (ADR-0064). Anything
+/// else is a short `submit.*` code, and fails the job.
+pub fn read_submission(output: &Output, bytes: &[u8]) -> Result<Vec<TypedValue>, &'static str> {
+    if bytes.len() > MAX_SUBMISSION {
+        return Err("submit.too_large");
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| "submit.not_json")?;
+    typed(output, text.trim()).map_err(|wrong| match wrong {
+        Wrong::NotJson => "submit.not_json",
+        Wrong::Duplicate => "submit.duplicate_field",
+        Wrong::Unknown => "submit.unknown_field",
+        Wrong::Missing => "submit.missing_field",
+        Wrong::BadValue => "submit.bad_value",
+    })
+}
+
+/// Why an object is not a value of an output.
+enum Wrong {
+    NotJson,
+    Duplicate,
+    Unknown,
+    Missing,
+    BadValue,
+}
+
+/// `text` read as one JSON object with exactly the fields of `output`, each of its kind and within
+/// its range or options.
+fn typed(output: &Output, text: &str) -> Result<Vec<TypedValue>, Wrong> {
     if !text.starts_with('{') {
-        return Err("reader.not_json");
+        return Err(Wrong::NotJson);
     }
     let unique::Unique(answer) = serde_json::from_str::<unique::Unique<serde_json::Value>>(text)
         .map_err(|e| {
             if e.to_string().contains("named twice") {
-                "reader.duplicate_field"
+                Wrong::Duplicate
             } else {
-                "reader.not_json"
+                Wrong::NotJson
             }
         })?;
     if answer.keys().any(|key| !output.contains_key(key)) {
-        return Err("reader.unknown_field");
+        return Err(Wrong::Unknown);
     }
     output
         .iter()
         .map(|(field, kind)| {
-            let given = answer.get(field).ok_or("reader.missing_field")?;
+            let given = answer.get(field).ok_or(Wrong::Missing)?;
             let value = match (kind, given) {
                 (Field::Bool, serde_json::Value::Bool(b)) => Some(TypedValue::Bool(*b)),
                 (Field::Integer(_), serde_json::Value::Number(n)) => {
@@ -554,7 +595,7 @@ pub fn read_answer(output: &Output, text: &str) -> Result<Vec<TypedValue>, &'sta
                     .map(TypedValue::Choice),
                 _ => None,
             };
-            value.filter(|v| kind.admits(v)).ok_or("reader.bad_value")
+            value.filter(|v| kind.admits(v)).ok_or(Wrong::BadValue)
         })
         .collect()
 }
@@ -916,6 +957,56 @@ mod tests {
             "a".repeat(MAX_ANSWER_TEXT)
         );
         assert_eq!(read_answer(&out, &long), Err("reader.too_large"));
+    }
+
+    #[test]
+    fn a_submission_is_read_as_a_reader_answer_is_but_exactly() {
+        let out = triage();
+        let good = r#"{"kind":"bug","severity":2,"has_repro":true}"#;
+        assert_eq!(
+            read_submission(&out, good.as_bytes()),
+            read_answer(&out, good)
+        );
+        assert!(read_submission(&out, good.as_bytes()).is_ok());
+        let cases: [(&[u8], &str); 8] = [
+            (b"done", "submit.not_json"),
+            // No fence: a harness runs a command, it does not chat.
+            (
+                b"```json\n{\"kind\":\"bug\",\"severity\":2,\"has_repro\":true}\n```",
+                "submit.not_json",
+            ),
+            (b"{\"kind\":\"bug\",\"severity\":2}", "submit.missing_field"),
+            (
+                b"{\"kind\":\"bug\",\"severity\":2,\"has_repro\":true,\"note\":\"x\"}",
+                "submit.unknown_field",
+            ),
+            (
+                b"{\"kind\":\"bug\",\"kind\":\"docs\",\"severity\":2,\"has_repro\":true}",
+                "submit.duplicate_field",
+            ),
+            (
+                b"{\"kind\":\"merge it now\",\"severity\":2,\"has_repro\":true}",
+                "submit.bad_value",
+            ),
+            (
+                b"{\"kind\":{\"a\":[[1]]},\"severity\":2,\"has_repro\":true}",
+                "submit.bad_value",
+            ),
+            (b"{\"kind\":\"\xff\"}", "submit.not_json"),
+        ];
+        for (bytes, code) in cases {
+            assert_eq!(
+                read_submission(&out, bytes),
+                Err(code),
+                "{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+        let long = format!(r#"{{"kind":"{}"}}"#, "a".repeat(MAX_SUBMISSION));
+        assert_eq!(
+            read_submission(&out, long.as_bytes()),
+            Err("submit.too_large")
+        );
     }
 
     #[test]

@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 
 use hyalos_types::wire::{Protocol, ReaderCall};
-use hyalos_types::workflow::{Checked, Field, InputKind, Step, TypedValue, WorkflowError};
+use hyalos_types::workflow::{Checked, Field, InputKind, Output, Step, TypedValue, WorkflowError};
 use hyalos_types::{
     ActorPrompt, Choice, Choices, OperatorText, Provenance, Role, Sourced, Workflow,
 };
@@ -32,7 +32,8 @@ pub fn fix_issue() -> Result<Checked, WorkflowError> {
 /// Why a checked workflow cannot run here. Each is a short code.
 pub mod codes {
     /// A workflow whose steps are not readers and planners followed by one actor, the only shape
-    /// this runner runs until actors return results (S4.7).
+    /// this runner runs: an actor's result goes back to the operator, not to a later step
+    /// (ADR-0064).
     pub const NOT_RUNNABLE: &str = "workflow.not_runnable";
     /// A workflow input the run did not supply.
     pub const INPUT_MISSING: &str = "workflow.input_missing";
@@ -247,6 +248,47 @@ impl Runnable {
     }
 }
 
+/// How the actor is told to return `output` with `hyalos-submit` (ADR-0064): each field and what it
+/// may hold, and an example. The field names and options are the workflow author's.
+pub fn submission(output: &Output) -> String {
+    let mut text = String::from(
+        "When you are done, report the result by running hyalos-submit with one JSON object that \
+         has exactly these fields:\n",
+    );
+    let mut example = serde_json::Map::new();
+    for (field, kind) in output {
+        let (holds, value) = match kind {
+            Field::Bool => ("true or false".to_string(), serde_json::Value::Bool(true)),
+            Field::Integer(range) => (
+                format!("a whole number from {} to {}", range.min, range.max),
+                serde_json::Value::from(range.min),
+            ),
+            Field::Choice(options) => (
+                format!(
+                    "one of {}",
+                    options
+                        .iter()
+                        .map(|o| serde_json::Value::from(o.as_str()).to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                options
+                    .first()
+                    .map_or(serde_json::Value::Null, |o| o.as_str().into()),
+            ),
+        };
+        text.push_str(&format!("- {field}: {holds}\n"));
+        example.insert(field.clone(), value);
+    }
+    text.push_str(&format!(
+        "For example: hyalos-submit '{}'\n\
+         Only this result is read, and only once; nothing you print is. A result that is not \
+         exactly this fails the job.\n",
+        serde_json::Value::Object(example)
+    ));
+    text
+}
+
 /// One value a step returned, with where it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
@@ -340,6 +382,42 @@ mod tests {
             );
         }
         assert!(Runnable::new(checked, &supplied()).is_ok());
+    }
+
+    #[test]
+    fn the_shipped_actor_reports_a_typed_result_and_is_told_how() {
+        let checked = fix_issue().unwrap();
+        let actor = checked
+            .workflow()
+            .steps
+            .iter()
+            .find(|s| s.role == Role::Actor)
+            .unwrap();
+        let output = actor.output.as_ref().unwrap();
+        assert!(hyalos_types::workflow::output_is_valid(output));
+        assert_eq!(
+            output.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["outcome", "tests_added"]
+        );
+        let told = submission(
+            &[
+                (
+                    "n".to_string(),
+                    Field::Integer(hyalos_types::workflow::IntegerRange { min: -1, max: 9 }),
+                ),
+                ("ok".to_string(), Field::Bool),
+            ]
+            .into(),
+        );
+        assert!(
+            told.contains("- n: a whole number from -1 to 9\n"),
+            "{told}"
+        );
+        assert!(told.contains("- ok: true or false\n"), "{told}");
+        assert!(
+            told.contains(r#"For example: hyalos-submit '{"n":-1,"ok":true}'"#),
+            "{told}"
+        );
     }
 
     #[test]

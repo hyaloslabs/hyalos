@@ -58,7 +58,8 @@ pub fn image_present() -> Res<bool> {
 // ---- a scripted model ----------------------------------------------------------------------
 
 /// A model on loopback that answers every call with a short text, or, when told to, first asks the
-/// harness to fetch a URL with its own tool. It records the paths and bodies it was sent.
+/// harness to fetch a URL or run a command with its own tool. It records the paths and bodies it was
+/// sent.
 #[derive(Clone)]
 pub struct Model {
     pub port: u16,
@@ -66,6 +67,9 @@ pub struct Model {
     pub bodies: Arc<Mutex<Vec<Value>>>,
     /// The URL the next run's harness is asked to fetch, if any.
     pub fetch: Arc<Mutex<Option<String>>>,
+    /// The shell command the next run's harness is asked to run, if any: Claude Code with its Bash
+    /// tool, Codex with its shell.
+    pub run: Arc<Mutex<Option<String>>>,
 }
 
 impl Model {
@@ -93,6 +97,7 @@ pub fn scripted_model() -> Res<Model> {
         calls: Arc::default(),
         bodies: Arc::default(),
         fetch: Arc::default(),
+        run: Arc::default(),
     };
     let shared = model.clone();
     std::thread::spawn(move || {
@@ -140,15 +145,21 @@ fn answer(stream: TcpStream, model: &Model) -> Res {
             json!({ "input_tokens": 10 }).to_string(),
         )
     } else if path.starts_with("/v1/messages") {
-        match fetch_for(model_state, &body, "WebFetch") {
-            Some(url) => anthropic_fetch(&model, stream_wanted, &url),
-            None => anthropic(&model, stream_wanted),
+        if let Some(command) = wanted(&model_state.run, &body, "Bash") {
+            let input = json!({ "command": command, "description": "Report the result" });
+            anthropic_tool(&model, stream_wanted, "Bash", &input)
+        } else if let Some(url) = wanted(&model_state.fetch, &body, "WebFetch") {
+            let input = json!({ "url": url, "prompt": "Say what the page says." });
+            anthropic_tool(&model, stream_wanted, "WebFetch", &input)
+        } else {
+            anthropic(&model, stream_wanted)
         }
+    } else if let Some(command) = wanted(&model_state.run, &body, "exec_command") {
+        responses_exec(&model, stream_wanted, &command)
+    } else if let Some(url) = wanted(&model_state.fetch, &body, "exec_command") {
+        responses_exec(&model, stream_wanted, &curl(&url))
     } else {
-        match fetch_for(model_state, &body, "exec_command") {
-            Some(url) => responses_fetch(&model, stream_wanted, &url),
-            None => responses(&model, stream_wanted),
-        }
+        responses(&model, stream_wanted)
     };
     write!(
         &stream,
@@ -158,10 +169,10 @@ fn answer(stream: TcpStream, model: &Model) -> Res {
     Ok(())
 }
 
-/// The URL to ask for with `tool`, when the model is told to fetch one, the call offers that tool,
-/// and no tool has answered yet in this conversation.
-fn fetch_for(model: &Model, body: &Value, tool: &str) -> Option<String> {
-    let url = model.fetch.lock().ok()?.clone()?;
+/// What to ask for with `tool` (a URL or a command), when the model is told to, the call offers that
+/// tool, and no tool has answered yet in this conversation.
+fn wanted(told: &Mutex<Option<String>>, body: &Value, tool: &str) -> Option<String> {
+    let url = told.lock().ok()?.clone()?;
     let offered = body["tools"]
         .as_array()?
         .iter()
@@ -176,11 +187,9 @@ pub fn curl(url: &str) -> String {
     format!("curl -sS --max-time 20 --cacert /opt/hyalos/harness/test/ca.pem {url}")
 }
 
-fn anthropic_fetch(model: &str, stream: bool, url: &str) -> (&'static str, String) {
+fn anthropic_tool(model: &str, stream: bool, tool: &str, input: &Value) -> (&'static str, String) {
     let usage = json!({ "input_tokens": 10, "output_tokens": 2 });
-    let input = json!({ "url": url, "prompt": "Say what the page says." });
-    let block =
-        json!({ "type": "tool_use", "id": "toolu_scripted", "name": "WebFetch", "input": input });
+    let block = json!({ "type": "tool_use", "id": "toolu_scripted", "name": tool, "input": input });
     if !stream {
         let message = json!({
             "id": "msg_scripted", "type": "message", "role": "assistant", "model": model,
@@ -194,7 +203,7 @@ fn anthropic_fetch(model: &str, stream: bool, url: &str) -> (&'static str, Strin
     });
     let events = sse(&[
         json!({ "type": "message_start", "message": start }),
-        json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "tool_use", "id": "toolu_scripted", "name": "WebFetch", "input": {} } }),
+        json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "tool_use", "id": "toolu_scripted", "name": tool, "input": {} } }),
         json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": input.to_string() } }),
         json!({ "type": "content_block_stop", "index": 0 }),
         json!({ "type": "message_delta", "delta": { "stop_reason": "tool_use", "stop_sequence": null }, "usage": { "output_tokens": 2 } }),
@@ -203,8 +212,8 @@ fn anthropic_fetch(model: &str, stream: bool, url: &str) -> (&'static str, Strin
     ("text/event-stream", events)
 }
 
-fn responses_fetch(model: &str, stream: bool, url: &str) -> (&'static str, String) {
-    let arguments = json!({ "cmd": curl(url) }).to_string();
+fn responses_exec(model: &str, stream: bool, command: &str) -> (&'static str, String) {
+    let arguments = json!({ "cmd": command }).to_string();
     let call = |status: &str, arguments: &str| {
         json!({
             "type": "function_call", "id": "fc_scripted", "call_id": "call_scripted",
@@ -307,7 +316,8 @@ fn responses(model: &str, stream: bool) -> (&'static str, String) {
 // ---- the broker and one job ----------------------------------------------------------------
 
 pub struct Job {
-    _broker: Broker,
+    /// The broker serving the job, which a test asks for what the job submitted.
+    pub broker: Broker,
     dir: PathBuf,
     /// What the sandbox is given: a relay to the broker's socket that records the first line of
     /// every request crossing the channel, model call or proxy request alike.
@@ -411,6 +421,8 @@ pub struct Spec<'a> {
     pub repo: &'a str,
     pub actions: &'a [&'a str],
     pub forge_token: Option<&'a str>,
+    /// The result the job must submit (ADR-0064).
+    pub result: Option<hyalos_types::workflow::Output>,
 }
 
 impl Default for Spec<'_> {
@@ -422,6 +434,7 @@ impl Default for Spec<'_> {
             repo: "hyaloslabs/hyalos",
             actions: &[],
             forge_token: None,
+            result: None,
         }
     }
 }
@@ -435,6 +448,7 @@ pub fn job_spec(port: u16, seq: u64, spec: Spec<'_>) -> Res<Job> {
         repo,
         actions,
         forge_token,
+        result,
     } = spec;
     let providers = Providers::parse(&format!(
         "anthropic.key = sk-image-test\nanthropic.base = http://127.0.0.1:{port}\n\
@@ -476,6 +490,7 @@ pub fn job_spec(port: u16, seq: u64, spec: Spec<'_>) -> Res<Job> {
         deadline: Timestamp::from_millis(deadline),
         approval: None,
         handles: Default::default(),
+        result,
     };
     let answer = broker.handle(
         ToBroker::StartJob {
@@ -495,7 +510,7 @@ pub fn job_spec(port: u16, seq: u64, spec: Spec<'_>) -> Res<Job> {
     assert_eq!(answer, Some(vec![ToEngine::Admitted { job: manifest.job }]));
     let requests = recording_relay(&socket, broker_socket)?;
     Ok(Job {
-        _broker: broker,
+        broker,
         dir,
         socket,
         requests,

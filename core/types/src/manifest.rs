@@ -20,6 +20,7 @@ use crate::Digest;
 use crate::hex;
 use crate::ids::JobId;
 use crate::time::Timestamp;
+use crate::workflow::Output;
 
 /// The only manifest schema this build writes and reads. A field that widens authority needs an ADR
 /// and a new version (ADR-0004).
@@ -96,6 +97,11 @@ pub struct Manifest {
     /// without any signs as before.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub handles: BTreeSet<Digest>,
+    /// The typed result the job's harness must submit through `hyalos-submit`, which the broker
+    /// checks it against (ADR-0064). Absent, the job submits nothing, and the field is left out of
+    /// the signed bytes, so a manifest without one signs as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Output>,
 }
 
 /// The data flows a manifest may declare (ADR-0055). A flow names where the job's data may go: the

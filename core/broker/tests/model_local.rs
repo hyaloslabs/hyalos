@@ -101,6 +101,7 @@ fn manifest() -> Manifest {
         deadline: Timestamp::from_millis(u64::MAX),
         approval: None,
         handles: Default::default(),
+        result: None,
     }
 }
 

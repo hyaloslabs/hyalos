@@ -178,6 +178,7 @@ pub fn run_job(seed: u64, dir: &Path) -> Res<Run> {
         deadline,
         approval: None,
         handles: Default::default(),
+        result: None,
     };
     let signed = engine.mint_manifest(
         &manifest,

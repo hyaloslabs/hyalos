@@ -100,6 +100,7 @@ fn manifest(job: JobId) -> Manifest {
         deadline: Timestamp::from_millis(10_000_000),
         approval: None,
         handles: Default::default(),
+        result: None,
     }
 }
 
@@ -476,6 +477,36 @@ fn a_manifest_the_engine_does_not_mint_is_refused_whatever_policy_says() -> Res 
             "{name:?}"
         );
     }
+    // A result is one a step may return: well-named, well-formed fields, at least one (ADR-0064).
+    use hyalos_types::workflow::{Field, IntegerRange};
+    let bad_results = [
+        Default::default(),
+        [("Bad Name".to_string(), Field::Bool)].into(),
+        [(
+            "n".to_string(),
+            Field::Integer(IntegerRange { min: 2, max: 1 }),
+        )]
+        .into(),
+        [("c".to_string(), Field::Choice(vec!["a".into(), "a".into()]))].into(),
+    ];
+    for result in bad_results {
+        let mut m = manifest(job);
+        m.result = Some(result);
+        assert_eq!(
+            refusal(e.mint_manifest(&m, &StepInputs::default(), &key, at(20)))?,
+            MintRefusal::Invalid {
+                reason: mint_codes::bad_result()
+            },
+            "{:?}",
+            m.result
+        );
+    }
+    let mut m = manifest(job);
+    m.result = Some([("done".to_string(), Field::Bool)].into());
+    assert!(
+        e.mint_manifest(&m, &StepInputs::default(), &key, at(20))
+            .is_ok()
+    );
     // A job that never started, and one that ended.
     let other = manifest(JobId::from_seq(999));
     assert_eq!(

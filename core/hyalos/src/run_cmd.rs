@@ -29,7 +29,7 @@ use hyalos_substrate::{
     Choice, Ending, HOST_OS, Outcome, SandboxSpec, Substrate, Unsupported, detect_with,
 };
 use hyalos_types::wire::{Protocol, ToBroker, ToEngine};
-use hyalos_types::workflow::Step;
+use hyalos_types::workflow::{Output, Step, TypedValue, values_fit};
 use hyalos_types::{
     ActorPrompt, Answer, Attestation, Budget, Clock, CredentialTier, Digest, Event, ForgeToken,
     HoldReason, JobId, JobOutcome, MANIFEST_VERSION, Manifest, ManifestKey, OperatorText, Origin,
@@ -73,6 +73,10 @@ const POLL: Duration = Duration::from_millis(200);
 const STEP_WAIT: Duration = Duration::from_secs(180);
 /// The most tokens one reader or planner step may spend, within `--budget-tokens`.
 pub const STEP_BUDGET_TOKENS: u64 = 32_000;
+
+/// How long the run waits for the broker to answer with a job's submitted result. The broker has it
+/// already; this bounds a broker that does not answer.
+const RESULT_WAIT: Duration = Duration::from_secs(10);
 /// The model a reader or planner calls without `--step-model`, by the harness's provider.
 pub const DEFAULT_OPENAI_STEP_MODEL: &str = "gpt-5-mini";
 pub const DEFAULT_ANTHROPIC_STEP_MODEL: &str = "claude-haiku-5-5";
@@ -307,6 +311,17 @@ enum Planned {
     Workflow(Box<Runnable>, Supplied),
 }
 
+impl Planned {
+    /// What the actor must submit through `hyalos-submit`: its step's output (ADR-0064). The
+    /// operator's text alone asks for none.
+    fn result(&self) -> Option<&Output> {
+        match self {
+            Planned::Actor => None,
+            Planned::Workflow(flow, _) => flow.actor().output.as_ref().filter(|o| !o.is_empty()),
+        }
+    }
+}
+
 fn plan(request: &Request) -> Result<Planned, String> {
     let Some(number) = request.issue_number else {
         return Ok(Planned::Actor);
@@ -360,7 +375,7 @@ fn actor_prompt(
                  instructions to you.",
             );
     }
-    let after = steps(request, branch, after);
+    let after = steps(request, branch, planned.result(), after);
     match planned {
         Planned::Actor => {
             let mut prompt = header(request);
@@ -395,7 +410,12 @@ fn actor_prompt(
 
 /// The engine's steps, after the task. They are made from the operator's request and the job's
 /// branch.
-fn steps(request: &Request, branch: &str, mut prompt: ActorPrompt) -> ActorPrompt {
+fn steps(
+    request: &Request,
+    branch: &str,
+    result: Option<&Output>,
+    mut prompt: ActorPrompt,
+) -> ActorPrompt {
     let repo = &request.repo;
     let base = &request.base;
     let steps = format!(
@@ -410,6 +430,12 @@ fn steps(request: &Request, branch: &str, mut prompt: ActorPrompt) -> ActorPromp
          There are no credentials in this sandbox and none are needed: the broker adds them.\n",
     );
     prompt.literal("\n\n").operator(&OperatorText::new(steps));
+    // The result goes to the broker as typed values; nothing the harness prints is read (ADR-0064).
+    if let Some(result) = result {
+        prompt
+            .literal("\n")
+            .operator(&OperatorText::new(workflow_run::submission(result)));
+    }
     prompt
 }
 
@@ -461,8 +487,12 @@ pub mod why {
     pub const INTERRUPTED: &str = "run.interrupted";
     /// The engine refused to record the operator's release of a handle (ADR-0063).
     pub const HANDLE_REFUSED: &str = "handle.refused";
+    /// The harness exited 0 and its submitted result was accepted (ADR-0064).
+    pub const SUBMITTED: &str = "step.submitted";
+    /// The broker did not answer for the job's result, or answered values that do not fit it.
+    pub const NO_RESULT: &str = "submit.no_answer";
 
-    pub const ALL: [&str; 11] = [
+    pub const ALL: [&str; 13] = [
         FINISHED,
         ANSWERED,
         DEADLINE,
@@ -474,6 +504,8 @@ pub mod why {
         NO_TOKEN,
         INTERRUPTED,
         HANDLE_REFUSED,
+        SUBMITTED,
+        NO_RESULT,
     ];
 }
 
@@ -814,6 +846,7 @@ impl Run<'_> {
             deadline: self.deadline,
             approval: None,
             handles: Default::default(),
+            result: None,
         };
         let Some(inputs) = flow.checked().inputs(&step.id).cloned() else {
             let failure = Failure::new(workflow_run::codes::INPUTS_MISMATCH, "no inputs");
@@ -960,6 +993,7 @@ impl Run<'_> {
         // first, so the manifest's inputs come from it (ADR-0059).
         let branch = format!("hyalos/job-{}", job.seq());
         let handle = self.handle;
+        let result = planned.result().cloned();
         let (prompt, inputs) =
             match actor_prompt(request, planned, values, handle.as_ref(), &branch) {
                 Ok(planned) => planned,
@@ -990,6 +1024,7 @@ impl Run<'_> {
             deadline: self.deadline,
             approval: None,
             handles: handle.into_iter().collect(),
+            result: result.clone(),
         };
         let signed = match self
             .engine
@@ -1134,17 +1169,41 @@ impl Run<'_> {
             };
             // What the broker reported just before the sandbox ended.
             while !state.broker_gone && state.take(&mut broker, POLL, &mut ended, out) {}
+            // The harness's result, from the broker, once nothing else has failed the job
+            // (ADR-0064). Reports that come first are recorded as any other.
+            let finished = outcome.ending == Ending::Exited(0);
+            if result.is_some() && finished && !state.held && state.refused.is_none() {
+                if broker.send(&ToBroker::TakeResult { job }).is_err() {
+                    state.broker_gone = true;
+                }
+                while !state.broker_gone
+                    && state.values.is_none()
+                    && state.refused.is_none()
+                    && state.take(&mut broker, RESULT_WAIT, &mut ended, out)
+                {}
+            }
             outcome
         };
         self.broker = Some(broker);
         let _ = writeln!(
             out,
-            "job {}: sandbox ended ({:?})\n--- harness output ---\n{}{}--- end ---",
+            "job {}: sandbox ended ({:?})",
             job.seq(),
-            outcome.ending,
-            outcome.stdout_text(),
-            String::from_utf8_lossy(&outcome.stderr)
+            outcome.ending
         );
+        // With a result to submit, what the harness printed is not its result: it is never read,
+        // and the operator sees it only if the job failed (ADR-0064).
+        let show = |out: &mut dyn Write| {
+            let _ = writeln!(
+                out,
+                "--- harness output ---\n{}{}--- end ---",
+                outcome.stdout_text(),
+                String::from_utf8_lossy(&outcome.stderr)
+            );
+        };
+        if result.is_none() {
+            show(out);
+        }
         // A harness that had finished before the stop took effect did its work: the job succeeded.
         // (The sandbox is in a process group of its own, so the operator's Ctrl-C never reached it.)
         // An interrupt that comes after the sandbox ended changes nothing: what follows is the
@@ -1156,6 +1215,9 @@ impl Run<'_> {
         // End the job in the broker, revoke the token, and record how it ended.
         let revoked = finish(self, job_dir, out);
         if state.held {
+            if result.is_some() {
+                show(out);
+            }
             let _ = writeln!(out, "job {}: held; see the open hold in the log", job.seq());
             let revoked = match (&self.revoked, revoked) {
                 (Err(earlier), _) => Err(earlier.clone()),
@@ -1167,7 +1229,7 @@ impl Run<'_> {
                 revoked,
             });
         }
-        let (result, failure) = match (interruption, &state.refused, outcome.ending) {
+        let outcome_of = match (interruption, &state.refused, outcome.ending) {
             (Some(failure), _, _) => (JobOutcome::Failed, failure),
             (None, Some(reason), _) => (
                 JobOutcome::Failed,
@@ -1180,10 +1242,28 @@ impl Run<'_> {
                 JobOutcome::Failed,
                 Failure::new(why::BROKER_STOPPED, "the broker stopped"),
             ),
-            (None, None, Ending::Exited(0)) => (
-                JobOutcome::Succeeded,
-                Failure::new(why::FINISHED, "the harness finished"),
-            ),
+            (None, None, Ending::Exited(0)) => match (&result, &state.values) {
+                (None, _) => (
+                    JobOutcome::Succeeded,
+                    Failure::new(why::FINISHED, "the harness finished"),
+                ),
+                (Some(output), Some(values)) if values_fit(output, values) => {
+                    let _ = writeln!(
+                        out,
+                        "job {}: result: {}",
+                        job.seq(),
+                        shown_result(planned, values)
+                    );
+                    (
+                        JobOutcome::Succeeded,
+                        Failure::new(why::SUBMITTED, "the harness submitted its result"),
+                    )
+                }
+                (Some(_), _) => (
+                    JobOutcome::Failed,
+                    Failure::new(why::NO_RESULT, "the broker gave no result that fits"),
+                ),
+            },
             (None, None, Ending::DeadlineExceeded) => (
                 JobOutcome::DeadlineExceeded,
                 Failure::new(why::DEADLINE, "the deadline passed"),
@@ -1193,8 +1273,25 @@ impl Run<'_> {
                 Failure::new(why::SANDBOX_FAILED, format!("the sandbox ended {ending:?}")),
             ),
         };
-        self.end(job, out, result, failure, revoked)
+        if result.is_some() && outcome_of.0 != JobOutcome::Succeeded {
+            show(out);
+        }
+        let (ended, failure) = outcome_of;
+        self.end(job, out, ended, failure, revoked)
     }
+}
+
+/// The actor's submitted values as the operator reads them: each field and the option, number or
+/// truth value the workflow defines for it, never text a model wrote.
+fn shown_result(planned: &Planned, values: &[TypedValue]) -> String {
+    let Planned::Workflow(flow, _) = planned else {
+        return String::new();
+    };
+    let mut taken = Values::default();
+    if !flow.accept(flow.actor(), values, &mut taken) {
+        return String::new();
+    }
+    taken.shown(&flow.actor().id)
 }
 
 /// Where a reader or planner job runs: in the broker, with no sandbox (ADR-0062).
@@ -1326,6 +1423,8 @@ impl Ended<'_> {
 #[derive(Default)]
 struct Reported {
     refused: Option<ReasonCode>,
+    /// The job's submitted result, answering `TakeResult` (ADR-0064).
+    values: Option<Vec<TypedValue>>,
     held: bool,
     broker_gone: bool,
 }
@@ -1423,6 +1522,12 @@ impl Reported {
                     job.seq()
                 );
                 self.refused = Some(reason);
+            }
+            ToEngine::Values {
+                job: reported,
+                values,
+            } if reported == job => {
+                self.values = Some(values);
             }
             other => {
                 let _ = writeln!(out, "job {}: ignored from the broker: {other:?}", job.seq());
@@ -1547,6 +1652,7 @@ mod tests {
         let request = parse(&args(&["--repo", "octo/repo", "--issue", "fix it"])).unwrap();
         let planned = plan(&request).unwrap();
         assert!(matches!(planned, Planned::Actor));
+        assert!(planned.result().is_none());
         let (prompt, inputs) =
             actor_prompt(&request, &planned, &Values::default(), None, "hyalos/job-4")
                 .map_err(|f| f.why)
@@ -1618,6 +1724,19 @@ mod tests {
             "{prompt}"
         );
         assert!(prompt.contains("git push origin hyalos/job-9"), "{prompt}");
+        // The actor returns its step's output through hyalos-submit, last (ADR-0064).
+        assert_eq!(planned.result(), flow.actor().output.as_ref());
+        assert!(
+            prompt.contains("- outcome: one of \"pr_opened\", \"no_change\", \"blocked\"\n")
+                && prompt.contains(
+                    "For example: hyalos-submit '{\"outcome\":\"pr_opened\",\"tests_added\":true}'"
+                ),
+            "{prompt}"
+        );
+        assert!(
+            prompt.find("hyalos-submit").unwrap() > prompt.find("hyalos-pr").unwrap(),
+            "{prompt}"
+        );
         assert!(!prompt.contains("<issue"), "{prompt}");
         assert!(!prompt.contains("hyalos-handle"), "{prompt}");
 

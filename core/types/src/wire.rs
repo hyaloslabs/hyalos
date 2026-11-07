@@ -26,7 +26,7 @@ use crate::{
 };
 
 /// The version of this protocol. Both sides say theirs first and stop on a mismatch.
-pub const WIRE_VERSION: u32 = 7;
+pub const WIRE_VERSION: u32 = 8;
 
 /// The longest job socket path the engine makes and the broker binds (ADR-0038). A Unix socket
 /// path is limited to about 107 bytes; this leaves room.
@@ -118,6 +118,11 @@ pub enum ToBroker {
     /// Run a reader step for the job (wire version 6, ADR-0061). The answer is `Values`, or `Refused`
     /// when anything about it failed, which fails the job.
     Read { job: JobId, call: ReaderCall },
+    /// Take the result the job's harness submitted through `hyalos-submit` (wire version 8,
+    /// ADR-0064). Asked once the sandbox has ended, for a job whose manifest names a result. The
+    /// answer is `Values`, checked against the manifest's result, or `Refused` when there was no
+    /// submission or it was invalid, which fails the job.
+    TakeResult { job: JobId },
     /// A job has ended, so a manifest for it is no longer admitted.
     EndJob { job: JobId },
     /// Stop serving.
@@ -140,8 +145,8 @@ pub enum ToEngine {
     /// The issue asked for with `HoldIssue` is held as `handle`, the SHA-256 of the bytes the broker
     /// keeps (ADR-0063).
     Held { job: JobId, handle: Digest },
-    /// A reader step's answer: one typed value per field of its output, in the output's order. No
-    /// text: a choice is its option's index (ADR-0061).
+    /// A reader step's answer, or a submitted result (`TakeResult`): one typed value per field of
+    /// its output, in the output's order. No text: a choice is its option's index (ADR-0061).
     Values { job: JobId, values: Vec<TypedValue> },
     /// A gate answered for a job. This is the one fact the broker reports that the engine records
     /// (`gate.answered`, ADR-0024): a verdict, the digest of what was asked, and a code.
@@ -303,7 +308,7 @@ mod tests {
                     forge: None,
                 },
                 format!(
-                    r#"{{"kind":"hello","version":7,"manifest_key":"{}"}}"#,
+                    r#"{{"kind":"hello","version":8,"manifest_key":"{}"}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -317,7 +322,7 @@ mod tests {
                     }),
                 },
                 format!(
-                    r#"{{"kind":"hello","version":7,"manifest_key":"{}","forge":{{"api":"https://api.github.com","git":"https://github.com"}}}}"#,
+                    r#"{{"kind":"hello","version":8,"manifest_key":"{}","forge":{{"api":"https://api.github.com","git":"https://github.com"}}}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -374,6 +379,12 @@ mod tests {
                     },
                 },
                 r#"{"kind":"read","job":3,"call":{"protocol":"openai","model":"gpt-x","instructions":"Classify.","context":[],"issue":12,"output":{"bug":"bool","kind":{"choice":["a","b"]}}}}"#.to_string(),
+            ),
+            (
+                ToBroker::TakeResult {
+                    job: JobId::from_seq(3),
+                },
+                r#"{"kind":"take_result","job":3}"#.to_string(),
             ),
             (
                 ToBroker::EndJob {

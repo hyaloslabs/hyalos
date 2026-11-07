@@ -230,6 +230,7 @@ fn manifest(job: u64, actions: &[&str]) -> Manifest {
         deadline: Timestamp::from_millis(SystemClock.now().as_millis() + 3_600_000),
         approval: None,
         handles: Default::default(),
+        result: None,
     }
 }
 

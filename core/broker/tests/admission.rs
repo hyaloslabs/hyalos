@@ -50,6 +50,7 @@ fn manifest(role: Role) -> Manifest {
         deadline: Timestamp::from_millis(DEADLINE),
         approval: None,
         handles: Default::default(),
+        result: None,
     }
 }
 

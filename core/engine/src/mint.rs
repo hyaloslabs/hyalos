@@ -61,6 +61,11 @@ pub mod mint_codes {
     pub fn handle_not_released() -> ReasonCode {
         code("mint.handle_not_released")
     }
+
+    /// The manifest names a result that is not a well-formed output (ADR-0064).
+    pub fn bad_result() -> ReasonCode {
+        code("mint.bad_result")
+    }
 }
 
 /// Why no manifest was minted.
@@ -139,6 +144,14 @@ impl Engine {
             .all(|h| task.is_some_and(|t| self.state().handle_is_released(t, h)))
         {
             return Err(invalid(mint_codes::handle_not_released()));
+        }
+        // A result is what the broker reads a submission as, so it must be one a step may return.
+        if manifest
+            .result
+            .as_ref()
+            .is_some_and(|r| !hyalos_types::workflow::output_is_valid(r))
+        {
+            return Err(invalid(mint_codes::bad_result()));
         }
         let asks = asks(manifest)?;
         let policies = self.policies().map_err(|_| MintRefusal::Held {

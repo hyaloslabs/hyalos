@@ -582,6 +582,7 @@ mod tests {
             deadline: Timestamp::from_millis(1),
             approval: None,
             handles: Default::default(),
+            result: None,
         }
     }
 

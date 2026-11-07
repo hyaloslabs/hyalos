@@ -3,7 +3,8 @@
 //! * `hyalos-forward` listens on a loopback port and relays each connection to the broker's socket,
 //!   which is the sandbox's only way out. It prepares the harness's home directories, then runs the
 //!   harness and exits with its status.
-//! * `hyalos-submit` posts a job's typed result through the forwarder to the broker.
+//! * `hyalos-submit` posts a job's typed result through the forwarder to the broker, which reads it
+//!   as the job's manifest says (ADR-0064).
 //! * `hyalos-dns-log` is for the image test only and is not in the shipped image: it answers DNS on
 //!   loopback over UDP and TCP, records every name asked, and runs a program.
 //!
@@ -31,8 +32,12 @@ pub const BROKER_SOCKET: &str = "/run/broker.sock";
 pub const MAX_CONNECTIONS: usize = 64;
 /// The Codex settings the image ships, copied into `$CODEX_HOME` before the harness starts.
 pub const CODEX_SEED: &str = "/etc/hyalos/codex";
-/// A submitted result larger than this is refused before it is sent.
+/// A request body or answer larger than this is refused before it is sent or read in full.
 pub const MAX_SUBMISSION: usize = 1024 * 1024;
+/// The largest result the broker reads (`hyalos_types::workflow::MAX_SUBMISSION`, ADR-0064).
+/// `hyalos-submit` refuses a larger one before sending it. This crate uses the standard library only,
+/// so the number is repeated here.
+pub const RESULT_LIMIT: usize = 16 * 1024;
 
 /// Relays connections on `listener` to the Unix socket at `socket`, each on its own threads, until
 /// the process ends.

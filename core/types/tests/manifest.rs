@@ -35,6 +35,7 @@ fn manifest() -> Manifest {
             event: 77,
         }),
         handles: Default::default(),
+        result: None,
     }
 }
 
@@ -110,6 +111,31 @@ fn handles_are_signed_when_present_and_absent_otherwise() -> Res {
         "02".repeat(32)
     );
     assert!(payload.ends_with(&sorted), "{payload}");
+    assert_eq!(signed.open(&key().public())?, with);
+    Ok(())
+}
+
+#[test]
+fn a_result_is_signed_when_present_and_absent_otherwise() -> Res {
+    // Absent, it is left out, so a manifest without one signs as it did before ADR-0064.
+    assert!(!PINNED_PAYLOAD.contains("result"));
+    let mut with = manifest();
+    with.result = Some(
+        [
+            (
+                "outcome".to_string(),
+                hyalos_types::workflow::Field::Choice(vec!["done".into(), "blocked".into()]),
+            ),
+            ("tested".to_string(), hyalos_types::workflow::Field::Bool),
+        ]
+        .into(),
+    );
+    let signed = key().sign(&with)?;
+    let payload = String::from_utf8(signed.payload().to_vec())?;
+    assert!(
+        payload.ends_with(r#""result":{"outcome":{"choice":["done","blocked"]},"tested":"bool"}}"#),
+        "{payload}"
+    );
     assert_eq!(signed.open(&key().public())?, with);
     Ok(())
 }

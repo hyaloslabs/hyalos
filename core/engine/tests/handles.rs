@@ -100,6 +100,7 @@ fn manifest(job: JobId, handles: &[Digest]) -> Manifest {
         deadline: Timestamp::from_millis(10_000_000),
         approval: None,
         handles: handles.iter().copied().collect(),
+        result: None,
     }
 }
 
