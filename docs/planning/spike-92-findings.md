@@ -50,3 +50,4 @@ S5.12 (#239), under E5 (#28): "As an operator, I drive Hyalos from a client on t
 - then either show Hermes completing `list_tasks`, `start_job`, `job_status` and `job_result`, or say in `docs/operations/mcp.md` that Hermes 0.19.0 cannot connect.
 
 Re-check these results when either client changes version.
+
