@@ -40,7 +40,10 @@ pub fn source(args: &[String]) -> (Vec<String>, Source) {
 pub fn read(source: Source, prompt: &str) -> Result<Zeroizing<String>, String> {
     let line = match source {
         Source::Stdin => line(std::io::stdin().lock())?,
-        Source::Terminal => from_terminal(prompt)?,
+        Source::Terminal => from_terminal(
+            prompt,
+            &format!("run this at a terminal, or pass {STDIN_FLAG}"),
+        )?,
     };
     if line.is_empty() {
         return Err("no passphrase was given".into());
@@ -48,14 +51,44 @@ pub fn read(source: Source, prompt: &str) -> Result<Zeroizing<String>, String> {
     Ok(line)
 }
 
-fn from_terminal(prompt: &str) -> Result<Zeroizing<String>, String> {
-    let tty = OpenOptions::new()
+/// A secret typed at the terminal with echo off, such as a provider's key (ADR-0080). Empty if
+/// nothing was typed.
+pub fn hidden(prompt: &str) -> Result<Zeroizing<String>, String> {
+    from_terminal(prompt, OWN_TERMINAL)
+}
+
+/// What to do when there is no terminal to ask at, for a command that has no other way in.
+const OWN_TERMINAL: &str = "run this in a terminal of your own";
+
+/// One answer typed at the terminal and shown as it is typed, without its line ending or the
+/// spaces around it (ADR-0080).
+pub fn answer(prompt: &str) -> Result<String, String> {
+    let tty = terminal(OWN_TERMINAL)?;
+    (&tty)
+        .write_all(prompt.as_bytes())
+        .map_err(|e| format!("cannot write to the terminal: {e}"))?;
+    let mut text = String::new();
+    BufReader::new((&tty).take(LIMIT))
+        .read_line(&mut text)
+        .map_err(|e| format!("cannot read the answer: {e}"))?;
+    Ok(text.trim().to_string())
+}
+
+/// Whether there is a terminal to ask at, checked before a command shows anything.
+pub fn has_terminal() -> Result<(), String> {
+    terminal(OWN_TERMINAL).map(drop)
+}
+
+fn terminal(hint: &str) -> Result<std::fs::File, String> {
+    OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/tty")
-        .map_err(|e| {
-            format!("cannot open the terminal to ask for the passphrase ({e}); run this at a terminal, or pass {STDIN_FLAG}")
-        })?;
+        .map_err(|e| format!("cannot open the terminal to ask ({e}); {hint}"))
+}
+
+fn from_terminal(prompt: &str, hint: &str) -> Result<Zeroizing<String>, String> {
+    let tty = terminal(hint)?;
     let saved = tcgetattr(&tty).map_err(|e| format!("cannot read the terminal's settings: {e}"))?;
     // Echo off, and keys read one at a time with no signals from them: Ctrl-C is a key that cancels
     // the read, so no signal can end the process while the terminal is silent, and nothing about

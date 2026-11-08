@@ -30,7 +30,7 @@ pub const COMMANDS: [(&str, &str); 5] = [
 pub const TASK_METHODS: [(&str, &str); 1] = [("stop", "tasks/cancel")];
 
 /// The operator's decisions, as commands. None of them is an MCP tool, or ever may be.
-pub const DECISIONS: [&str; 8] = [
+pub const DECISIONS: [&str; 11] = [
     "approve",
     "cancel",
     "release",
@@ -39,6 +39,9 @@ pub const DECISIONS: [&str; 8] = [
     "agent issue",
     "agent revoke",
     "run --release-issue",
+    "setup walk",
+    "setup policy",
+    "setup agent",
 ];
 
 const USAGE: &str = "usage: hyalos tasks [--limit <n>] [--json]

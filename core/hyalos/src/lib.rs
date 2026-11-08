@@ -26,6 +26,7 @@ pub mod paths;
 pub mod policy_cmd;
 pub mod run_cmd;
 pub mod runs;
+pub mod setup_ask;
 pub mod setup_cmd;
 pub mod tools_cmd;
 pub mod workflow_cmd;

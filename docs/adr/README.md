@@ -90,6 +90,7 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0074](0074-approvals-shown-to-the-driving-agent.md) | Approvals are shown to the driving agent as read-only tool results | Accepted |
 | [0075](0075-the-thin-cli-for-the-agents-tools.md) | The thin CLI: one command for each of the driving agent's tools | Accepted |
 | [0076](0076-the-set-up-hyalos-skill-and-the-setup-checklist.md) | The set-up-hyalos skill and the setup checklist | Superseded by [ADR-0077](0077-handing-the-operator-one-step-at-a-time.md) |
-| [0077](0077-handing-the-operator-one-step-at-a-time.md) | Handing the operator one step at a time | Accepted |
+| [0077](0077-handing-the-operator-one-step-at-a-time.md) | Handing the operator one step at a time | Superseded by [ADR-0080](0080-setup-asks-the-operator-in-their-own-terminal.md) |
 | [0078](0078-agent-started-runs-wait-for-the-operator-to-release-the-issue.md) | Agent-started runs wait for the operator to release the issue | Accepted |
 | [0079](0079-readers-hold-the-provider-to-their-fields-schema.md) | Readers hold the provider to their fields' schema | Accepted |
+| [0080](0080-setup-asks-the-operator-in-their-own-terminal.md) | Setup asks the operator in their own terminal | Proposed |

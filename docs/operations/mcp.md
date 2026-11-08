@@ -37,7 +37,7 @@ Each tool has one command that makes the same call and prints the same answer ([
 - `stop` asks a run started by `start` or `start_job` to stop, as `tasks/cancel` does. It is not `hyalos cancel`, which is your signed decision on a held task.
 - They need no agent credential: they run as you and decide nothing. Like the server, `start` starts a runner, and `status` or `result` on a run whose runner stopped resumes it (`hyalos run --resume <task> --auto`), which writes to the log with the engine's key.
 
-Your decisions are the other way round: they are commands only, and no MCP tool makes one. These are `approve`, `cancel`, `release`, `merge`, `policy approve`, `agent issue`, `agent revoke` and `run --release-issue`. A test fails if the server gains a tool without a command here, or a tool that decides. Setup and maintenance (`init`, `doctor`, `operator`, `github check`, `log ...`, `workflow check`) have no MCP tool either.
+Your decisions are the other way round: they are commands only, and no MCP tool makes one. These are `approve`, `cancel`, `release`, `merge`, `policy approve`, `agent issue`, `agent revoke`, `run --release-issue`, and the setup commands that approve a policy or issue a credential: `setup walk`, `setup policy` and `setup agent`. A test fails if the server gains a tool without a command here, or a tool that decides. Setup and maintenance (`init`, `doctor`, `setup`, `operator`, `github check`, `log ...`, `workflow check`) have no MCP tool either.
 
 ## Which clients can connect
 
@@ -62,7 +62,7 @@ Every call needs a credential you issued ([ADR-0068](../adr/0068-the-driving-age
 hyalos agent issue claude-code
 ```
 
-This prints the credential on stdout, once. The log keeps only its SHA-256, so it cannot be shown again: if you lose it, revoke it and issue another. Treat it like a password and give it only to the agent.
+For Claude Code, `hyalos setup agent` does this and the registration below in one step, without showing the credential ([ADR-0080](../adr/0080-setup-asks-the-operator-in-their-own-terminal.md)). Run it in the directory you start Claude Code in. `hyalos agent issue` prints the credential on stdout, once. The log keeps only its SHA-256, so it cannot be shown again: if you lose it, revoke it and issue another. Treat it like a password and give it only to the agent.
 
 ```
 hyalos agent list            # every credential issued, by id and name, and whether it is revoked
