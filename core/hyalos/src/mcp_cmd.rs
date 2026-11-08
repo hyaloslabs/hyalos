@@ -178,7 +178,10 @@ impl EngineLog {
         let key = PublicKey::from_hex(text.trim())
             .ok_or("the engine's public key is not 64 hexadecimal characters")?;
         if !self.log.exists() {
-            return Err("there is no event log yet: run hyalos init".into());
+            return Err(
+                "there is no event log yet: the first event written creates it, such as hyalos policy approve"
+                    .into(),
+            );
         }
         read_state(&self.log, &key).map_err(|e| format!("the event log does not check out: {e}"))
     }

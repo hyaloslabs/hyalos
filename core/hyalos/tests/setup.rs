@@ -123,3 +123,69 @@ fn a_machine_set_up_for_a_job_has_every_step_done_once_the_agent_has_a_credentia
     assert_eq!(todo(&steps), ["engine_key", "policy", "agent_credential"]);
     Ok(())
 }
+
+#[test]
+fn hyalos_init_alone_clears_the_engine_key_step_before_any_log_exists() -> Res {
+    let root = dir("setup-init")?;
+    let (config, data) = (root.join("c"), root.join("d"));
+    let run = |args: &[&str]| {
+        Command::new(EXE)
+            .args(args)
+            .env("HYALOS_CONFIG_DIR", &config)
+            .env("HYALOS_DATA_DIR", &data)
+            .env("HYALOS_RUNTIME_DIR", root.join("r"))
+            .output()
+    };
+    ok_cli(run(&["init"])?)?;
+    // init makes the key pair and no log (#255).
+    assert!(!data.join("events.db").exists());
+    let env = |name: &str| match name {
+        "HYALOS_CONFIG_DIR" => Some(config.to_string_lossy().into_owned()),
+        "HYALOS_DATA_DIR" => Some(data.to_string_lossy().into_owned()),
+        _ => None,
+    };
+    let steps = hyalos::setup_cmd::steps(&env, Err("no substrate".into()))?;
+    let engine = steps
+        .iter()
+        .find(|s| s.id == "engine_key")
+        .ok_or("engine_key")?;
+    assert!(engine.done, "{engine:?}");
+    // With no log the state is empty, so the later steps say what is missing, whichever comes first.
+    for (id, missing) in [
+        ("policy", "no policy is in force"),
+        ("agent_credential", "no agent credential is in force"),
+    ] {
+        let step = steps.iter().find(|s| s.id == id).ok_or(id)?;
+        assert!(!step.done && step.detail.contains(missing), "{step:?}");
+    }
+    // Running init again changes nothing, and setup still writes nothing.
+    let keys = |dir: &std::path::Path| -> Res<(Vec<u8>, Vec<u8>)> {
+        Ok((
+            std::fs::read(dir.join("engine.key"))?,
+            std::fs::read(dir.join("engine.pub"))?,
+        ))
+    };
+    let before = keys(&config)?;
+    ok_cli(run(&["init"])?)?;
+    assert_eq!(keys(&config)?, before);
+    let out = run(&["setup", "--json"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let shown: Value = serde_json::from_slice(&out.stdout)?;
+    let engine = shown["steps"]
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["id"] == "engine_key"))
+        .ok_or("engine_key")?;
+    assert_eq!(engine["done"], true, "{engine}");
+    assert!(!data.join("events.db").exists());
+
+    // A log path that is there but cannot be read, such as a dangling link, is not taken as no log.
+    std::os::unix::fs::symlink(root.join("nowhere.db"), data.join("events.db"))?;
+    let steps = hyalos::setup_cmd::steps(&env, Err("no substrate".into()))?;
+    let engine = steps
+        .iter()
+        .find(|s| s.id == "engine_key")
+        .ok_or("engine_key")?;
+    assert!(!engine.done, "{engine:?}");
+    std::fs::remove_dir_all(&root).ok();
+    Ok(())
+}
