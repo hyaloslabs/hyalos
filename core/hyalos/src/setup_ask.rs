@@ -475,9 +475,17 @@ impl<'a> Setup<'a> {
             .filter(|(_, a)| a.revoked.is_none() && a.name == name)
             .map(|(id, _)| *id)
             .collect();
-        self.ask
-            .say("This registers the hyalos server for Claude Code sessions started in");
+        // Claude Code drives Hyalos; the jobs it starts run their own harness, which the key decides.
+        let jobs = match harness.as_deref() {
+            Some("claude-code") => "Claude Code, with your Anthropic key",
+            _ => "Codex, with your OpenAI key",
+        };
+        self.ask.say(
+            "This lets Claude Code, the agent you work with, start Hyalos jobs from sessions in",
+        );
         self.ask.say(&format!("  {}", dir.display()));
+        self.ask
+            .say(&format!("The jobs themselves run {jobs}, in the sandbox."));
         if !self.yes("Is that where you run Claude Code?", true)? {
             return Err(
                 "nothing was issued: run this in that directory, or with --dir <dir>".into(),
@@ -554,7 +562,7 @@ impl<'a> Setup<'a> {
             ));
         }
         Ok(format!(
-            "issued agent {} (claude-code) and registered it with Claude Code for {}, without showing it. A new Claude Code session there has the tools",
+            "issued agent {} (claude-code) and registered it with Claude Code for {}, without showing it. A new Claude Code session there has the tools; the jobs it starts run {jobs}",
             head.seq,
             dir.display()
         ))
