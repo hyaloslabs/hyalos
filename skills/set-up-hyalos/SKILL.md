@@ -84,7 +84,7 @@ It takes each of their steps that is not done, in order, and asks them for what 
 | --- | --- |
 | `operator_key` | A passphrase of 12 or more characters, twice. It signs their decisions, and you must never see it. |
 | `provider_keys` | Which provider, and the key, which it reads without showing. |
-| `github_app` | Whether the App exists yet, its App ID, and which `.pem` to use. It finds a downloaded key in their home directory, `~/Downloads` or the config directory. |
+| `github_app` | Whether the App exists yet, its App ID, and which `.pem` to use. It finds GitHub's download (`*.private-key.pem`) in their home directory, `~/Downloads`, Windows' downloads on WSL2, or the config directory. |
 | `policy` | It prints the starter policy and asks before they approve it with their passphrase. It allows the first job's actions, with data going only to the model and GitHub. |
 | `agent_credential` | That this is the directory they run Claude Code in. It issues a credential and registers this client's server with it, without showing it. It adds `--harness claude-code` when their only key is Anthropic's. |
 

@@ -1,15 +1,16 @@
 //! The operator's setup steps, asked in their own terminal (ADR-0080): `hyalos setup walk`, and one
 //! short command per step. Each asks for what it needs, writes it owner-only, checks it, and is safe
 //! to run again. Answers come through [`Ask`]: from `/dev/tty` for the operator, scripted in tests.
-//! So no answer and no secret is ever in an argument, the environment or shell history, and nothing
-//! the operator runs is a long line they had to copy.
+//! So nothing the operator types is ever in an argument, the environment or shell history, and
+//! nothing they run is a long line they had to copy. The one secret on a command line is the
+//! credential `agent` hands to `claude mcp add`, for as long as that runs (ADR-0080).
 //!
 //! `walk`, `policy` and `agent` record decisions signed with the operator's key, so they are in
 //! `tools_cmd::DECISIONS`. Nothing here prints a secret: not a provider key, the App's key, the
 //! passphrase or a credential, and not what `claude` prints.
 
 use std::fs::{self, OpenOptions};
-use std::io::{IsTerminal, Read, Write};
+use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -45,22 +46,29 @@ pub trait Ask {
     fn secret(&mut self, prompt: &str) -> Result<Zeroizing<String>, String>;
 }
 
-/// The operator's terminal: `/dev/tty` for answers, standard output for what is shown.
-pub struct Terminal;
+/// The operator's terminal, `/dev/tty`, for what is shown and what is asked alike, so what they
+/// approve is shown where they are asked, whatever standard output is.
+pub struct Terminal {
+    tty: fs::File,
+}
+
+impl Terminal {
+    pub fn open() -> Result<Self, String> {
+        Ok(Self {
+            tty: passphrase::open_terminal()?,
+        })
+    }
+}
 
 impl Ask for Terminal {
     fn say(&mut self, text: &str) {
-        println!("{text}");
+        let _ = writeln!(self.tty, "{text}");
     }
 
     fn link(&mut self, before: &str, text: &str, url: &str) {
         // OSC 8: a terminal that knows it shows `text` and opens `url` on a click; one that does not
         // shows `text` alone.
-        if std::io::stdout().is_terminal() {
-            println!("{before}\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\");
-        } else {
-            println!("{before}{text}");
-        }
+        let _ = writeln!(self.tty, "{before}\x1b]8;;{url}\x1b\\{text}\x1b]8;;\x1b\\");
     }
 
     fn answer(&mut self, prompt: &str) -> Result<String, String> {
@@ -236,7 +244,17 @@ impl<'a> Setup<'a> {
         {
             return Ok("kept the App as it was".into());
         }
-        let current = fs::read_to_string(&settings_path).unwrap_or_default();
+        // Only a file that is not there is empty; one that cannot be read is never overwritten.
+        let current = match fs::read_to_string(&settings_path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                return Err(format!(
+                    "cannot read {}: {e}; nothing was written",
+                    settings_path.display()
+                ));
+            }
+        };
         let app_id = match AppSettings::parse(&current) {
             Ok(settings) if self.yes(&format!("Use App ID {}?", settings.app_id), true)? => {
                 settings.app_id
@@ -274,8 +292,15 @@ impl<'a> Setup<'a> {
         }
         write_private(&settings_path, settings.as_bytes())?;
         GitHubApp::load(&config).map_err(|e| e.to_string())?;
+        // Only GitHub's own download is removed: any other file is the operator's to keep.
+        let download = source
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".private-key.pem"));
         let from = if same {
             "kept the key where it was, owner-only".to_string()
+        } else if !download {
+            format!("copied the key from {}", source.display())
         } else if fs::remove_file(&source).is_ok() {
             format!("moved the key from {}", source.display())
         } else {
@@ -469,9 +494,11 @@ impl<'a> Setup<'a> {
         let (issued, revoked) = (reason("agent.issued")?, reason("agent.revoked")?);
         let credential = fresh_credential()?;
         let engine = self.engine()?;
-        for id in replaced {
+        // A name has one credential in force, so the old one goes first; if registering the new one
+        // then fails, both are revoked and the error says so.
+        for id in &replaced {
             engine
-                .revoke_agent(now(), id, Decider::Human, revoked.clone())
+                .revoke_agent(now(), *id, Decider::Human, revoked.clone())
                 .map_err(|e| e.to_string())?;
         }
         let head = engine
@@ -511,8 +538,13 @@ impl<'a> Setup<'a> {
                 .engine()?
                 .revoke_agent(now(), agent, Decider::Human, revoked)
                 .is_ok();
+            let old = if replaced.is_empty() {
+                ""
+            } else {
+                ", and the credential it replaced was revoked before it"
+            };
             return Err(format!(
-                "claude mcp add failed in {}, so {}; see claude mcp list there",
+                "claude mcp add failed in {}, so {}{old}; see claude mcp list there, then run this again",
                 dir.display(),
                 if undone {
                     format!("agent {} was revoked again", head.seq)
@@ -636,9 +668,9 @@ fn with_app_id(current: &str, app_id: u64) -> String {
     text
 }
 
-/// The `.pem` most likely to be the App's key in `places`: GitHub names its downloads
-/// `<app>.<date>.private-key.pem`, so those come first, then the newest. Only the operator's own
-/// regular files, not links.
+/// The newest file in `places` that can only be the App's key: GitHub's download name
+/// (`<app>.<date>.private-key.pem`) or `github-app.pem` itself. Any other `.pem` is the operator's
+/// to name. Only their own regular files, not links.
 fn newest_pem(places: &[PathBuf]) -> Option<PathBuf> {
     let user = rustix::process::getuid().as_raw();
     places
@@ -650,23 +682,23 @@ fn newest_pem(places: &[PathBuf]) -> Option<PathBuf> {
             let name = path.file_name()?.to_str()?.to_string();
             let meta = fs::symlink_metadata(&path).ok()?;
             let ours = meta.is_file() && meta.uid() == user && meta.len() <= FILE_LIMIT;
-            (ours && name.ends_with(".pem")).then(|| {
-                let github = name.ends_with(".private-key.pem") || name == GITHUB_KEY_FILE;
-                ((github, meta.mtime()), path)
-            })
+            let github = name.ends_with(".private-key.pem") || name == GITHUB_KEY_FILE;
+            (ours && github).then(|| (meta.mtime(), path))
         })
-        .max_by(|a, b| a.0.cmp(&b.0))
+        .max_by_key(|(mtime, _)| *mtime)
         .map(|(_, path)| path)
 }
 
 pub fn run(args: &[String]) -> ExitCode {
     // Before anything is shown or written, so a shell with no terminal gets one line.
-    if let Err(e) = passphrase::has_terminal() {
-        eprintln!("hyalos: {e}");
-        return ExitCode::from(1);
-    }
+    let mut terminal = match Terminal::open() {
+        Ok(terminal) => terminal,
+        Err(e) => {
+            eprintln!("hyalos: {e}");
+            return ExitCode::from(1);
+        }
+    };
     let env = |name: &str| std::env::var(name).ok();
-    let mut terminal = Terminal;
     let mut setup = Setup::new(&env, &mut terminal);
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     let done = match words.as_slice() {

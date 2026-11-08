@@ -122,6 +122,9 @@ fn walk_takes_every_step_on_a_fresh_machine_and_shows_no_secret() -> Res {
         .join("Downloads/hyalos-op.2026-11-08.private-key.pem");
     std::fs::write(&download, PEM)?;
     std::fs::set_permissions(&download, std::fs::Permissions::from_mode(0o644))?;
+    // Another RSA key, newer, under a name that is not GitHub's: never offered, never touched.
+    let other = m.home.join("mykey.pem");
+    std::fs::write(&other, PEM)?;
     let mut script = Script::new(&[
         PASSPHRASE, // new operator passphrase
         PASSPHRASE, // again
@@ -161,6 +164,7 @@ fn walk_takes_every_step_on_a_fresh_machine_and_shows_no_secret() -> Res {
         "app_id = 7\n"
     );
     assert!(!download.exists());
+    assert!(other.exists() && !script.shown.contains("mykey.pem"));
     assert!(
         script
             .shown
@@ -232,6 +236,14 @@ fn a_key_already_in_the_config_directory_is_kept_and_made_owner_only() -> Res {
     assert!(!m.config.join("github.app").exists() && wrong.exists());
     assert_eq!(m.mode(&pem)?, 0o775);
 
+    // A github.app that cannot be read is refused, never overwritten.
+    let settings = m.config.join("github.app");
+    std::fs::create_dir(&settings)?;
+    let mut script = Script::new(&[]);
+    let refused = Setup::new(&env, &mut script).github_app(None);
+    assert!(refused.is_err_and(|e| e.contains("cannot read")));
+    std::fs::remove_dir(&settings)?;
+
     let mut script = Script::new(&["y", "7", ""]);
     let done = Setup::new(&env, &mut script).github_app(None)?;
     assert!(done.contains("kept the key where it was"), "{done}");
@@ -244,10 +256,21 @@ fn a_key_already_in_the_config_directory_is_kept_and_made_owner_only() -> Res {
     );
     assert_eq!(std::fs::read(&pem)?, PEM);
     assert_eq!(m.mode(&pem)?, 0o600);
+    assert_eq!(std::fs::read_to_string(&settings)?, "app_id = 7\n");
+
+    // Given its own path, with github.app's other lines: the id is offered, the lines are kept.
+    std::fs::write(
+        &settings,
+        "# mine\napp_id = 7\napi = https://api.github.com\n",
+    )?;
+    std::fs::set_permissions(&pem, std::fs::Permissions::from_mode(0o644))?;
+    let mut script = Script::new(&[""]);
+    Setup::new(&env, &mut script).github_app(Some(pem.clone()))?;
     assert_eq!(
-        std::fs::read_to_string(m.config.join("github.app"))?,
-        "app_id = 7\n"
+        std::fs::read_to_string(&settings)?,
+        "app_id = 7\n# mine\napi = https://api.github.com\n"
     );
+    assert_eq!(m.mode(&pem)?, 0o600);
     let step = hyalos::setup_cmd::steps(&env, Err("no substrate".into()))?
         .into_iter()
         .find(|s| s.id == "github_app")
@@ -356,9 +379,15 @@ fn an_agent_credential_claude_code_refuses_is_revoked_again() -> Res {
     assert_eq!(run(&["", ""], &m.home)?, "kept the credential in force");
     run(&["", "y", PASSPHRASE], &m.home)?;
     assert_eq!(agents()?, 1);
+    // A replace that claude refuses leaves none in force, and says the old one went too.
+    std::fs::write(m.root.join("fail"), "")?;
+    let failed = run(&["", "y", PASSPHRASE], &m.home);
+    assert!(failed.is_err_and(|e| e.contains("the credential it replaced was revoked")));
+    assert_eq!(agents()?, 0);
+    std::fs::remove_file(m.root.join("fail"))?;
     let log = std::fs::read_to_string(m.root.join("claude.log"))?;
     let adds: Vec<&str> = log.lines().filter(|l| l.contains(" mcp add ")).collect();
-    assert_eq!(adds.len(), 3);
+    assert_eq!(adds.len(), 4);
     assert!(
         adds.iter()
             .all(|a| a.starts_with(&format!("{} ", m.home.display())))
@@ -369,7 +398,42 @@ fn an_agent_credential_claude_code_refuses_is_revoked_again() -> Res {
         "{adds:?}"
     );
     // Each registration first removed the one before it in that directory.
-    assert_eq!(log.matches(" mcp remove hyalos -s local").count(), 3);
+    assert_eq!(log.matches(" mcp remove hyalos -s local").count(), 4);
+    std::fs::remove_dir_all(&m.root).ok();
+    Ok(())
+}
+
+#[test]
+fn with_no_terminal_each_command_refuses_and_writes_nothing() -> Res {
+    // setsid leaves the command with no controlling terminal, as an agent's shell may be.
+    if std::process::Command::new("setsid")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipped: no setsid here");
+        return Ok(());
+    }
+    let m = Machine::new("no-tty")?;
+    for command in [&["walk"][..], &["provider-key"], &["policy"], &["agent"]] {
+        let out = std::process::Command::new("setsid")
+            .arg("-w")
+            .arg(common::EXE)
+            .arg("setup")
+            .args(command)
+            .env("HYALOS_CONFIG_DIR", &m.config)
+            .env("HYALOS_DATA_DIR", &m.data)
+            .stdin(std::process::Stdio::null())
+            .output()?;
+        assert_eq!(out.status.code(), Some(1), "{command:?}");
+        assert!(out.stdout.is_empty(), "{command:?}");
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            said.contains("run this in a terminal of your own"),
+            "{said}"
+        );
+        assert!(!m.config.exists() && !m.data.exists(), "{command:?}");
+    }
     std::fs::remove_dir_all(&m.root).ok();
     Ok(())
 }

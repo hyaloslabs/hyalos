@@ -68,15 +68,19 @@ pub fn answer(prompt: &str) -> Result<String, String> {
         .write_all(prompt.as_bytes())
         .map_err(|e| format!("cannot write to the terminal: {e}"))?;
     let mut text = String::new();
-    BufReader::new((&tty).take(LIMIT))
+    let read = BufReader::new((&tty).take(LIMIT))
         .read_line(&mut text)
         .map_err(|e| format!("cannot read the answer: {e}"))?;
+    // The end of input is no answer, not an empty one: it never takes a default (fail closed).
+    if read == 0 {
+        return Err("no answer was given; nothing was written".into());
+    }
     Ok(text.trim().to_string())
 }
 
-/// Whether there is a terminal to ask at, checked before a command shows anything.
-pub fn has_terminal() -> Result<(), String> {
-    terminal(OWN_TERMINAL).map(drop)
+/// The terminal to show and ask at, opened before a command shows anything.
+pub fn open_terminal() -> Result<std::fs::File, String> {
+    terminal(OWN_TERMINAL)
 }
 
 fn terminal(hint: &str) -> Result<std::fs::File, String> {
