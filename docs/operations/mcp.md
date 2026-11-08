@@ -83,7 +83,7 @@ This is the default, and there is no listener at all. The server takes the crede
 claude mcp add hyalos -e HYALOS_AGENT_CREDENTIAL=hyalos-agent-… -- hyalos mcp
 ```
 
-Claude Code registers the server for the directory `claude mcp add` runs in (its default `local` scope), so run it in the repository you will drive Hyalos from. Check it there with `claude mcp list`, which should show a `hyalos:` line. `claude mcp get hyalos` shows the server's details, which can include the credential, so do not run it where the output is shared, such as an agent's conversation.
+Claude Code registers the server for the directory `claude mcp add` runs in (its default `local` scope), so run it in the directory you will start your Claude Code session in. Check it there with `claude mcp list`, which should show a `hyalos:` line. `claude mcp get hyalos` shows the server's details, which can include the credential, so do not run it where the output is shared, such as an agent's conversation.
 
 Set `HYALOS_DATA_DIR` and `HYALOS_CONFIG_DIR` in the client's server entry too if your log and key are not in the default places. The server checks the credential when it starts and exits with the reason if it is missing, unknown or revoked, so a wrong setup shows at once. Run `hyalos mcp` by hand to check it: it reads one JSON-RPC message per line on stdin and answers on stdout until stdin ends.
 
