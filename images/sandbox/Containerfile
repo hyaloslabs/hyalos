@@ -1,10 +1,11 @@
 # The sandbox image (ADR-0016, ADR-0040): the four pinned harnesses, the forwarder and the submit
 # helper. Build from the repository root:
 #
-#   docker build -f images/sandbox/Containerfile -t hyalos-sandbox .
+#   docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:latest .
 #
-# The `test` target adds what the image test needs (hyalos-dns-log and the SDK scripts); the default
-# target is the image jobs run in. Network is used while building, never while a job runs.
+# The `sandbox` target is the image jobs run in. The `test` target adds what the image test needs
+# (curl, hyalos-dns-log, the test CA and the SDK scripts). It is the last stage, so a build that
+# names no target builds it: always name one. Network is used while building, never while a job runs.
 
 # ---- the sandbox's own programs, built from this workspace ------------------------------------
 FROM rust:1.99.1-slim-bookworm@sha256:ed2c95ca377d6571b124b05e75e01207973ded639dce7d5542eb7bcd797e32aa AS tools

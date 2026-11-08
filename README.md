@@ -8,6 +8,7 @@
 
 ## Start here
 
+- [Getting started](docs/operations/getting-started.md): from a clone to a first job; or open Claude Code here and say "set up Hyalos"
 - [Product requirements](docs/prd/hyalos.md): what we are building and why
 - [Architecture decisions](docs/adr/README.md): why it is shaped this way
 - [Documentation map](docs/README.md): where everything lives
