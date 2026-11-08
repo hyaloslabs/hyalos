@@ -189,3 +189,95 @@ fn hyalos_init_alone_clears_the_engine_key_step_before_any_log_exists() -> Res {
     std::fs::remove_dir_all(&root).ok();
     Ok(())
 }
+
+#[test]
+fn setup_next_prints_only_the_next_step_with_its_commands_last() -> Res {
+    let root = dir("setup next")?;
+    let (config, data) = (root.join("c"), root.join("d"));
+    let run = |args: &[&str]| {
+        Command::new(EXE)
+            .args(args)
+            .env("HYALOS_CONFIG_DIR", &config)
+            .env("HYALOS_DATA_DIR", &data)
+            .env("HYALOS_RUNTIME_DIR", root.join("r"))
+            .output()
+    };
+    ok_cli(run(&["init"])?)?;
+    let out = run(&["setup", "--next"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let shown = String::from_utf8_lossy(&out.stdout).into_owned();
+    // The engine key is done, so the operator key is next, and nothing of any other step is shown.
+    assert!(
+        shown.contains("next is operator_key (yours, in a terminal of your own)"),
+        "{shown}"
+    );
+    for other in ["provider_keys", "github_app", "policy", "agent_credential"] {
+        assert!(!shown.contains(other), "{shown}");
+    }
+    assert!(shown.ends_with("\n\nhyalos operator init\n"), "{shown}");
+
+    // The JSON form carries the one step, with its commands, and no list.
+    let out = run(&["setup", "--next", "--json"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let shown: Value = serde_json::from_slice(&out.stdout)?;
+    assert_eq!(shown["next"]["id"], "operator_key");
+    assert_eq!(
+        shown["next"]["commands"],
+        serde_json::json!(["hyalos operator init"])
+    );
+    assert!(shown.get("steps").is_none());
+    assert_eq!(run(&["setup", "--next", "--next"])?.status.code(), Some(2));
+
+    // The provider key step's commands, pasted into a shell with the key typed in, take the step,
+    // in a config directory whose path needs quoting.
+    let env = |name: &str| match name {
+        "HYALOS_CONFIG_DIR" => Some(config.to_string_lossy().into_owned()),
+        "HYALOS_DATA_DIR" => Some(data.to_string_lossy().into_owned()),
+        _ => None,
+    };
+    let steps = hyalos::setup_cmd::steps(&env, Err("no substrate".into()))?;
+    let keys = steps
+        .iter()
+        .find(|s| s.id == "provider_keys")
+        .ok_or("keys")?;
+    assert!(!keys.done);
+    let script = keys.commands.join("\n");
+    assert!(!script.contains("sk-"), "{script}");
+    let mut shell = Command::new("bash")
+        .args(["-c", &script])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    use std::io::Write;
+    shell
+        .stdin
+        .take()
+        .ok_or("stdin")?
+        .write_all(b"sk-test-key-0123\n")?;
+    assert!(shell.wait()?.success());
+    let file = config.join("provider.keys");
+    assert_eq!(
+        std::fs::metadata(&file)?.permissions().mode() & 0o777,
+        0o600
+    );
+    let steps = hyalos::setup_cmd::steps(&env, Err("no substrate".into()))?;
+    assert!(
+        steps.iter().any(|s| s.id == "provider_keys" && s.done),
+        "{steps:?}"
+    );
+
+    // Every step has commands; with every step done, --next says so and shows none.
+    assert!(steps.iter().all(|s| !s.commands.is_empty()));
+    let mut all = steps.clone();
+    for s in &mut all {
+        s.done = true;
+    }
+    let shown = hyalos::setup_cmd::next(&config, &all);
+    assert!(
+        shown.starts_with("setup: all 7 steps done\nready: "),
+        "{shown}"
+    );
+    std::fs::remove_dir_all(&root).ok();
+    Ok(())
+}

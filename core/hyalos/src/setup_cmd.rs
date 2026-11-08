@@ -18,11 +18,12 @@ use crate::github::GitHubApp;
 use crate::mcp_cmd::EngineLog;
 use crate::paths::{self, Env};
 
-const USAGE: &str = "usage: hyalos setup [--image <image>] [--json]
+const USAGE: &str = "usage: hyalos setup [--next] [--image <image>] [--json]
   lists what this machine still needs before a first job, in order, and who takes each step: the
   agent (setup a shell can do) or you (a secret, or a decision signed with your approval key, which
-  you run in a terminal of your own). It writes nothing and prints no secret. --image names the
-  sandbox image (default hyalos-sandbox:latest); --json prints the steps as JSON.
+  you run in a terminal of your own). It writes nothing and prints no secret. --next prints only the
+  first step not done, ending with its commands ready to paste; --image names the sandbox image
+  (default hyalos-sandbox:latest); --json prints the steps as JSON.
   Exit 0 when every step is done, 1 when one is not, 2 for bad usage";
 
 /// Who takes a step.
@@ -53,6 +54,9 @@ pub struct Step {
     pub detail: String,
     /// What to run or do when it is not done.
     pub action: &'static str,
+    /// The commands that take it, one per line, ready to paste into a shell (`#` lines say what to
+    /// change). They read a secret only from the terminal, never from an argument (#258).
+    pub commands: Vec<String>,
     /// Where the procedure is written down.
     pub doc: &'static str,
 }
@@ -79,7 +83,7 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
     let engine = engine_key(&config, state.as_ref());
     let state = state.unwrap_or_else(|| Ok(hyalos_engine::State::default()));
     let mut steps = Vec::new();
-    let mut step = |id, who, action, doc, found: Result<String, String>| {
+    let mut step = |id, who, action, commands: Vec<String>, doc, found: Result<String, String>| {
         let (done, detail) = match found {
             Ok(detail) => (true, detail),
             Err(detail) => (false, detail),
@@ -90,14 +94,23 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
             who,
             detail,
             action,
+            commands,
             doc,
         });
     };
+    let dir = quoted(&config);
+    let keys_file = quoted(&paths::provider_keys(env)?);
+    let (app_file, pem_file) = (
+        quoted(&config.join("github.app")),
+        quoted(&config.join("github-app.pem")),
+    );
+    let lines = |lines: &[&str]| lines.iter().map(|l| l.to_string()).collect::<Vec<_>>();
 
     step(
         "engine_key",
         Who::Agent,
         "hyalos init",
+        lines(&["hyalos init"]),
         "docs/operations/keys-and-recovery.md",
         engine,
     );
@@ -105,6 +118,7 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
         "operator_key",
         Who::Operator,
         "in a terminal of your own: hyalos operator init",
+        lines(&["hyalos operator init"]),
         "docs/operations/approvals.md",
         operator_key(&config),
     );
@@ -112,6 +126,11 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
         "substrate",
         Who::Agent,
         "from the repository root: docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:latest . (then hyalos doctor)",
+        lines(&[
+            "# from the repository root; podman in place of docker if that is what you have",
+            "docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:latest .",
+            "hyalos doctor",
+        ]),
         "docs/operations/substrates.md",
         substrate.map(|name| format!("a job would run on {name}")),
     );
@@ -119,6 +138,14 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
         "provider_keys",
         Who::Operator,
         "write provider.keys in the config directory with a dedicated key, chmod 600 it, and set a spend cap at the provider",
+        vec![
+            "# a dedicated key with a spend cap set at the provider; for Claude Code write anthropic.key".to_string(),
+            "# in place of openai.key. The key is read from the terminal and not shown.".to_string(),
+            format!(
+                "(umask 077; mkdir -p {dir}; read -rsp 'API key: ' k; echo; printf 'openai.key = %s\\n' \"$k\" >> {keys_file})"
+            ),
+            format!("chmod 600 {keys_file}"),
+        ],
         "docs/operations/provider-keys.md",
         provider_keys(env),
     );
@@ -126,6 +153,14 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
         "github_app",
         Who::Operator,
         "create the GitHub App, save its private key as github-app.pem (chmod 600) and its id in github.app, and install it on the repository",
+        vec![
+            "# after creating the App and installing it on the repository: put in the .pem the browser".to_string(),
+            "# saved and the App ID GitHub showed".to_string(),
+            format!("mkdir -p -m 700 {dir}"),
+            format!("mv ~/Downloads/<the-app>.<date>.private-key.pem {pem_file}"),
+            format!("chmod 600 {pem_file}"),
+            format!("echo 'app_id = <App ID>' > {app_file}"),
+        ],
         "docs/operations/github-app.md",
         GitHubApp::load(&config)
             .map(|_| "github.app and github-app.pem read".to_string())
@@ -135,6 +170,11 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
         "policy",
         Who::Operator,
         "in a terminal of your own: hyalos policy starter > policy.cedar, read it, then hyalos policy approve policy.cedar",
+        lines(&[
+            "hyalos policy starter > policy.cedar",
+            "less policy.cedar",
+            "hyalos policy approve policy.cedar",
+        ]),
         "docs/operations/running-a-job.md",
         // As a mint reads it: a stored policy that no longer validates holds every job (ADR-0034).
         state.clone().and_then(|state| match state.policy() {
@@ -150,6 +190,11 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
         "agent_credential",
         Who::Operator,
         "in a terminal of your own: hyalos agent issue <name>, then give the client its server: claude mcp add hyalos -e HYALOS_AGENT_CREDENTIAL=<credential> -- hyalos mcp (add --harness claude-code if provider.keys has only anthropic.key)",
+        lines(&[
+            "# in the repository's directory; add --harness claude-code at the end if provider.keys has",
+            "# only anthropic.key. The credential goes straight to the client and is not shown.",
+            "c=$(hyalos agent issue claude-code) && claude mcp add hyalos -e HYALOS_AGENT_CREDENTIAL=\"$c\" -- hyalos mcp; unset c",
+        ]),
         "docs/operations/mcp.md",
         state.and_then(|state| {
             let in_force = state
@@ -217,6 +262,8 @@ fn provider_keys(env: Env<'_>) -> Result<String, String> {
     Ok(format!("a key for {}", named.join(" and ")))
 }
 
+const READY: &str = "ready: check the App can reach your repository with hyalos github check <owner/repo>, then start a job (start_job, or hyalos start <owner/repo> <issue-number>)";
+
 /// The steps as text: each with its state, who takes it and, if not done, what to do.
 pub fn text(config: &Path, steps: &[Step]) -> String {
     let done = steps.iter().filter(|s| s.done).count();
@@ -240,7 +287,52 @@ pub fn text(config: &Path, steps: &[Step]) -> String {
         }
     }
     if done == steps.len() {
-        out.push_str("ready: check the App can reach your repository with hyalos github check <owner/repo>, then start a job (start_job, or hyalos start <owner/repo> <issue-number>)\n");
+        out.push_str(READY);
+        out.push('\n');
+    } else {
+        out.push_str(
+            "hyalos setup --next prints only the next step, with its commands ready to paste\n",
+        );
+    }
+    out
+}
+
+/// A path as a shell word: as it is when it holds only characters a shell leaves alone, else quoted.
+fn quoted(path: &Path) -> String {
+    let text = path.display().to_string();
+    if !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+:@%".contains(c))
+    {
+        text
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
+}
+
+/// Only the first step not done, ending with its commands and nothing after them, so they can be
+/// copied whole; or that every step is done (#258).
+pub fn next(config: &Path, steps: &[Step]) -> String {
+    let done = steps.iter().filter(|s| s.done).count();
+    let Some(s) = steps.iter().find(|s| !s.done) else {
+        return format!("setup: all {done} steps done\n{READY}\n");
+    };
+    let who = match s.who {
+        Who::Agent => "the agent's, or yours",
+        Who::Operator => "yours, in a terminal of your own",
+    };
+    let mut out = format!(
+        "setup: {done} of {} steps done; next is {} ({who})\nconfig directory: {}\n{}\nsee {}\n\n",
+        steps.len(),
+        s.id,
+        config.display(),
+        s.detail,
+        s.doc
+    );
+    for line in &s.commands {
+        out.push_str(line);
+        out.push('\n');
     }
     out
 }
@@ -257,6 +349,7 @@ pub fn json(config: &Path, steps: &[Step]) -> Value {
             "who": s.who.name(),
             "detail": s.detail,
             "action": s.action,
+            "commands": s.commands,
             "doc": s.doc,
         })).collect::<Vec<_>>(),
     })
@@ -264,14 +357,19 @@ pub fn json(config: &Path, steps: &[Step]) -> Value {
 
 pub fn run(args: &[String]) -> ExitCode {
     let (as_json, args): (Vec<_>, Vec<_>) = args.iter().partition(|a| *a == "--json");
+    let (only_next, args): (Vec<_>, Vec<_>) = args.into_iter().partition(|a| *a == "--next");
     let image = match args.as_slice() {
         [] => DEFAULT_IMAGE.to_string(),
         [flag, image] if flag.as_str() == "--image" => (*image).clone(),
         _ => {
-            eprintln!("hyalos: setup takes only --image <image> and --json\n{USAGE}");
+            eprintln!("hyalos: setup takes only --next, --image <image> and --json\n{USAGE}");
             return ExitCode::from(2);
         }
     };
+    if as_json.len() > 1 || only_next.len() > 1 {
+        eprintln!("hyalos: setup takes each flag once\n{USAGE}");
+        return ExitCode::from(2);
+    }
     let env = |name: &str| std::env::var(name).ok();
     let substrate = crate::microvm_conf::from_env(&env).and_then(|microvm| detect(&image, microvm));
     let found = paths::config_dir(&env).and_then(|config| Ok((steps(&env, substrate)?, config)));
@@ -282,10 +380,21 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    if as_json.is_empty() {
-        print!("{}", text(&config, &steps));
-    } else {
-        println!("{}", json(&config, &steps));
+    match (as_json.is_empty(), only_next.is_empty()) {
+        (true, true) => print!("{}", text(&config, &steps)),
+        (true, false) => print!("{}", next(&config, &steps)),
+        (false, true) => println!("{}", json(&config, &steps)),
+        (false, false) => {
+            let mut shown = json(&config, &steps);
+            let first = shown["steps"]
+                .as_array()
+                .and_then(|all| all.iter().find(|s| s["done"] == false).cloned());
+            shown["next"] = first.unwrap_or(Value::Null);
+            if let Some(object) = shown.as_object_mut() {
+                object.remove("steps");
+            }
+            println!("{shown}");
+        }
     }
     if steps.iter().all(|s| s.done) {
         ExitCode::SUCCESS
