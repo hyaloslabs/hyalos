@@ -67,6 +67,9 @@ pub fn run(
     }
     let issue = call.issue.map(issue).transpose()?;
     let text = prompt(manifest.role, call, issue.as_ref())?;
+    // The provider constrains its output to the step's fields, so a small model cannot misspell an
+    // option or quote a bool (#273). `read_answer` below still checks every value.
+    let schema = workflow::answer_schema(&call.output);
     let (target, body) = match call.protocol {
         Protocol::Anthropic => (
             "/v1/messages",
@@ -74,6 +77,7 @@ pub fn run(
                 "model": call.model,
                 "max_tokens": READER_OUTPUT_TOKENS,
                 "messages": [{"role": "user", "content": text}],
+                "output_config": {"format": {"type": "json_schema", "schema": schema}},
             }),
         ),
         Protocol::OpenAi => (
@@ -83,6 +87,12 @@ pub fn run(
                 "max_output_tokens": READER_OUTPUT_TOKENS,
                 "store": false,
                 "input": text,
+                "text": {"format": {
+                    "type": "json_schema",
+                    "name": "answer",
+                    "strict": true,
+                    "schema": schema,
+                }},
             }),
         ),
     };
@@ -112,7 +122,12 @@ pub fn run(
         return Err("reader.too_deep");
     }
     let answer = answer_text(call.protocol, &bytes)?;
-    workflow::read_answer(&call.output, &answer)
+    workflow::read_answer(&call.output, &answer).inspect_err(|code| {
+        // The field's name is the workflow author's, never the model's text.
+        if let Some(field) = workflow::refused_field(&call.output, &answer) {
+            eprintln!("hyalos broker: {code}: the answer's field {field} is missing or not one of its kind");
+        }
+    })
 }
 
 /// The prompt: the engine's framing, the operator's instructions and context, the issue, and the
@@ -146,7 +161,12 @@ fn prompt(
          number within its min and max, and a choice is one of its options, spelled exactly. \
          The fields are:\n",
     )
-    .operator(&OperatorText::new(&shape));
+    .operator(&OperatorText::new(&shape))
+    .literal(
+        "\n\nThe answer has this form, with each placeholder replaced by its value. A choice is \
+         its option's text in quotes, and a bool is true or false without quotes:\n",
+    )
+    .operator(&OperatorText::new(workflow::answer_form(&call.output)));
     Ok(p.into_text())
 }
 

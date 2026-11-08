@@ -320,13 +320,38 @@ fn a_reader_reads_the_issue_with_no_tools_and_the_engine_gets_typed_values() -> 
         let text = upstream.to_string();
         assert!(text.contains("<issue number=\\\"7\\\">"), "{text}");
         assert!(text.contains(INJECTION) && text.contains("Classify the issue."));
-        match protocol {
-            Protocol::Anthropic => assert_eq!(upstream["_target"], json!("/v1/messages")),
+        // The provider is held to the step's fields (#273), and the prompt shows the answer's form.
+        assert!(text.contains("The answer has this form"), "{text}");
+        let schema = match protocol {
+            Protocol::Anthropic => {
+                assert_eq!(upstream["_target"], json!("/v1/messages"));
+                assert_eq!(
+                    upstream["output_config"]["format"]["type"],
+                    json!("json_schema")
+                );
+                &upstream["output_config"]["format"]["schema"]
+            }
             Protocol::OpenAi => {
                 assert_eq!(upstream["_target"], json!("/v1/responses"));
                 assert_eq!(upstream["store"], json!(false));
+                let format = &upstream["text"]["format"];
+                assert_eq!(format["type"], json!("json_schema"));
+                assert_eq!(format["strict"], json!(true));
+                &format["schema"]
             }
-        }
+        };
+        assert_eq!(schema["additionalProperties"], json!(false));
+        assert_eq!(
+            schema["required"].as_array().map(Vec::len),
+            Some(3),
+            "{schema}"
+        );
+        assert!(
+            schema["properties"]
+                .as_object()
+                .is_some_and(|p| p.values().any(|f| f.get("enum").is_some())),
+            "{schema}"
+        );
         // The job is still live after a good read.
         assert!(r.broker.manifest(JobId::from_seq(job)).is_some());
     }

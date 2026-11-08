@@ -92,3 +92,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0076](0076-the-set-up-hyalos-skill-and-the-setup-checklist.md) | The set-up-hyalos skill and the setup checklist | Superseded by [ADR-0077](0077-handing-the-operator-one-step-at-a-time.md) |
 | [0077](0077-handing-the-operator-one-step-at-a-time.md) | Handing the operator one step at a time | Accepted |
 | [0078](0078-agent-started-runs-wait-for-the-operator-to-release-the-issue.md) | Agent-started runs wait for the operator to release the issue | Accepted |
+| [0079](0079-readers-hold-the-provider-to-their-fields-schema.md) | Readers hold the provider to their fields' schema | Accepted |
