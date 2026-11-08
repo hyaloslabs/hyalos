@@ -513,6 +513,71 @@ pub fn values_fit(output: &Output, values: &[TypedValue]) -> bool {
     output.len() == values.len() && output.values().zip(values).all(|(f, v)| f.admits(v))
 }
 
+/// The JSON Schema of an answer to `output`, for a provider to constrain its output with (#273): an
+/// object with exactly these fields, every one required, a choice as an `enum` of its options and a
+/// bool as a `boolean`. An integer's range is said in its `description`, since not every provider
+/// takes `minimum` and `maximum`. The schema only makes a good answer likely; [`read_answer`] is
+/// still the check.
+pub fn answer_schema(output: &Output) -> serde_json::Value {
+    use serde_json::{Map, Value, json};
+    let mut properties = Map::new();
+    for (field, kind) in output {
+        let schema = match kind {
+            Field::Bool => json!({"type": "boolean"}),
+            Field::Integer(range) => json!({
+                "type": "integer",
+                "description": format!("a whole number from {} to {}", range.min, range.max),
+            }),
+            Field::Choice(options) => json!({"type": "string", "enum": options}),
+        };
+        properties.insert(field.clone(), schema);
+    }
+    json!({
+        "type": "object",
+        "properties": Value::Object(properties),
+        "required": output.keys().collect::<Vec<_>>(),
+        "additionalProperties": false,
+    })
+}
+
+/// The form of an answer to `output`, with a placeholder for each value rather than a value, so the
+/// form steers no choice: `{"add_test": <true or false>, "approach": "<one of its options, exactly as written>"}`.
+pub fn answer_form(output: &Output) -> String {
+    let fields: Vec<String> = output
+        .iter()
+        .map(|(field, kind)| {
+            let value = match kind {
+                Field::Bool => "<true or false>".to_string(),
+                Field::Integer(range) => {
+                    format!("<a whole number from {} to {}>", range.min, range.max)
+                }
+                Field::Choice(_) => "\"<one of its options, exactly as written>\"".to_string(),
+            };
+            format!("\"{field}\": {value}")
+        })
+        .collect();
+    format!("{{{}}}", fields.join(", "))
+}
+
+/// The first field of `output` that an answer leaves out or gives a bad value, in name order, if
+/// `text` is a JSON object at all. Only the field's name, which the workflow's author wrote, never
+/// anything from the answer: the broker says it when it refuses an answer, so the next failure can
+/// be told apart (#273).
+pub fn refused_field<'a>(output: &'a Output, text: &str) -> Option<&'a str> {
+    let text = text.trim();
+    let text = text
+        .strip_prefix("```")
+        .and_then(|f| f.split_once('\n'))
+        .and_then(|(_, rest)| rest.strip_suffix("```"))
+        .map_or(text, str::trim);
+    let answer = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let answer = answer.as_object()?;
+    output.iter().find_map(|(field, kind)| {
+        let fits = answer.get(field).and_then(|given| value_of(kind, given));
+        fits.is_none().then_some(field.as_str())
+    })
+}
+
 /// The longest answer text a model may give a reader, in bytes, once any code fence is removed.
 pub const MAX_ANSWER_TEXT: usize = 16 * 1024;
 
@@ -587,21 +652,24 @@ fn typed(output: &Output, text: &str) -> Result<Vec<TypedValue>, Wrong> {
         .iter()
         .map(|(field, kind)| {
             let given = answer.get(field).ok_or(Wrong::Missing)?;
-            let value = match (kind, given) {
-                (Field::Bool, serde_json::Value::Bool(b)) => Some(TypedValue::Bool(*b)),
-                (Field::Integer(_), serde_json::Value::Number(n)) => {
-                    n.as_i64().map(TypedValue::Integer)
-                }
-                (Field::Choice(options), serde_json::Value::String(s)) => options
-                    .iter()
-                    .position(|o| o == s)
-                    .and_then(|at| u32::try_from(at).ok())
-                    .map(TypedValue::Choice),
-                _ => None,
-            };
-            value.filter(|v| kind.admits(v)).ok_or(Wrong::BadValue)
+            value_of(kind, given).ok_or(Wrong::BadValue)
         })
         .collect()
+}
+
+/// `given` as a value of `kind`: of its kind and within its range or options, or none.
+fn value_of(kind: &Field, given: &serde_json::Value) -> Option<TypedValue> {
+    let value = match (kind, given) {
+        (Field::Bool, serde_json::Value::Bool(b)) => Some(TypedValue::Bool(*b)),
+        (Field::Integer(_), serde_json::Value::Number(n)) => n.as_i64().map(TypedValue::Integer),
+        (Field::Choice(options), serde_json::Value::String(s)) => options
+            .iter()
+            .position(|o| o == s)
+            .and_then(|at| u32::try_from(at).ok())
+            .map(TypedValue::Choice),
+        _ => None,
+    };
+    value.filter(|v| kind.admits(v))
 }
 
 #[cfg(test)]
@@ -1078,5 +1146,79 @@ mod tests {
         )])));
         let json = serde_json::to_string(&TypedValue::Choice(2)).unwrap();
         assert_eq!(json, r#"{"choice":2}"#);
+    }
+
+    #[test]
+    fn the_answer_schema_has_exactly_the_fields_each_required_and_closed() {
+        let schema = answer_schema(&triage());
+        assert_eq!(
+            schema,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "has_repro": {"type": "boolean"},
+                    "kind": {"type": "string", "enum": ["bug", "feature", "docs"]},
+                    "severity": {"type": "integer", "description": "a whole number from 1 to 5"},
+                },
+                "required": ["has_repro", "kind", "severity"],
+                "additionalProperties": false,
+            })
+        );
+        // No keyword a provider's structured output refuses (#273).
+        let text = schema.to_string();
+        for refused in ["minimum", "maximum", "minLength", "maxLength", "pattern"] {
+            assert!(!text.contains(refused), "{refused} in {text}");
+        }
+    }
+
+    #[test]
+    fn the_answer_form_shows_placeholders_and_no_option() {
+        let form = answer_form(&triage());
+        assert_eq!(
+            form,
+            r#"{"has_repro": <true or false>, "kind": "<one of its options, exactly as written>", "severity": <a whole number from 1 to 5>}"#
+        );
+        // An option in the form could steer the choice.
+        for option in ["bug", "feature", "docs"] {
+            assert!(!form.contains(option), "{option} in {form}");
+        }
+    }
+
+    #[test]
+    fn a_refused_answer_names_its_first_bad_field_and_nothing_from_the_answer() {
+        let out = triage();
+        let cases = [
+            // The answers a small model gives when it mirrors the shape or quotes a bool (#273).
+            (
+                r#"{"has_repro":"false","kind":"bug","severity":1}"#,
+                Some("has_repro"),
+            ),
+            (
+                r#"{"has_repro":true,"kind":{"choice":"bug"},"severity":1}"#,
+                Some("kind"),
+            ),
+            (
+                r#"{"has_repro":true,"kind":"Bug","severity":1}"#,
+                Some("kind"),
+            ),
+            (
+                r#"{"has_repro":true,"kind":"bug","severity":9}"#,
+                Some("severity"),
+            ),
+            (r#"{"has_repro":true,"kind":"bug"}"#, Some("severity")),
+            (
+                "```json\n{\"has_repro\":true,\"kind\":\"docs-only\",\"severity\":1}\n```",
+                Some("kind"),
+            ),
+            (r#"{"has_repro":true,"kind":"bug","severity":1}"#, None),
+            ("not json", None),
+            ("[1, 2]", None),
+        ];
+        for (text, field) in cases {
+            assert_eq!(refused_field(&out, text), field, "{text}");
+            if field.is_some() {
+                assert_eq!(read_answer(&out, text).ok(), None, "{text}");
+            }
+        }
     }
 }

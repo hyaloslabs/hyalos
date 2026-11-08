@@ -18,7 +18,7 @@ use hyalos_broker::model::{
 };
 use hyalos_broker::sandbox::{Models, Sandboxes};
 use hyalos_types::wire::{Protocol, ReaderCall, ToBroker, ToEngine};
-use hyalos_types::workflow::{Field, IntegerRange, TypedValue};
+use hyalos_types::workflow::{self, Field, IntegerRange, TypedValue};
 use hyalos_types::{
     Budget, Clock, ForgeToken, JobId, MANIFEST_VERSION, Manifest, ManifestKey, Role, Timestamp,
 };
@@ -320,13 +320,28 @@ fn a_reader_reads_the_issue_with_no_tools_and_the_engine_gets_typed_values() -> 
         let text = upstream.to_string();
         assert!(text.contains("<issue number=\\\"7\\\">"), "{text}");
         assert!(text.contains(INJECTION) && text.contains("Classify the issue."));
-        match protocol {
-            Protocol::Anthropic => assert_eq!(upstream["_target"], json!("/v1/messages")),
+        // The provider is held to the step's fields (#273), and the prompt shows the answer's form.
+        assert!(text.contains("The answer has this form"), "{text}");
+        let schema = match protocol {
+            Protocol::Anthropic => {
+                assert_eq!(upstream["_target"], json!("/v1/messages"));
+                assert_eq!(
+                    upstream["output_config"]["format"]["type"],
+                    json!("json_schema")
+                );
+                &upstream["output_config"]["format"]["schema"]
+            }
             Protocol::OpenAi => {
                 assert_eq!(upstream["_target"], json!("/v1/responses"));
                 assert_eq!(upstream["store"], json!(false));
+                let format = &upstream["text"]["format"];
+                assert_eq!(format["type"], json!("json_schema"));
+                assert_eq!(format["strict"], json!(true));
+                assert_eq!(format["name"], json!("answer"));
+                &format["schema"]
             }
-        }
+        };
+        assert_eq!(*schema, workflow::answer_schema(&output()));
         // The job is still live after a good read.
         assert!(r.broker.manifest(JobId::from_seq(job)).is_some());
     }

@@ -67,6 +67,9 @@ pub fn run(
     }
     let issue = call.issue.map(issue).transpose()?;
     let text = prompt(manifest.role, call, issue.as_ref())?;
+    // The provider constrains its output to the step's fields, so a small model cannot misspell an
+    // option or quote a bool (#273). `read_answer` below still checks every value.
+    let schema = workflow::answer_schema(&call.output);
     let (target, body) = match call.protocol {
         Protocol::Anthropic => (
             "/v1/messages",
@@ -74,6 +77,7 @@ pub fn run(
                 "model": call.model,
                 "max_tokens": READER_OUTPUT_TOKENS,
                 "messages": [{"role": "user", "content": text}],
+                "output_config": {"format": {"type": "json_schema", "schema": schema}},
             }),
         ),
         Protocol::OpenAi => (
@@ -83,6 +87,12 @@ pub fn run(
                 "max_output_tokens": READER_OUTPUT_TOKENS,
                 "store": false,
                 "input": text,
+                "text": {"format": {
+                    "type": "json_schema",
+                    "name": "answer",
+                    "strict": true,
+                    "schema": schema,
+                }},
             }),
         ),
     };
@@ -112,7 +122,24 @@ pub fn run(
         return Err("reader.too_deep");
     }
     let answer = answer_text(call.protocol, &bytes)?;
-    workflow::read_answer(&call.output, &answer)
+    workflow::read_answer(&call.output, &answer).inspect_err(|code| {
+        if let Some(note) = refusal_note(code, &call.output, &answer) {
+            eprintln!("{note}");
+        }
+    })
+}
+
+/// What the broker says on its standard error when it refuses an answer for a missing or bad field:
+/// the code and the field's name, which the workflow's author wrote, never anything from the answer
+/// (ADR-0079).
+fn refusal_note(code: &str, output: &workflow::Output, answer: &str) -> Option<String> {
+    if !matches!(code, "reader.missing_field" | "reader.bad_value") {
+        return None;
+    }
+    let field = workflow::refused_field(output, answer)?;
+    Some(format!(
+        "hyalos broker: {code}: the answer's field {field} is missing or not one of its kind"
+    ))
 }
 
 /// The prompt: the engine's framing, the operator's instructions and context, the issue, and the
@@ -146,7 +173,12 @@ fn prompt(
          number within its min and max, and a choice is one of its options, spelled exactly. \
          The fields are:\n",
     )
-    .operator(&OperatorText::new(&shape));
+    .operator(&OperatorText::new(&shape))
+    .literal(
+        "\n\nThe answer has this form, with each placeholder replaced by its value. A choice is \
+         its option's text in quotes, and a bool is true or false without quotes:\n",
+    )
+    .operator(&OperatorText::new(workflow::answer_form(&call.output)));
     Ok(p.into_text())
 }
 
@@ -234,4 +266,48 @@ fn relay_code(code: &str) -> &'static str {
         .find(|k| **k == code)
         .copied()
         .unwrap_or("reader.provider_refused")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use hyalos_types::workflow::Field;
+
+    use super::refusal_note;
+
+    #[test]
+    fn a_refusal_note_holds_the_code_and_the_fields_name_and_nothing_from_the_answer() {
+        let output = BTreeMap::from([
+            ("add_test".to_string(), Field::Bool),
+            (
+                "approach".to_string(),
+                Field::Choice(vec!["minimal_fix".into(), "docs_only".into()]),
+            ),
+        ]);
+        let marker = "MARKER-FROM-THE-MODEL";
+        let answer = format!(r#"{{"add_test":false,"approach":"{marker}"}}"#);
+        let note = refusal_note("reader.bad_value", &output, &answer);
+        assert_eq!(
+            note.as_deref(),
+            Some(
+                "hyalos broker: reader.bad_value: the answer's field approach is missing or not one of its kind"
+            )
+        );
+        // An unknown key the answer adds is never named, and no value is printed.
+        let extra = format!(r#"{{"{marker}":1,"add_test":"no","approach":"docs_only"}}"#);
+        let note = refusal_note("reader.bad_value", &output, &extra).unwrap_or_default();
+        assert!(
+            !note.contains(marker) && note.contains("add_test"),
+            "{note}"
+        );
+        // Codes it does not describe get no note.
+        for code in [
+            "reader.duplicate_field",
+            "reader.too_large",
+            "reader.not_json",
+        ] {
+            assert_eq!(refusal_note(code, &output, &answer), None, "{code}");
+        }
+    }
 }
