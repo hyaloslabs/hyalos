@@ -4,8 +4,19 @@
 - `start_job` runs the fix-issue workflow on a GitHub issue, as `hyalos run --issue-number` does ([ADR-0069](../adr/0069-jobs-the-driving-agent-starts-as-mcp-tasks.md)).
 - `job_status` and `job_result` read that job, for clients without the Tasks extension.
 - `list_tasks` returns the newest tasks in the event log, with each task's status and the outcome of each of its jobs.
+- `list_approvals` returns the holds waiting for your decision, with the command you run for each ([ADR-0074](../adr/0074-approvals-shown-to-the-driving-agent.md)).
 
-Approvals come in a later story.
+## What waits for you
+
+When a gate cannot decide, the job stops and a hold waits for a decision. `list_approvals` shows the driving agent each open hold:
+- which gate held and why;
+- how much the held action matters (its tier, and whether it touches credentials, policy, publishing or a capability grant);
+- who may release it;
+- the two commands you can run: `hyalos approve <hold>` to release it, or `hyalos cancel <task>` to end the task instead.
+
+A held run's `job_status` shows the same for its own holds. The agent can show you this and ask you to run the command, but it cannot decide anything: no tool releases, cancels or merges, and every decision is signed with your key at your own terminal ([Approvals](approvals.md)). The details are ids, codes and a digest, never text from the issue or a model. A client that reads only text gets them as sentences.
+
+No client renders MCP Apps yet (see below), so there is no graphical approval view.
 
 ## Which clients can connect
 
@@ -18,7 +29,7 @@ Checked November 7, 2026, in spike #92 ([findings](../planning/spike-92-findings
 | Claude Code | 2.1.318 | Yes. It calls every tool plainly, so it uses `job_status` and `job_result`, not `tasks/get`. |
 | Hermes Agent | 0.19.0 | **No.** It uses the Python MCP SDK 1.26.0 and `initialize`. It will need Python MCP SDK 2.3.0 or later and a change to call `discover()`. |
 
-Neither client renders MCP Apps, and the server offers none: everything it returns is plain text and structured content.
+Neither client renders MCP Apps, and the server offers none: everything it returns is plain text and structured content, approvals included.
 
 The server reads the log with the engine's public key only. It never opens `engine.key`, so it runs while `hyalos run` writes. Run `hyalos init` first, and set up everything `hyalos run` needs (see [Running a job](running-a-job.md)) before the agent starts a job.
 

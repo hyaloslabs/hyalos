@@ -8,7 +8,9 @@
 //! (the base branch is the operator's `--base`): the server starts a runner that holds the engine's key, and never opens it itself
 //! (`runs`). For a client that declares the Tasks extension the call answers with a task that
 //! `tasks/get` polls and `tasks/cancel` stops; for one that does not, `start_job` answers the same
-//! task's id and status at once, and `job_status` and `job_result` read it. Approvals come in S5.4.
+//! task's id and status at once, and `job_status` and `job_result` read it. `list_approvals` shows the
+//! open holds and the operator's commands for them, and a held run's task shows its own; nothing here
+//! decides one (ADR-0074).
 //!
 //! Every message needs a credential the operator issued with `hyalos agent issue` and has not
 //! revoked (ADR-0068): on stdio the server's `HYALOS_AGENT_CREDENTIAL`, on HTTP each request's bearer
@@ -18,10 +20,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use hyalos_engine::{State, TaskStatus, read_state};
+use hyalos_engine::{Hold, State, TaskStatus, read_state};
 use hyalos_log::PublicKey;
-use hyalos_types::JobOutcome;
 use hyalos_types::provenance::Provenance;
+use hyalos_types::{Gate, HoldId, HoldReason, JobOutcome, Resolution, Tier};
 use serde_json::{Map, Value, json};
 
 use crate::agent_cmd::credential_digest;
@@ -46,7 +48,7 @@ const USAGE: &str = "usage: hyalos mcp [--listen <loopback address:port>] [--bas
 /// Where the stdio server takes the driving agent's credential from.
 pub const CREDENTIAL_VAR: &str = "HYALOS_AGENT_CREDENTIAL";
 
-const INSTRUCTIONS: &str = "Hyalos runs agent jobs contained, within a signed manifest. start_job runs the fix-issue workflow on a GitHub issue and answers with a task (with the Tasks extension, poll tasks/get; without it, use job_status and job_result). list_tasks shows the tasks in its event log and the state of each one's jobs.";
+const INSTRUCTIONS: &str = "Hyalos runs agent jobs contained, within a signed manifest. start_job runs the fix-issue workflow on a GitHub issue and answers with a task (with the Tasks extension, poll tasks/get; without it, use job_status and job_result). list_tasks shows the tasks in its event log and the state of each one's jobs. list_approvals shows what waits for the operator's decision and the command they run for it; nothing here can decide it.";
 
 /// How often a client is asked to poll a run's task. A run takes minutes.
 pub const POLL_MS: u64 = 5_000;
@@ -300,11 +302,37 @@ impl EngineTools {
             requires: &[],
             task: TaskSupport::Never,
         };
+        let list_approvals = Tool {
+            name: "list_approvals",
+            title: "List approvals waiting for the operator",
+            description: "The holds waiting for the operator's decision, newest first: which gate could not decide, how much the held action matters, who may release it, and the command the operator runs at their own terminal to release it or cancel the task. Read only: nothing in this server can release a hold or cancel a task, since every human decision is signed with the operator's key behind their passphrase. Show the details to the operator and ask them to run the command.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": MAX_TASKS, "description": "How many approvals to return (default 20)."}},
+                "additionalProperties": false,
+            }),
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "total": {"type": "integer"},
+                    "approvals": {"type": "array", "items": approval_schema()},
+                },
+                "required": ["total", "approvals"],
+            })),
+            requires: &[],
+            task: TaskSupport::Never,
+        };
         Self {
             log,
             launcher,
             template,
-            tools: vec![list_tasks, start_job, job_status, job_result],
+            tools: vec![
+                list_tasks,
+                start_job,
+                job_status,
+                job_result,
+                list_approvals,
+            ],
         }
     }
 
@@ -360,7 +388,8 @@ impl EngineTools {
     fn view(&self, task: TaskId) -> Option<TaskView> {
         let state = self.log.read().ok()?;
         self.launcher.resume_if_stopped(&state, task);
-        runs::view(&state, &self.launcher.runs, task).map(|v| task_view(&v))
+        runs::view(&state, &self.launcher.runs, task)
+            .map(|v| task_view(&v, &open_holds(&state, Some(task))))
     }
 
     fn task_id(&self, arguments: &Map<String, Value>) -> Result<TaskView, Called> {
@@ -373,15 +402,9 @@ impl EngineTools {
     }
 
     fn list_tasks(&self, arguments: &Map<String, Value>) -> Called {
-        if arguments.keys().any(|k| k != "limit") {
-            return Called::error("list_tasks takes only limit");
-        }
-        let limit = match arguments.get("limit") {
-            None => 20,
-            Some(n) => match n.as_u64().filter(|n| (1..=MAX_TASKS).contains(n)) {
-                Some(n) => n,
-                None => return Called::error("limit must be an integer from 1 to 100"),
-            },
+        let limit = match limit("list_tasks", arguments) {
+            Ok(limit) => limit,
+            Err(called) => return called,
         };
         let state = match self.log.read() {
             Ok(state) => state,
@@ -409,6 +432,158 @@ impl EngineTools {
             .collect();
         Called::structured(json!({"total": state.tasks().len(), "tasks": tasks}))
     }
+
+    /// The open holds, newest first, as details and the operator's commands. It reads the log and
+    /// writes nothing (ADR-0012, ADR-0074).
+    fn list_approvals(&self, arguments: &Map<String, Value>) -> Called {
+        let limit = match limit("list_approvals", arguments) {
+            Ok(limit) => limit,
+            Err(called) => return called,
+        };
+        let state = match self.log.read() {
+            Ok(state) => state,
+            Err(e) => return Called::error(&e),
+        };
+        let open = open_holds(&state, None);
+        let shown: Vec<_> = open.iter().rev().take(limit as usize).collect();
+        let mut text = match open.len() {
+            0 => "No approval is waiting for the operator.".to_string(),
+            1 => format!("1 approval is waiting for the operator. {NO_DECIDING}"),
+            n => format!("{n} approvals are waiting for the operator. {NO_DECIDING}"),
+        };
+        for (id, hold) in &shown {
+            text.push_str("\n\n");
+            text.push_str(&approval_text(*id, hold));
+        }
+        if shown.len() < open.len() {
+            text.push_str(&format!("\n\n{} more not shown.", open.len() - shown.len()));
+        }
+        let approvals: Vec<Value> = shown.iter().map(|(id, hold)| approval(*id, hold)).collect();
+        Called::described(json!({"total": open.len(), "approvals": approvals}), &text)
+    }
+}
+
+/// What the driving agent is told about a decision it cannot make.
+const NO_DECIDING: &str = "Nothing in this server can release a hold or cancel a task: the operator decides at their own terminal, signed with their own key. Show them the details and ask them to run one of the commands below.";
+
+/// A call's `limit`: 1 to [`MAX_TASKS`], 20 if it gives none. `tool` takes no other argument.
+fn limit(tool: &str, arguments: &Map<String, Value>) -> Result<u64, Called> {
+    if arguments.keys().any(|k| k != "limit") {
+        return Err(Called::error(&format!("{tool} takes only limit")));
+    }
+    match arguments.get("limit") {
+        None => Ok(20),
+        Some(n) => n
+            .as_u64()
+            .filter(|n| (1..=MAX_TASKS).contains(n))
+            .ok_or_else(|| Called::error("limit must be an integer from 1 to 100")),
+    }
+}
+
+/// The holds still undecided, oldest first, of `task` or of every task.
+fn open_holds(state: &State, task: Option<TaskId>) -> Vec<(HoldId, Hold)> {
+    state
+        .holds()
+        .iter()
+        .filter(|(id, hold)| state.hold_is_open(id) && task.is_none_or(|t| hold.task == t))
+        .map(|(id, hold)| (*id, hold.clone()))
+        .collect()
+}
+
+/// Who may release a hold with these stakes, besides the gate itself answering again (ADR-0025).
+fn deciders(hold: &Hold) -> Vec<&'static str> {
+    [
+        (Resolution::Policy, "policy"),
+        (Resolution::Verifier, "verifier"),
+        (Resolution::Human, "operator"),
+    ]
+    .into_iter()
+    .filter(|(by, _)| hold.stakes.may_be_resolved_by(*by))
+    .map(|(_, name)| name)
+    .collect()
+}
+
+fn approval_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "hold": {"type": "integer"},
+            "task": {"type": "integer"},
+            "gate": {"enum": ["egress", "content", "role", "manifest"]},
+            "reason": {"enum": ["unknown", "timed_out"]},
+            "inputs": {"type": "string", "description": "SHA-256 of what the gate was asked about."},
+            "tier": {"enum": ["routine", "escalated", "irreversible"]},
+            "touches": {"type": "array", "items": {"enum": ["credentials", "policy", "publishing", "capability_grant"]}},
+            "may_decide": {"type": "array", "items": {"enum": ["policy", "verifier", "operator"]}},
+            "opened_at_ms": {"type": "integer"},
+            "approve": {"type": "string", "description": "The command the operator runs to release the hold."},
+            "cancel": {"type": "string", "description": "The command the operator runs to cancel the task instead."},
+        },
+        "required": ["hold", "task", "gate", "reason", "inputs", "tier", "touches", "may_decide", "opened_at_ms", "approve", "cancel"],
+    })
+}
+
+/// An open hold's details, every one a typed value from the log, and the operator's commands.
+fn approval(id: HoldId, hold: &Hold) -> Value {
+    json!({
+        "hold": id.seq(),
+        "task": hold.task.seq(),
+        "gate": gate_name(hold.gate),
+        "reason": match hold.reason {
+            HoldReason::Unknown => "unknown",
+            HoldReason::TimedOut => "timed_out",
+        },
+        "inputs": hold.inputs.to_string(),
+        "tier": tier_name(hold.stakes.tier),
+        "touches": hold.stakes.touches.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        "may_decide": deciders(hold),
+        "opened_at_ms": hold.opened_at.as_millis(),
+        "approve": format!("hyalos approve {}", id.seq()),
+        "cancel": format!("hyalos cancel {}", hold.task.seq()),
+    })
+}
+
+/// The same, as sentences.
+fn approval_text(id: HoldId, hold: &Hold) -> String {
+    let why = match hold.reason {
+        HoldReason::Unknown => "could not decide",
+        HoldReason::TimedOut => "did not answer in time",
+    };
+    let touches: Vec<_> = hold.stakes.touches.iter().map(|s| s.as_str()).collect();
+    let stakes = if touches.is_empty() {
+        tier_name(hold.stakes.tier).to_string()
+    } else {
+        format!(
+            "{}, touching {}",
+            tier_name(hold.stakes.tier),
+            touches.join(", ")
+        )
+    };
+    format!(
+        "Hold {hold_id} on task {task}: the {gate} gate {why}, so its job stopped. Stakes: {stakes}. Who may release it: {deciders}. Opened {opened}.\n  To release it: hyalos approve {hold_id}\n  To cancel the task instead: hyalos cancel {task}",
+        hold_id = id.seq(),
+        task = hold.task.seq(),
+        gate = gate_name(hold.gate),
+        deciders = deciders(hold).join(", "),
+        opened = mcp::rfc3339(hold.opened_at.as_millis()),
+    )
+}
+
+fn gate_name(gate: Gate) -> &'static str {
+    match gate {
+        Gate::Egress => "egress",
+        Gate::Content => "content",
+        Gate::Role => "role",
+        Gate::Manifest => "manifest",
+    }
+}
+
+fn tier_name(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Routine => "routine",
+        Tier::Escalated => "escalated",
+        Tier::Irreversible => "irreversible",
+    }
 }
 
 impl Tools for EngineTools {
@@ -424,6 +599,7 @@ impl Tools for EngineTools {
         };
         match name {
             "list_tasks" => self.list_tasks(arguments),
+            "list_approvals" => self.list_approvals(arguments),
             "start_job" => shown(self.start_job(arguments)),
             "job_status" => shown(self.task_id(arguments)),
             "job_result" => match self.task_id(arguments) {
@@ -482,8 +658,9 @@ fn parse_task(id: &str) -> Option<TaskId> {
 }
 
 /// A run as an MCP task. A run that ended without the actor's result is a completed task whose result
-/// is a tool error, since the protocol keeps `failed` for protocol errors.
-fn task_view(view: &RunView) -> TaskView {
+/// is a tool error, since the protocol keeps `failed` for protocol errors. A held run's result names
+/// the holds in `open` and the operator's commands for them.
+fn task_view(view: &RunView, open: &[(HoldId, Hold)]) -> TaskView {
     let task = view.task.seq();
     let (state, message) = match &view.phase {
         Phase::Working {
@@ -508,6 +685,39 @@ fn task_view(view: &RunView) -> TaskView {
             TaskState::Completed(succeeded(task, result, *provenance)),
             "finished".into(),
         ),
+        Phase::Ended {
+            outcome: JobOutcome::Held,
+            reason,
+        } => {
+            let approvals: Vec<Value> = open.iter().map(|(id, hold)| approval(*id, hold)).collect();
+            // Once its holds are decided the run does not go on, and nothing waits for the operator.
+            let mut text = if open.is_empty() {
+                format!(
+                    "Task {task}'s job stopped held ({reason}). Its hold has been decided, so nothing is waiting for the operator now."
+                )
+            } else {
+                format!(
+                    "Task {task} is held: its job stopped for a decision ({reason}). {NO_DECIDING}"
+                )
+            };
+            for (id, hold) in open {
+                text.push_str("\n\n");
+                text.push_str(&approval_text(*id, hold));
+            }
+            let mut called = Called::described(
+                json!({"task": task, "outcome": "held", "reason": reason, "approvals": approvals}),
+                &text,
+            );
+            called.is_error = true;
+            let message = match open.first() {
+                Some((id, _)) => format!(
+                    "held for the operator's decision (hyalos approve {})",
+                    id.seq()
+                ),
+                None => format!("ended held ({reason}); nothing is waiting"),
+            };
+            (TaskState::Completed(called), message)
+        }
         Phase::Ended { outcome, reason } => {
             let outcome = job_status(Some(*outcome));
             let mut called =

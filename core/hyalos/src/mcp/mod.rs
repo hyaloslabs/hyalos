@@ -156,6 +156,16 @@ impl Called {
         }
     }
 
+    /// `value` as structured content, and `text`, written by Hyalos from the same typed values, for a
+    /// client that reads only text.
+    pub fn described(value: Value, text: &str) -> Self {
+        Self {
+            content: vec![json!({"type": "text", "text": text})],
+            structured: Some(value),
+            is_error: false,
+        }
+    }
+
     /// `value` as structured content, holding `data` that someone the operator does not trust
     /// wrote, or a model wrote after reading what they wrote (ADR-0005, ADR-0010). `value` says so
     /// itself; a client that reads only text gets `summary`, a notice that the data is not
