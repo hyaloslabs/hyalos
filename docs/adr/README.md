@@ -89,5 +89,5 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0073](0073-clients-on-older-mcp-revisions-are-unsupported.md) | Clients on older MCP revisions are unsupported until they move | Accepted |
 | [0074](0074-approvals-shown-to-the-driving-agent.md) | Approvals are shown to the driving agent as read-only tool results | Accepted |
 | [0075](0075-the-thin-cli-for-the-agents-tools.md) | The thin CLI: one command for each of the driving agent's tools | Accepted |
-| [0076](0076-the-set-up-hyalos-skill-and-the-setup-checklist.md) | The set-up-hyalos skill and the setup checklist | Accepted |
-| [0077](0077-handing-the-operator-one-step-at-a-time.md) | Handing the operator one step at a time | Proposed |
+| [0076](0076-the-set-up-hyalos-skill-and-the-setup-checklist.md) | The set-up-hyalos skill and the setup checklist | Superseded by [ADR-0077](0077-handing-the-operator-one-step-at-a-time.md) |
+| [0077](0077-handing-the-operator-one-step-at-a-time.md) | Handing the operator one step at a time | Accepted |
