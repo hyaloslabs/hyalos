@@ -140,6 +140,15 @@ impl Machine {
         command
     }
 
+    /// Runs a command of `tools_cmd` (S5.6): its exit code and what it printed.
+    fn cli(&self, args: &[&str]) -> Res<(i32, String)> {
+        let out = self.command(args).output()?;
+        Ok((
+            out.status.code().unwrap_or(-1),
+            String::from_utf8(out.stdout)?,
+        ))
+    }
+
     /// Sends each message on stdin to a server started with `credential` and returns one parsed
     /// answer per line of stdout.
     fn stdio(&self, credential: Option<&str>, messages: &[Value]) -> Res<Vec<Value>> {
@@ -467,6 +476,16 @@ fn start_job_takes_only_identifiers_and_says_why_a_runner_could_not_start() {
     assert!(text(&answers[4]).contains("only repo and issue_number"));
     let refused = text(&answers[5]);
     assert!(refused.starts_with("the job did not start: "), "{refused}");
+    // hyalos start makes the same call: the same refusal, and the same runner that stops.
+    let (code, out) = m.cli(&["start", "octo/repo; rm", "7"]).unwrap();
+    assert_eq!((code, out.trim_end()), (1, text(&answers[2]).as_str()));
+    let (code, out) = m.cli(&["start", "octo/repo", "7"]).unwrap();
+    assert_eq!(code, 1, "{out}");
+    assert!(out.starts_with("the job did not start: "), "{out}");
+    let (code, _) = m
+        .cli(&["start", "octo/repo", "7", "--listen", "127.0.0.1:1"])
+        .unwrap();
+    assert_eq!(code, 2);
     // Nothing was written, and the runner's files are gone.
     assert_eq!(events(&m).unwrap(), before);
     let left: Vec<_> = std::fs::read_dir(m.root.join("data/runs"))
@@ -619,6 +638,16 @@ fn a_runs_task_is_polled_with_the_tasks_extension_or_its_plain_tools_and_reads_t
     let cancel = runs.join(format!("task-{}.cancel", task.seq()));
     assert!(cancel.exists());
     std::fs::remove_file(&cancel).unwrap();
+    // hyalos stop asks the same, in the same file; a task the server did not start is refused (S5.6).
+    let (code, out) = m.cli(&["stop", &id]).unwrap();
+    assert_eq!(code, 0, "{out}");
+    assert!(cancel.exists());
+    std::fs::remove_file(&cancel).unwrap();
+    for other in [stranger.as_str(), "99", "x"] {
+        let (code, out) = m.cli(&["stop", other]).unwrap();
+        assert_eq!(code, 1, "{other}: {out}");
+    }
+    assert!(!cancel.exists());
 
     step(
         &mut engine,
@@ -895,17 +924,33 @@ fn approvals_are_shown_with_the_operators_commands_and_the_server_cannot_decide_
             "tools/call",
             json!({"name": "list_approvals", "arguments": {"limit": 0}}),
         ),
+        request(
+            5,
+            "tools/call",
+            json!({"name": "job_result", "arguments": {"task": run.seq().to_string()}}),
+        ),
+        request(
+            6,
+            "tools/call",
+            json!({"name": "list_tasks", "arguments": {}}),
+        ),
     ]);
     // Asking changed nothing in the log.
     assert_eq!(events(&m).unwrap(), before);
 
-    // No tool decides: the server offers only these, and none releases, cancels or merges.
+    // No tool decides: the server offers exactly the tools that have a command of tools_cmd, and no
+    // operator decision is one of them. A new tool fails here until it has its command (S5.6).
     let names: Vec<&str> = answers[0]["result"]["tools"]
         .as_array()
         .unwrap()
         .iter()
         .filter_map(|t| t["name"].as_str())
         .collect();
+    assert_eq!(
+        names,
+        hyalos::tools_cmd::COMMANDS.map(|(_, tool)| tool),
+        "every MCP tool needs exactly one command in tools_cmd::COMMANDS"
+    );
     assert_eq!(
         names,
         [
@@ -1001,6 +1046,28 @@ fn approvals_are_shown_with_the_operators_commands_and_the_server_cannot_decide_
         "{inner}"
     );
     assert_eq!(answers[3]["result"]["isError"], true);
+
+    // The same calls from the command line answer the same, text and structured content (S5.6).
+    let task = run.seq().to_string();
+    for (args, answer, code) in [
+        (vec!["approvals"], &answers[1], 0),
+        (vec!["status", task.as_str()], &answers[2], 0),
+        (vec!["approvals", "--limit", "0"], &answers[3], 1),
+        (vec!["result", task.as_str()], &answers[4], 1),
+        (vec!["tasks"], &answers[5], 0),
+    ] {
+        let (got, out) = m.cli(&args).unwrap();
+        assert_eq!(got, code, "{args:?}: {out}");
+        assert_eq!(out.trim_end(), text(answer), "{args:?}");
+        if let Some(structured) = answer["result"].get("structuredContent") {
+            let mut json = args.clone();
+            json.push("--json");
+            let (_, out) = m.cli(&json).unwrap();
+            let printed: Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(&printed, structured, "{args:?}");
+        }
+    }
+    assert_eq!(events(&m).unwrap(), before);
 
     // Once the operator decides at their own terminal, the hold is no longer listed.
     let out = m.signed(&["approve", &second.to_string()]).unwrap();

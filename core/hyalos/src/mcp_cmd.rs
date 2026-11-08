@@ -65,20 +65,7 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let found = (|| {
-        let log = EngineLog {
-            log: paths::log_file(&env)?,
-            public_key: paths::engine_public_key(&env)?,
-        };
-        let launcher = Launcher {
-            runs: Runs::from_env(&env)?,
-            exe: std::env::current_exe()
-                .map_err(|e| format!("cannot find this executable: {e}"))?,
-            wait: runs::START_WAIT,
-        };
-        Ok::<_, String>((log, launcher))
-    })();
-    let (log, launcher) = match found {
+    let (log, launcher) = match setup(&env) {
         Ok(found) => found,
         Err(e) => {
             eprintln!("hyalos: {e}");
@@ -135,9 +122,24 @@ pub fn run(args: &[String]) -> ExitCode {
     }
 }
 
+/// The log the tools read and the launcher `start_job` starts runners with, from the environment as
+/// every command finds them. The server and the commands of `tools_cmd` share it.
+pub fn setup(env: crate::paths::Env<'_>) -> Result<(EngineLog, Launcher), String> {
+    let log = EngineLog {
+        log: paths::log_file(env)?,
+        public_key: paths::engine_public_key(env)?,
+    };
+    let launcher = Launcher {
+        runs: Runs::from_env(env)?,
+        exe: std::env::current_exe().map_err(|e| format!("cannot find this executable: {e}"))?,
+        wait: runs::START_WAIT,
+    };
+    Ok((log, launcher))
+}
+
 /// `--listen`, and the request every run starts from: `hyalos run`'s options, with no repository,
 /// issue or text of the operator's, which the agent may not add to (ADR-0069).
-fn options(args: &[String]) -> Result<(Option<String>, Request), String> {
+pub fn options(args: &[String]) -> Result<(Option<String>, Request), String> {
     let mut listen = None;
     let mut run = vec![
         "--repo".to_string(),

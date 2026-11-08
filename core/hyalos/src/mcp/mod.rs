@@ -249,7 +249,13 @@ pub struct Progress<'a> {
     emit: &'a mut dyn FnMut(Value),
 }
 
-impl Progress<'_> {
+impl<'a> Progress<'a> {
+    /// For a call no request asked progress for, such as one from the command line: it reports
+    /// nothing.
+    pub fn untracked(emit: &'a mut dyn FnMut(Value)) -> Self {
+        Self { token: None, emit }
+    }
+
     pub fn report(&mut self, progress: u64, total: Option<u64>, message: &str) {
         let Some(token) = &self.token else { return };
         let mut params = json!({"progressToken": token, "progress": progress, "message": message});
