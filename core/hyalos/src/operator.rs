@@ -132,7 +132,12 @@ pub fn engine(env: Env<'_>, source: Source) -> Result<Engine, String> {
     let config_dir = paths::config_dir(env)?;
     Sealed::read(&config_dir)?;
     let passphrase = passphrase::read(source, "operator passphrase: ")?;
-    let key = unlock(&config_dir, &passphrase)?;
+    engine_with(env, &passphrase)
+}
+
+/// As [`engine`], with the passphrase already read (`hyalos setup`, ADR-0080).
+pub fn engine_with(env: Env<'_>, passphrase: &str) -> Result<Engine, String> {
+    let key = unlock(&paths::config_dir(env)?, passphrase)?;
     Ok(policy_cmd::open(env)?.with_operator(key))
 }
 

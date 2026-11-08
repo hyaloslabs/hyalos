@@ -4,6 +4,8 @@ How to give the broker the API keys it calls models with. The reasons are in [AD
 
 The broker reads `provider.keys` from the config directory (`$HYALOS_CONFIG_DIR`, else `$XDG_CONFIG_HOME/hyalos`, else `~/.config/hyalos`). No sandbox, and not the engine, ever sees the keys.
 
+`hyalos setup provider-key` writes it for you: it asks which provider and the key, which it reads without showing, and writes that provider's line owner-only, keeping the others ([ADR-0080](../adr/0080-setup-asks-the-operator-in-their-own-terminal.md)). The rest of this page is the file by hand.
+
 ## Before you start
 
 - Make a **dedicated** API key for Hyalos at each provider you use, not one you use anywhere else.

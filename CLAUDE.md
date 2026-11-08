@@ -70,7 +70,7 @@ These are pinned by tests. A change to one bumps its version (except where noted
 | `core/engine` | State, holds, cancels, compaction and audit, the policy store, minting, handles, agents, several writers | 0013, 0024, 0025, 0026, 0027, 0028, 0029, 0031, 0034, 0047, 0055, 0063, 0066, 0068, 0069, 0070, 0071 |
 | `core/broker` | Channel, model relay and TLS, egress, git proxy, forge, content gates, readers, handles, results, merge | 0035, 0037, 0038, 0039, 0042, 0046, 0047, 0048, 0051, 0054, 0055, 0061, 0063, 0064, 0065, 0071, 0079 |
 | `core/substrate` | Containers, gVisor, Firecracker, choosing one, attestation | 0032, 0041, 0043, 0056, 0057, 0058 |
-| `core/hyalos` | The binary: keys, log commands, the broker process and channel, doctor, GitHub App, `hyalos run`, the fix-issue workflow, MCP server, operator commands and merge, thin CLI, setup | 0018, 0021, 0022, 0026–0028, 0030, 0035, 0038, 0043, 0044, 0045, 0050, 0052, 0053, 0058, 0062, 0063, 0067–0075, 0077, 0078 |
+| `core/hyalos` | The binary: keys, log commands, the broker process and channel, doctor, GitHub App, `hyalos run`, the fix-issue workflow, MCP server, operator commands and merge, thin CLI, setup | 0018, 0021, 0022, 0026–0028, 0030, 0035, 0038, 0043, 0044, 0045, 0050, 0052, 0053, 0058, 0062, 0063, 0067–0075, 0078, 0080 |
 | `crates/xtask` | `layout` and `lines` | 0017 |
 | `crates/sim`, `crates/world` | Deterministic simulation and the simulated world | 0013, 0036 |
 | `crates/substrate-contract`, `crates/vm-init` | The contract every substrate passes; the microVM's init | 0032, 0041, 0056, 0058 |
@@ -78,6 +78,6 @@ These are pinned by tests. A change to one bumps its version (except where noted
 | `crates/policy-proof` | Symbolic proofs of the baseline (cvc5) | 0033 |
 | `crates/mcp-conformance` | The pinned MCP conformance suite | 0067, 0069 |
 | `crates/redteam` | The red-team corpus | 0065 |
-| `skills/set-up-hyalos` | The setup skill (`.claude/skills/set-up-hyalos` links to it; edit this one) | 0077, 0078 |
+| `skills/set-up-hyalos` | The setup skill (`.claude/skills/set-up-hyalos` links to it; edit this one) | 0078, 0080 |
 
 The image builds from the repository root and must name its target: `--target sandbox -t hyalos-sandbox:latest` for jobs, `--target test -t hyalos-sandbox:test` for the image tests (they skip without that tag), as in `docker build -f images/sandbox/Containerfile --target test -t hyalos-sandbox:test .`. Regenerate the harness lockfile with the image's own npm, not the host's.

@@ -1,6 +1,6 @@
 # ADR-0077: Handing the operator one step at a time
 
-**Status:** Accepted. Supersedes [ADR-0076](0076-the-set-up-hyalos-skill-and-the-setup-checklist.md).
+**Status:** Superseded by [ADR-0080](0080-setup-asks-the-operator-in-their-own-terminal.md). It superseded [ADR-0076](0076-the-set-up-hyalos-skill-and-the-setup-checklist.md).
 
 ## Context
 

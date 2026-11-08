@@ -1,6 +1,6 @@
 # The GitHub App: creating and installing it
 
-How to give Hyalos access to a repository. Hyalos never uses a personal access token. The engine holds a GitHub App's private key and, for each job, mints a token for one repository with only the permissions that job's actions need. The broker gets that token, never the key, and the engine revokes it when the job ends. The reasons are in [ADR-0004](../adr/0004-one-signed-manifest-per-job.md) and [ADR-0044](../adr/0044-minting-per-job-github-tokens-from-the-app.md). This page is the procedure.
+How to give Hyalos access to a repository. Hyalos never uses a personal access token. The engine holds a GitHub App's private key and, for each job, mints a token for one repository with only the permissions that job's actions need. The broker gets that token, never the key, and the engine revokes it when the job ends. The reasons are in [ADR-0004](../adr/0004-one-signed-manifest-per-job.md) and [ADR-0044](../adr/0044-minting-per-job-github-tokens-from-the-app.md). This page is the procedure. `hyalos setup github-app` takes you through it in your terminal: it says what to do in the browser, then writes the files of steps 2 and 3 for you, taking the key wherever it was saved ([ADR-0080](../adr/0080-setup-asks-the-operator-in-their-own-terminal.md)).
 
 ## 1. Create the App
 
