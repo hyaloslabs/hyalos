@@ -1,6 +1,6 @@
 # ADR-0081: Prebuilt releases: a static binary that names its image by digest
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
