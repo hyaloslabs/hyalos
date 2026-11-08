@@ -1,6 +1,6 @@
 # ADR-0079: Readers hold the provider to their fields' schema
 
-**Status:** Accepted
+**Status:** Proposed
 
 ## Context
 
@@ -24,12 +24,12 @@ The broker sends it as `output_config.format` to Anthropic and as `text.format` 
 
 **The prompt shows the answer's form.** After the fields, `workflow::answer_form(output)` gives the form with a placeholder for each value, such as `{"add_test": <true or false>, "approach": "<one of its options, exactly as written>"}`. It shows no option, so the form steers no choice.
 
-**A refused answer names its field.** When `read_answer` refuses an answer that is a JSON object, the broker prints the first field that is missing or not of its kind on its standard error (`workflow::refused_field`). It prints only the field's name, which the workflow's author wrote, never a value from the answer. The job's ending reason stays the short code.
+**A refused answer names its field.** When `read_answer` refuses an answer for a missing field or a bad value (`reader.missing_field`, `reader.bad_value`), the broker prints the first field that is missing or not of its kind on its standard error (`workflow::refused_field`). It prints only the field's name, which the workflow's author wrote, never a value from the answer. The job's ending reason stays the short code.
 
 ## Consequences
 
 The default step models no longer fail by misspelling a value. A failure that remains says which field, so the next one can be told apart without seeing the model's text.
 
-A step model must support structured outputs. Current OpenAI and Anthropic models do. An older or third-party model behind a compatible base may refuse the request (`reader.provider_refused`) and needs `--step-model`.
+A step model must support structured outputs; current OpenAI and Anthropic models do. An older or third-party model behind a compatible base may refuse the request (`reader.provider_refused`) and needs `--step-model`. A very large output can also pass a provider's limits on a schema (16 fields of 64 options is 1,024 enum values), and is refused the same way, closed.
 
 The output budget is unchanged (`READER_OUTPUT_TOKENS`, 1,024). If a reasoning model's reasoning uses it up, the answer is cut off and is refused as `reader.not_json`, not `bad_value`. Raising the budget is left until that is seen.

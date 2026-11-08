@@ -18,7 +18,7 @@ use hyalos_broker::model::{
 };
 use hyalos_broker::sandbox::{Models, Sandboxes};
 use hyalos_types::wire::{Protocol, ReaderCall, ToBroker, ToEngine};
-use hyalos_types::workflow::{Field, IntegerRange, TypedValue};
+use hyalos_types::workflow::{self, Field, IntegerRange, TypedValue};
 use hyalos_types::{
     Budget, Clock, ForgeToken, JobId, MANIFEST_VERSION, Manifest, ManifestKey, Role, Timestamp,
 };
@@ -337,21 +337,11 @@ fn a_reader_reads_the_issue_with_no_tools_and_the_engine_gets_typed_values() -> 
                 let format = &upstream["text"]["format"];
                 assert_eq!(format["type"], json!("json_schema"));
                 assert_eq!(format["strict"], json!(true));
+                assert_eq!(format["name"], json!("answer"));
                 &format["schema"]
             }
         };
-        assert_eq!(schema["additionalProperties"], json!(false));
-        assert_eq!(
-            schema["required"].as_array().map(Vec::len),
-            Some(3),
-            "{schema}"
-        );
-        assert!(
-            schema["properties"]
-                .as_object()
-                .is_some_and(|p| p.values().any(|f| f.get("enum").is_some())),
-            "{schema}"
-        );
+        assert_eq!(*schema, workflow::answer_schema(&output()));
         // The job is still live after a good read.
         assert!(r.broker.manifest(JobId::from_seq(job)).is_some());
     }

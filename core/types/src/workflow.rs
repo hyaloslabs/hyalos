@@ -541,7 +541,7 @@ pub fn answer_schema(output: &Output) -> serde_json::Value {
 }
 
 /// The form of an answer to `output`, with a placeholder for each value rather than a value, so the
-/// form steers no choice: `{"add_test": <true or false>, "approach": "<one of its options>"}`.
+/// form steers no choice: `{"add_test": <true or false>, "approach": "<one of its options, exactly as written>"}`.
 pub fn answer_form(output: &Output) -> String {
     let fields: Vec<String> = output
         .iter()
