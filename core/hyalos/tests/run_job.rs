@@ -228,6 +228,10 @@ fn an_issue_number_runs_the_fix_issue_workflow_and_only_the_reader_sees_the_issu
     let repos = dir("irepos")?;
     let gh = GitHub::start(&repos, false)?;
     let world = World::new("issue", Some(&gh))?;
+    // The starter policy `hyalos policy starter` prints is enough for this run (S5.5).
+    let starter = world.root.join("starter.cedar");
+    std::fs::write(&starter, ok_cli(world.cli(&["policy", "starter"])?)?)?;
+    ok_cli(world.signed(&["policy", "approve", &starter.to_string_lossy()])?)?;
     let model = Model::start(&[
         r#"{"kind": "docs", "size": "small", "clear": true, "has_repro": false}"#,
         "```json\n{\"approach\": \"docs_only\", \"add_test\": false}\n```",

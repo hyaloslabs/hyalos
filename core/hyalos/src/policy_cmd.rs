@@ -14,14 +14,20 @@ use crate::clock::SystemClock;
 use crate::paths::{self, Env};
 use crate::{keys, operator, passphrase};
 
+/// A starter policy for a first job (S5.5): the fix-issue workflow's actions, data only to the model
+/// and the forge. The operator reads it and approves it; nothing puts it in force by itself.
+pub const STARTER: &str = include_str!("../policies/starter.cedar");
+
 const USAGE: &str = "usage: hyalos policy check <file>
        hyalos policy approve <file> [--reason <code>] [--passphrase-stdin]
        hyalos policy show
+       hyalos policy starter
   check says whether <file> is Cedar that the shipped schema accepts, and writes nothing
   approve records <file> as the operator's policy, approved by you, from this event on; it is checked
   first and nothing is written if it fails. --reason is a short code (default policy.approved). It is
   signed with your approval key: the passphrase is asked for at the terminal, or read from stdin
   show prints the policy in force, or says there is none
+  starter prints a starter policy for a first job, to read before you approve it
   The log is events.db in the data directory and the key engine.key in the config directory
   (HYALOS_DATA_DIR / HYALOS_CONFIG_DIR override both)";
 
@@ -45,6 +51,7 @@ pub fn run_with(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
     let usage = |why: &str| (2, format!("{why}\n{USAGE}"));
     let failed = |e: String| (1, e);
     match args.as_slice() {
+        [starter] if starter == "starter" => Ok(STARTER.to_string()),
         [check, file] if check == "check" => {
             let document = read(file).map_err(failed)?;
             Engine::check_policy(&document).map_err(|e| failed(format!("{file}: {e}")))?;

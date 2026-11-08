@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use hyalos::{
     agent_cmd, broker_cmd, doctor_cmd, github_cmd, hardening, init_cmd, log_cmd, mcp_cmd,
-    merge_cmd, operator_cmd, policy_cmd, run_cmd, tools_cmd, workflow_cmd,
+    merge_cmd, operator_cmd, policy_cmd, run_cmd, setup_cmd, tools_cmd, workflow_cmd,
 };
 
 fn main() -> ExitCode {
@@ -32,6 +32,7 @@ fn main() -> ExitCode {
         Some("merge") => merge_cmd::run(args.get(1..).unwrap_or_default()),
         Some("run") => run_cmd::run(args.get(1..).unwrap_or_default()),
         Some("workflow") => workflow_cmd::run(args.get(1..).unwrap_or_default()),
+        Some("setup") => setup_cmd::run(args.get(1..).unwrap_or_default()),
         // The MCP server's tools, one command each (ADR-0075).
         Some(command @ ("tasks" | "start" | "status" | "result" | "approvals" | "stop")) => {
             tools_cmd::run(command, args.get(1..).unwrap_or_default())
@@ -40,7 +41,7 @@ fn main() -> ExitCode {
         Some("broker") => broker_cmd::run(args.get(1..).unwrap_or_default()),
         Some(other) => {
             eprintln!(
-                "hyalos: unknown command {other}\nusage: hyalos [--version | init | doctor [--image <image>] | github check <owner/repo> | run --repo <owner/name> --issue <text> ... | operator init|show | approve <hold> | cancel <task> | merge <owner/repo> <pr> --head <commit> | policy check|approve|show ... | workflow check <file> | agent issue|revoke|list ... | mcp [--listen <127.0.0.1:port>] | tasks | start <owner/repo> <issue> | status <task> | result <task> | approvals | stop <task> | log verify|audit|backup|restore|compact|prune ...]"
+                "hyalos: unknown command {other}\nusage: hyalos [--version | init | doctor [--image <image>] | setup [--json] | github check <owner/repo> | run --repo <owner/name> --issue <text> ... | operator init|show | approve <hold> | cancel <task> | merge <owner/repo> <pr> --head <commit> | policy check|approve|show ... | workflow check <file> | agent issue|revoke|list ... | mcp [--listen <127.0.0.1:port>] | tasks | start <owner/repo> <issue> | status <task> | result <task> | approvals | stop <task> | log verify|audit|backup|restore|compact|prune ...]"
             );
             ExitCode::from(2)
         }

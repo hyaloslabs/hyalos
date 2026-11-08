@@ -4,6 +4,8 @@
 
 ## 1. Before the first job
 
+`hyalos setup` lists which of these are still missing and who takes each ([getting-started.md](getting-started.md)).
+
 - **The engine's key.** Run `hyalos init`. See [keys-and-recovery.md](keys-and-recovery.md).
 - **Your approval key.** Run `hyalos operator init`; approving the policy below and releasing an issue's text are your decisions, signed with it after your passphrase. See [approvals.md](approvals.md).
 - **A provider key.** Write `provider.keys` and set a spend cap at the provider. See [provider-keys.md](provider-keys.md).

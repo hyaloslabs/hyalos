@@ -69,7 +69,7 @@ pub fn run(args: &[String]) -> ExitCode {
 
 /// The providers in the key file. A file that is missing means no provider yet, and model calls are
 /// refused; one that is not the operator's alone, or does not parse, stops the broker.
-fn providers(path: &Path) -> Result<Providers, String> {
+pub(crate) fn providers(path: &Path) -> Result<Providers, String> {
     if !path.exists() {
         return Ok(Providers::default());
     }
