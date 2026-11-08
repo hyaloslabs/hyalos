@@ -172,6 +172,14 @@ fn walk_takes_every_step_on_a_fresh_machine_and_shows_no_secret() -> Res {
         "{}",
         script.shown
     );
+    // The only key is Anthropic's, so the step says the jobs run Claude Code.
+    assert!(
+        script
+            .shown
+            .contains("The jobs themselves run Claude Code, with your Anthropic key"),
+        "{}",
+        script.shown
+    );
     // The passphrase was asked for once for both decisions.
     assert_eq!(script.shown.matches("\noperator passphrase: ").count(), 1);
 
@@ -373,7 +381,11 @@ fn an_agent_credential_claude_code_refuses_is_revoked_again() -> Res {
     assert_eq!(agents()?, 0);
     std::fs::remove_file(m.root.join("fail"))?;
 
-    run(&["", PASSPHRASE], &m.home)?;
+    let issued = run(&["", PASSPHRASE], &m.home)?;
+    assert!(
+        issued.ends_with("the jobs it starts run Codex, with your OpenAI key"),
+        "{issued}"
+    );
     assert_eq!(agents()?, 1);
     // Again: a no keeps the one in force; a yes revokes it and issues another.
     assert_eq!(run(&["", ""], &m.home)?, "kept the credential in force");
