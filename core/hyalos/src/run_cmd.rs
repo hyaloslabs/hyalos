@@ -597,8 +597,11 @@ pub mod why {
     /// The run's deadline passed while the actor waited for the operator to release the issue
     /// (ADR-0078).
     pub const UNRELEASED: &str = "handle.unreleased";
+    /// The runner of a run that held the issue stopped, and the broker's copy went with it, so the
+    /// run is ended rather than resumed (ADR-0078).
+    pub const LOST: &str = "handle.lost";
 
-    pub const ALL: [&str; 16] = [
+    pub const ALL: [&str; 17] = [
         FINISHED,
         ANSWERED,
         DEADLINE,
@@ -615,6 +618,7 @@ pub mod why {
         RESTARTED,
         CANCELLED,
         UNRELEASED,
+        LOST,
     ];
 }
 
@@ -703,11 +707,13 @@ fn drive(
             format!("interrupted ({signal}) before the job was recorded, so nothing was written")
         })
     };
-    // A held issue lives in the broker's memory, which a stopped runner took with it (ADR-0078).
-    if resume.is_some()
-        && (request.issue_number.is_none() || request.release_issue || request.await_release)
-    {
-        return Err("only a fix-issue run that holds no handle can be resumed".into());
+    if resume.is_some() && request.issue_number.is_none() {
+        return Err("only a fix-issue run can be resumed".into());
+    }
+    // A held issue lives in the broker's memory, which a stopped runner took with it: the run is
+    // ended rather than resumed (ADR-0078).
+    if let Some(task) = resume.filter(|_| request.release_issue || request.await_release) {
+        return close_lost(request, &config_dir, &log, &runs_dir, task, out);
     }
     let substrate = choose(&request.image, detect, detect_timeout, &interrupt)?;
     let chosen_name = substrate.chosen_name().ok_or("no substrate was chosen")?;
@@ -808,6 +814,7 @@ fn drive(
         handle: None,
         awaiting: None,
         held_file: runs_dir.join(format!("task-{}.held", task.seq())),
+        held_lock: None,
     };
     let summary = match &planned {
         Planned::Workflow(flow, _) => {
@@ -838,6 +845,7 @@ fn drive(
             .map(Some),
     };
     run.shutdown_broker();
+    run.forget_held();
     // The run is over unless it stopped held, which only a decision ends (ADR-0029). A refusal here
     // is printed: the jobs are recorded either way.
     if let Ok(Some(last)) = &summary
@@ -851,8 +859,80 @@ fn drive(
 /// How often the actor's job looks at the log while it waits for the operator's release.
 const RELEASE_POLL: Duration = Duration::from_millis(500);
 
-/// Writes the awaited handle and the issue's number where `hyalos release` reads them, owner-only.
-fn write_held(file: &std::path::Path, handle: &Digest, number: u64) -> std::io::Result<()> {
+/// Ends a resumed run that held the issue (ADR-0078): a job its log shows running is ended
+/// `handle.lost` and the task completed, since the issue's bytes went with the broker. The agent can
+/// start the issue again; nothing is minted or run here.
+fn close_lost(
+    request: &Request,
+    config_dir: &std::path::Path,
+    log: &std::path::Path,
+    runs_dir: &std::path::Path,
+    task: TaskId,
+    out: &mut dyn Write,
+) -> Result<Option<Summary>, String> {
+    let key = keys::load(&config_dir.join(paths::ENGINE_KEY_FILE)).map_err(|e| e.to_string())?;
+    let mut engine = Engine::open(log, key).map_err(|e| e.to_string())?;
+    engine.stamp_forward();
+    let mut clock = Stamps(
+        SystemClock.now().max(
+            engine
+                .state()
+                .last_at()
+                .unwrap_or(Timestamp::from_millis(0)),
+        ),
+    );
+    let recorded = engine
+        .state()
+        .tasks()
+        .get(&task)
+        .ok_or_else(|| format!("there is no task {task}"))?;
+    if recorded.request != request_digest(request) {
+        return Err(format!("task {task} was not started with this request"));
+    }
+    if recorded.status() != TaskStatus::Open {
+        return Ok(None);
+    }
+    let running = engine
+        .state()
+        .jobs()
+        .iter()
+        .find(|(_, job)| job.task == task && job.is_running())
+        .map(|(id, _)| *id);
+    let mut summary = None;
+    if let Some(job) = running {
+        let _ = writeln!(
+            out,
+            "job {}: was running when its runner stopped, and the issue the broker held went with it; \
+             ending the run. Start the issue again to run it anew",
+            job.seq()
+        );
+        let mut ended = Ended {
+            engine: &mut engine,
+            clock: &mut clock,
+            job,
+        };
+        let lost = Failure::new(
+            why::LOST,
+            "its runner stopped while the broker held the issue",
+        );
+        summary = Some(ended.with(out, JobOutcome::Failed, lost, Ok(()), None)?);
+    }
+    let head = engine
+        .submit(clock.now(), Origin::Engine, Event::TaskCompleted { task })
+        .map_err(|e| e.to_string())?;
+    let _ = writeln!(out, "task {}: completed (event {})", task.seq(), head.seq);
+    let _ = std::fs::remove_file(runs_dir.join(format!("task-{}.held", task.seq())));
+    Ok(summary)
+}
+
+/// Writes the awaited handle, the issue's repository and number where `hyalos release` reads them,
+/// owner-only, and locks the file for as long as the returned file is kept.
+fn write_held(
+    file: &std::path::Path,
+    handle: &Digest,
+    repo: &str,
+    number: u64,
+) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     if let Some(dir) = file.parent() {
         std::fs::DirBuilder::new()
@@ -860,14 +940,19 @@ fn write_held(file: &std::path::Path, handle: &Digest, number: u64) -> std::io::
             .mode(0o700)
             .create(dir)?;
     }
-    let text = serde_json::json!({"handle": handle.to_string(), "issue": number}).to_string();
+    let text = serde_json::json!({"handle": handle.to_string(), "repo": repo, "issue": number})
+        .to_string();
     let mut held = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .truncate(true)
+        .truncate(false)
         .mode(0o600)
         .open(file)?;
-    held.write_all(text.as_bytes())
+    // Locked before it says anything, so a release never reads a file no runner waits on.
+    held.try_lock().map_err(std::io::Error::other)?;
+    held.set_len(0)?;
+    held.write_all(text.as_bytes())?;
+    Ok(held)
 }
 
 /// What a resumed run found already done (ADR-0069).
@@ -904,6 +989,9 @@ struct Run<'a> {
     awaiting: Option<(Digest, u64)>,
     /// Where an awaited handle is written for `hyalos release` (`runs/task-<id>.held`).
     held_file: PathBuf,
+    /// The lock on `held_file` while the actor waits: `hyalos release` refuses a file nobody holds,
+    /// so a run whose runner stopped is never released to.
+    held_lock: Option<std::fs::File>,
 }
 
 impl Run<'_> {
@@ -1089,6 +1177,21 @@ impl Run<'_> {
     /// handle to this task with `hyalos release` (ADR-0078). Interrupts and a cancel end the wait as
     /// they end a job; so does the run's deadline. Nothing to wait for passes at once.
     fn await_release(&mut self, job: JobId, out: &mut dyn Write) -> Result<(), Failure> {
+        let waited = self.wait_for_release(job, out);
+        if waited.is_err() {
+            self.forget_held();
+        }
+        waited
+    }
+
+    /// The handle file is the waiting runner's alone: once it waits no more, nothing may release.
+    fn forget_held(&mut self) {
+        if self.held_lock.take().is_some() {
+            let _ = std::fs::remove_file(&self.held_file);
+        }
+    }
+
+    fn wait_for_release(&mut self, job: JobId, out: &mut dyn Write) -> Result<(), Failure> {
         let Some((handle, number)) = self.awaiting else {
             return Ok(());
         };
@@ -1111,7 +1214,7 @@ impl Run<'_> {
                     "job {}: issue #{number} released to the task by you",
                     job.seq()
                 );
-                let _ = std::fs::remove_file(&self.held_file);
+                self.forget_held();
                 self.awaiting = None;
                 self.handle = Some(handle);
                 return Ok(());
@@ -1382,12 +1485,14 @@ impl Run<'_> {
             reason,
         })?;
         if self.request.await_release {
-            write_held(&self.held_file, &handle, number).map_err(|e| {
-                Failure::new(
-                    why::HANDLE_REFUSED,
-                    format!("cannot write {}: {e}", self.held_file.display()),
-                )
-            })?;
+            let lock =
+                write_held(&self.held_file, &handle, &self.request.repo, number).map_err(|e| {
+                    Failure::new(
+                        why::HANDLE_REFUSED,
+                        format!("cannot write {}: {e}", self.held_file.display()),
+                    )
+                })?;
+            self.held_lock = Some(lock);
             let _ = writeln!(
                 out,
                 "job {}: issue #{number} held as handle {handle}, for you to release to the task",

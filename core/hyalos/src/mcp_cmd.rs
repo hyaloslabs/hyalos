@@ -48,7 +48,7 @@ const USAGE: &str = "usage: hyalos mcp [--listen <loopback address:port>] [--bas
 /// Where the stdio server takes the driving agent's credential from.
 pub const CREDENTIAL_VAR: &str = "HYALOS_AGENT_CREDENTIAL";
 
-const INSTRUCTIONS: &str = "Hyalos runs agent jobs contained, within a signed manifest. start_job runs the fix-issue workflow on a GitHub issue and answers with a task (with the Tasks extension, poll tasks/get; without it, use job_status and job_result). list_tasks shows the tasks in its event log and the state of each one's jobs. list_approvals shows what waits for the operator's decision and the command they run for it; nothing here can decide it.";
+const INSTRUCTIONS: &str = "Hyalos runs agent jobs contained, within a signed manifest. start_job runs the fix-issue workflow on a GitHub issue and answers with a task (with the Tasks extension, poll tasks/get; without it, use job_status and job_result). list_tasks shows the tasks in its event log and the state of each one's jobs. list_approvals shows what waits for the operator's decision (holds, and issues a run waits for them to release to its harness) and the command they run for it; nothing here can decide it.";
 
 /// How often a client is asked to poll a run's task. A run takes minutes.
 pub const POLL_MS: u64 = 5_000;
@@ -275,7 +275,7 @@ impl EngineTools {
         let start_job = Tool {
             name: "start_job",
             title: "Start a job on an issue",
-            description: "Runs Hyalos's fix-issue workflow on a GitHub issue: a reader classifies it, a planner chooses an approach, and a harness in a sandbox pushes a branch and opens a pull request into the base branch the operator set. It takes minutes. Only the repository and the issue's number can be given; the issue's text reaches only the reader. Answers with a task: poll it with tasks/get, or job_status and job_result.",
+            description: "Runs Hyalos's fix-issue workflow on a GitHub issue: a reader classifies it, a planner chooses an approach, and a harness in a sandbox pushes a branch and opens a pull request into the base branch the operator set. It takes minutes. Only the repository and the issue's number can be given. The issue's text reaches the reader, and the harness only once the operator releases it with hyalos release <task> at their own terminal: the run waits for that, and job_status and list_approvals say so. Answers with a task: poll it with tasks/get, or job_status and job_result.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -310,7 +310,7 @@ impl EngineTools {
         let list_approvals = Tool {
             name: "list_approvals",
             title: "List approvals waiting for the operator",
-            description: "The holds waiting for the operator's decision, newest first: which gate could not decide, how much the held action matters, who may release it, and the command the operator runs at their own terminal to release it or cancel the task. Read only: nothing in this server can release a hold or cancel a task, since every human decision is signed with the operator's key behind their passphrase. Show the details to the operator and ask them to run the command.",
+            description: "What waits for the operator's decision. approvals: the holds, newest first: which gate could not decide, how much the held action matters, who may release it, and the command the operator runs at their own terminal to release it or cancel the task. releases: the runs whose harness waits for the operator to release the issue's text to it, with the command to release it or stop the run. Read only: nothing in this server can release a hold or an issue or cancel a task, since every human decision is signed with the operator's key behind their passphrase. Show the details to the operator and ask them to run the command.",
             input_schema: json!({
                 "type": "object",
                 "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": MAX_TASKS, "description": "How many approvals to return (default 20)."}},
@@ -321,8 +321,19 @@ impl EngineTools {
                 "properties": {
                     "total": {"type": "integer"},
                     "approvals": {"type": "array", "items": approval_schema()},
+                    "releases": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "task": {"type": "integer"},
+                            "issue": {"type": "integer"},
+                            "repo": {"type": "string"},
+                            "release": {"type": "string"},
+                            "stop": {"type": "string"},
+                        },
+                        "required": ["task", "issue", "repo", "release", "stop"],
+                    }},
                 },
-                "required": ["total", "approvals"],
+                "required": ["total", "approvals", "releases"],
             })),
             requires: &[],
             task: TaskSupport::Never,
@@ -455,10 +466,11 @@ impl EngineTools {
         let open = open_holds(&state, None);
         let shown: Vec<_> = open.iter().rev().take(limit as usize).collect();
         let releases = self.awaiting_releases(&state);
-        let mut text = match open.len() {
-            0 => "No approval is waiting for the operator.".to_string(),
-            1 => format!("1 approval is waiting for the operator. {NO_DECIDING}"),
-            n => format!("{n} approvals are waiting for the operator. {NO_DECIDING}"),
+        let mut text = match (open.len(), releases.is_empty()) {
+            (0, true) => "No approval is waiting for the operator.".to_string(),
+            (0, false) => "No hold is waiting for the operator.".to_string(),
+            (1, _) => format!("1 approval is waiting for the operator. {NO_DECIDING}"),
+            (n, _) => format!("{n} approvals are waiting for the operator. {NO_DECIDING}"),
         };
         if !releases.is_empty() {
             text.push_str(&format!(
@@ -505,8 +517,11 @@ impl EngineTools {
             .keys()
             .filter_map(|task| {
                 let view = runs::view(state, &self.launcher.runs, *task)?;
+                // A run whose runner stopped waits for nothing: hyalos release refuses it.
                 let Phase::Working {
                     awaiting_release: Some(issue),
+                    stopped: false,
+                    failed: false,
                     ..
                 } = view.phase
                 else {

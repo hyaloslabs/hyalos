@@ -525,9 +525,26 @@ fn an_awaited_issue_reaches_the_actor_once_the_operator_releases_it() -> Res {
         hyalos::runs::awaiting_release(&state, id, &awaited),
         Some(7)
     );
-    // Releasing another task, or asking without the passphrase, writes nothing.
+    // Releasing another task, or with a malformed id, writes nothing.
+    let before = world.events()?.len();
     assert_eq!(world.signed(&["release", "999"])?.status.code(), Some(1));
     assert_eq!(world.cli(&["release", "x"])?.status.code(), Some(2));
+    // A file that names another digest than the issue's own (anything running as this user could
+    // write it) is refused: the release reads the issue again first.
+    let written = std::fs::read_to_string(&held)?;
+    let mut forged: serde_json::Value = serde_json::from_str(&written)?;
+    forged["handle"] = "ab".repeat(32).into();
+    std::fs::write(&held, forged.to_string())?;
+    let refused = world.signed(&["release", &task.to_string()])?;
+    assert_eq!(refused.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&refused.stderr).into_owned();
+    assert!(said.contains("is not the issue task"), "{said}");
+    std::fs::write(&held, &written)?;
+    assert_eq!(world.events()?.len(), before, "a refused release wrote");
+    assert!(
+        gh.issued().is_empty(),
+        "the release's read-only token is left live"
+    );
 
     let released = world.signed(&["release", &task.to_string()])?;
     let shown = String::from_utf8_lossy(&released.stdout).into_owned();
@@ -590,6 +607,165 @@ fn an_awaited_issue_reaches_the_actor_once_the_operator_releases_it() -> Res {
     assert!(!prompt.contains("report that you are blocked"), "{prompt}");
     assert!(gh.issued().is_empty(), "no token is left live");
     let _ = std::fs::remove_dir_all(&repos);
+    Ok(())
+}
+
+/// The `.held` file a waiting run writes, once it appears; an error if `finished` first.
+fn wait_for_held(runs: &Path, finished: impl Fn() -> bool) -> Res<PathBuf> {
+    let started = Instant::now();
+    loop {
+        let found = std::fs::read_dir(runs).ok().and_then(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .find(|p| p.extension().is_some_and(|x| x == "held"))
+        });
+        if let Some(found) = found {
+            return Ok(found);
+        }
+        if started.elapsed() > Duration::from_secs(60) || finished() {
+            return Err("the run never waited for the release".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// A cancel while the actor waits for the release ends the run as any cancel does, mints nothing for
+/// the actor, and leaves nothing for `hyalos release` to act on (ADR-0078).
+#[test]
+fn a_cancel_while_waiting_for_the_release_ends_the_run_and_leaves_nothing_to_release() -> Res {
+    let repos = dir("cwrepos")?;
+    let gh = GitHub::start(&repos, false)?;
+    let world = World::new("cwait", Some(&gh))?;
+    let model = Model::start(&[
+        r#"{"kind": "docs", "size": "small", "clear": true, "has_repro": false}"#,
+        r#"{"approach": "docs_only", "add_test": false}"#,
+    ])?;
+    world.use_model(&model)?;
+    let mut asked = request(Harness::Command(vec!["/bin/false".into()]));
+    asked.issue = String::new();
+    asked.issue_number = Some(7);
+    asked.await_release = true;
+    let cancel = world.root.join("cancel");
+    let mut setup = world.setup(local_detect(), Duration::from_secs(10));
+    setup.operator = None;
+    let file = cancel.clone();
+    setup.on_task = Some(Box::new(move |_| Ok(Some(file))));
+    let runner = std::thread::spawn(move || {
+        let mut said = Vec::new();
+        let summary = run_job(&asked, setup, &mut said);
+        (summary, String::from_utf8_lossy(&said).into_owned())
+    });
+    let held = wait_for_held(&world.data.join("runs"), || runner.is_finished())?;
+    std::fs::write(&cancel, b"")?;
+    let (summary, said) = runner.join().map_err(|_| "the runner panicked")?;
+    let summary = summary?;
+    assert_eq!(summary.outcome, JobOutcome::Failed, "{said}");
+    let events = world.events()?;
+    assert!(
+        events.contains(&Event::JobEnded {
+            job: summary.job,
+            outcome: JobOutcome::Failed,
+            reason: ReasonCode::new("run.cancelled").ok_or("code")?,
+        }),
+        "{events:?}"
+    );
+    assert!(matches!(events.last(), Some(Event::TaskCompleted { .. })));
+    assert!(!held.exists(), "the held file stays after the run ended");
+    let task = held
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_prefix("task-"))
+        .ok_or("task")?
+        .to_string();
+    assert_eq!(world.signed(&["release", &task])?.status.code(), Some(1));
+    assert_eq!(
+        world.events()?.len(),
+        events.len(),
+        "a refused release wrote"
+    );
+    assert!(gh.issued().is_empty(), "no token is left live");
+    let _ = std::fs::remove_dir_all(&repos);
+    Ok(())
+}
+
+/// A run that held the issue and whose runner stopped is not resumed, since the broker's copy of the
+/// issue went with it: the resume ends the cut job `handle.lost` and completes the task, so nothing
+/// is left open for the agent or the operator (ADR-0078).
+#[test]
+fn a_resumed_run_that_held_the_issue_ends_rather_than_running_again() -> Res {
+    let world = World::new("lost", None)?;
+    let mut asked = request(Harness::Command(vec!["/bin/false".into()]));
+    asked.issue = String::new();
+    asked.issue_number = Some(7);
+    asked.await_release = true;
+    let (task, cut) = {
+        let key = hyalos::keys::load(&world.config.join("engine.key"))?;
+        let mut e = Engine::open(&world.data.join("events.db"), key)?;
+        let now = || hyalos::clock::SystemClock.now();
+        let engine = hyalos_types::Origin::Engine;
+        let task = TaskId::from_seq(
+            e.submit(
+                now(),
+                engine,
+                Event::TaskCreated {
+                    request: request_digest(&asked),
+                },
+            )?
+            .seq,
+        );
+        let start = |e: &mut Engine| -> Res<JobId> {
+            let head = e.submit(
+                now(),
+                engine,
+                Event::JobStarted {
+                    task,
+                    substrate: SubstrateName::new("broker").ok_or("substrate")?,
+                    credentials: CredentialTier::BrokerHeld,
+                    attestation: Attestation::no_hardware_root(),
+                },
+            )?;
+            Ok(JobId::from_seq(head.seq))
+        };
+        for values in finished_values().into_iter().take(2) {
+            let job = start(&mut e)?;
+            e.submit_all(
+                now(),
+                &[
+                    (engine, Event::JobValues { job, values }),
+                    (
+                        engine,
+                        Event::JobEnded {
+                            job,
+                            outcome: JobOutcome::Succeeded,
+                            reason: ReasonCode::new("step.answered").ok_or("code")?,
+                        },
+                    ),
+                ],
+            )?;
+        }
+        (task, start(&mut e)?)
+    };
+    let mut said = Vec::new();
+    let summary = resume_job(
+        &asked,
+        task,
+        world.setup(local_detect(), Duration::from_secs(10)),
+        &mut said,
+    )?
+    .ok_or("nothing was ended")?;
+    let said = String::from_utf8_lossy(&said).into_owned();
+    assert_eq!(summary.job, cut, "{said}");
+    let events = world.events()?;
+    assert!(
+        events.contains(&Event::JobEnded {
+            job: cut,
+            outcome: JobOutcome::Failed,
+            reason: ReasonCode::new("handle.lost").ok_or("code")?,
+        }),
+        "{events:?}"
+    );
+    assert!(matches!(events.last(), Some(Event::TaskCompleted { task: t }) if *t == task));
     Ok(())
 }
 

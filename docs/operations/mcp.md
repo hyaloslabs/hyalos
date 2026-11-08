@@ -112,7 +112,7 @@ The server does not run the job itself. It starts `hyalos run` as a process of i
 - `task-<id>.failed`: the error its last runner stopped with, if it did.
 - `task-<id>.held`: the digest and number of the issue the actor waits for you to release.
 
-A run whose runner stopped while it held the issue cannot be resumed, since the broker kept the issue's bytes in memory. Start another.
+A run whose runner stopped while it held the issue is not resumed, since the broker kept the issue's bytes in memory. Its resume ends the cut job `handle.lost` and completes the task. Start another.
 
 `hyalos log compact` and `hyalos log prune` refuse while a runner holds its lock. Wait for the run to end, or stop its runner, first.
 

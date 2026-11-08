@@ -36,7 +36,8 @@ const CANCEL_USAGE: &str = "usage: hyalos cancel <task> [--reason <code>] [--pas
 const RELEASE_USAGE: &str = "usage: hyalos release <task> [--reason <code>] [--passphrase-stdin]
   releases the issue task <task>'s run holds to its actor as your decision, signed with your approval
   key after your passphrase: the actor may then read the issue's text, as its users wrote it. Read the
-  issue on the forge first. --reason is a short code (default handle.operator_released)";
+  issue on the forge first: the command reads it again and refuses if it is not what the run holds.
+  --reason is a short code (default handle.operator_released)";
 
 fn finish(result: Result<String, (u8, String)>) -> ExitCode {
     match result {
@@ -168,7 +169,29 @@ pub fn release_with(args: &[String], env: Env<'_>) -> Result<String, (u8, String
     })?;
     let task = TaskId::from_seq(id);
     let runs = crate::runs::Runs::from_env(env).map_err(|e| (1, e))?;
-    let (handle, issue) = runs.held_handle(task).map_err(|e| (1, e))?;
+    let held = runs.held_handle(task).map_err(|e| (1, e))?;
+    let (handle, issue) = (held.handle, held.issue);
+    // What the operator reads on the forge now must be what the actor will read (ADR-0078).
+    let config = paths::config_dir(env).map_err(|e| (1, e))?;
+    match issue_digest(&config, &held) {
+        Ok(now) if now == handle => {}
+        Ok(_) => {
+            return Err((
+                1,
+                format!(
+                    "issue #{issue} of {} is not the issue task {id} holds: it changed since the run read it, \
+                     or the run's file names another. Stop the run (hyalos stop {id}) and start it again",
+                    held.repo
+                ),
+            ));
+        }
+        Err(e) => {
+            return Err((
+                1,
+                format!("cannot read issue #{issue} of {} again: {e}", held.repo),
+            ));
+        }
+    }
     let mut engine = operator::engine(env, source).map_err(|e| (1, e))?;
     if engine.state().handles().iter().any(|h| h.task == task) {
         return Err((1, format!("task {id} already has a released issue")));
@@ -181,4 +204,44 @@ pub fn release_with(args: &[String], env: Env<'_>) -> Result<String, (u8, String
         "released issue #{issue} (handle {handle}) to task {id} at event {}, signed by you; its actor may now read the issue's text\n",
         head.seq
     ))
+}
+
+/// The digest the broker would hold for `held`'s issue as the forge has it now: read with a
+/// read-only token of its own for that one repository, revoked before this returns.
+fn issue_digest(
+    config: &std::path::Path,
+    held: &crate::runs::HeldIssue,
+) -> Result<hyalos_types::Digest, String> {
+    use crate::github::{GitHubApp, permissions_for};
+    let app = GitHubApp::load(config).map_err(|e| e.to_string())?;
+    let read: std::collections::BTreeSet<String> = ["read".to_string()].into();
+    let now = hyalos_types::Clock::now(&SystemClock);
+    let permissions = permissions_for(&read).map_err(|e| e.to_string())?;
+    let minted = app
+        .mint_for(&held.repo, &permissions, now)
+        .map_err(|e| e.to_string())?;
+    let manifest = hyalos_types::Manifest {
+        version: hyalos_types::MANIFEST_VERSION,
+        job: hyalos_types::JobId::from_seq(0),
+        role: hyalos_types::Role::Reader,
+        tainted: true,
+        repo: held.repo.clone(),
+        branch_prefix: String::new(),
+        pr_base: None,
+        actions: read,
+        egress_hosts: Default::default(),
+        tools: Default::default(),
+        data_flows: Default::default(),
+        budget: hyalos_types::Budget { tokens: 0 },
+        deadline: now,
+        approval: None,
+        handles: Default::default(),
+        result: None,
+    };
+    let forge = hyalos_broker::forge::Forge::with_base(&app.forge_bases().api);
+    let read = forge.read_issue(&manifest, Some(&minted.token), held.issue);
+    let revoked = app.revoke(&minted.token);
+    let issue = read.map_err(|code| format!("the forge refused ({code})"))?;
+    revoked.map_err(|e| format!("its read-only token may still be live: {e}"))?;
+    hyalos_broker::handles::hold(&mut Default::default(), &issue).map_err(str::to_string)
 }

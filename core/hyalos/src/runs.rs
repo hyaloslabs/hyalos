@@ -77,17 +77,18 @@ impl Runs {
         (request_digest(&request) == recorded).then_some(request)
     }
 
-    /// The handle `task`'s runner holds for the operator to release, and the issue's number, as the
-    /// runner wrote them (ADR-0078). The release is checked against the log; the broker serves only
-    /// bytes it read for this run, whatever digest is named.
-    pub fn held_handle(&self, task: TaskId) -> Result<(hyalos_types::Digest, u64), String> {
+    /// The handle `task`'s runner holds for the operator to release, with the issue's repository and
+    /// number, as the runner wrote them (ADR-0078), and only while that runner waits: it locks the
+    /// file for as long as it does. Anything running as this user could write the file, so
+    /// `hyalos release` reads the issue again and refuses unless its digest is this handle.
+    pub fn held_handle(&self, task: TaskId) -> Result<HeldIssue, String> {
         let file = self.file(task, "held");
-        let text = std::fs::read_to_string(&file).map_err(|_| {
-            format!(
-                "task {} holds no issue waiting for your release",
-                task.seq()
-            )
-        })?;
+        let none = || format!("task {} has no run waiting for your release", task.seq());
+        let opened = File::open(&file).map_err(|_| none())?;
+        if opened.try_lock_shared().is_ok() {
+            return Err(format!("{}: its runner stopped", none()));
+        }
+        let text = std::fs::read_to_string(&file).map_err(|_| none())?;
         let held: Value = serde_json::from_str(&text)
             .map_err(|_| format!("{} is not readable", file.display()))?;
         let handle = held["handle"]
@@ -97,7 +98,16 @@ impl Runs {
         let issue = held["issue"]
             .as_u64()
             .ok_or_else(|| format!("{} names no issue", file.display()))?;
-        Ok((handle, issue))
+        let repo = held["repo"]
+            .as_str()
+            .filter(|r| run_cmd::is_repo(r))
+            .ok_or_else(|| format!("{} names no repository", file.display()))?
+            .to_string();
+        Ok(HeldIssue {
+            handle,
+            repo,
+            issue,
+        })
     }
 
     /// Whether `task`'s last runner stopped with an error, and nothing has retried it since.
@@ -147,6 +157,14 @@ impl Runs {
             Err(e) => e.kind() != std::io::ErrorKind::NotFound,
         }
     }
+}
+
+/// The issue a waiting run holds, as its `.held` file names it (ADR-0078).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldIssue {
+    pub handle: hyalos_types::Digest,
+    pub repo: String,
+    pub issue: u64,
 }
 
 /// Records that `task`'s runner stopped with an error, before it lets go of the lock, so the server
