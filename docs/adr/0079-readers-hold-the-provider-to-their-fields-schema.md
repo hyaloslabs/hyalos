@@ -1,6 +1,6 @@
 # ADR-0079: Readers hold the provider to their fields' schema
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
