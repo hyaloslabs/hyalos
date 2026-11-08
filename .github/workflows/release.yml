@@ -1,0 +1,130 @@
+name: release
+
+# A release (ADR-0081): on a tag vX.Y.Z that matches the workspace's version, the sandbox image is
+# built and pushed to ghcr.io, and the static `hyalos` binary is built to name that image by its
+# digest. Both get build provenance, and the binary a SHA-256 in SHA256SUMS, on a GitHub release.
+# A pull request that changes this file builds both and publishes nothing.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The Containerfile's own builder, so the binary and the sandbox tools build alike.
+  BUILDER: rust:1.99.1-slim-bookworm@sha256:ed2c95ca377d6571b124b05e75e01207973ded639dce7d5542eb7bcd797e32aa
+  TARGET: x86_64-unknown-linux-musl
+  PUBLISH: ${{ github.event_name == 'push' }}
+
+jobs:
+  image:
+    name: sandbox image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The tag is the workspace's version
+        if: env.PUBLISH == 'true'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          test "$TAG" = "v$version" || { echo "tag $TAG is not v$version"; exit 1; }
+      - name: Build the image
+        run: docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:release .
+      - name: Push it, and name it by digest
+        id: push
+        if: env.PUBLISH == 'true'
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/hyalos-sandbox"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker tag hyalos-sandbox:release "$repo:$TAG"
+          docker push "$repo:$TAG" | tee push.log
+          digest=$(grep -o 'digest: sha256:[0-9a-f]\{64\}' push.log | tail -n1 | cut -d' ' -f2)
+          test -n "$digest" || { echo "no digest in the push's output"; exit 1; }
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image=$repo@$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest the image's provenance
+        if: env.PUBLISH == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.push.outputs.repo }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  binary:
+    name: hyalos binary
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Static, with musl, so it runs on any Linux of this architecture. The C parts (ring, SQLite)
+      # need musl-gcc. The image's digest is built in as the default image; a pull request has none.
+      - name: Build the static binary
+        env:
+          HYALOS_RELEASE_IMAGE: ${{ needs.image.outputs.image }}
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src -e HYALOS_RELEASE_IMAGE -e TARGET "$BUILDER" bash -c '
+            set -euo pipefail
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends musl-tools >/dev/null
+            rustup target add "$TARGET"
+            cargo build --release --locked -p hyalos --target "$TARGET"'
+          mkdir dist
+          cp "target/$TARGET/release/hyalos" dist/hyalos-x86_64-linux
+      - name: It is static, runs, and names its image
+        env:
+          IMAGE: ${{ needs.image.outputs.image }}
+        run: |
+          file dist/hyalos-x86_64-linux | grep -q 'static' || { file dist/hyalos-x86_64-linux; exit 1; }
+          dist/hyalos-x86_64-linux --version
+          want="docker pull ${IMAGE:-hyalos-sandbox:latest}"
+          [ -n "$IMAGE" ] || want="docker build -f images/sandbox/Containerfile"
+          HYALOS_CONFIG_DIR="$RUNNER_TEMP/c" HYALOS_DATA_DIR="$RUNNER_TEMP/d" \
+            dist/hyalos-x86_64-linux setup --json > setup.json || true
+          grep -qF "$want" setup.json || { cat setup.json; exit 1; }
+      - name: Checksums
+        run: cd dist && sha256sum hyalos-x86_64-linux > SHA256SUMS && cat SHA256SUMS
+      - name: Attest the binary's provenance
+        if: env.PUBLISH == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/hyalos-x86_64-linux
+      - name: Publish the release
+        if: env.PUBLISH == 'true'
+        env:
+          TAG: ${{ github.ref_name }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf 'The sandbox image, by digest:\n\n    %s\n\nInstall: docs/operations/getting-started.md. Verify: sha256sum -c SHA256SUMS, and gh attestation verify hyalos-x86_64-linux --repo %s.\n' \
+            "$IMAGE" "$GITHUB_REPOSITORY" > notes.md
+          gh release create "$TAG" dist/hyalos-x86_64-linux dist/SHA256SUMS \
+            --verify-tag --title "$TAG" --notes-file notes.md

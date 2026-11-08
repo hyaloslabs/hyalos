@@ -94,3 +94,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0078](0078-agent-started-runs-wait-for-the-operator-to-release-the-issue.md) | Agent-started runs wait for the operator to release the issue | Accepted |
 | [0079](0079-readers-hold-the-provider-to-their-fields-schema.md) | Readers hold the provider to their fields' schema | Accepted |
 | [0080](0080-setup-asks-the-operator-in-their-own-terminal.md) | Setup asks the operator in their own terminal | Accepted |
+| [0081](0081-prebuilt-releases.md) | Prebuilt releases: a static binary that names its image by digest | Proposed |

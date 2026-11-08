@@ -14,7 +14,7 @@ use std::process::ExitCode;
 
 use serde_json::{Value, json};
 
-use crate::doctor_cmd::DEFAULT_IMAGE;
+use crate::doctor_cmd::{DEFAULT_IMAGE, RELEASE_IMAGE};
 use crate::github::GitHubApp;
 use crate::mcp_cmd::EngineLog;
 use crate::paths::{self, Env};
@@ -109,12 +109,27 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
     step(
         "substrate",
         Who::Agent,
-        "from the repository root: docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:latest . (then hyalos doctor)",
-        lines(&[
-            "# from the repository root; podman in place of docker if that is what you have",
-            "docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:latest .",
-            "hyalos doctor",
-        ]),
+        match RELEASE_IMAGE {
+            Some(_) => {
+                "pull the image this release was published with: docker pull <image> (then hyalos doctor)"
+            }
+            None => {
+                "from the repository root: docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:latest . (then hyalos doctor)"
+            }
+        },
+        match RELEASE_IMAGE {
+            // A release names its image by digest, so what is pulled is what was published (ADR-0081).
+            Some(image) => vec![
+                "# podman in place of docker if that is what you have".to_string(),
+                format!("docker pull {image}"),
+                "hyalos doctor".to_string(),
+            ],
+            None => lines(&[
+                "# from the repository root; podman in place of docker if that is what you have",
+                "docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:latest .",
+                "hyalos doctor",
+            ]),
+        },
         "docs/operations/substrates.md",
         substrate.map(|name| format!("a job would run on {name}")),
     );

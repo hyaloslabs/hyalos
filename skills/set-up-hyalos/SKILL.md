@@ -29,15 +29,37 @@ Keep what you print between steps short, and run long commands in the background
 
 Hyalos runs jobs only on Linux (WSL2 counts). Check for:
 - `git`;
-- `cargo`, through rustup (the repository pins its toolchain in `rust-toolchain.toml`);
 - `docker` or `podman`;
-- `gh`, logged in (`gh auth status`). It is optional: without it you cannot open a first issue for the operator in part 5, and they open it on GitHub instead.
+- `gh`, logged in (`gh auth status`). A release is downloaded with it, and you open a first issue with it in part 5. Without it, Hyalos is built from source and the operator opens the issue on GitHub.
 
-If one is missing, say which and how to install it, then stop until it is there. If rustup installs `cargo` during this session, the operator's terminal does not have it on its `PATH` yet: tell them to open a new terminal, or to run `. ~/.cargo/env` in theirs.
+Then see whether there is a release for this host ([ADR-0081](../../docs/adr/0081-prebuilt-releases.md)): `uname -m` is `x86_64`, and `gh release view --repo hyaloslabs/hyalos --json tagName` answers. If so, take part 2's release path, which needs no Rust. If not, the source path needs `cargo`, through rustup (the repository pins its toolchain in `rust-toolchain.toml`).
 
-## 2. Start the two long builds
+If something is missing, say which and how to install it, then stop until it is there. If rustup installs `cargo` during this session, the operator's terminal does not have it on its `PATH` yet: tell them to open a new terminal, or to run `. ~/.cargo/env` in theirs.
 
-Both take minutes. Start them in the background from the repository root, at the same time, and do not stream their output:
+## 2. Install `hyalos` and the sandbox image
+
+**From a release.** Download and check the binary, from a new temporary directory:
+
+```
+cd "$(mktemp -d)"
+gh release download --repo hyaloslabs/hyalos -p hyalos-x86_64-linux -p SHA256SUMS
+sha256sum -c SHA256SUMS
+gh attestation verify hyalos-x86_64-linux --repo hyaloslabs/hyalos
+install -D -m 755 hyalos-x86_64-linux ~/.local/bin/hyalos
+```
+
+If `sha256sum -c` fails, or the attestation fails to verify, stop and use the source path instead. On a `gh` older than 2.49 there is no `gh attestation`: skip that line and tell the operator the provenance was not checked. Run `hyalos` as `~/.local/bin/hyalos` until `~/.local/bin` is on this shell's `PATH`. If `hyalos` is not found in the operator's terminal, tell them to open a new one.
+
+Then pull the image. The release names it by digest, and `hyalos setup --json` gives the line, under the `substrate` step's `commands`. Run that `docker pull` in the background. If it is refused because the image is private, the login is the operator's, since the token is theirs. They run these in their own terminal:
+
+```
+gh auth refresh -h github.com -s read:packages
+gh auth token | docker login ghcr.io -u <their GitHub user> --password-stdin
+```
+
+Then run the pull again.
+
+**From source.** Both builds take minutes. Start them in the background from the repository root, at the same time, and do not stream their output:
 
 ```
 cargo install --locked --path core/hyalos
@@ -46,7 +68,7 @@ docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:
 
 Use `podman` in place of `docker` if that is what the machine has. Keep `--target sandbox`: the Containerfile's last stage is the test image, which is not for jobs.
 
-## 3. The browser work, while the builds run
+## 3. The browser work, while it installs
 
 The operator can do this in a browser on any computer, including one other than this machine. Tell them, in these short lines:
 
@@ -66,7 +88,7 @@ They keep the key, the App ID and the `.pem`. Nothing is written yet. On a machi
 
 ## 4. Work through the checklist
 
-Once `cargo install` has finished and `hyalos --version` answers, run `hyalos init` (the engine key, which is yours), then:
+Once `hyalos --version` answers, run `hyalos init` (the engine key, which is yours), then:
 
 ```
 hyalos setup --json
@@ -90,7 +112,7 @@ It takes each of their steps that is not done, in order, and asks them for what 
 
 Each step is also its own command (`hyalos setup provider-key`, `github-app`, `policy`, `agent`), safe to run again, which asks before it replaces anything. If a step fails, `walk` says what was not written; once they fix it, they run `hyalos setup walk` again.
 
-Meanwhile, the `substrate` step is yours: wait for the image build. If it is still not ready, `hyalos doctor` says why. `walk` does not wait for it.
+Meanwhile, the `substrate` step is yours: wait for the image's pull or build. If it is still not ready, `hyalos doctor` says why. `walk` does not wait for it.
 
 When they say `walk` is done, run `hyalos setup` until it prints `setup: 7 of 7 steps done`. Then check that the server was registered for the directory this session runs in:
 

@@ -124,7 +124,7 @@ impl ContainerSubstrate {
             Ok(())
         } else {
             Err(Unavailable(format!(
-                "{} has no image {image}; build or load it first",
+                "{} has no image {image}; build or pull it first (hyalos setup says how)",
                 self.runtime
             )))
         }

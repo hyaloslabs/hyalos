@@ -6,7 +6,7 @@ You keep every secret and every decision. The agent never needs your passphrase,
 
 ## By hand
 
-1. Install the binary from the repository root: `cargo install --locked --path core/hyalos`. Build the image at the same time: `docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:latest .` (name the target: the last stage is the test image).
+1. Install a release, if there is one for your host: a static binary for x86_64 Linux and the image it names ([releases.md](releases.md)). Or build from source: install the binary from the repository root with `cargo install --locked --path core/hyalos`. Build the image at the same time: `docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:latest .` (name the target: the last stage is the test image).
 2. Run `hyalos setup`. It lists what is missing, in order, who takes each step and where it is written down, and writes nothing:
 
    ```
