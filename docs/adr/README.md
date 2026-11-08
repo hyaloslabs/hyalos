@@ -87,4 +87,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0071](0071-merging-after-the-operators-approval.md) | Merging a pull request after the operator's approval | Accepted |
 | [0072](0072-marking-untrusted-data-in-results.md) | Marking untrusted data in the driving agent's results | Accepted |
 | [0073](0073-clients-on-older-mcp-revisions-are-unsupported.md) | Clients on older MCP revisions are unsupported until they move | Accepted |
-| [0074](0074-approvals-shown-to-the-driving-agent.md) | Approvals are shown to the driving agent as read-only tool results | Proposed |
+| [0074](0074-approvals-shown-to-the-driving-agent.md) | Approvals are shown to the driving agent as read-only tool results | Accepted |

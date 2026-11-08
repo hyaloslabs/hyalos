@@ -1,6 +1,6 @@
 # ADR-0074: Approvals are shown to the driving agent as read-only tool results
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
