@@ -1,6 +1,6 @@
 # ADR-0076: The set-up-hyalos skill and the setup checklist
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
