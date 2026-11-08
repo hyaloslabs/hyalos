@@ -89,10 +89,10 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0073](0073-clients-on-older-mcp-revisions-are-unsupported.md) | Clients on older MCP revisions are unsupported until they move | Accepted |
 | [0074](0074-approvals-shown-to-the-driving-agent.md) | Approvals are shown to the driving agent as read-only tool results | Accepted |
 | [0075](0075-the-thin-cli-for-the-agents-tools.md) | The thin CLI: one command for each of the driving agent's tools | Accepted |
-| [0076](0076-the-set-up-hyalos-skill-and-the-setup-checklist.md) | The set-up-hyalos skill and the setup checklist | Superseded by [ADR-0077](0077-handing-the-operator-one-step-at-a-time.md) |
+| [0076](0076-the-set-up-hyalos-skill-and-the-setup-checklist.md) | The set-up-hyalos skill and the setup checklist | Superseded by [ADR-0077](0077-handing-the-operator-one-step-at-a-time.md); its starter policy by [ADR-0082](0082-the-starter-policy-permits-merge.md) |
 | [0077](0077-handing-the-operator-one-step-at-a-time.md) | Handing the operator one step at a time | Superseded by [ADR-0080](0080-setup-asks-the-operator-in-their-own-terminal.md) |
 | [0078](0078-agent-started-runs-wait-for-the-operator-to-release-the-issue.md) | Agent-started runs wait for the operator to release the issue | Accepted |
 | [0079](0079-readers-hold-the-provider-to-their-fields-schema.md) | Readers hold the provider to their fields' schema | Accepted |
 | [0080](0080-setup-asks-the-operator-in-their-own-terminal.md) | Setup asks the operator in their own terminal | Accepted |
 | [0081](0081-prebuilt-releases.md) | Prebuilt releases: a static binary that names its image by digest | Accepted |
-| [0082](0082-the-starter-policy-permits-merge.md) | The starter policy permits merge | Proposed |
+| [0082](0082-the-starter-policy-permits-merge.md) | The starter policy permits merge | Accepted |

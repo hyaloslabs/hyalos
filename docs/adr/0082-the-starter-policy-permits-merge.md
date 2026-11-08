@@ -1,6 +1,6 @@
 # ADR-0082: The starter policy permits merge
 
-**Status:** Proposed
+**Status:** Accepted. Supersedes [ADR-0076](0076-the-set-up-hyalos-skill-and-the-setup-checklist.md)'s starter policy.
 
 ## Context
 

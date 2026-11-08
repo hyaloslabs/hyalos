@@ -1,6 +1,6 @@
 # ADR-0076: The set-up-hyalos skill and the setup checklist
 
-**Status:** Superseded by [ADR-0077](0077-handing-the-operator-one-step-at-a-time.md)
+**Status:** Superseded by [ADR-0077](0077-handing-the-operator-one-step-at-a-time.md). Its starter policy is superseded by [ADR-0082](0082-the-starter-policy-permits-merge.md).
 
 ## Context
 
