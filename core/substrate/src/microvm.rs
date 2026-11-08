@@ -115,7 +115,7 @@ impl MicroVmSubstrate {
         let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if !out.status.success() || id.is_empty() {
             return Err(format!(
-                "{} has no image {image}; build or load it first",
+                "{} has no image {image}; build or pull it first (hyalos setup says how)",
                 self.runtime
             ));
         }

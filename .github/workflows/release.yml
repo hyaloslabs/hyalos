@@ -1,0 +1,150 @@
+name: release
+
+# A release (ADR-0081). On a tag vX.Y.Z that is on main and matches the workspace's version:
+# - the sandbox image is built and pushed to ghcr.io, and named from then on by its digest;
+# - the static `hyalos` binary is built to name that image as its default;
+# - both get build provenance while the repository is public (GitHub offers attestations for
+#   private repositories only on Enterprise Cloud);
+# - the binary and its SHA-256 (SHA256SUMS) are published on a GitHub release.
+# A pull request that changes the release runs only the check jobs, which can write nothing.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - ".github/scripts/build-release-binary.sh"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  image-check:
+    name: sandbox image (check)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the image
+        run: docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:release .
+
+  binary-check:
+    name: hyalos binary (check)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and check the static binary
+        run: .github/scripts/build-release-binary.sh ""
+
+  image:
+    name: sandbox image
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: The tag is on main and is the workspace's version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          test "$TAG" = "v$version" || { echo "tag $TAG is not v$version"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$TAG is not on main"; exit 1; }
+      - name: Log in to the registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Build and push the image, and name it by digest
+        id: push
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/hyalos-sandbox"
+          # A tag is published once: a second run would leave the first image's digest behind. Only
+          # "not found" lets the push go ahead; any other failure to look stops it.
+          if out=$(docker buildx imagetools inspect "$repo:$TAG" 2>&1); then
+            echo "$repo:$TAG is published already"; exit 1
+          elif ! grep -qi 'not found' <<<"$out"; then
+            echo "cannot tell whether $repo:$TAG is published: $out"; exit 1
+          fi
+          docker buildx build -f images/sandbox/Containerfile --target sandbox -t "$repo:$TAG" --push .
+          # The digest as the registry serves it, which is what a pull by digest asks for.
+          digest=$(docker buildx imagetools inspect "$repo:$TAG" --format '{{.Manifest.Digest}}')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest: $digest"; exit 1; }
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "image=$repo@$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest the image's provenance
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.push.outputs.repo }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+  binary:
+    name: hyalos binary
+    if: github.event_name == 'push'
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The image it will name can be pulled by its digest
+        env:
+          IMAGE: ${{ needs.image.outputs.image }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker pull "$IMAGE"
+          docker image inspect "$IMAGE" >/dev/null
+      - name: Build and check the static binary
+        env:
+          IMAGE: ${{ needs.image.outputs.image }}
+        run: .github/scripts/build-release-binary.sh "$IMAGE"
+      - name: Attest the binary's provenance
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/hyalos-x86_64-linux
+      - name: Publish the release
+        env:
+          TAG: ${{ github.ref_name }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf 'The sandbox image, by digest:\n\n    %s\n\nInstall and verify: docs/operations/releases.md.\n' "$IMAGE" > notes.md
+          gh release create "$TAG" dist/hyalos-x86_64-linux dist/SHA256SUMS \
+            --verify-tag --title "$TAG" --notes-file notes.md

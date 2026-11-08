@@ -9,13 +9,64 @@ use std::process::ExitCode;
 
 use hyalos_substrate::{Choice, HOST_OS, Isolation, Unsupported, detect_with};
 
-/// The sandbox image a job runs, as `images/sandbox/Containerfile` builds it (ADR-0040).
-pub const DEFAULT_IMAGE: &str = "hyalos-sandbox:latest";
+/// The sandbox image a job runs: as `images/sandbox/Containerfile` builds it (ADR-0040), or, in a
+/// release binary, the image published with it, by digest (ADR-0081).
+pub const DEFAULT_IMAGE: &str = match RELEASE_IMAGE {
+    Some(image) => image,
+    None => "hyalos-sandbox:latest",
+};
+
+/// The image a release was built with, set by the release workflow; `None` in a build from source.
+pub const RELEASE_IMAGE: Option<&str> = match option_env!("HYALOS_RELEASE_IMAGE") {
+    Some(image) if !image.is_empty() => Some(image),
+    _ => None,
+};
+
+// A release names its image by digest, and a plain reference at that, or it does not build.
+const _: () = if let Some(image) = RELEASE_IMAGE {
+    assert!(
+        by_digest(image),
+        "HYALOS_RELEASE_IMAGE is not <name>@sha256:<64 hex>"
+    );
+};
+
+/// Whether `image` is `<name>@sha256:<64 lowercase hex>`, with only the characters a plain image
+/// reference has.
+const fn by_digest(image: &str) -> bool {
+    const AT: &[u8] = b"@sha256:";
+    let b = image.as_bytes();
+    if b.len() <= AT.len() + 64 || b.len() > 255 || b[0] == b'-' {
+        return false;
+    }
+    let name = b.len() - AT.len() - 64;
+    let mut i = 0;
+    while i < name {
+        let c = b[i];
+        if !(c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'/' | b':' | b'-')) {
+            return false;
+        }
+        i += 1;
+    }
+    while i < name + AT.len() {
+        if b[i] != AT[i - name] {
+            return false;
+        }
+        i += 1;
+    }
+    while i < b.len() {
+        if !matches!(b[i], b'0'..=b'9' | b'a'..=b'f') {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
 
 const USAGE: &str = "usage: hyalos doctor [--image <image>]
   checks that this host can run jobs: that it is Linux, which substrate a job would run on (each
   runtime must have the sandbox image and start an init), and reminds you to cap spending on the
-  provider key. --image names the sandbox image (default hyalos-sandbox:latest).
+  provider key. --image names the sandbox image (default hyalos-sandbox:latest, or the image a
+  release was published with).
   Exit 0 if a job could run, 1 if not, 2 for bad usage";
 
 /// The provider-side spend cap reminder (ADR-0038). A job's budget bounds what the broker spends; only
@@ -118,6 +169,30 @@ mod tests {
             name: SubstrateName::new(name).unwrap(),
             isolation: Isolation::Container,
             result,
+        }
+    }
+
+    #[test]
+    fn a_release_image_is_named_by_its_digest() {
+        let digest = "0123456789abcdef".repeat(4);
+        assert!(by_digest(&format!(
+            "ghcr.io/hyaloslabs/hyalos-sandbox@sha256:{digest}"
+        )));
+        for bad in [
+            "hyalos-sandbox:latest".to_string(),
+            format!("@sha256:{digest}"),
+            format!("-x@sha256:{digest}"),
+            format!("a@b@sha256:{digest}"),
+            format!("a@sha256:{}", &digest[1..]),
+            format!("a@sha256:{}", digest.to_uppercase()),
+            format!("a b@sha256:{digest}"),
+            format!("a@sha512:{digest}"),
+        ] {
+            assert!(!by_digest(&bad), "{bad}");
+        }
+        // A build from source runs the image Containerfile builds.
+        if RELEASE_IMAGE.is_none() {
+            assert_eq!(DEFAULT_IMAGE, "hyalos-sandbox:latest");
         }
     }
 
