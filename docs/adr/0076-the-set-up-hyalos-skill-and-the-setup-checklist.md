@@ -24,20 +24,21 @@ An agent that helps set up Hyalos has a shell as the operator's user. That is al
 For each it gives whether it is done, what it found or what is wrong, what to do, and the procedure's document.
 
 It checks each step the way a job would read it:
-- the engine key with `keys::load`, and the log against `engine.pub`;
-- the substrate with `detect_with`;
+- the engine key with `keys::load`, its public half against `engine.pub`, and the log against that;
+- the operator key with `operator::check`: the file is the operator's alone, parses and is sealed to `operator.pub`, without the passphrase;
+- the substrate with `detect_with`, on a thread with `hyalos run`'s 60-second timeout ([ADR-0050](0050-running-one-job-from-the-command-line.md));
 - `provider.keys` with the broker's own reader;
 - the App with `GitHubApp::load`;
-- the policy in force and the agent credentials in force from the log.
+- the policy in force from the log, which must still validate, since a stored policy that does not holds every job ([ADR-0034](0034-the-operator-policy-store-and-minting-within-policy.md)), and the agent credentials in force.
 
-It writes nothing and makes no network call. Whether the App is installed on a repository is `hyalos github check`. It prints no secret: the details name files and lines, never contents. It exits 0 when every step is done, 1 when one is not, and 2 for bad usage. It is a setup command, so it has no MCP tool (ADR-0075).
+It writes nothing but what substrate detection caches, as `hyalos doctor` does, and makes no network call. It names the config directory, so the operator's files go where Hyalos reads them. Whether the App is installed on a repository is `hyalos github check`. It prints no secret: the details name files and lines, never contents. It exits 0 when every step is done, 1 when one is not, and 2 for bad usage. It is a setup command, so it has no MCP tool (ADR-0075).
 
-**Each step names who takes it.** The agent takes setup a shell can do with nothing secret and nothing decided: `hyalos init` and building the image. The operator takes every step that holds a secret or is a signed decision:
+**Each step names who takes it.** The agent takes setup a shell can do with nothing secret and nothing decided: `hyalos init` and building the image (`--target sandbox`; the Containerfile's last stage is the test image, with curl and the test CA). The operator takes every step that holds a secret or is a signed decision:
 - `operator init`;
 - `provider.keys`;
 - the App and its key;
-- `policy approve`;
-- `agent issue`, and registering the server with the client.
+- the policy: the operator prints the starter, reads it and approves it, so the file they sign is one the agent never wrote;
+- `agent issue`, and registering the server with the client (with `--harness claude-code` when their only key is Anthropic's, since the server's template defaults to Codex).
 
 The operator runs those in a terminal of their own, because what they type into the agent's session, or what a command prints there, reaches the agent.
 
@@ -49,7 +50,7 @@ The operator runs those in a terminal of their own, because what they type into 
 - loops on `hyalos setup`;
 - starts the first job with `hyalos start`, so that job does not wait for the client to load the new MCP server.
 
-It states the rules: never read or ask for a secret, never run a decision, and send the operator to their own terminal for both.
+It states the rules: never read or ask for a secret, never run a decision or write a document the operator signs, and send the operator to their own terminal for those.
 
 ## Consequences
 

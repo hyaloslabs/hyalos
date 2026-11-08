@@ -1,8 +1,9 @@
 //! `hyalos setup`: what still stands between this machine and a first job, step by step, and who
 //! takes each step (S5.5, ADR-0076). The set-up-hyalos Agent Skill reads it to know what to do next.
 //!
-//! It is read-only: it writes nothing, opens no private key's contents beyond checking that the file
-//! is the operator's alone and parses, and prints no secret. Each step is the agent's, when it is
+//! It is read-only: it writes nothing but what substrate detection caches (as `hyalos doctor` does),
+//! reads a private key file only to check that it is the operator's alone and parses, makes no
+//! network call, and prints no secret. Each step is the agent's, when it is
 //! setup a shell can do, or the operator's, when it needs a secret (a provider key, the App's private
 //! key) or is a decision signed with the operator's key behind their passphrase, which the agent must
 //! never see. The operator runs those in a terminal of their own.
@@ -66,6 +67,7 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
     };
     let state = log.read();
     let mut steps = Vec::new();
+    let engine = engine_key(&config, &state);
     let mut step = |id, who, action, doc, found: Result<String, String>| {
         let (done, detail) = match found {
             Ok(detail) => (true, detail),
@@ -86,7 +88,7 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
         Who::Agent,
         "hyalos init",
         "docs/operations/keys-and-recovery.md",
-        engine_key(&config, &log),
+        engine,
     );
     step(
         "operator_key",
@@ -98,7 +100,7 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
     step(
         "substrate",
         Who::Agent,
-        "from the repository root: docker build -f images/sandbox/Containerfile -t hyalos-sandbox:latest . (then hyalos doctor)",
+        "from the repository root: docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:latest . (then hyalos doctor)",
         "docs/operations/substrates.md",
         substrate.map(|name| format!("a job would run on {name}")),
     );
@@ -121,17 +123,22 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
     step(
         "policy",
         Who::Operator,
-        "hyalos policy starter > policy.cedar, read it, then in a terminal of your own: hyalos policy approve policy.cedar",
+        "in a terminal of your own: hyalos policy starter > policy.cedar, read it, then hyalos policy approve policy.cedar",
         "docs/operations/running-a-job.md",
+        // As a mint reads it: a stored policy that no longer validates holds every job (ADR-0034).
         state.clone().and_then(|state| match state.policy() {
-            Some(_) => Ok("a policy is in force (hyalos policy show)".to_string()),
+            Some(policy) => hyalos_engine::Engine::check_policy(&policy.document)
+                .map(|()| "a policy is in force (hyalos policy show)".to_string())
+                .map_err(|e| {
+                    format!("the policy in force no longer validates ({e}): approve a new one")
+                }),
             None => Err("no policy is in force, so no job can run".to_string()),
         }),
     );
     step(
         "agent_credential",
         Who::Operator,
-        "in a terminal of your own: hyalos agent issue <name>, then give the client its server: claude mcp add hyalos -e HYALOS_AGENT_CREDENTIAL=<credential> -- hyalos mcp",
+        "in a terminal of your own: hyalos agent issue <name>, then give the client its server: claude mcp add hyalos -e HYALOS_AGENT_CREDENTIAL=<credential> -- hyalos mcp (add --harness claude-code if provider.keys has only anthropic.key)",
         "docs/operations/mcp.md",
         state.and_then(|state| {
             let in_force = state
@@ -150,20 +157,24 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
     Ok(steps)
 }
 
-fn engine_key(config: &Path, log: &EngineLog) -> Result<String, String> {
-    crate::keys::load(&config.join(paths::ENGINE_KEY_FILE))
+fn engine_key(
+    config: &Path,
+    state: &Result<hyalos_engine::State, String>,
+) -> Result<String, String> {
+    let key = crate::keys::load(&config.join(paths::ENGINE_KEY_FILE))
         .map_err(|e| format!("no usable engine key: {e}"))?;
-    log.read()?;
+    let public = std::fs::read_to_string(config.join(paths::ENGINE_PUBLIC_KEY_FILE))
+        .map_err(|_| "there is no engine.pub: run hyalos init".to_string())?;
+    if public.trim() != key.public().to_hex() {
+        return Err("engine.pub is not engine.key's public key".into());
+    }
+    state.as_ref().map_err(Clone::clone)?;
     Ok("engine.key, engine.pub and the event log check out".to_string())
 }
 
 fn operator_key(config: &Path) -> Result<String, String> {
-    crate::operator::read_public(&config.join(paths::OPERATOR_PUBLIC_KEY_FILE))
-        .map_err(|e| format!("no operator key yet: {e}"))?;
-    if !config.join(paths::OPERATOR_KEY_FILE).is_file() {
-        return Err("operator.pub is there but operator.key is not".into());
-    }
-    Ok("operator.key and operator.pub are there".to_string())
+    crate::operator::check(config).map_err(|e| format!("no usable operator key: {e}"))?;
+    Ok("operator.key and operator.pub check out".to_string())
 }
 
 fn provider_keys(env: Env<'_>) -> Result<String, String> {
@@ -186,9 +197,13 @@ fn provider_keys(env: Env<'_>) -> Result<String, String> {
 }
 
 /// The steps as text: each with its state, who takes it and, if not done, what to do.
-pub fn text(steps: &[Step]) -> String {
+pub fn text(config: &Path, steps: &[Step]) -> String {
     let done = steps.iter().filter(|s| s.done).count();
-    let mut out = format!("setup: {done} of {} steps done\n", steps.len());
+    let mut out = format!(
+        "setup: {done} of {} steps done\nconfig directory: {}\n",
+        steps.len(),
+        config.display()
+    );
     for s in steps {
         if s.done {
             out.push_str(&format!("  [done] {}: {}\n", s.id, s.detail));
@@ -210,8 +225,9 @@ pub fn text(steps: &[Step]) -> String {
 }
 
 /// The steps as JSON.
-pub fn json(steps: &[Step]) -> Value {
+pub fn json(config: &Path, steps: &[Step]) -> Value {
     json!({
+        "config_dir": config.display().to_string(),
         "done": steps.iter().filter(|s| s.done).count(),
         "total": steps.len(),
         "steps": steps.iter().map(|s| json!({
@@ -236,31 +252,49 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     };
     let env = |name: &str| std::env::var(name).ok();
-    let substrate = crate::microvm_conf::from_env(&env).and_then(|microvm| {
-        hyalos_substrate::detect_with(&image, microvm)
-            .map_err(|e| format!("{e}"))
-            .and_then(|choice| match choice.chosen_name() {
-                Some(name) => Ok(name.to_string()),
-                None => Err(format!(
-                    "no substrate is ready for {image}; hyalos doctor says why"
-                )),
-            })
-    });
-    let steps = match steps(&env, substrate) {
-        Ok(steps) => steps,
+    let substrate = crate::microvm_conf::from_env(&env).and_then(|microvm| detect(&image, microvm));
+    let found = paths::config_dir(&env).and_then(|config| Ok((steps(&env, substrate)?, config)));
+    let (steps, config) = match found {
+        Ok(found) => found,
         Err(e) => {
             eprintln!("hyalos: {e}");
             return ExitCode::from(1);
         }
     };
     if as_json.is_empty() {
-        print!("{}", text(&steps));
+        print!("{}", text(&config, &steps));
     } else {
-        println!("{}", json(&steps));
+        println!("{}", json(&config, &steps));
     }
     if steps.iter().all(|s| s.done) {
         ExitCode::SUCCESS
     } else {
         ExitCode::from(1)
+    }
+}
+
+/// The substrate a job would run on, asked on a thread with `hyalos run`'s timeout, since a container
+/// runtime that does not answer would hang the checklist (ADR-0050).
+fn detect(image: &str, microvm: Option<hyalos_substrate::MicroVmConfig>) -> Result<String, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let owned = image.to_string();
+    std::thread::spawn(move || {
+        let _ = tx.send(hyalos_substrate::detect_with(&owned, microvm));
+    });
+    let timeout = crate::run_cmd::DETECT_TIMEOUT;
+    let choice = rx
+        .recv_timeout(timeout)
+        .map_err(|_| {
+            format!(
+                "finding a substrate took longer than {} s, so a container runtime is not answering; check that docker info or podman info returns",
+                timeout.as_secs()
+            )
+        })?
+        .map_err(|e| e.to_string())?;
+    match choice.chosen_name() {
+        Some(name) => Ok(name.to_string()),
+        None => Err(format!(
+            "no substrate is ready for {image}; hyalos doctor says why"
+        )),
     }
 }

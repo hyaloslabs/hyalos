@@ -136,6 +136,17 @@ pub fn engine(env: Env<'_>, source: Source) -> Result<Engine, String> {
     Ok(policy_cmd::open(env)?.with_operator(key))
 }
 
+/// Whether `operator.key` is the operator's alone, parses, and is sealed to the key `operator.pub`
+/// names, without the passphrase (`hyalos setup`, ADR-0076).
+pub fn check(config_dir: &Path) -> Result<OperatorPublic, String> {
+    let sealed = Sealed::read(config_dir)?;
+    let public = read_public(&config_dir.join(crate::paths::OPERATOR_PUBLIC_KEY_FILE))?;
+    if sealed.public != public {
+        return Err("operator.key is not the key operator.pub names".into());
+    }
+    Ok(public)
+}
+
 struct Sealed {
     iterations: u32,
     salt: Vec<u8>,

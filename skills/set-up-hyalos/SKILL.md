@@ -14,6 +14,7 @@ You are setting up Hyalos for the person you work for, the **operator**. The goa
 Hyalos has two principals ([ADR-0010](../../docs/adr/0010-mcp-primary-interface-two-principals.md)): you, the driving agent, and the operator. These keep that split true while you set it up:
 
 - **Never read, print, copy or ask for a secret.** That covers the operator's passphrase, a provider API key, and the files `provider.keys`, `github-app.pem`, `operator.key` and `engine.key`. If the operator pastes one to you, tell them to revoke or rotate it.
+- **Never write or summarise a document the operator signs.** They make it and read it themselves, so what they sign is what they read.
 - **Never run a decision.** That means `hyalos approve`, `cancel`, `merge`, `policy approve`, `agent issue`, `agent revoke` and `run --release-issue`. The operator runs them in **a terminal of their own**, not through you and not with a `!` command here, because what they type and what the command prints would land in this conversation.
 - A step whose `who` is `operator` is theirs. Tell them exactly what to do, then wait until they say it is done.
 
@@ -32,10 +33,10 @@ Both builds take minutes. Start them in the background from the repository root,
 
 ```
 cargo install --locked --path core/hyalos
-docker build -f images/sandbox/Containerfile -t hyalos-sandbox:latest .
+docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:latest .
 ```
 
-Use `podman` in place of `docker` if that is what the machine has.
+Use `podman` in place of `docker` if that is what the machine has. Keep `--target sandbox`: the Containerfile's last stage is the test image, which is not for jobs.
 
 While they build, ask the operator to do the two things that need no Hyalos binary:
 
@@ -50,20 +51,13 @@ While they build, ask the operator to do the two things that need no Hyalos bina
   On that page they should:
   1. Check the permissions shown: Contents, Issues and Pull requests are Read and write, Metadata is Read-only, and everything else is No access.
   2. Choose **Create GitHub App** and note the App ID.
-  3. Generate a private key, then move it into place and lock it down:
-
-     ```
-     mv ~/Downloads/*.private-key.pem ~/.config/hyalos/github-app.pem
-     chmod 600 ~/.config/hyalos/github-app.pem
-     ```
-
-     (Create `~/.config/hyalos` with `mkdir -p -m 700` first if it does not exist.)
-  4. Write `app_id = <id>` into `~/.config/hyalos/github.app`.
+  3. Generate a private key. The browser downloads one `.pem` file. They move that file to `github-app.pem` in the config directory and `chmod 600` it. The config directory is `$HYALOS_CONFIG_DIR`, else `$XDG_CONFIG_HOME/hyalos`, else `~/.config/hyalos`; once Hyalos is installed, `hyalos setup` prints it. Create it with `mkdir -p -m 700` if it does not exist. On WSL2 the download is under `/mnt/c/Users/<user>/Downloads`.
+  4. Write `app_id = <id>` into `github.app` in the config directory.
   5. **Install App** on the repository the first job will work on, with "Only select repositories".
 
   You may write `github.app` yourself once they tell you the id, since it holds no secret.
 
-- **A provider key** ([docs/operations/provider-keys.md](../../docs/operations/provider-keys.md)). Ask them to make a dedicated API key and set a spend cap on it at the provider. They then write it into `~/.config/hyalos/provider.keys` themselves and `chmod 600` it. The file holds one line:
+- **A provider key** ([docs/operations/provider-keys.md](../../docs/operations/provider-keys.md)). Ask them to make a dedicated API key and set a spend cap on it at the provider. They then write it into `provider.keys` in the config directory themselves and `chmod 600` it. The file holds one line:
   - `openai.key = ...` for the default harness, Codex;
   - or `anthropic.key = ...` for Claude Code, in which case start the job with `--harness claude-code`.
 
@@ -75,7 +69,7 @@ Once `cargo install` has finished and `hyalos --version` answers, run:
 hyalos setup
 ```
 
-Add `--json` if you would rather parse it. Take the first step that is not done:
+Add `--json` if you would rather parse it. Its second line names the config directory; use that path, not a guess. Take the first step that is not done:
 
 | Step | Who | What happens |
 | --- | --- | --- |
@@ -83,8 +77,8 @@ Add `--json` if you would rather parse it. Take the first step that is not done:
 | `operator_key` | operator | They run `hyalos operator init` in their own terminal and choose a passphrase of 12 or more characters. It signs their decisions, and you must never see it. |
 | `substrate` | agent | Wait for the image build. If it is still not ready, `hyalos doctor` says why. |
 | `provider_keys`, `github_app` | operator | The steps they started in part 2. The detail says what is still wrong, such as a file with the wrong mode. |
-| `policy` | operator | You run `hyalos policy starter > ~/.config/hyalos/policy.cedar` and show them what it allows: the first job's actions, with data going only to the model and GitHub. They read it and run `hyalos policy approve ~/.config/hyalos/policy.cedar` in their own terminal. |
-| `agent_credential` | operator | They run `hyalos agent issue claude-code` in their own terminal, then give this client the server with `claude mcp add hyalos -e HYALOS_AGENT_CREDENTIAL=<credential> -- hyalos mcp`. The credential is printed once. The MCP tools appear in your next session, and the first job does not wait for them. |
+| `policy` | operator | In their own terminal they run `hyalos policy starter > policy.cedar`, read it, then run `hyalos policy approve policy.cedar`. The starter allows the first job's actions, with data going only to the model and GitHub. You do not write or edit the file they approve. |
+| `agent_credential` | operator | They run `hyalos agent issue claude-code` in their own terminal, then give this client the server with `claude mcp add hyalos -e HYALOS_AGENT_CREDENTIAL=<credential> -- hyalos mcp`, adding `--harness claude-code` at the end if their only key is Anthropic's (the server's jobs default to Codex). The credential is printed once. The MCP tools appear in your next session, and the first job does not wait for them. |
 
 Run `hyalos setup` again after each step, until it prints `setup: 7 of 7 steps done`.
 

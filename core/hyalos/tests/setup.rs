@@ -3,6 +3,7 @@
 
 mod common;
 
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 use common::{EXE, GitHub, PASSPHRASE, Res, World, dir, ok_cli};
@@ -81,12 +82,15 @@ fn a_machine_set_up_for_a_job_has_every_step_done_once_the_agent_has_a_credentia
     assert!(credential.starts_with("hyalos-agent-"));
     let steps = hyalos::setup_cmd::steps(&env, local())?;
     assert!(todo(&steps).is_empty(), "{steps:?}");
-    let text = hyalos::setup_cmd::text(&steps);
-    assert!(text.starts_with("setup: 7 of 7 steps done\n"), "{text}");
+    let text = hyalos::setup_cmd::text(&world.config, &steps);
+    assert!(
+        text.starts_with("setup: 7 of 7 steps done\nconfig directory: "),
+        "{text}"
+    );
     assert!(text.contains("ready: "), "{text}");
 
     // No secret is shown, as text, as JSON or from the command itself.
-    let json = hyalos::setup_cmd::json(&steps).to_string();
+    let json = hyalos::setup_cmd::json(&world.config, &steps).to_string();
     let command = world.cli(&["setup", "--json"])?;
     let printed = String::from_utf8_lossy(&command.stdout).into_owned();
     let pem = std::fs::read_to_string(world.config.join("github-app.pem"))?;
@@ -103,6 +107,13 @@ fn a_machine_set_up_for_a_job_has_every_step_done_once_the_agent_has_a_credentia
     }
     let printed: Value = serde_json::from_str(&printed)?;
     assert_eq!(printed["total"], 7);
+
+    // An operator key file others can read is not done, as approving would refuse it.
+    let sealed = world.config.join("operator.key");
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o644))?;
+    let steps = hyalos::setup_cmd::steps(&env, local())?;
+    assert_eq!(todo(&steps), ["operator_key"]);
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o600))?;
 
     // A policy the log no longer checks out against is not taken as done.
     let public = world.config.join("engine.pub");

@@ -10,7 +10,7 @@
 - **Your approval key.** Run `hyalos operator init`; approving the policy below and releasing an issue's text are your decisions, signed with it after your passphrase. See [approvals.md](approvals.md).
 - **A provider key.** Write `provider.keys` and set a spend cap at the provider. See [provider-keys.md](provider-keys.md).
 - **The GitHub App.** Write `github.app` and `github-app.pem`, and install the App on the repository. See [github-app.md](github-app.md). `hyalos github check <owner/repo>` shows the App can mint a token for it.
-- **A substrate and the image.** Build the image (`docker build -f images/sandbox/Containerfile -t hyalos-sandbox .` from the repository root). `hyalos doctor` must say a job could run. A job runs under gVisor where it is set up, otherwise in a plain container ([substrates.md](substrates.md)).
+- **A substrate and the image.** Build the image (`docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:latest .` from the repository root; without `--target sandbox` it builds the test image). `hyalos doctor` must say a job could run. A job runs under gVisor where it is set up, otherwise in a plain container ([substrates.md](substrates.md)).
 - **A policy.** The shipped baseline allows nothing, so no job runs until you approve a policy that allows what a job asks for. A job asks for `read`, `push` and `open_pr`, and `request_host` for each `--allow-host`. It also asks for `data_flow` for each place its data may go ([ADR-0055](../adr/0055-data-flows-name-where-the-jobs-data-may-go.md)): `job->model` and `job->forge` always, and `job->web` when it may reach a host:
 
   ```
