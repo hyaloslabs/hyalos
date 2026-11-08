@@ -598,8 +598,9 @@ impl Engine {
 
     /// Reads and projects what other processes appended since this engine last looked, each event
     /// checked as replay checks it (ADR-0069). The state is unchanged if any of it does not check out,
-    /// and the engine then accepts nothing more.
-    fn catch_up(&mut self) -> Result<(), EngineError> {
+    /// and the engine then accepts nothing more. A run waiting for the operator's decision, which
+    /// another process writes, calls it to see that decision (ADR-0078).
+    pub fn catch_up(&mut self) -> Result<(), EngineError> {
         let (events, head) = match self.log.events_after(self.known) {
             Ok(read) => read,
             Err(e) => {

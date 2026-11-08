@@ -30,6 +30,7 @@ Each command asks for the passphrase before it writes anything, and writes nothi
 ```
 hyalos approve <hold>        # release a hold (default reason approved.operator)
 hyalos cancel <task>         # end a held task instead (default reason cancelled.operator)
+hyalos release <task>        # release the issue a run waits for to its actor (default reason handle.operator_released)
 hyalos policy approve <file>
 hyalos agent issue <name>
 hyalos agent revoke <id>
@@ -41,7 +42,7 @@ Each takes `--reason <code>` where it did before. A hold's id and a task's id ar
 
 In a script you run yourself, `--passphrase-stdin` reads one line from standard input instead of the terminal. Do not give the agent a script that holds the passphrase.
 
-The MCP server has no tool that decides, never opens `operator.key`, and the runs the agent starts cannot release an issue's text. The agent's credential is not a key and opens nothing.
+The MCP server has no tool that decides, and never opens `operator.key`. A run the agent starts holds the issue and its actor waits for you ([ADR-0078](../adr/0078-agent-started-runs-wait-for-the-operator-to-release-the-issue.md)). The agent's `job_status` and `list_approvals` show which task waits and for which issue. Read the issue on GitHub, then run `hyalos release <task>`: the actor may then read the issue's text as its users wrote it. Or run `hyalos stop <task>` instead. If you do neither, the run ends at its deadline (`handle.unreleased`). The agent's credential is not a key and opens nothing.
 
 ## Merging
 

@@ -1,5 +1,6 @@
-//! `hyalos operator init|show`, `hyalos approve <hold>` and `hyalos cancel <task>`: the operator's
-//! own channel for decisions (ADR-0010, ADR-0012, ADR-0070).
+//! `hyalos operator init|show`, `hyalos approve <hold>`, `hyalos cancel <task>` and
+//! `hyalos release <task>`: the operator's own channel for decisions (ADR-0010, ADR-0012, ADR-0070,
+//! ADR-0078).
 //!
 //! A decision is recorded only after the operator's passphrase opens `operator.key`, and it carries
 //! the operator's signature as well as the engine's. The MCP server offers no tool that decides and
@@ -32,6 +33,11 @@ const CANCEL_USAGE: &str = "usage: hyalos cancel <task> [--reason <code>] [--pas
   ends held task <task> as your decision, signed with your approval key after your passphrase.
   --reason is a short code (default cancelled.operator)";
 
+const RELEASE_USAGE: &str = "usage: hyalos release <task> [--reason <code>] [--passphrase-stdin]
+  releases the issue task <task>'s run holds to its actor as your decision, signed with your approval
+  key after your passphrase: the actor may then read the issue's text, as its users wrote it. Read the
+  issue on the forge first. --reason is a short code (default handle.operator_released)";
+
 fn finish(result: Result<String, (u8, String)>) -> ExitCode {
     match result {
         Ok(text) => {
@@ -59,6 +65,10 @@ pub fn approve(args: &[String]) -> ExitCode {
 
 pub fn cancel(args: &[String]) -> ExitCode {
     finish(cancel_with(args, &env()))
+}
+
+pub fn release(args: &[String]) -> ExitCode {
+    finish(release_with(args, &env()))
 }
 
 pub fn operator_with(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
@@ -141,6 +151,34 @@ pub fn cancel_with(args: &[String], env: Env<'_>) -> Result<String, (u8, String)
         .map_err(|e| (1, format!("task {id}: {e}")))?;
     Ok(format!(
         "cancelled task {id} at event {}, signed by you\n",
+        head.seq
+    ))
+}
+
+/// Releases the issue a run holds to its task, for the actor waiting on it (ADR-0078). The digest is
+/// the one the runner wrote; the engine records it only for an open task with no release yet, and
+/// the broker serves only bytes it read for that run.
+pub fn release_with(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
+    let (args, source) = passphrase::source(args);
+    let (id, reason) = id_and_reason(&args, "handle.operator_released").ok_or_else(|| {
+        (
+            2,
+            format!("a task's id is a number and a reason a short code\n{RELEASE_USAGE}"),
+        )
+    })?;
+    let task = TaskId::from_seq(id);
+    let runs = crate::runs::Runs::from_env(env).map_err(|e| (1, e))?;
+    let (handle, issue) = runs.held_handle(task).map_err(|e| (1, e))?;
+    let mut engine = operator::engine(env, source).map_err(|e| (1, e))?;
+    if engine.state().handles().iter().any(|h| h.task == task) {
+        return Err((1, format!("task {id} already has a released issue")));
+    }
+    let at = hyalos_types::Clock::now(&SystemClock);
+    let head = engine
+        .release_handle(at, task, handle, Decider::Human, reason)
+        .map_err(|e| (1, format!("task {id}: {e}")))?;
+    Ok(format!(
+        "released issue #{issue} (handle {handle}) to task {id} at event {}, signed by you; its actor may now read the issue's text\n",
         head.seq
     ))
 }

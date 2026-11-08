@@ -15,7 +15,7 @@ Hyalos has two principals ([ADR-0010](../../docs/adr/0010-mcp-primary-interface-
 
 - **Never read, print, copy or ask for a secret.** That covers the operator's passphrase, a provider API key, and the files `provider.keys`, `github-app.pem`, `operator.key` and `engine.key`. If the operator pastes one to you, tell them to revoke or rotate it.
 - **Never write or summarise a document the operator signs.** They make it and read it themselves, so what they sign is what they read.
-- **Never run a decision.** That means `hyalos approve`, `cancel`, `merge`, `policy approve`, `agent issue`, `agent revoke` and `run --release-issue`. The operator runs them in **a terminal of their own**, not through you and not with a `!` command here, because what they type and what the command prints would land in this conversation.
+- **Never run a decision.** That means `hyalos approve`, `cancel`, `release`, `merge`, `policy approve`, `agent issue`, `agent revoke` and `run --release-issue`. The operator runs them in **a terminal of their own**, not through you and not with a `!` command here, because what they type and what the command prints would land in this conversation.
 - A step whose `who` is `operator` is theirs. Tell them what to do, then wait until they say it is done.
 
 ## How to hand the operator a step
@@ -101,7 +101,13 @@ Hand each operator step over as in "How to hand the operator a step". Run `hyalo
 
    Add `--harness claude-code` if their key is Anthropic's. This command is the CLI twin of the `start_job` tool ([ADR-0075](../../docs/adr/0075-the-thin-cli-for-the-agents-tools.md)), and it prints the task's id.
 4. Tell the operator how long setup took, from the time you noted at the start to now.
-5. Check `hyalos status <task>` about every 30 seconds until the run is over, then show `hyalos result <task>`. A run that succeeds has opened a pull request on the branch `hyalos/job-<id>`.
+5. Check `hyalos status <task>` about every 30 seconds. After triage and planning, the status says the actor waits for the operator to release the issue ([ADR-0078](../../docs/adr/0078-agent-started-runs-wait-for-the-operator-to-release-the-issue.md)). Tell the operator once that this is the step where they let the job read the issue's text: they read the issue on GitHub, then run this in their own terminal:
+
+   ```
+   hyalos release <task>
+   ```
+
+   You do not run it. Keep checking until the run is over, then show `hyalos result <task>`. A run that succeeds has opened a pull request on the branch `hyalos/job-<id>`. Waiting for the release counts against the run's 30 minutes.
 6. If the run is held, `hyalos approvals` shows what is waiting and the command the operator runs to decide it. You do not decide it.
 
 After this, in a new session with the MCP server, use the tools `start_job`, `job_status`, `job_result` and `list_approvals` in place of the commands.

@@ -57,6 +57,7 @@ fn request(harness: Harness) -> Request {
         egress_hosts: BTreeSet::new(),
         step_model: None,
         release_issue: false,
+        await_release: false,
         nonce: None,
     }
 }
@@ -288,6 +289,12 @@ fn an_issue_number_runs_the_fix_issue_workflow_and_only_the_reader_sees_the_issu
     );
     assert!(prompt.contains("- triage.kind: docs\n"), "{prompt}");
     assert!(prompt.contains("- plan.approach: docs_only\n"), "{prompt}");
+    // With neither the issue's text nor the operator's words, it is told to say it is blocked rather
+    // than guess what the issue asks (#257).
+    assert!(
+        prompt.contains("change nothing and report that you are blocked at once"),
+        "{prompt}"
+    );
     // It was told how to return its result, and the run took that, not what it printed (ADR-0064).
     assert!(
         prompt.contains("hyalos-submit")
@@ -430,6 +437,7 @@ fn a_released_issue_reaches_the_actor_only_through_its_handle() -> Res {
         prompt.contains(&format!("hyalos-handle {handle}")),
         "{prompt}"
     );
+    assert!(!prompt.contains("report that you are blocked"), "{prompt}");
     for forge in [ISSUE_TITLE, ISSUE_BODY, "issue-body-marker-5b1e"] {
         assert!(!prompt.contains(forge), "{forge} is in the prompt");
     }
@@ -438,6 +446,148 @@ fn a_released_issue_reaches_the_actor_only_through_its_handle() -> Res {
         let raw = std::fs::read(entry?.path())?;
         assert!(!contains(&raw, b"issue-body-marker-5b1e"));
     }
+    assert!(gh.issued().is_empty(), "no token is left live");
+    let _ = std::fs::remove_dir_all(&repos);
+    Ok(())
+}
+
+/// A run started for the driving agent holds the issue and the actor's job waits for the operator's
+/// `hyalos release`, signed in their own terminal; the run holds no operator key. Until then nothing
+/// is minted for the actor; after it, the actor reads the issue through its handle (ADR-0078).
+#[test]
+fn an_awaited_issue_reaches_the_actor_once_the_operator_releases_it() -> Res {
+    let repos = dir("arepos")?;
+    let gh = GitHub::start(&repos, false)?;
+    let world = World::new("await", Some(&gh))?;
+    let model = Model::start(&[
+        r#"{"kind": "docs", "size": "small", "clear": true, "has_repro": false}"#,
+        r#"{"approach": "docs_only", "add_test": false}"#,
+    ])?;
+    world.use_model(&model)?;
+    let out = world.root.join("out");
+    std::fs::create_dir(&out)?;
+    let Harness::Command(mut command) = this_harness(&world, &out)? else {
+        return Err("harness".into());
+    };
+    command.push("mode:handle".into());
+    let mut asked = request(Harness::Command(command));
+    asked.issue = String::new();
+    asked.issue_number = Some(7);
+    asked.await_release = true;
+    let awaited = asked.clone();
+    let mut setup = world.setup(local_detect(), Duration::from_secs(10));
+    setup.operator = None;
+    let runner = std::thread::spawn(move || {
+        let mut said = Vec::new();
+        let summary = run_job(&asked, setup, &mut said);
+        (summary, String::from_utf8_lossy(&said).into_owned())
+    });
+
+    // The run waits with the handle written for the operator, and the actor has not been minted.
+    let runs = world.data.join("runs");
+    let started = std::time::Instant::now();
+    let held = loop {
+        let found = std::fs::read_dir(&runs).ok().and_then(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .find(|p| p.extension().is_some_and(|x| x == "held"))
+        });
+        if let Some(found) = found {
+            break found;
+        }
+        if started.elapsed() > Duration::from_secs(60) || runner.is_finished() {
+            return Err("the run never waited for the release".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let task: u64 = held
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_prefix("task-"))
+        .and_then(|s| s.parse().ok())
+        .ok_or("task")?;
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(!runner.is_finished());
+    assert!(
+        !out.join("prompt").exists(),
+        "the actor ran before the release"
+    );
+    // The log alone shows the agent what the run waits for.
+    let public = hyalos_log::PublicKey::from_hex(
+        std::fs::read_to_string(world.config.join("engine.pub"))?.trim(),
+    )
+    .ok_or("engine.pub")?;
+    let log = world.data.join("events.db");
+    let state = hyalos_engine::read_state(&log, &public)?;
+    let id = hyalos_types::TaskId::from_seq(task);
+    assert_eq!(
+        hyalos::runs::awaiting_release(&state, id, &awaited),
+        Some(7)
+    );
+    // Releasing another task, or asking without the passphrase, writes nothing.
+    assert_eq!(world.signed(&["release", "999"])?.status.code(), Some(1));
+    assert_eq!(world.cli(&["release", "x"])?.status.code(), Some(2));
+
+    let released = world.signed(&["release", &task.to_string()])?;
+    let shown = String::from_utf8_lossy(&released.stdout).into_owned();
+    assert_eq!(
+        released.status.code(),
+        Some(0),
+        "{shown}{}",
+        String::from_utf8_lossy(&released.stderr)
+    );
+    assert!(shown.contains("released issue #7"), "{shown}");
+    // A second release of the same task is refused.
+    assert_eq!(
+        world.signed(&["release", &task.to_string()])?.status.code(),
+        Some(1)
+    );
+
+    let (summary, said) = runner.join().map_err(|_| "the runner panicked")?;
+    let summary = summary?;
+    assert!(summary.ok(), "{said}");
+    assert!(
+        said.contains(&format!("run hyalos release {task}")),
+        "{said}"
+    );
+    assert!(said.contains("released to the task by you"), "{said}");
+    assert!(!held.exists(), "the held file stays after the release");
+    let state = hyalos_engine::read_state(&log, &public)?;
+    assert_eq!(hyalos::runs::awaiting_release(&state, id, &awaited), None);
+
+    // The release is the operator's, signed, for the run's task, and the actor read those bytes.
+    let events = world.events()?;
+    let released: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::HandleReleased {
+                task: t,
+                by,
+                signed,
+                handle,
+                ..
+            } if t.seq() == task => Some((*by, signed.clone(), *handle)),
+            _ => None,
+        })
+        .collect();
+    let [(by, signed, handle)] = released.as_slice() else {
+        return Err(format!("{events:?}").into());
+    };
+    let (by, handle) = (*by, *handle);
+    assert_eq!(by, hyalos_types::Resolution::Human);
+    assert!(
+        matches!(signed, hyalos_types::Signed::Operator(_)),
+        "{signed:?}"
+    );
+    let body = std::fs::read_to_string(out.join("handle"))?;
+    assert_eq!(hyalos_broker::egress::inputs_digest(&body), handle);
+    let prompt = std::fs::read_to_string(out.join("prompt"))?;
+    assert!(
+        prompt.contains(&format!("hyalos-handle {handle}")),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("report that you are blocked"), "{prompt}");
     assert!(gh.issued().is_empty(), "no token is left live");
     let _ = std::fs::remove_dir_all(&repos);
     Ok(())
