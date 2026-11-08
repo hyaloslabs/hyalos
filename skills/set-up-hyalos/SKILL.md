@@ -32,7 +32,8 @@ The operator works in a second terminal and copies from this one, while your out
 Hyalos runs jobs only on Linux (WSL2 counts). Check for:
 - `git`;
 - `cargo`, through rustup (the repository pins its toolchain in `rust-toolchain.toml`);
-- `docker` or `podman`.
+- `docker` or `podman`;
+- `gh`, logged in (`gh auth status`). It is optional: without it you cannot open a first issue for the operator in part 5, and they open it on GitHub instead.
 
 If one is missing, say which and give the install as one block to copy, then stop until it is there.
 
@@ -65,6 +66,8 @@ Open it with `xdg-open '<link>'` on Linux; on WSL2 with `wslview '<link>'`, or `
 
 They keep the App ID and the file; the files are written in part 4.
 
+**Whenever the operator changes the App's permissions later**, tell them the change does not reach the installation until they accept it there too: on `https://github.com/settings/installations` (for an organization, `https://github.com/organizations/<org>/settings/installations`), they choose **Configure** on the App, then **Review request** in the banner at the top, then **Accept new permissions**. Until then, jobs fail with `forge.no_token`.
+
 **Then, a provider key** ([docs/operations/provider-keys.md](../../docs/operations/provider-keys.md)). They make a dedicated API key at the provider and set a spend cap on it, and keep the key to hand. OpenAI's is for the default harness, Codex; Anthropic's is for Claude Code, and the job then starts with `--harness claude-code`. The key is written in part 4.
 
 ## 4. Work through the checklist
@@ -85,13 +88,35 @@ It names the config directory (`config_dir`); use that path, not a guess. Take t
 | `provider_keys` | operator | The line asks which provider and the key, which it reads without showing, and writes `provider.keys` owner-only. Pasting it again after a mistake is safe. |
 | `github_app` | operator | The line asks for the App ID and the full path of the downloaded `.pem`, moves the key into place owner-only and writes `github.app`. The detail says what is still wrong, such as a file with the wrong mode. |
 | `policy` | operator | They print the starter, read it, and approve it. It allows the first job's actions, with data going only to the model and GitHub. You do not write or edit the file they approve. |
-| `agent_credential` | operator | One line, run in the repository's directory, issues a credential and registers this client's server with it, so the credential goes straight to the client without being shown. It adds `--harness claude-code` itself when their only key is Anthropic's. The MCP tools appear in your next session, and the first job does not wait for them. |
+| `agent_credential` | operator | One line, run in the directory this session runs in, issues a credential and registers this client's server with it, so the credential goes straight to the client without being shown. It adds `--harness claude-code` itself when their only key is Anthropic's. The MCP tools appear in your next session, and the first job does not wait for them. |
+
+After `agent_credential` is done, check that the server was registered for the directory this session runs in. `claude mcp add` registers it only for the directory it ran in, so a line the operator pasted anywhere else leaves this session without it. In this session's directory, run:
+
+```
+claude mcp list
+```
+
+and look for a line starting `hyalos:`. Never run `claude mcp get hyalos`: it shows the server's details, which can include the credential.
+
+If there is no `hyalos:` line, the credential is in force but registered elsewhere, so the step shows as done and `hyalos setup --next` will not hand it over again. Build the block yourself:
+1. Run `hyalos agent list` (it reads only the public key) and note the id of the credential named `claude-code` that is in force (it lists revoked ones too).
+2. Take the `agent_credential` step's last command from `hyalos setup --json`. It is there even for a step that is done.
+3. Hand the operator one block, with this session's directory and the id filled in:
+
+   ```
+   cd <this session's directory>
+   claude mcp remove hyalos 2>/dev/null
+   hyalos agent revoke <id>
+   <the step's last command, exactly as given>
+   ```
+
+   The revoke is a decision, so it is theirs to run, and it asks for their passphrase. Then run `claude mcp list` again.
 
 Hand each operator step over as in "How to hand the operator a step". Run `hyalos setup` again after each step, until it prints `setup: 7 of 7 steps done`.
 
 ## 5. The first job
 
-1. Ask the operator for the repository (`owner/name`, the one the App is installed on) and the number of an open issue there.
+1. Ask the operator for the repository (`owner/name`, the one the App is installed on) and the number of a small open issue there: one change a short job can make, such as a typo or a one-line fix. Not an epic or a tracking issue (one with sub-issues or a task list), which a single job cannot finish. If the repository has no such issue, offer to open one for a small change they choose, such as a line added to the README. Only on their yes, and only if `gh` is logged in, run `gh issue create --repo <owner/name> --title '<title>' --body '<body>'`, worded from what they asked for. Otherwise they open it on GitHub.
 2. Run `hyalos github check <owner/name>`. It must exit 0. It tries each permission a job needs, and if one is refused it names it: the operator fixes it on the App's settings page and then accepts the change on the installation's page, which GitHub asks for separately.
 3. Start the job:
 
