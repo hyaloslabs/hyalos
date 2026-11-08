@@ -15,6 +15,9 @@ docker run --rm -v "$PWD:/src" -w /src -e HYALOS_RELEASE_IMAGE="$image" -e TARGE
   apt-get update -qq && apt-get install -y -qq --no-install-recommends musl-tools >/dev/null
   rustup target add "$TARGET"
   cargo build --release --locked -p hyalos --target "$TARGET"
+  # The policy engine answers on the thread the binary runs its commands on (#280). Only a musl
+  # build shows it, and only off a test harness thread.
+  cargo test --release --locked -p hyalos --target "$TARGET" --test main_thread
   chown -R "$(stat -c %u:%g /src)" target'
 mkdir -p dist
 cp "target/$target/release/hyalos" dist/hyalos-x86_64-linux
