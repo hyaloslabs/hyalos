@@ -28,7 +28,7 @@ Paths are quoted for the shell. A config directory whose path is not UTF-8, or h
 
 **The skill hands over one step at a time.** It gives only the step the operator takes now, as a one-line note and then one fenced block of that step's `commands`, exactly as given. It never edits them. It waits until the operator says the step is done before giving the next, and tells them once that `hyalos setup --next` shows the next step in their own terminal. It runs the builds in the background without streaming their output.
 
-While the builds run, the operator does only the browser work: creating the App, and creating the provider key with a spend cap. Writing the files waits until `hyalos` is installed and can print the commands.
+While the builds run, the operator does only the browser work: creating the App, and creating the provider key with a spend cap. The skill opens the App's prefilled page in their browser (`xdg-open`, or `wslview` or `explorer.exe` on WSL2) rather than printing the link, since on bot1 copying the wrapped link put a space in the homepage URL. The link names only what is not GitHub's default, with `https://github.com` as the homepage, so it is short if it must be printed. Writing the files waits until `hyalos` is installed and can print the commands.
 
 ## Consequences
 

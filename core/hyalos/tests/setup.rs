@@ -275,6 +275,25 @@ fn setup_next_prints_only_the_next_step_with_its_commands_last() -> Res {
         credential.contains("-- hyalos mcp --harness claude-code; unset c"),
         "{credential}"
     );
+    // The App's line asks for its id and the downloaded key; a bad answer writes nothing.
+    let app = step("github_app")?.commands.join("\n");
+    let download = root.join("downloaded key.pem");
+    std::fs::write(&download, "not a real key\n")?;
+    assert!(!paste(&app, b"12x\n")?);
+    let missing = format!("7\n{}\n", root.join("nope.pem").display());
+    assert!(!paste(&app, missing.as_bytes())?);
+    assert!(!config.join("github.app").exists() && download.exists());
+    assert!(paste(
+        &app,
+        format!("7\n{}\n", download.display()).as_bytes()
+    )?);
+    assert_eq!(
+        std::fs::read_to_string(config.join("github.app"))?,
+        "app_id = 7\n"
+    );
+    let pem = config.join("github-app.pem");
+    assert_eq!(std::fs::metadata(&pem)?.permissions().mode() & 0o777, 0o600);
+    assert!(!download.exists());
     let steps = hyalos::setup_cmd::steps(&env, Err("no substrate".into()))?;
 
     // Every step has commands; with every step done, --next says so and shows none.

@@ -51,13 +51,13 @@ Use `podman` in place of `docker` if that is what the machine has. Keep `--targe
 
 These need no Hyalos binary. Give them one at a time.
 
-**First, the GitHub App** ([docs/operations/github-app.md](../../docs/operations/github-app.md)). Ask for their GitHub user name, then give them this link to open, with `<name>` filled in:
+**First, the GitHub App** ([docs/operations/github-app.md](../../docs/operations/github-app.md)). Ask for their GitHub user name, then **open** this page in their browser for them, with `<name>` filled in, rather than printing it for them to copy (a long line wraps in the terminal, and copying across the wrap can put a space in it):
 
 ```
-https://github.com/settings/apps/new?name=hyalos-<name>&url=https://github.com/<name>&public=false&webhook_active=false&contents=write&issues=write&pull_requests=write&metadata=read
+https://github.com/settings/apps/new?name=hyalos-<name>&url=https://github.com&webhook_active=false&contents=write&issues=write&pull_requests=write
 ```
 
-For an organization's repositories it starts `https://github.com/organizations/<org>/settings/apps/new?` with the same parameters. On that page they:
+Open it with `xdg-open '<link>'` on Linux; on WSL2 with `wslview '<link>'`, or `explorer.exe '<link>'` if `wslview` is missing. Keep the single quotes, since the link holds `&`. Only if that fails, print the link alone in a block and tell them to check it has no space in it once pasted. For an organization's repositories it starts `https://github.com/organizations/<org>/settings/apps/new?` with the same parameters. The homepage is plain `https://github.com` because GitHub requires one and Hyalos never uses it; the rest are GitHub's defaults (installable only on this account, Metadata read). On that page they:
 1. check Contents, Issues and Pull requests are Read and write, Metadata Read-only, everything else No access;
 2. choose **Create GitHub App** and note the App ID;
 3. choose **Generate a private key**, which downloads one `.pem` file (on WSL2 under `/mnt/c/Users/<user>/Downloads`);

@@ -198,7 +198,9 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
         vec![
             "# in the repository's directory: the credential goes straight to Claude Code, unshown. If"
                 .to_string(),
-            "# claude mcp add fails, hyalos agent list and hyalos agent revoke <id>, then paste again."
+            "# claude mcp add fails: claude mcp remove hyalos if one is there, hyalos agent revoke <id> (from"
+                .to_string(),
+            "# hyalos agent list), then paste again."
                 .to_string(),
             format!(
                 "c=$(hyalos agent issue claude-code) && claude mcp add hyalos -e HYALOS_AGENT_CREDENTIAL=\"$c\" -- hyalos mcp{}; unset c",
@@ -312,11 +314,11 @@ pub fn text(config: &Path, steps: &[Step]) -> String {
 /// asks which provider, refuses one the file already names (the reader refuses a name given twice),
 /// reads the key with echo off, and writes nothing for an empty answer, so pasting it again repairs
 /// a bad attempt. `exit` leaves only the subshell.
-const PROVIDER_KEY_LINE: &str = r#"(umask 077; f=@FILE@; mkdir -p @DIR@ && touch "$f" && chmod 600 "$f" || exit 1; printf 'Provider, openai or anthropic: '; read -r p; case "$p" in openai|anthropic) ;; *) echo 'not openai or anthropic, nothing written'; exit 1;; esac; if grep -qs "^[[:space:]]*$p\.key[[:space:]]*=" "$f"; then echo "$f already has $p.key: edit or remove that line first"; exit 1; fi; printf 'API key (not shown): '; stty -echo 2>/dev/null; IFS= read -r k; stty echo 2>/dev/null; echo; [ -n "$k" ] || { echo 'no key given, nothing written'; exit 1; }; printf '%s.key = %s\n' "$p" "$k" >> "$f" && echo "wrote $p.key to $f")"#;
+const PROVIDER_KEY_LINE: &str = r#"(trap 'stty echo 2>/dev/null' EXIT; trap 'exit 1' INT; umask 077; f=@FILE@; mkdir -p @DIR@ && touch "$f" && chmod 600 "$f" || exit 1; printf 'Provider, openai or anthropic: '; read -r p; case "$p" in openai|anthropic) ;; *) echo 'not openai or anthropic, nothing written'; exit 1;; esac; if grep -qs "^[[:space:]]*$p\.key[[:space:]]*=" "$f"; then echo "$f already has $p.key: edit or remove that line first"; exit 1; fi; printf 'API key (not shown): '; stty -echo 2>/dev/null; IFS= read -r k; stty echo 2>/dev/null; echo; [ -n "$k" ] || { echo 'no key given, nothing written'; exit 1; }; printf '%s.key = %s\n' "$p" "$k" >> "$f" && echo "wrote $p.key to $f")"#;
 
 /// The App's files, as one POSIX shell line that asks for what only the operator knows rather than
 /// leaving placeholders to edit.
-const GITHUB_APP_LINE: &str = r#"(umask 077; mkdir -p @DIR@ && chmod 700 @DIR@ || exit 1; printf 'App ID: '; read -r id; case "$id" in ''|*[!0-9]*) echo 'an App ID is digits only, nothing written'; exit 1;; esac; printf 'Full path of the downloaded .pem: '; read -r pem; case "$pem" in '~/'*) pem="$HOME/${pem#'~/'}";; esac; [ -f "$pem" ] || { echo "no file at $pem, nothing written"; exit 1; }; mv -- "$pem" @PEM@ && chmod 600 @PEM@ && printf 'app_id = %s\n' "$id" > @APP@ && echo 'wrote github-app.pem and github.app')"#;
+const GITHUB_APP_LINE: &str = r#"(umask 077; mkdir -p @DIR@ && chmod 700 @DIR@ || exit 1; printf 'App ID: '; read -r id; case "$id" in ''|*[!0-9]*) echo 'an App ID is digits only, nothing written'; exit 1;; esac; printf 'Full path of the downloaded .pem: '; read -r pem; case "$pem" in '~/'*) pem="$HOME/${pem#\~/}";; esac; [ -f "$pem" ] || { echo "no file at $pem, nothing written"; exit 1; }; mv -- "$pem" @PEM@ && chmod 600 @PEM@ && printf 'app_id = %s\n' "$id" > @APP@ && echo 'wrote github-app.pem and github.app')"#;
 
 /// A path as a shell word: as it is when it holds only characters a shell leaves alone, else quoted.
 /// A path that is not UTF-8, or has a line break, cannot be one line of `commands`.
