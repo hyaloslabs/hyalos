@@ -4,14 +4,16 @@ A release is a static `hyalos` binary for x86_64 Linux and the sandbox image it 
 
 ## Installing one
 
-You need Docker (or Podman) and `gh`, logged in to an account that can read the repository. Take the release for the version you want (here `v0.1.0`), download it, and check its SHA-256. The second line runs each step only if the one before it passed:
+You need Docker (or Podman) and `gh`, logged in to an account that can read the repository. Take the release for the version you want (here `v0.1.1`), download it, and check its SHA-256. The second line runs each step only if the one before it passed:
 
 ```
-v=v0.1.0; d=$(mktemp -d)
+v=v0.1.1; d=$(mktemp -d)
 gh release download "$v" --repo hyaloslabs/hyalos -D "$d" -p hyalos-x86_64-linux -p SHA256SUMS && (cd "$d" && sha256sum -c SHA256SUMS)
 ```
 
 If the checksum does not match, install nothing: the download is not what was published.
+
+Do not install v0.1.0: it refuses every job (#280).
 
 While the repository is public, check the binary's provenance too. It must have been built by the release workflow from that tag. This needs `gh` 2.68 or later, for `--source-ref`:
 
@@ -54,7 +56,7 @@ A release has no microVM init (`hyalos-vm-init`): to run jobs in a microVM, buil
 2. Tag the merge commit and push the tag:
 
    ```
-   git tag v0.1.0 && git push origin v0.1.0
+   git tag v0.1.1 && git push origin v0.1.1
    ```
 
 The `release` workflow refuses a tag that is not `v` and the workspace's version, one that is not on `main`, and one whose image is published already. It builds and pushes the image, pulls it back by digest, and builds the binary to name it. It attests both while the repository is public. Then it publishes the GitHub release with the binary and `SHA256SUMS`, with the image's digest in the notes. A pull request that changes the workflow runs only check jobs, which build both and can write nothing. A tag that failed part-way is cut again under the next version.

@@ -14,6 +14,11 @@ on:
     paths:
       - ".github/workflows/release.yml"
       - ".github/scripts/build-release-binary.sh"
+      # What the musl check covers (#280): the command thread, its test, and Cedar's pin.
+      - "core/hyalos/src/main.rs"
+      - "core/hyalos/src/stack.rs"
+      - "core/hyalos/tests/main_thread.rs"
+      - "core/policy/Cargo.toml"
 
 permissions:
   contents: read
