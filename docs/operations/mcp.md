@@ -18,6 +18,25 @@ A held run's `job_status` shows the same for its own holds. The agent can show y
 
 No client renders MCP Apps yet (see below), so there is no graphical approval view.
 
+## The same tools on the command line
+
+Each tool has one command that makes the same call and prints the same answer ([ADR-0075](../adr/0075-the-thin-cli-for-the-agents-tools.md)):
+
+| Command | Tool |
+| --- | --- |
+| `hyalos tasks [--limit <n>]` | `list_tasks` |
+| `hyalos start <owner/repo> <issue-number> [--base <branch>] ...` | `start_job` |
+| `hyalos status <task>` | `job_status` |
+| `hyalos result <task>` | `job_result` |
+| `hyalos approvals [--limit <n>]` | `list_approvals` |
+
+- Each prints the tool's text; `--json` prints its structured content instead.
+- They exit 1 when the tool answers with an error, and 2 for bad usage.
+- `start` takes the same options as `hyalos mcp` and starts the runner in the background, as `start_job` does; `hyalos run` is still the runner in your terminal.
+- They need no agent credential: they run as you, read the log with the engine's public key, and decide nothing.
+
+Your decisions are the other way round: they are commands only, and no MCP tool makes one. These are `approve`, `cancel`, `merge`, `policy approve`, `agent issue`, `agent revoke` and `run --release-issue`. A test fails if the server gains a tool without a command here, or a tool that decides. Setup and maintenance (`init`, `doctor`, `operator`, `github check`, `log ...`, `workflow check`) have no MCP tool either.
+
 ## Which clients can connect
 
 A client must speak MCP revision 2026-07-28: it sends `_meta` with the protocol version and its capabilities on every request (usually starting with `server/discover`), and never `initialize`. A client that opens with `initialize`, the 2025-11-25 handshake, is refused with `-32601` and told which revision this is. Hyalos does not serve older revisions ([ADR-0073](../adr/0073-clients-on-older-mcp-revisions-are-unsupported.md)).
