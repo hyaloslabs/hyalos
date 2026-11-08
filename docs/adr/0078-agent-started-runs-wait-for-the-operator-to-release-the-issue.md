@@ -1,6 +1,6 @@
 # ADR-0078: Agent-started runs wait for the operator to release the issue
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

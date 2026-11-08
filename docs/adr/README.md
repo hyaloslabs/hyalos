@@ -91,4 +91,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0075](0075-the-thin-cli-for-the-agents-tools.md) | The thin CLI: one command for each of the driving agent's tools | Accepted |
 | [0076](0076-the-set-up-hyalos-skill-and-the-setup-checklist.md) | The set-up-hyalos skill and the setup checklist | Superseded by [ADR-0077](0077-handing-the-operator-one-step-at-a-time.md) |
 | [0077](0077-handing-the-operator-one-step-at-a-time.md) | Handing the operator one step at a time | Accepted |
-| [0078](0078-agent-started-runs-wait-for-the-operator-to-release-the-issue.md) | Agent-started runs wait for the operator to release the issue | Proposed |
+| [0078](0078-agent-started-runs-wait-for-the-operator-to-release-the-issue.md) | Agent-started runs wait for the operator to release the issue | Accepted |
