@@ -69,7 +69,7 @@ Once `cargo install` has finished and `hyalos --version` answers, run:
 hyalos setup
 ```
 
-Add `--json` if you would rather parse it. Its second line names the config directory; use that path, not a guess. Take the first step that is not done:
+Add `--json` if you would rather parse it. It names the config directory (the `config directory:` line, or `config_dir` with `--json`); use that path, not a guess. Take the first step that is not done:
 
 | Step | Who | What happens |
 | --- | --- | --- |
