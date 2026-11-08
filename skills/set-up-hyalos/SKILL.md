@@ -20,10 +20,10 @@ Hyalos has two principals ([ADR-0010](../../docs/adr/0010-mcp-primary-interface-
 
 ## How to hand the operator a step
 
-The operator works in a second terminal and copies from this one, while your output keeps scrolling. Make that easy (#258):
+The operator works in a second terminal and copies from this one, while your output keeps scrolling. Make that easy ([ADR-0077](../../docs/adr/0077-handing-the-operator-one-step-at-a-time.md)):
 
 - **One step at a time.** Give only the step they take now. Do not list the steps after it. Wait until they say it is done, check it, then give the next.
-- **One block to copy.** Put a one-line note on what the step does, then a single fenced block holding exactly the commands to paste, and nothing after the block. Take the commands from the step's `commands` in `hyalos setup --json`, filling in any `<...>` you know (such as the App ID) and leaving the rest for them.
+- **One block to copy.** Put a one-line note on what the step does, then a single fenced block holding the step's `commands` from `hyalos setup --json`, exactly as given, and nothing after the block. Never edit them: a step asks the operator for what only they know (which provider, the key, the App ID, where the `.pem` was saved), and the commands they run should be Hyalos's, not yours.
 - **Point them at `hyalos setup --next`.** Once `hyalos` is installed, tell them once that it prints the next step's commands in their own terminal, so they need not copy from this window at all.
 - Keep what you print between steps short, and run long commands in the background, so the step they are on stays on screen.
 
@@ -82,10 +82,10 @@ It names the config directory (`config_dir`); use that path, not a guess. Take t
 | `engine_key` | agent | Run `hyalos init`. |
 | `operator_key` | operator | They run `hyalos operator init` and choose a passphrase of 12 or more characters. It signs their decisions, and you must never see it. |
 | `substrate` | agent | Wait for the image build. If it is still not ready, `hyalos doctor` says why. |
-| `provider_keys` | operator | The commands read the key from their terminal without showing it and write `provider.keys` at mode 0600. They write `openai.key`; for an Anthropic key the operator changes it to `anthropic.key`. |
-| `github_app` | operator | The commands move the downloaded `.pem` into place and write `github.app`. Fill in the App ID and the download's path as they tell you them. The detail says what is still wrong, such as a file with the wrong mode. |
+| `provider_keys` | operator | The line asks which provider and the key, which it reads without showing, and writes `provider.keys` owner-only. Pasting it again after a mistake is safe. |
+| `github_app` | operator | The line asks for the App ID and the full path of the downloaded `.pem`, moves the key into place owner-only and writes `github.app`. The detail says what is still wrong, such as a file with the wrong mode. |
 | `policy` | operator | They print the starter, read it, and approve it. It allows the first job's actions, with data going only to the model and GitHub. You do not write or edit the file they approve. |
-| `agent_credential` | operator | They issue a credential and register this client's server in one line, run in the repository's directory, so the credential goes straight to the client without being shown. They add `--harness claude-code` at the end if their only key is Anthropic's (the server's jobs default to Codex). The MCP tools appear in your next session, and the first job does not wait for them. |
+| `agent_credential` | operator | One line, run in the repository's directory, issues a credential and registers this client's server with it, so the credential goes straight to the client without being shown. It adds `--harness claude-code` itself when their only key is Anthropic's. The MCP tools appear in your next session, and the first job does not wait for them. |
 
 Hand each operator step over as in "How to hand the operator a step". Run `hyalos setup` again after each step, until it prints `setup: 7 of 7 steps done`.
 

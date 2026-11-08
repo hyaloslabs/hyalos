@@ -98,11 +98,14 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
             doc,
         });
     };
-    let dir = quoted(&config);
-    let keys_file = quoted(&paths::provider_keys(env)?);
+    let keys_path = paths::provider_keys(env)?;
+    let dir = quoted(&config)?;
+    let keys_file = quoted(&keys_path)?;
+    let only_anthropic = crate::broker_cmd::providers(&keys_path)
+        .is_ok_and(|p| p.anthropic.is_some() && p.openai.is_none());
     let (app_file, pem_file) = (
-        quoted(&config.join("github.app")),
-        quoted(&config.join("github-app.pem")),
+        quoted(&config.join("github.app"))?,
+        quoted(&config.join("github-app.pem"))?,
     );
     let lines = |lines: &[&str]| lines.iter().map(|l| l.to_string()).collect::<Vec<_>>();
 
@@ -139,12 +142,12 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
         Who::Operator,
         "write provider.keys in the config directory with a dedicated key, chmod 600 it, and set a spend cap at the provider",
         vec![
-            "# a dedicated key with a spend cap set at the provider; for Claude Code write anthropic.key".to_string(),
-            "# in place of openai.key. The key is read from the terminal and not shown.".to_string(),
-            format!(
-                "(umask 077; mkdir -p {dir}; read -rsp 'API key: ' k; echo; printf 'openai.key = %s\\n' \"$k\" >> {keys_file})"
-            ),
-            format!("chmod 600 {keys_file}"),
+            "# a dedicated key with a spend cap set at the provider: asks which provider and the key (not"
+                .to_string(),
+            "# shown), and writes provider.keys owner-only. Safe to paste again.".to_string(),
+            PROVIDER_KEY_LINE
+                .replace("@DIR@", &dir)
+                .replace("@FILE@", &keys_file),
         ],
         "docs/operations/provider-keys.md",
         provider_keys(env),
@@ -154,12 +157,14 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
         Who::Operator,
         "create the GitHub App, save its private key as github-app.pem (chmod 600) and its id in github.app, and install it on the repository",
         vec![
-            "# after creating the App and installing it on the repository: put in the .pem the browser".to_string(),
-            "# saved and the App ID GitHub showed".to_string(),
-            format!("mkdir -p -m 700 {dir}"),
-            format!("mv ~/Downloads/<the-app>.<date>.private-key.pem {pem_file}"),
-            format!("chmod 600 {pem_file}"),
-            format!("echo 'app_id = <App ID>' > {app_file}"),
+            "# after creating the App and installing it on the repository: asks for its App ID and the"
+                .to_string(),
+            "# .pem the browser saved, moves the key into place owner-only and writes github.app"
+                .to_string(),
+            GITHUB_APP_LINE
+                .replace("@DIR@", &dir)
+                .replace("@PEM@", &pem_file)
+                .replace("@APP@", &app_file),
         ],
         "docs/operations/github-app.md",
         GitHubApp::load(&config)
@@ -190,11 +195,17 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
         "agent_credential",
         Who::Operator,
         "in a terminal of your own: hyalos agent issue <name>, then give the client its server: claude mcp add hyalos -e HYALOS_AGENT_CREDENTIAL=<credential> -- hyalos mcp (add --harness claude-code if provider.keys has only anthropic.key)",
-        lines(&[
-            "# in the repository's directory; add --harness claude-code at the end if provider.keys has",
-            "# only anthropic.key. The credential goes straight to the client and is not shown.",
-            "c=$(hyalos agent issue claude-code) && claude mcp add hyalos -e HYALOS_AGENT_CREDENTIAL=\"$c\" -- hyalos mcp; unset c",
-        ]),
+        vec![
+            "# in the repository's directory: the credential goes straight to Claude Code, unshown. If"
+                .to_string(),
+            "# claude mcp add fails, hyalos agent list and hyalos agent revoke <id>, then paste again."
+                .to_string(),
+            format!(
+                "c=$(hyalos agent issue claude-code) && claude mcp add hyalos -e HYALOS_AGENT_CREDENTIAL=\"$c\" -- hyalos mcp{}; unset c",
+                // The server's jobs default to Codex, which needs OpenAI's key.
+                if only_anthropic { " --harness claude-code" } else { "" }
+            ),
+        ],
         "docs/operations/mcp.md",
         state.and_then(|state| {
             let in_force = state
@@ -297,18 +308,39 @@ pub fn text(config: &Path, steps: &[Step]) -> String {
     out
 }
 
+/// The provider key, as one POSIX shell line so a paste cannot feed a later line to its prompts. It
+/// asks which provider, refuses one the file already names (the reader refuses a name given twice),
+/// reads the key with echo off, and writes nothing for an empty answer, so pasting it again repairs
+/// a bad attempt. `exit` leaves only the subshell.
+const PROVIDER_KEY_LINE: &str = r#"(umask 077; f=@FILE@; mkdir -p @DIR@ && touch "$f" && chmod 600 "$f" || exit 1; printf 'Provider, openai or anthropic: '; read -r p; case "$p" in openai|anthropic) ;; *) echo 'not openai or anthropic, nothing written'; exit 1;; esac; if grep -qs "^[[:space:]]*$p\.key[[:space:]]*=" "$f"; then echo "$f already has $p.key: edit or remove that line first"; exit 1; fi; printf 'API key (not shown): '; stty -echo 2>/dev/null; IFS= read -r k; stty echo 2>/dev/null; echo; [ -n "$k" ] || { echo 'no key given, nothing written'; exit 1; }; printf '%s.key = %s\n' "$p" "$k" >> "$f" && echo "wrote $p.key to $f")"#;
+
+/// The App's files, as one POSIX shell line that asks for what only the operator knows rather than
+/// leaving placeholders to edit.
+const GITHUB_APP_LINE: &str = r#"(umask 077; mkdir -p @DIR@ && chmod 700 @DIR@ || exit 1; printf 'App ID: '; read -r id; case "$id" in ''|*[!0-9]*) echo 'an App ID is digits only, nothing written'; exit 1;; esac; printf 'Full path of the downloaded .pem: '; read -r pem; case "$pem" in '~/'*) pem="$HOME/${pem#'~/'}";; esac; [ -f "$pem" ] || { echo "no file at $pem, nothing written"; exit 1; }; mv -- "$pem" @PEM@ && chmod 600 @PEM@ && printf 'app_id = %s\n' "$id" > @APP@ && echo 'wrote github-app.pem and github.app')"#;
+
 /// A path as a shell word: as it is when it holds only characters a shell leaves alone, else quoted.
-fn quoted(path: &Path) -> String {
-    let text = path.display().to_string();
-    if !text.is_empty()
-        && text
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "/._-+:@%".contains(c))
-    {
-        text
-    } else {
-        format!("'{}'", text.replace('\'', "'\\''"))
-    }
+/// A path that is not UTF-8, or has a line break, cannot be one line of `commands`.
+fn quoted(path: &Path) -> Result<String, String> {
+    let text = path
+        .to_str()
+        .filter(|t| !t.contains(['\n', '\r']))
+        .ok_or_else(|| {
+            format!(
+                "{} cannot be written in a command; set HYALOS_CONFIG_DIR to a plainer path",
+                path.display()
+            )
+        })?;
+    Ok(
+        if !text.is_empty()
+            && text
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/._-+:@%".contains(c))
+        {
+            text.to_string()
+        } else {
+            format!("'{}'", text.replace('\'', "'\\''"))
+        },
+    )
 }
 
 /// Only the first step not done, ending with its commands and nothing after them, so they can be
@@ -426,5 +458,22 @@ fn detect(image: &str, microvm: Option<hyalos_substrate::MicroVmConfig>) -> Resu
         None => Err(format!(
             "no substrate is ready for {image}; hyalos doctor says why"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::quoted;
+    use std::path::Path;
+
+    #[test]
+    fn a_path_is_quoted_only_when_a_shell_would_change_it() {
+        assert_eq!(
+            quoted(Path::new("/home/you/.config/hyalos")),
+            Ok("/home/you/.config/hyalos".into())
+        );
+        assert_eq!(quoted(Path::new("/a b")), Ok("'/a b'".into()));
+        assert_eq!(quoted(Path::new("/it's")), Ok("'/it'\\''s'".into()));
+        assert!(quoted(Path::new("/a\nb")).is_err());
     }
 }

@@ -228,44 +228,54 @@ fn setup_next_prints_only_the_next_step_with_its_commands_last() -> Res {
     assert!(shown.get("steps").is_none());
     assert_eq!(run(&["setup", "--next", "--next"])?.status.code(), Some(2));
 
-    // The provider key step's commands, pasted into a shell with the key typed in, take the step,
-    // in a config directory whose path needs quoting.
+    // The provider key step's commands, pasted into a POSIX shell with the answers typed in, take
+    // the step, in a config directory whose path needs quoting. An empty key writes nothing, and
+    // pasting again leaves a good file as it was, so a bad attempt is repaired by pasting again.
     let env = |name: &str| match name {
         "HYALOS_CONFIG_DIR" => Some(config.to_string_lossy().into_owned()),
         "HYALOS_DATA_DIR" => Some(data.to_string_lossy().into_owned()),
         _ => None,
     };
-    let steps = hyalos::setup_cmd::steps(&env, Err("no substrate".into()))?;
-    let keys = steps
-        .iter()
-        .find(|s| s.id == "provider_keys")
-        .ok_or("keys")?;
+    let step = |id: &str| -> Res<hyalos::setup_cmd::Step> {
+        hyalos::setup_cmd::steps(&env, Err("no substrate".into()))?
+            .into_iter()
+            .find(|s| s.id == id)
+            .ok_or_else(|| id.to_string().into())
+    };
+    let paste = |script: &str, typed: &[u8]| -> Res<bool> {
+        use std::io::Write;
+        let mut shell = Command::new("sh")
+            .args(["-c", script])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        shell.stdin.take().ok_or("stdin")?.write_all(typed)?;
+        Ok(shell.wait()?.success())
+    };
+    let keys = step("provider_keys")?;
     assert!(!keys.done);
     let script = keys.commands.join("\n");
-    assert!(!script.contains("sk-"), "{script}");
-    let mut shell = Command::new("bash")
-        .args(["-c", &script])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
-    use std::io::Write;
-    shell
-        .stdin
-        .take()
-        .ok_or("stdin")?
-        .write_all(b"sk-test-key-0123\n")?;
-    assert!(shell.wait()?.success());
     let file = config.join("provider.keys");
+    assert!(!paste(&script, b"openai\n\n")?);
+    assert_eq!(std::fs::read_to_string(&file)?, "");
+    assert!(paste(&script, b"anthropic\nsk-test-key-0123\n")?);
+    let written = std::fs::read_to_string(&file)?;
+    assert_eq!(written, "anthropic.key = sk-test-key-0123\n");
+    assert!(!paste(&script, b"anthropic\nsk-other\n")?);
+    assert_eq!(std::fs::read_to_string(&file)?, written);
     assert_eq!(
         std::fs::metadata(&file)?.permissions().mode() & 0o777,
         0o600
     );
-    let steps = hyalos::setup_cmd::steps(&env, Err("no substrate".into()))?;
+    assert!(step("provider_keys")?.done);
+    // With only Anthropic's key, the credential's line registers a server whose jobs use Claude Code.
+    let credential = step("agent_credential")?.commands.join("\n");
     assert!(
-        steps.iter().any(|s| s.id == "provider_keys" && s.done),
-        "{steps:?}"
+        credential.contains("-- hyalos mcp --harness claude-code; unset c"),
+        "{credential}"
     );
+    let steps = hyalos::setup_cmd::steps(&env, Err("no substrate".into()))?;
 
     // Every step has commands; with every step done, --next says so and shows none.
     assert!(steps.iter().all(|s| !s.commands.is_empty()));

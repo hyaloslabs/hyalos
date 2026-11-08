@@ -21,7 +21,7 @@ You keep every secret and every decision. The agent never needs your passphrase,
 
    It exits 0 once every step is done. `--json` prints the same as JSON, with each step's `commands`. Your files go in the config directory it names.
 
-   `hyalos setup --next` prints only the first step not done, ending with its commands and nothing after them. The commands that write a secret read it from your terminal without showing it, so it never lands in a command line or your shell history:
+   `hyalos setup --next` prints only the first step not done, ending with its commands and nothing after them. A step that needs something only you know asks for it, and a secret is read from your terminal without showing it, so it never lands in a command line or your shell history ([ADR-0077](../adr/0077-handing-the-operator-one-step-at-a-time.md)):
 
    ```
    setup: 3 of 7 steps done; next is provider_keys (yours, in a terminal of your own)
@@ -29,10 +29,9 @@ You keep every secret and every decision. The agent never needs your passphrase,
    there is no /home/you/.config/hyalos/provider.keys
    see docs/operations/provider-keys.md
 
-   # a dedicated key with a spend cap set at the provider; for Claude Code write anthropic.key
-   # in place of openai.key. The key is read from the terminal and not shown.
-   (umask 077; mkdir -p /home/you/.config/hyalos; read -rsp 'API key: ' k; echo; printf 'openai.key = %s\n' "$k" >> /home/you/.config/hyalos/provider.keys)
-   chmod 600 /home/you/.config/hyalos/provider.keys
+   # a dedicated key with a spend cap set at the provider: asks which provider and the key (not
+   # shown), and writes provider.keys owner-only. Safe to paste again.
+   (umask 077; f=/home/you/.config/hyalos/provider.keys; mkdir -p /home/you/.config/hyalos && ... )
    ```
 3. For the policy, run `hyalos policy starter > policy.cedar` yourself; it prints one that allows a first job and nothing more: read, push the job's branch, open a pull request, with data going only to the model and GitHub. Read it, then approve it with `hyalos policy approve policy.cedar`. Do this step yourself rather than through the agent, so the file you sign is the one you read.
 4. Check the App can reach the repository with `hyalos github check <owner/repo>`, then start a job with `hyalos start <owner/repo> <issue-number>` ([mcp.md](mcp.md)) or `hyalos run` ([running-a-job.md](running-a-job.md)).
