@@ -165,3 +165,49 @@ fn a_wrong_passphrase_or_a_bad_request_writes_nothing_and_asks_nothing() -> Res 
     assert!(gh.seen().is_empty());
     Ok(())
 }
+
+#[test]
+fn the_starter_policy_lets_an_approved_merge_through() -> Res {
+    // ADR-0082: a first issue can be merged under the starter, with no policy of the operator's own.
+    let root = common::dir("merge-starter")?;
+    let gh = GitHub::start(&root, false)?;
+    let world = World::new("merge-starter", Some(&gh))?;
+    let starter = world.root.join("starter.cedar");
+    std::fs::write(&starter, ok_cli(world.cli(&["policy", "starter"])?)?)?;
+    ok_cli(world.signed(&["policy", "approve", &starter.to_string_lossy()])?)?;
+    let out = ok_cli(world.signed(&["merge", "octo/repo", "42", "--head", PR_HEAD])?)?;
+    assert!(
+        out.contains(&format!("merged {PR_HEAD} as {MERGE_COMMIT}")),
+        "{out}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_starter_policy_still_needs_the_approval_and_an_untainted_job_to_merge() -> Res {
+    use hyalos_policy::{Action, JobFacts, Policies, PolicyRequest, TargetFacts};
+    use hyalos_types::Answer;
+    let policies = Policies::load(hyalos::policy_cmd::STARTER).map_err(|e| format!("{e:?}"))?;
+    let merge = |tainted: bool, approved: bool| PolicyRequest {
+        action: Action::Merge,
+        job: JobFacts {
+            tainted,
+            repo: "octo/repo".to_string(),
+            budget_tokens: 0,
+        },
+        target: TargetFacts {
+            repo: "octo/repo".to_string(),
+            name: String::new(),
+            in_branch_prefix: false,
+            protected: true,
+        },
+        approved,
+        subscription_token: false,
+    };
+    let answer = |r: &PolicyRequest| policies.judge_request(r).answer;
+    assert_eq!(answer(&merge(false, true)), Answer::Allow);
+    // The baseline's forbids still hold under the starter: no approval, or a tainted job, is a deny.
+    assert_eq!(answer(&merge(false, false)), Answer::Deny);
+    assert_eq!(answer(&merge(true, true)), Answer::Deny);
+    Ok(())
+}

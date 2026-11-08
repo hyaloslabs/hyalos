@@ -26,7 +26,7 @@
 
   Every actor is tainted, so with this rule a run with `--allow-host` is refused at minting, with a `no manifest` message that names `data_flow:job->web`.
 
-  `hyalos policy check policy.cedar` validates it, `hyalos policy approve policy.cedar` puts it in force, and `hyalos policy show` prints what is in force. The baseline's forbids still apply under any policy: no write outside the job's repository, no push outside its branch, no irreversible action without an approval.
+  `hyalos policy starter` prints both, with `merge` added so that you can merge the pull request after you review it (section 3), and `hyalos setup policy` shows and approves it. `hyalos policy check policy.cedar` validates a policy of your own, `hyalos policy approve policy.cedar` puts it in force, and `hyalos policy show` prints what is in force. The baseline's forbids still apply under any policy: no write outside the job's repository, no push outside its branch, no irreversible action without an approval.
 
 ## 2. Run it
 
@@ -61,10 +61,20 @@ The command prints each step: the substrate and its attestation (none of today's
 
 It needs the run's request in `runs/task-<id>.json` in the data directory, which `hyalos mcp` writes for the jobs an agent starts. A run started from the command line has none, so it cannot be resumed. The MCP server resumes its own runs by itself ([mcp.md](mcp.md)).
 
-## 3. If something goes wrong
+## 3. Merge the pull request
+
+A job opens a pull request and merges nothing. Merging is yours ([ADR-0071](../adr/0071-merging-after-the-operators-approval.md)): review the pull request on GitHub, then in your own terminal:
+
+```
+hyalos merge owner/repo 42 --head <the full id of its head commit>
+```
+
+It asks for your passphrase and merges exactly that commit. A push after you reviewed makes GitHub refuse it, so you review again. Your policy must permit `merge`: the starter does from v0.1.2 ([ADR-0082](../adr/0082-the-starter-policy-permits-merge.md)). If yours was approved before, `hyalos setup policy` offers to replace it with the starter. [approvals.md](approvals.md#merging) has the options and what each refusal means.
+
+## 4. If something goes wrong
 
 - **Refused before the job started** (not Linux, no ready substrate, a container runtime that does not answer within 60 seconds, missing settings): nothing was written. The message says what to fix; `hyalos doctor` shows the substrates.
-- **`no manifest: policy does not allow ...`**: the approved policy does not allow what the job asks for. The job is in the log as failed.
+- **`no manifest: policy does not allow ...`**: the approved policy does not allow what the job asks for, such as `merge` under a policy approved before v0.1.2. The job is in the log as failed.
 - **`REVOKING THE FORGE TOKEN FAILED`**: the token stays valid until it expires, within an hour. It is in no file and was never printed; only the broker, which has stopped, held it. To cut the repository off sooner, remove it from the App's installation ([github-app.md](github-app.md), "Rotating or revoking"). Then find out why the revoke failed: the network, or GitHub's status.
 - **A gate refused something** (`gate Egress answered Deny`): the job asked for something its manifest does not allow. `flow.not_declared` means it tried to send data somewhere it has no flow to, such as a web host without `--allow-host`. It is recorded as `gate.answered`; the job carries on without it. A push or pull request holding a credential or hidden text is the content gate's refusal (`content.credential`, `content.hidden_text`, [ADR-0054](../adr/0054-the-content-gate-on-what-a-push-carries.md)). A pull request from the actor, which is tainted, is also refused for a key of a known shape (`content.key_shape`), a credential encoded or split (`content.encoded_credential`), a link off the forge or one with a query (`content.link`), or a title or body over 20,000 characters (`content.too_long`, [ADR-0065](../adr/0065-the-content-gate-on-what-a-tainted-job-publishes.md)); link to the repository's own issues and files, and name anything else in words.
 - **`held; stopping the sandbox`**: a gate could not answer, such as the content gate on a push it could not read (`content.pack_unreadable`, `content.pack_too_large`, `content.ref_delta`). The job ends `held`, the sandbox is stopped and the token is revoked. The hold is in the log, and only a person can release it.
