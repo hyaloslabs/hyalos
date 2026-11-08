@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use hyalos::{
     agent_cmd, broker_cmd, doctor_cmd, github_cmd, hardening, init_cmd, log_cmd, mcp_cmd,
-    merge_cmd, operator_cmd, policy_cmd, run_cmd, setup_cmd, tools_cmd, workflow_cmd,
+    merge_cmd, operator_cmd, policy_cmd, run_cmd, setup_cmd, stack, tools_cmd, workflow_cmd,
 };
 
 fn main() -> ExitCode {
@@ -14,6 +14,17 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // On a thread with a stack of its own, so the policy engine can tell how much it has (#280).
+    match stack::run(move || command(&args)) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("hyalos: cannot start: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn command(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
         None | Some("--version") => {
             println!("hyalos {}", env!("CARGO_PKG_VERSION"));

@@ -28,6 +28,7 @@ pub mod run_cmd;
 pub mod runs;
 pub mod setup_ask;
 pub mod setup_cmd;
+pub mod stack;
 pub mod tools_cmd;
 pub mod workflow_cmd;
 pub mod workflow_run;

@@ -35,3 +35,9 @@ signal-hook = { version = "0.3.18", default-features = false, features = ["itera
 # The fake substrate runs the end-to-end leak test's sandbox (S3.2). Never linked into the binary.
 hyalos-substrate-contract = { path = "../../crates/substrate-contract" }
 rusqlite = { version = "0.41", features = ["bundled"] }
+
+# Runs on its own main thread, as the binary does, not on a test harness thread (#280). The release
+# check runs it built for musl.
+[[test]]
+name = "main_thread"
+harness = false
