@@ -68,6 +68,9 @@ impl Access {
 /// GitHub permissions by name, as the token request and response write them.
 pub type Permissions = BTreeMap<&'static str, Access>;
 
+/// The step a [`MintError::Refused`] names when GitHub refuses the token itself, rather than the App.
+pub const MINT_STEP: &str = "mint an installation token";
+
 /// The forge permissions a manifest's actions need (ADR-0044). An action that touches no forge needs
 /// none. An action the engine never mints a token for, and any name that is not an action, is refused,
 /// so a manifest cannot reach a permission this table does not name.
@@ -379,7 +382,7 @@ impl GitHubApp {
         )?;
         if status != 201 {
             return Err(MintError::Refused {
-                step: "mint an installation token",
+                step: MINT_STEP,
                 status,
             });
         }

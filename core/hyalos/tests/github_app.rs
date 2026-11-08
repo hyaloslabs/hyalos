@@ -506,9 +506,15 @@ fn github_check_mints_shows_and_revokes_without_printing_the_token() -> Res {
         "{text}"
     );
 
+    // An error about the whole App is said once, not once per permission.
     let out = run("octo/elsewhere")?;
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("not installed on octo/elsewhere"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        stderr.matches("not installed on octo/elsewhere").count(),
+        1,
+        "{stderr}"
+    );
     for bad in [
         &["github"][..],
         &["github", "check"],

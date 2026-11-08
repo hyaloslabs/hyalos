@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use hyalos_types::Clock;
 
 use crate::clock::SystemClock;
-use crate::github::{GitHubApp, MintError, Permissions, permissions_for};
+use crate::github::{GitHubApp, MINT_STEP, MintError, Permissions, permissions_for};
 use crate::paths;
 
 const USAGE: &str = "usage: hyalos github check <owner/repo>
@@ -61,22 +61,33 @@ pub fn run(args: &[String]) -> ExitCode {
         let named = format!("{permission}: {}", access.as_str());
         let minted = match app.mint_for(repo, &asked, SystemClock.now()) {
             Ok(minted) => minted,
-            // The installation is missing: no permission will mint, so say so once.
-            Err(e @ MintError::NotInstalled { .. }) => {
-                eprintln!("hyalos: {e}");
-                return ExitCode::from(1);
-            }
-            Err(MintError::Refused { status: 422, .. }) => {
+            Err(MintError::Refused {
+                step: MINT_STEP,
+                status: 422,
+            }) => {
                 eprintln!(
                     "hyalos: GitHub refused a token with {named} (status 422): the App does not have that permission, or its installation has not accepted it. Set it on the App's settings page, then accept the change at {INSTALLATIONS}"
                 );
                 ok = false;
                 continue;
             }
-            Err(e) => {
+            // About this permission's token: check the others too.
+            Err(
+                e @ (MintError::Refused {
+                    step: MINT_STEP, ..
+                }
+                | MintError::Wider
+                | MintError::Response(_)),
+            ) => {
                 eprintln!("hyalos: {named}: {e}");
                 ok = false;
                 continue;
+            }
+            // About the whole App (not installed, a refused JWT, the key, the network): no permission
+            // will mint, so say so once.
+            Err(e) => {
+                eprintln!("hyalos: {e}");
+                return ExitCode::from(1);
             }
         };
         if installation.is_none() {
