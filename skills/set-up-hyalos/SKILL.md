@@ -88,7 +88,7 @@ It names the config directory (`config_dir`); use that path, not a guess. Take t
 | `provider_keys` | operator | The line asks which provider and the key, which it reads without showing, and writes `provider.keys` owner-only. Pasting it again after a mistake is safe. |
 | `github_app` | operator | The line asks for the App ID and the full path of the downloaded `.pem`, moves the key into place owner-only and writes `github.app`. The detail says what is still wrong, such as a file with the wrong mode. |
 | `policy` | operator | They print the starter, read it, and approve it. It allows the first job's actions, with data going only to the model and GitHub. You do not write or edit the file they approve. |
-| `agent_credential` | operator | One line, run in the repository's directory, issues a credential and registers this client's server with it, so the credential goes straight to the client without being shown. It adds `--harness claude-code` itself when their only key is Anthropic's. The MCP tools appear in your next session, and the first job does not wait for them. |
+| `agent_credential` | operator | One line, run in the directory this session runs in, issues a credential and registers this client's server with it, so the credential goes straight to the client without being shown. It adds `--harness claude-code` itself when their only key is Anthropic's. The MCP tools appear in your next session, and the first job does not wait for them. |
 
 After `agent_credential` is done, check that the server was registered for the directory this session runs in. `claude mcp add` registers it only for the directory it ran in, so a line the operator pasted anywhere else leaves this session without it. In this session's directory, run:
 
@@ -99,7 +99,7 @@ claude mcp list
 and look for a line starting `hyalos:`. Never run `claude mcp get hyalos`: it shows the server's details, which can include the credential.
 
 If there is no `hyalos:` line, the credential is in force but registered elsewhere, so the step shows as done and `hyalos setup --next` will not hand it over again. Build the block yourself:
-1. Run `hyalos agent list` (it reads only the public key) and note the id of the credential named `claude-code`.
+1. Run `hyalos agent list` (it reads only the public key) and note the id of the credential named `claude-code` that is in force (it lists revoked ones too).
 2. Take the `agent_credential` step's last command from `hyalos setup --json`. It is there even for a step that is done.
 3. Hand the operator one block, with this session's directory and the id filled in:
 
