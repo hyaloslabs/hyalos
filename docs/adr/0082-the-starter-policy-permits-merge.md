@@ -34,4 +34,4 @@ An operator who wants no merges at all approves a policy without `merge`, as the
 
 A merge still depends on the repository: branch protection, required checks and allowed merge methods are GitHub's, and the App merges as itself ([github-app.md](../operations/github-app.md), section 6).
 
-The run under the starter (`run_job.rs`) now runs under a policy that permits `merge`. It still opens a pull request and merges nothing, since its actor is tainted. A test merges under the starter with an approval, and the starter is checked to refuse a merge without one and a merge by a tainted job.
+The run under the starter (`run_job.rs`) now runs under a policy that permits `merge`. It still opens a pull request and merges nothing, since its actor never asks for `merge` and is tainted. A test merges under the starter with an approval, and the starter is checked to refuse a merge without one and a merge by a tainted job.

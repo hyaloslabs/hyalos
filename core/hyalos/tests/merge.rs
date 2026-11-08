@@ -175,6 +175,12 @@ fn the_starter_policy_lets_an_approved_merge_through() -> Res {
     let starter = world.root.join("starter.cedar");
     std::fs::write(&starter, ok_cli(world.cli(&["policy", "starter"])?)?)?;
     ok_cli(world.signed(&["policy", "approve", &starter.to_string_lossy()])?)?;
+    // The starter replaced the world's own policy, which also permits merge.
+    let shown = ok_cli(world.cli(&["policy", "show"])?)?;
+    assert!(
+        shown.contains("A starter policy for a first issue"),
+        "{shown}"
+    );
     let out = ok_cli(world.signed(&["merge", "octo/repo", "42", "--head", PR_HEAD])?)?;
     assert!(
         out.contains(&format!("merged {PR_HEAD} as {MERGE_COMMIT}")),

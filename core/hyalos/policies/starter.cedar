@@ -5,8 +5,8 @@
 //
 // The shipped baseline's forbids still apply under it: no write outside the job's repository, no
 // push outside the job's branch, no merge by a job that read forge content, and no irreversible
-// action, such as a merge, without your signed approval of that pull request's head. So no job
-// merges anything: each merge is yours, one `hyalos merge` at a time (ADR-0071, ADR-0082).
+// action, such as a merge, without your signed approval of that pull request's head. So no job of a
+// workflow merges: each merge is yours, one `hyalos merge` at a time (ADR-0071, ADR-0082).
 // It permits no web host; add one when you want it (docs/operations/running-a-job.md).
 
 permit (
