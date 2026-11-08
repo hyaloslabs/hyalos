@@ -1,6 +1,6 @@
 # ADR-0077: Handing the operator one step at a time
 
-**Status:** Proposed. On acceptance it supersedes [ADR-0076](0076-the-set-up-hyalos-skill-and-the-setup-checklist.md), whose Status line then changes to `Superseded by ADR-0077`.
+**Status:** Accepted. Supersedes [ADR-0076](0076-the-set-up-hyalos-skill-and-the-setup-checklist.md).
 
 ## Context
 

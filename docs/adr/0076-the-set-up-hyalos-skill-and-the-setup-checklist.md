@@ -1,6 +1,6 @@
 # ADR-0076: The set-up-hyalos skill and the setup checklist
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-0077](0077-handing-the-operator-one-step-at-a-time.md)
 
 ## Context
 
