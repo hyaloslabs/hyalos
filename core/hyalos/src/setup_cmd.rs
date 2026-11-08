@@ -25,7 +25,7 @@ const USAGE: &str = "usage: hyalos setup [--next] [--image <image>] [--json]
   hyalos setup lists what this machine still needs before a first job, in order, and who takes each
   step: the agent (setup a shell can do) or you (a secret, or a decision signed with your approval
   key). It writes nothing and prints no secret. --next prints only the first step not done, ending
-  with its command; --image names the sandbox image (default hyalos-sandbox:latest); --json prints
+  with its command; --image names the sandbox image (default hyalos-sandbox:latest, or a release's own); --json prints
   the steps as JSON. Exit 0 when every step is done, 1 when one is not, 2 for bad usage.
   The others are yours, in a terminal of your own: each asks for what it needs there, writes it and
   checks it, and is safe to run again. walk takes every step still missing, in order";

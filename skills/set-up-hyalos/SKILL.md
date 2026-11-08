@@ -38,17 +38,28 @@ If something is missing, say which and how to install it, then stop until it is 
 
 ## 2. Install `hyalos` and the sandbox image
 
-**From a release.** Download and check the binary, from a new temporary directory:
+**From a release.** Use the release for this checkout's version, so this skill and the binary match. From the repository root, download it and check its SHA-256. Each line runs only if the one before it passed:
 
 ```
-cd "$(mktemp -d)"
-gh release download --repo hyaloslabs/hyalos -p hyalos-x86_64-linux -p SHA256SUMS
-sha256sum -c SHA256SUMS
-gh attestation verify hyalos-x86_64-linux --repo hyaloslabs/hyalos
-install -D -m 755 hyalos-x86_64-linux ~/.local/bin/hyalos
+v=v$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+d=$(mktemp -d) && gh release download "$v" --repo hyaloslabs/hyalos -D "$d" -p hyalos-x86_64-linux -p SHA256SUMS && (cd "$d" && sha256sum -c SHA256SUMS)
 ```
 
-If `sha256sum -c` fails, or the attestation fails to verify, stop and use the source path instead. On a `gh` older than 2.49 there is no `gh attestation`: skip that line and tell the operator the provenance was not checked. Run `hyalos` as `~/.local/bin/hyalos` until `~/.local/bin` is on this shell's `PATH`. If `hyalos` is not found in the operator's terminal, tell them to open a new one.
+If there is no release for `$v`, use the source path. If `sha256sum -c` fails, stop and install nothing. Tell the operator the download did not match its checksum, which can mean it was tampered with.
+
+Then check its provenance, where it can be checked: the repository is public (`gh repo view hyaloslabs/hyalos --json visibility` says `PUBLIC`) and `gh --version` is 2.49 or later. It must have been built by the release workflow from that tag:
+
+```
+gh attestation verify "$d/hyalos-x86_64-linux" --repo hyaloslabs/hyalos --signer-workflow hyaloslabs/hyalos/.github/workflows/release.yml --source-ref "refs/tags/$v"
+```
+
+If it fails, stop and tell the operator, as for a bad checksum. If it cannot be checked (a private repository, or an older `gh`), tell the operator that its provenance was not checked, and why. Then install it:
+
+```
+install -D -m 755 "$d/hyalos-x86_64-linux" ~/.local/bin/hyalos
+```
+
+Run it as `~/.local/bin/hyalos` until `~/.local/bin` is on this shell's `PATH` (`export PATH="$HOME/.local/bin:$PATH"`). Tell the operator to do the same in their terminal. A new terminal is not enough on most desktop distributions, because `~/.profile` adds `~/.local/bin` only if it existed at login. Logging in again makes it last.
 
 Then pull the image. The release names it by digest, and `hyalos setup --json` gives the line, under the `substrate` step's `commands`. Run that `docker pull` in the background. If it is refused because the image is private, the login is the operator's, since the token is theirs. They run these in their own terminal:
 
@@ -56,6 +67,8 @@ Then pull the image. The release names it by digest, and `hyalos setup --json` g
 gh auth refresh -h github.com -s read:packages
 gh auth token | docker login ghcr.io -u <their GitHub user> --password-stdin
 ```
+
+A token of their own with only `read:packages` is narrower than `gh auth token`; they can use one in its place.
 
 Then run the pull again.
 

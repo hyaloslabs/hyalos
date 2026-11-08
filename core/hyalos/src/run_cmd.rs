@@ -63,7 +63,8 @@ const USAGE: &str = "usage: hyalos run --repo <owner/name>
   policy that allows read, push, open_pr and data_flow (hyalos policy approve), provider.keys and
   the GitHub App (github.app, github-app.pem) in the config directory, and a ready substrate (hyalos
   doctor). --allow-host lets the job reach a web host through the egress gate, if policy allows it.
-  Defaults: harness codex, image hyalos-sandbox:latest, 200000 tokens, 30 minutes";
+  Defaults: harness codex, image hyalos-sandbox:latest (or the one a release names by digest),
+  200000 tokens, 30 minutes";
 
 /// How long finding a substrate may take. A runtime that does not answer refuses the job rather than
 /// hanging it (ADR-0043, ADR-0050).

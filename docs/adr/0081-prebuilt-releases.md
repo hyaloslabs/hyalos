@@ -14,22 +14,24 @@ Today a job's default image is `hyalos-sandbox:latest`, a tag anything on the ma
 
 ## Decision
 
-**A release is a tag `vX.Y.Z`** that matches the workspace's version. Pushing it runs `.github/workflows/release.yml`, which refuses a tag that does not match. A pull request that changes the workflow builds everything and publishes nothing.
+**A release is a tag `vX.Y.Z`** that matches the workspace's version, on a commit on `main`. Pushing it runs `.github/workflows/release.yml`, which refuses any other tag, and a tag whose image is published already: each tag is published once. A pull request that changes the release runs only check jobs, which build the image and the binary with read-only permissions and publish nothing. The publish jobs run only on a tag.
 
-**The sandbox image** is built from `images/sandbox/Containerfile` (`--target sandbox`), as for a build from source. It is pushed to `ghcr.io/<owner>/hyalos-sandbox:<tag>` and named from then on by its digest, `ghcr.io/<owner>/hyalos-sandbox@sha256:<digest>`. Its build provenance is attested and pushed to the registry beside it.
+**The sandbox image** is built from `images/sandbox/Containerfile` (`--target sandbox`), as for a build from source. It is pushed to `ghcr.io/<owner>/hyalos-sandbox:<tag>`, with `docker buildx build --push --metadata-file`. From then on it is named by the digest the build reports, `ghcr.io/<owner>/hyalos-sandbox@sha256:<digest>`. The binary's job pulls it back by that digest before building.
 
-**The binary** is `hyalos` built for `x86_64-unknown-linux-musl`, statically linked, so it runs on any x86_64 Linux. It is built in the Containerfile's own pinned Rust image, with `musl-tools` for the C parts (ring and SQLite). The image's reference by digest is built into it, through `HYALOS_RELEASE_IMAGE`, as the default image (`doctor_cmd::DEFAULT_IMAGE`). A value that is not `<name>@sha256:<64 hex>` fails the build. The workflow checks that the binary is static, runs, and names its image. The binary's build provenance is attested.
+**The binary** is `hyalos` built for `x86_64-unknown-linux-musl`, statically linked, so it runs on any x86_64 Linux. It is built in the Containerfile's own pinned Rust image, with `musl-tools` for the C parts (ring and SQLite). The image's reference by digest is built into it, through `HYALOS_RELEASE_IMAGE`, as the default image (`doctor_cmd::DEFAULT_IMAGE`). A value that is not `<name>@sha256:<64 hex>` fails the build. The workflow checks that the binary is static, runs, and names its image (`.github/scripts/build-release-binary.sh`).
+
+**Provenance.** While the repository is public, the build provenance of the image and of the binary is attested, with `actions/attest-build-provenance`. The image's attestation is pushed to the registry. GitHub offers attestations for private repositories only on Enterprise Cloud, and `hyaloslabs` is on Team. So while the repository is private, a release has its checksums and no attestation, and the workflow skips the attest steps.
 
 **The GitHub release** holds `hyalos-x86_64-linux` and `SHA256SUMS`, and its notes give the image's digest.
 
 **What a release binary changes:** only its default image. `hyalos setup`'s `substrate` step then says `docker pull <image by digest>` in place of the build, and `hyalos doctor` checks that image. `--image` still names any other. A build from source is unchanged: its default is `hyalos-sandbox:latest`.
 
-**Installing.** The `set-up-hyalos` skill installs the latest release when there is one for the host (x86_64 Linux):
+**Installing.** The `set-up-hyalos` skill installs a release when there is one for the host (x86_64 Linux). It takes the release for the checkout's version, so the skill and the binary match:
 1. `gh release download` fetches the binary and `SHA256SUMS`, and `sha256sum -c` must pass.
-2. Where `gh` has `gh attestation` (2.49 and later), the binary's attestation must verify too.
+2. Where provenance can be checked (a public repository, and `gh` 2.49 or later), `gh attestation verify` must pass. It is pinned to the release workflow and the tag: `--signer-workflow …/release.yml --source-ref refs/tags/<tag>`. Where it cannot be checked, the skill tells the operator so, and why.
 3. It installs the binary to `~/.local/bin`, and pulls the image the binary names.
 
-Anything that fails falls back to building from source. Only aarch64 hosts build from source for now. They need an arm64 runner, which a private repository does not get without paying.
+A failed checksum or attestation installs nothing and is reported to the operator as a possible tampering sign. No release for the version means building from source. Only aarch64 hosts build from source for now. They need an arm64 runner, which a private repository does not get without paying.
 
 **While the repository is private**, downloading a release needs `gh` logged in with access to it. Pulling the image needs `docker login ghcr.io` with a token that can read packages, unless the package is made public. That is an operator step, since the token is theirs.
 
@@ -39,6 +41,10 @@ A machine with Docker and `gh` gets a working `hyalos` in seconds, and the image
 
 The image a release's jobs run in is fixed by digest, so retagging cannot change it. Moving to a newer image means installing a newer release, or passing `--image`.
 
-The checksum proves the download is whole. Authenticity rests on GitHub's TLS and the release belonging to the repository. The attestation adds that the binary was built by this workflow from the tagged commit, where `gh` can check it. On an older `gh`, such as Ubuntu 24.04's 2.45, the skill says it was not checked.
+The checksum proves the download is whole. Authenticity rests on GitHub's TLS and the release belonging to the repository. Once the repository is public, the attestation adds that the binary was built by the release workflow from the tag. Until then, and on an older `gh` such as Ubuntu 24.04's 2.45, the skill says it was not checked.
 
-A release is cut by hand: bump the workspace version, merge, tag, push the tag. Nothing publishes on a merge.
+A release carries no microVM init (`hyalos-vm-init`), so a microVM still needs a build from source.
+
+`~/.local/bin` is on `PATH` on most distributions only after the next login, if it did not exist before. Until then the skill runs `hyalos` by its full path and tells the operator to `export PATH`.
+
+A release is cut by hand: bump the workspace version, merge, tag, push the tag. Nothing publishes on a merge. A tag that failed part-way is not run again; it is cut again under the next version.
