@@ -65,9 +65,18 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
         log: paths::log_file(env)?,
         public_key: paths::engine_public_key(env)?,
     };
-    let state = log.read();
+    // `hyalos init` makes the key, not the log; the first event the engine writes, which on a fresh
+    // install is the operator's policy approval, creates it (#255).
+    let state = if log.log.exists() {
+        Some(log.read())
+    } else {
+        None
+    };
+    let engine = engine_key(&config, state.as_ref());
+    let state = state.unwrap_or_else(|| {
+        Err("there is no event log yet: hyalos policy approve creates it".to_string())
+    });
     let mut steps = Vec::new();
-    let engine = engine_key(&config, &state);
     let mut step = |id, who, action, doc, found: Result<String, String>| {
         let (done, detail) = match found {
             Ok(detail) => (true, detail),
@@ -157,9 +166,11 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
     Ok(steps)
 }
 
+/// The engine's key pair, and the log against it if there is one yet (`state` is `None` before the
+/// first event).
 fn engine_key(
     config: &Path,
-    state: &Result<hyalos_engine::State, String>,
+    state: Option<&Result<hyalos_engine::State, String>>,
 ) -> Result<String, String> {
     let key = crate::keys::load(&config.join(paths::ENGINE_KEY_FILE))
         .map_err(|e| format!("no usable engine key: {e}"))?;
@@ -168,8 +179,16 @@ fn engine_key(
     if public.trim() != key.public().to_hex() {
         return Err("engine.pub is not engine.key's public key".into());
     }
-    state.as_ref().map_err(Clone::clone)?;
-    Ok("engine.key, engine.pub and the event log check out".to_string())
+    match state {
+        Some(state) => {
+            state.as_ref().map_err(Clone::clone)?;
+            Ok("engine.key, engine.pub and the event log check out".to_string())
+        }
+        None => Ok(
+            "engine.key and engine.pub check out; the event log starts with the first approval"
+                .to_string(),
+        ),
+    }
 }
 
 fn operator_key(config: &Path) -> Result<String, String> {

@@ -123,3 +123,46 @@ fn a_machine_set_up_for_a_job_has_every_step_done_once_the_agent_has_a_credentia
     assert_eq!(todo(&steps), ["engine_key", "policy", "agent_credential"]);
     Ok(())
 }
+
+#[test]
+fn hyalos_init_alone_clears_the_engine_key_step_before_any_log_exists() -> Res {
+    let root = dir("setup-init")?;
+    let (config, data) = (root.join("c"), root.join("d"));
+    let run = |args: &[&str]| {
+        Command::new(EXE)
+            .args(args)
+            .env("HYALOS_CONFIG_DIR", &config)
+            .env("HYALOS_DATA_DIR", &data)
+            .env("HYALOS_RUNTIME_DIR", root.join("r"))
+            .output()
+    };
+    ok_cli(run(&["init"])?)?;
+    // init makes the key pair and no log (#255).
+    assert!(!data.join("events.db").exists());
+    let env = |name: &str| match name {
+        "HYALOS_CONFIG_DIR" => Some(config.to_string_lossy().into_owned()),
+        "HYALOS_DATA_DIR" => Some(data.to_string_lossy().into_owned()),
+        _ => None,
+    };
+    let steps = hyalos::setup_cmd::steps(&env, Err("no substrate".into()))?;
+    let engine = steps
+        .iter()
+        .find(|s| s.id == "engine_key")
+        .ok_or("engine_key")?;
+    assert!(engine.done, "{engine:?}");
+    for id in ["policy", "agent_credential"] {
+        let step = steps.iter().find(|s| s.id == id).ok_or(id)?;
+        assert!(!step.done);
+        assert!(
+            step.detail.contains("hyalos policy approve creates it"),
+            "{step:?}"
+        );
+    }
+    // Running init again still changes nothing, and setup still writes nothing.
+    ok_cli(run(&["init"])?)?;
+    let out = run(&["setup", "--json"])?;
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!data.join("events.db").exists());
+    std::fs::remove_dir_all(&root).ok();
+    Ok(())
+}
