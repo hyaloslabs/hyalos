@@ -1,6 +1,6 @@
 # ADR-0080: Setup asks the operator in their own terminal
 
-**Status:** Proposed. On acceptance it supersedes [ADR-0077](0077-handing-the-operator-one-step-at-a-time.md), whose Status line then changes to `Superseded by ADR-0080`.
+**Status:** Accepted. Supersedes [ADR-0077](0077-handing-the-operator-one-step-at-a-time.md).
 
 ## Context
 
