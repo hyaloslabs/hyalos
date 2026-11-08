@@ -19,12 +19,17 @@ The server offers five tools: `list_tasks`, `start_job`, `job_status`, `job_resu
 | `hyalos status <task>` | `job_status` |
 | `hyalos result <task>` | `job_result` |
 | `hyalos approvals [--limit <n>]` | `list_approvals` |
+| `hyalos stop <task>` | `tasks/cancel` (the Tasks extension) |
+
+`stop` is the one thing the agent does to a run outside a tool: it asks a run the server started to stop, as `tasks/cancel` does (`EngineTools::cancel`, the run's `task-<id>.cancel`). It is not `hyalos cancel`, the operator's signed decision on a held task ([ADR-0029](0029-cancelling-a-held-task-and-recording-a-refusal.md)), and it shares no name with one.
 
 Each one builds the server's own `EngineTools` and calls `Tools::call` with the tool's arguments, so the checks, the answer and its text are the same code. `start` takes the same template options as `hyalos mcp` (`--base`, `--harness`, `--image`, `--budget-tokens`, `--minutes`, `--step-model`), and nothing the agent could not give, so it starts a runner exactly as `start_job` does.
 
-**The output is the tool's.** A command prints the tool's text, or its structured content with `--json`. It exits 1 when the tool answers with an error, and 2 for bad usage, which is refused before anything is called.
+**The output is the tool's.** A command prints the tool's text, or with `--json` its structured content (for an answer with none, its content and whether it is an error, so `--json` is always JSON). It exits 1 when the tool answers with an error, and 2 for bad usage, which is refused before anything is called.
 
-**No credential.** The agent's credential ([ADR-0068](0068-the-driving-agents-credential.md)) admits callers on the MCP channel. These commands run as the operator's user on the operator's machine, read the log with the engine's public key, and decide nothing, as `hyalos run` and `hyalos log verify` already do. An agent that has a shell there can run them too, and gains nothing it does not have on MCP.
+**They act as the server acts.** `start` starts a runner. `status` and `result`, like `tasks/get`, resume a run whose runner stopped ([ADR-0069](0069-jobs-the-driving-agent-starts-as-mcp-tasks.md)), and the resumed run writes to the log with the engine's key. None of them decides anything.
+
+**No credential.** The agent's credential ([ADR-0068](0068-the-driving-agents-credential.md)) admits callers on the MCP channel. These commands run as the operator's user on the operator's machine, as `hyalos run` and `hyalos log verify` already do. An agent with a shell as that user is already past the credential's boundary, since it could run `hyalos run` itself, so these commands add nothing to it. Revoking a credential closes the MCP channel, not a shell.
 
 **Operator decisions stay CLI-only, and a test keeps them so.** `tools_cmd::COMMANDS` maps each command to its tool, and `tools_cmd::DECISIONS` lists the decisions:
 - `approve`, `cancel`, `merge`;
@@ -32,7 +37,7 @@ Each one builds the server's own `EngineTools` and calls `Tools::call` with the 
 - `agent issue`, `agent revoke`;
 - `run --release-issue`.
 
-`tests/mcp.rs` requires the server's tool list to be exactly the tools in `COMMANDS`, so a tool added without its command fails. A unit test requires that no command in `COMMANDS` is a decision, and that no tool's name approves, cancels, merges, releases, revokes or touches policy.
+`tools_cmd::TASK_METHODS` maps `stop` to `tasks/cancel`. `tests/mcp.rs` requires the server's tool list to be exactly the tools in `COMMANDS`, so a tool added without its command fails, and checks that each command answers as its tool does and that `stop` asks what `tasks/cancel` asks. A unit test requires that no command shares a decision's name, and that no tool's name approves, cancels, merges, releases, revokes or touches policy.
 
 **Setup and maintenance stay operator tools with no MCP tool:** `init`, `doctor`, `operator`, `github check`, `log ...` and `workflow check`. They set up or inspect the operator's own machine, and none of them is something the driving agent asks for.
 

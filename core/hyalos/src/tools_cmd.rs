@@ -24,6 +24,11 @@ pub const COMMANDS: [(&str, &str); 5] = [
     ("approvals", "list_approvals"),
 ];
 
+/// The Tasks extension's methods that act on a run, one command each. `stop` is `tasks/cancel`: it
+/// asks a run the server started to stop, as the agent can. It is not `hyalos cancel`, the operator's
+/// signed decision on a held task.
+pub const TASK_METHODS: [(&str, &str); 1] = [("stop", "tasks/cancel")];
+
 /// The operator's decisions, as commands. None of them is an MCP tool, or ever may be.
 pub const DECISIONS: [&str; 7] = [
     "approve",
@@ -41,15 +46,48 @@ const USAGE: &str = "usage: hyalos tasks [--limit <n>] [--json]
        hyalos status <task> [--json]
        hyalos result <task> [--json]
        hyalos approvals [--limit <n>] [--json]
+       hyalos stop <task>
   the MCP server's tools, one command each (list_tasks, start_job, job_status, job_result,
   list_approvals): the same call and the same answer. Each prints the tool's text, or with --json its
   structured content. start starts hyalos run as a process of its own, as start_job does, with these
-  options (as for hyalos mcp). Exit 1 when the tool answers with an error, 2 for bad usage.
+  options (as for hyalos mcp). status and result, like the server, resume a run whose runner
+  stopped, and that run writes to the log. stop asks a run start started to stop, as tasks/cancel
+  does. Exit 1 when the tool answers with an error, 2 for bad usage.
   None of them decides anything: hyalos approve, cancel and merge are commands of their own";
 
-/// Runs `command` (one of [`COMMANDS`]) with `args`.
+/// Options whose next argument is their value, so a `--json` there is a value, not the flag.
+const VALUED: [&str; 8] = [
+    "--limit",
+    "--base",
+    "--harness",
+    "--image",
+    "--budget-tokens",
+    "--minutes",
+    "--step-model",
+    "--listen",
+];
+
+/// Whether `--json` was given as a flag, and the other arguments.
+fn split_json(args: &[String]) -> (bool, Vec<&String>) {
+    let mut json = false;
+    let mut rest = Vec::new();
+    for (i, arg) in args.iter().enumerate() {
+        let is_value = i > 0 && VALUED.contains(&args[i - 1].as_str());
+        if arg == "--json" && !is_value {
+            json = true;
+        } else {
+            rest.push(arg);
+        }
+    }
+    (json, rest)
+}
+
+/// Runs `command` (one of [`COMMANDS`] or [`TASK_METHODS`]) with `args`.
 pub fn run(command: &str, args: &[String]) -> ExitCode {
-    let (json, args): (Vec<_>, Vec<_>) = args.iter().partition(|a| *a == "--json");
+    if command == "stop" {
+        return stop(args);
+    }
+    let (json, args) = split_json(args);
     let (tool, arguments, template) = match parse(command, &args) {
         Ok(parsed) => parsed,
         Err(e) => {
@@ -68,11 +106,39 @@ pub fn run(command: &str, args: &[String]) -> ExitCode {
     let tools = EngineTools::new(log, launcher, template);
     let mut ignore = |_: Value| {};
     let called = tools.call(tool, &arguments, &mut Progress::untracked(&mut ignore));
-    println!("{}", shown(&called, !json.is_empty()));
+    println!("{}", shown(&called, json));
     if called.is_error {
         ExitCode::from(1)
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// `hyalos stop <task>`: the server's `tasks/cancel`, which answers an unknown task the same way.
+fn stop(args: &[String]) -> ExitCode {
+    let [task] = args else {
+        eprintln!("hyalos: stop takes one task\n{USAGE}");
+        return ExitCode::from(2);
+    };
+    let env = |name: &str| std::env::var(name).ok();
+    // Cancelling starts nothing, so the template is the server's with no options.
+    let found = mcp_cmd::setup(&env).and_then(|(log, launcher)| {
+        let (_, template) = mcp_cmd::options(&[])?;
+        Ok(EngineTools::new(log, launcher, template))
+    });
+    let tools = match found {
+        Ok(tools) => tools,
+        Err(e) => {
+            eprintln!("hyalos: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    if tools.cancel(task) {
+        println!("asked task {task} to stop");
+        ExitCode::SUCCESS
+    } else {
+        println!("there is no such task started by hyalos start or start_job");
+        ExitCode::from(1)
     }
 }
 
@@ -122,10 +188,15 @@ fn parse(
     Ok((tool, arguments, template))
 }
 
-/// What a call printed: its text, or with `json` its structured content (its text if it has none).
+/// What a call printed: its text, or with `json` its structured content (or, for an answer with
+/// none, its content and whether it is an error), so `--json` is always JSON.
 fn shown(called: &Called, json: bool) -> String {
-    if json && let Some(value) = &called.structured {
-        return serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
+    if json {
+        let value = called
+            .structured
+            .clone()
+            .unwrap_or_else(|| json!({"isError": called.is_error, "content": called.content}));
+        return serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
     }
     called
         .content
@@ -193,14 +264,29 @@ mod tests {
     }
 
     #[test]
+    fn json_is_the_flag_only_where_it_is_not_an_options_value() {
+        let given = args(&["octo/repo", "7", "--step-model", "--json", "--json"]);
+        let (json, rest) = split_json(&given);
+        assert!(json);
+        assert_eq!(rest, ["octo/repo", "7", "--step-model", "--json"]);
+        let given = args(&["--json", "12"]);
+        assert_eq!(split_json(&given), (true, vec![&given[1]]));
+    }
+
+    #[test]
     fn no_command_here_is_an_operator_decision() {
-        for (command, tool) in COMMANDS {
+        // No command shares a decision's name. `stop` (tasks/cancel) only stops a run the agent
+        // started, which is not a decision, and is not `hyalos cancel`.
+        for (command, _) in COMMANDS.into_iter().chain(TASK_METHODS) {
             assert!(
                 DECISIONS
                     .iter()
                     .all(|d| d.split(' ').next() != Some(command)),
                 "{command} is a decision"
             );
+        }
+        // No tool is named for a decision.
+        for (_, tool) in COMMANDS {
             for word in ["approve", "cancel", "merge", "release", "revoke", "policy"] {
                 assert!(!tool.contains(word), "{tool}");
             }

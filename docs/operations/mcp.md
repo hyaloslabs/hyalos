@@ -29,11 +29,13 @@ Each tool has one command that makes the same call and prints the same answer ([
 | `hyalos status <task>` | `job_status` |
 | `hyalos result <task>` | `job_result` |
 | `hyalos approvals [--limit <n>]` | `list_approvals` |
+| `hyalos stop <task>` | `tasks/cancel` |
 
-- Each prints the tool's text; `--json` prints its structured content instead.
+- Each prints the tool's text; `--json` prints its structured content instead, and is always JSON.
 - They exit 1 when the tool answers with an error, and 2 for bad usage.
 - `start` takes the same options as `hyalos mcp` and starts the runner in the background, as `start_job` does; `hyalos run` is still the runner in your terminal.
-- They need no agent credential: they run as you, read the log with the engine's public key, and decide nothing.
+- `stop` asks a run started by `start` or `start_job` to stop, as `tasks/cancel` does. It is not `hyalos cancel`, which is your signed decision on a held task.
+- They need no agent credential: they run as you and decide nothing. Like the server, `start` starts a runner, and `status` or `result` on a run whose runner stopped resumes it (`hyalos run --resume <task> --auto`), which writes to the log with the engine's key.
 
 Your decisions are the other way round: they are commands only, and no MCP tool makes one. These are `approve`, `cancel`, `merge`, `policy approve`, `agent issue`, `agent revoke` and `run --release-issue`. A test fails if the server gains a tool without a command here, or a tool that decides. Setup and maintenance (`init`, `doctor`, `operator`, `github check`, `log ...`, `workflow check`) have no MCP tool either.
 

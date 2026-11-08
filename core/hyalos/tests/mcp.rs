@@ -638,6 +638,16 @@ fn a_runs_task_is_polled_with_the_tasks_extension_or_its_plain_tools_and_reads_t
     let cancel = runs.join(format!("task-{}.cancel", task.seq()));
     assert!(cancel.exists());
     std::fs::remove_file(&cancel).unwrap();
+    // hyalos stop asks the same, in the same file; a task the server did not start is refused (S5.6).
+    let (code, out) = m.cli(&["stop", &id]).unwrap();
+    assert_eq!(code, 0, "{out}");
+    assert!(cancel.exists());
+    std::fs::remove_file(&cancel).unwrap();
+    for other in [stranger.as_str(), "99", "x"] {
+        let (code, out) = m.cli(&["stop", other]).unwrap();
+        assert_eq!(code, 1, "{other}: {out}");
+    }
+    assert!(!cancel.exists());
 
     step(
         &mut engine,
