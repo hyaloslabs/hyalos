@@ -59,8 +59,9 @@ On the App's settings page, choose **Install App**, pick the account, and choose
 hyalos github check owner/repo
 ```
 
-It mints a read-only token for the repository, shows the installation and when the token would expire, and revokes it at once. It never prints the token. It exits 0 when the App can mint for that repository. If it fails, the message says which step:
+It mints a token for the repository for each permission a job needs, one at a time: `contents: write`, `issues: read` and `pull_requests: write`. It shows the installation and when each token would expire, and revokes each at once. It never prints a token. It exits 0 only when the App can mint and revoke every one for that repository. If it fails, the message says which step:
 - **not installed on owner/repo**: go back to step 4.
+- **a permission refused with status 422**: the App does not have that permission, or it does but the installation has not accepted it. Set it on the App's settings page (step 1), then accept the change on the installation's page, under your account's or organization's **Settings → Applications → Installed GitHub Apps**. GitHub asks for that second step separately, and it is easy to miss.
 - **status 401**: `app_id` does not match the key, the key was replaced on GitHub, or this machine's clock is off by more than a minute.
 
 ## 6. Let the App merge (optional)

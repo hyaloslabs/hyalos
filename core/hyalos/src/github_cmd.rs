@@ -1,21 +1,26 @@
 //! `hyalos github check <owner/repo>`: shows the GitHub App is set up for a repository (ADR-0044).
 //!
-//! It mints the smallest token the App can give for the repository (read access to its contents),
-//! says what GitHub granted and until when, and revokes it at once. It prints neither the token nor
-//! anything from the key.
+//! It mints, one at a time, a token for each permission a run's jobs need (`permissions_for` of
+//! `run_cmd::ACTOR_ACTIONS`), each revoked at once, so a permission the App lacks, or that its
+//! installation has not accepted, is named before a job fails on it (#256). It prints neither a token
+//! nor anything from the key.
 
 use std::process::ExitCode;
 
 use hyalos_types::Clock;
 
 use crate::clock::SystemClock;
-use crate::github::{Access, GitHubApp, Permissions};
+use crate::github::{GitHubApp, MINT_STEP, MintError, Permissions, permissions_for};
 use crate::paths;
 
 const USAGE: &str = "usage: hyalos github check <owner/repo>
-  mints a read-only token for the repository from the GitHub App in github.app and github-app.pem
-  (config directory), shows what GitHub granted, and revokes it. See docs/operations/github-app.md.
-  Exit 0 if the App can mint for the repository, 1 if not, 2 for bad usage";
+  mints a token for the repository from the GitHub App in github.app and github-app.pem (config
+  directory) for each permission a job needs, one at a time, shows what GitHub granted, and revokes
+  each. See docs/operations/github-app.md.
+  Exit 0 if the App can mint every one for the repository, 1 if not, 2 for bad usage";
+
+/// Where the operator accepts an App's changed permissions, which GitHub asks for separately.
+const INSTALLATIONS: &str = "https://github.com/settings/installations (for an organization: https://github.com/organizations/<org>/settings/installations)";
 
 pub fn run(args: &[String]) -> ExitCode {
     let [check, repo] = args else {
@@ -41,32 +46,75 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let asked = Permissions::from([("contents", Access::Read)]);
-    let minted = match app.mint_for(repo, &asked, SystemClock.now()) {
-        Ok(minted) => minted,
+    let actions = crate::run_cmd::ACTOR_ACTIONS.map(String::from).into();
+    let needed = match permissions_for(&actions) {
+        Ok(needed) => needed,
         Err(e) => {
             eprintln!("hyalos: {e}");
             return ExitCode::from(1);
         }
     };
-    println!(
-        "GitHub App installation {} can mint for {}",
-        minted.installation, minted.repo
-    );
-    println!(
-        "  minted a token with contents: read, expiring at {} ms since 1970",
-        minted.token.expires_at.as_millis()
-    );
-    match app.revoke(&minted.token) {
-        Ok(()) => {
-            println!("  revoked it");
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!(
-                "hyalos: minted a token but could not revoke it ({e}); it expires on its own within an hour"
+    let mut ok = true;
+    let mut installation = None;
+    for (&permission, &access) in &needed {
+        let asked = Permissions::from([(permission, access)]);
+        let named = format!("{permission}: {}", access.as_str());
+        let minted = match app.mint_for(repo, &asked, SystemClock.now()) {
+            Ok(minted) => minted,
+            Err(MintError::Refused {
+                step: MINT_STEP,
+                status: 422,
+            }) => {
+                eprintln!(
+                    "hyalos: GitHub refused a token with {named} (status 422): the App does not have that permission, or its installation has not accepted it. Set it on the App's settings page, then accept the change at {INSTALLATIONS}"
+                );
+                ok = false;
+                continue;
+            }
+            // About this permission's token: check the others too.
+            Err(
+                e @ (MintError::Refused {
+                    step: MINT_STEP, ..
+                }
+                | MintError::Wider
+                | MintError::Response(_)),
+            ) => {
+                eprintln!("hyalos: {named}: {e}");
+                ok = false;
+                continue;
+            }
+            // About the whole App (not installed, a refused JWT, the key, the network): no permission
+            // will mint, so say so once.
+            Err(e) => {
+                eprintln!("hyalos: {e}");
+                return ExitCode::from(1);
+            }
+        };
+        if installation.is_none() {
+            println!(
+                "GitHub App installation {} can mint for {}",
+                minted.installation, minted.repo
             );
-            ExitCode::from(1)
+            installation = Some(minted.installation);
         }
+        println!(
+            "  minted a token with {named}, expiring at {} ms since 1970",
+            minted.token.expires_at.as_millis()
+        );
+        match app.revoke(&minted.token) {
+            Ok(()) => println!("  revoked it"),
+            Err(e) => {
+                eprintln!(
+                    "hyalos: minted a token with {named} but could not revoke it ({e}); it expires on its own within an hour"
+                );
+                ok = false;
+            }
+        }
+    }
+    if ok {
+        println!("every permission a job needs is granted");
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(1)
     }
 }

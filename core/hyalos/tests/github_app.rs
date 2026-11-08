@@ -51,6 +51,9 @@ enum Mode {
     Wider,
     /// Issues a token with an expiry this build cannot read.
     BadExpiry,
+    /// Refuses, with 422, a token asking for pull requests, as for an installation that has not
+    /// accepted that permission (#256).
+    NoPullRequests,
 }
 
 struct GitHub {
@@ -164,6 +167,15 @@ fn github(mode: Mode) -> Res<GitHub> {
                 }
                 ("GET", "/repos/octo/repo/installation") => (200, json!({"id": 77})),
                 ("GET", _) => (404, json!({"message": "Not Found"})),
+                ("POST", "/app/installations/77/access_tokens")
+                    if mode == Mode::NoPullRequests
+                        && body["permissions"].get("pull_requests").is_some() =>
+                {
+                    (
+                        422,
+                        json!({"message": "The permissions requested are not granted to this installation."}),
+                    )
+                }
                 ("POST", "/app/installations/77/access_tokens") => {
                     // As long as GitHub's are now (about 400 characters, ADR-0045).
                     let token = format!("ghs_stand_in_{n}_{port}_{}", "x".repeat(360));
@@ -467,15 +479,42 @@ fn github_check_mints_shows_and_revokes_without_printing_the_token() -> Res {
         text.contains("installation 77 can mint for octo/repo"),
         "{text}"
     );
-    assert!(text.contains("revoked it"), "{text}");
+    assert!(
+        text.contains("every permission a job needs is granted"),
+        "{text}"
+    );
     assert!(!text.contains("ghs_"), "{text}");
+    // One token per permission a job needs, each at its level and each revoked (#256).
     let seen = gh.seen();
-    assert_eq!(seen[1].body["permissions"], json!({"contents": "read"}));
-    assert_eq!(seen.last().map(|s| s.method.as_str()), Some("DELETE"));
+    let asked: Vec<Value> = seen
+        .iter()
+        .filter(|s| s.path.ends_with("/access_tokens"))
+        .map(|s| s.body["permissions"].clone())
+        .collect();
+    assert_eq!(
+        asked,
+        [
+            json!({"contents": "write"}),
+            json!({"issues": "read"}),
+            json!({"pull_requests": "write"}),
+        ]
+    );
+    let revoked = seen.iter().filter(|s| s.method == "DELETE").count();
+    assert_eq!(
+        (revoked, text.matches("revoked it").count()),
+        (3, 3),
+        "{text}"
+    );
 
+    // An error about the whole App is said once, not once per permission.
     let out = run("octo/elsewhere")?;
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("not installed on octo/elsewhere"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        stderr.matches("not installed on octo/elsewhere").count(),
+        1,
+        "{stderr}"
+    );
     for bad in [
         &["github"][..],
         &["github", "check"],
@@ -506,5 +545,36 @@ fn a_token_this_build_cannot_use_is_still_revoked() -> Res {
         last.authorization.contains(&"x".repeat(360)),
         "the long token was revoked"
     );
+    Ok(())
+}
+
+#[test]
+fn github_check_names_a_permission_the_installation_has_not_granted() -> Res {
+    let gh = github(Mode::NoPullRequests)?;
+    let config = config("check-pr", &gh, 0o600)?;
+    let out = Command::new(EXE)
+        .args(["github", "check", "octo/repo"])
+        .env_clear()
+        .env("HYALOS_CONFIG_DIR", &config)
+        .output()?;
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert_eq!(out.status.code(), Some(1), "{stdout}{stderr}");
+    assert!(
+        stderr.contains("pull_requests: write (status 422)")
+            && stderr.contains("has not accepted it")
+            && stderr.contains("settings/installations"),
+        "{stderr}"
+    );
+    // The two it could mint were minted and revoked, and named as granted.
+    assert!(
+        stdout.contains("contents: write") && stdout.contains("issues: read"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("every permission"), "{stdout}");
+    let seen = gh.seen();
+    assert_eq!(seen.iter().filter(|s| s.method == "DELETE").count(), 2);
     Ok(())
 }
