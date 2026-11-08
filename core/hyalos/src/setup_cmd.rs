@@ -65,17 +65,19 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
         log: paths::log_file(env)?,
         public_key: paths::engine_public_key(env)?,
     };
-    // `hyalos init` makes the key, not the log; the first event the engine writes, which on a fresh
-    // install is the operator's policy approval, creates it (#255).
-    let state = if log.log.exists() {
-        Some(log.read())
-    } else {
-        None
+    // `hyalos init` makes the key, not the log; the first event the engine writes creates it (#255).
+    // As `keys::prepare` judges it, only a path that is not there at all is no log; a missing log is
+    // the empty state.
+    let state = match std::fs::symlink_metadata(&log.log) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => Some(Err(format!(
+            "cannot read the event log {}: {e}",
+            log.log.display()
+        ))),
+        Ok(_) => Some(log.read()),
     };
     let engine = engine_key(&config, state.as_ref());
-    let state = state.unwrap_or_else(|| {
-        Err("there is no event log yet: hyalos policy approve creates it".to_string())
-    });
+    let state = state.unwrap_or_else(|| Ok(hyalos_engine::State::default()));
     let mut steps = Vec::new();
     let mut step = |id, who, action, doc, found: Result<String, String>| {
         let (done, detail) = match found {
@@ -185,7 +187,7 @@ fn engine_key(
             Ok("engine.key, engine.pub and the event log check out".to_string())
         }
         None => Ok(
-            "engine.key and engine.pub check out; the event log starts with the first approval"
+            "engine.key and engine.pub check out; the event log starts with the first event written"
                 .to_string(),
         ),
     }
