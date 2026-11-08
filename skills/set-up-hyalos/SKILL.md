@@ -32,30 +32,32 @@ Hyalos runs jobs only on Linux (WSL2 counts). Check for:
 - `docker` or `podman`;
 - `gh`, logged in (`gh auth status`). A release is downloaded with it, and you open a first issue with it in part 5. Without it, Hyalos is built from source and the operator opens the issue on GitHub.
 
-Then see whether there is a release for this host ([ADR-0081](../../docs/adr/0081-prebuilt-releases.md)): `uname -m` is `x86_64`, and `gh release view --repo hyaloslabs/hyalos --json tagName` answers. If so, take part 2's release path, which needs no Rust. If not, the source path needs `cargo`, through rustup (the repository pins its toolchain in `rust-toolchain.toml`).
+Then see whether there is a release for this host ([ADR-0081](../../docs/adr/0081-prebuilt-releases.md)): `uname -m` is `x86_64`, and there is a release for this checkout's version: `gh release view "v$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)" --repo hyaloslabs/hyalos` answers. If so, take part 2's release path, which needs no Rust. If not, the source path needs `cargo`, through rustup (the repository pins its toolchain in `rust-toolchain.toml`).
 
 If something is missing, say which and how to install it, then stop until it is there. If rustup installs `cargo` during this session, the operator's terminal does not have it on its `PATH` yet: tell them to open a new terminal, or to run `. ~/.cargo/env` in theirs.
 
 ## 2. Install `hyalos` and the sandbox image
 
-**From a release.** Use the release for this checkout's version, so this skill and the binary match. From the repository root, download it and check its SHA-256. Each line runs only if the one before it passed:
+**From a release.** Use the release for this checkout's version, so this skill and the binary match. Your shell does not keep variables from one command to the next, so each block below works it out again, and the download goes to a fixed directory. From the repository root, download it and check its SHA-256. Each step runs only if the one before it passed:
 
 ```
-v=v$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
-d=$(mktemp -d) && gh release download "$v" --repo hyaloslabs/hyalos -D "$d" -p hyalos-x86_64-linux -p SHA256SUMS && (cd "$d" && sha256sum -c SHA256SUMS)
+v=v$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1); d="$HOME/.cache/hyalos/release/$v"
+rm -rf "$d" && mkdir -p "$d" && gh release download "$v" --repo hyaloslabs/hyalos -D "$d" -p hyalos-x86_64-linux -p SHA256SUMS && (cd "$d" && sha256sum -c SHA256SUMS)
 ```
 
-If there is no release for `$v`, use the source path. If `sha256sum -c` fails, stop and install nothing. Tell the operator the download did not match its checksum, which can mean it was tampered with.
+If there is no release for that version, use the source path. If `sha256sum -c` fails, stop and install nothing. Tell the operator the download did not match its checksum, which can mean it was tampered with.
 
-Then check its provenance, where it can be checked: the repository is public (`gh repo view hyaloslabs/hyalos --json visibility` says `PUBLIC`) and `gh --version` is 2.49 or later. It must have been built by the release workflow from that tag:
+Then check its provenance, where it can be checked. That needs a public repository (`gh repo view hyaloslabs/hyalos --json visibility` says `PUBLIC`) and `gh` 2.68 or later (`gh --version`), which has `--source-ref`. It must have been built by the release workflow from that tag:
 
 ```
+v=v$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1); d="$HOME/.cache/hyalos/release/$v"
 gh attestation verify "$d/hyalos-x86_64-linux" --repo hyaloslabs/hyalos --signer-workflow hyaloslabs/hyalos/.github/workflows/release.yml --source-ref "refs/tags/$v"
 ```
 
 If it fails, stop and tell the operator, as for a bad checksum. If it cannot be checked (a private repository, or an older `gh`), tell the operator that its provenance was not checked, and why. Then install it:
 
 ```
+v=v$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1); d="$HOME/.cache/hyalos/release/$v"
 install -D -m 755 "$d/hyalos-x86_64-linux" ~/.local/bin/hyalos
 ```
 

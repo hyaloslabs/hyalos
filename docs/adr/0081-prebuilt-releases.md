@@ -16,7 +16,7 @@ Today a job's default image is `hyalos-sandbox:latest`, a tag anything on the ma
 
 **A release is a tag `vX.Y.Z`** that matches the workspace's version, on a commit on `main`. Pushing it runs `.github/workflows/release.yml`, which refuses any other tag, and a tag whose image is published already: each tag is published once. A pull request that changes the release runs only check jobs, which build the image and the binary with read-only permissions and publish nothing. The publish jobs run only on a tag.
 
-**The sandbox image** is built from `images/sandbox/Containerfile` (`--target sandbox`), as for a build from source. It is pushed to `ghcr.io/<owner>/hyalos-sandbox:<tag>`, with `docker buildx build --push --metadata-file`. From then on it is named by the digest the build reports, `ghcr.io/<owner>/hyalos-sandbox@sha256:<digest>`. The binary's job pulls it back by that digest before building.
+**The sandbox image** is built from `images/sandbox/Containerfile` (`--target sandbox`), as for a build from source. It is pushed to `ghcr.io/<owner>/hyalos-sandbox:<tag>`. From then on it is named by the digest the registry serves for it (`docker buildx imagetools inspect`), `ghcr.io/<owner>/hyalos-sandbox@sha256:<digest>`. The binary's job pulls it back by that digest before building.
 
 **The binary** is `hyalos` built for `x86_64-unknown-linux-musl`, statically linked, so it runs on any x86_64 Linux. It is built in the Containerfile's own pinned Rust image, with `musl-tools` for the C parts (ring and SQLite). The image's reference by digest is built into it, through `HYALOS_RELEASE_IMAGE`, as the default image (`doctor_cmd::DEFAULT_IMAGE`). A value that is not `<name>@sha256:<64 hex>` fails the build. The workflow checks that the binary is static, runs, and names its image (`.github/scripts/build-release-binary.sh`).
 
@@ -28,7 +28,7 @@ Today a job's default image is `hyalos-sandbox:latest`, a tag anything on the ma
 
 **Installing.** The `set-up-hyalos` skill installs a release when there is one for the host (x86_64 Linux). It takes the release for the checkout's version, so the skill and the binary match:
 1. `gh release download` fetches the binary and `SHA256SUMS`, and `sha256sum -c` must pass.
-2. Where provenance can be checked (a public repository, and `gh` 2.49 or later), `gh attestation verify` must pass. It is pinned to the release workflow and the tag: `--signer-workflow …/release.yml --source-ref refs/tags/<tag>`. Where it cannot be checked, the skill tells the operator so, and why.
+2. Where provenance can be checked (a public repository, and `gh` 2.68 or later, which has `--source-ref`), `gh attestation verify` must pass. It is pinned to the release workflow and the tag: `--signer-workflow …/release.yml --source-ref refs/tags/<tag>`. Where it cannot be checked, the skill tells the operator so, and why.
 3. It installs the binary to `~/.local/bin`, and pulls the image the binary names.
 
 A failed checksum or attestation installs nothing and is reported to the operator as a possible tampering sign. No release for the version means building from source. Only aarch64 hosts build from source for now. They need an arm64 runner, which a private repository does not get without paying.
@@ -41,7 +41,7 @@ A machine with Docker and `gh` gets a working `hyalos` in seconds, and the image
 
 The image a release's jobs run in is fixed by digest, so retagging cannot change it. Moving to a newer image means installing a newer release, or passing `--image`.
 
-The checksum proves the download is whole. Authenticity rests on GitHub's TLS and the release belonging to the repository. Once the repository is public, the attestation adds that the binary was built by the release workflow from the tag. Until then, and on an older `gh` such as Ubuntu 24.04's 2.45, the skill says it was not checked.
+The checksum proves the download is whole. Authenticity rests on GitHub's TLS and the release belonging to the repository. Once the repository is public, the attestation adds that the binary was built by the release workflow from the tag. Until then, and on a `gh` older than 2.68, such as Ubuntu 24.04's 2.45, the skill says it was not checked.
 
 A release carries no microVM init (`hyalos-vm-init`), so a microVM still needs a build from source.
 

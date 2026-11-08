@@ -85,13 +85,16 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/hyalos-sandbox"
-          # A tag is published once: a second run would leave the first image's digest behind.
-          if docker buildx imagetools inspect "$repo:$TAG" >/dev/null 2>&1; then
+          # A tag is published once: a second run would leave the first image's digest behind. Only
+          # "not found" lets the push go ahead; any other failure to look stops it.
+          if out=$(docker buildx imagetools inspect "$repo:$TAG" 2>&1); then
             echo "$repo:$TAG is published already"; exit 1
+          elif ! grep -qi 'not found' <<<"$out"; then
+            echo "cannot tell whether $repo:$TAG is published: $out"; exit 1
           fi
-          docker buildx build -f images/sandbox/Containerfile --target sandbox \
-            -t "$repo:$TAG" --push --metadata-file meta.json .
-          digest=$(python3 -c 'import json; print(json.load(open("meta.json"))["containerimage.digest"])')
+          docker buildx build -f images/sandbox/Containerfile --target sandbox -t "$repo:$TAG" --push .
+          # The digest as the registry serves it, which is what a pull by digest asks for.
+          digest=$(docker buildx imagetools inspect "$repo:$TAG" --format '{{.Manifest.Digest}}')
           [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest: $digest"; exit 1; }
           echo "repo=$repo" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"

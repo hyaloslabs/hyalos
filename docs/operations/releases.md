@@ -4,7 +4,7 @@ A release is a static `hyalos` binary for x86_64 Linux and the sandbox image it 
 
 ## Installing one
 
-You need Docker (or Podman) and `gh`, logged in to an account that can read the repository. Take the release for the version you want (here `v0.1.0`), download it, and check its SHA-256. Each line runs only if the one before it passed:
+You need Docker (or Podman) and `gh`, logged in to an account that can read the repository. Take the release for the version you want (here `v0.1.0`), download it, and check its SHA-256. The second line runs each step only if the one before it passed:
 
 ```
 v=v0.1.0; d=$(mktemp -d)
@@ -13,7 +13,7 @@ gh release download "$v" --repo hyaloslabs/hyalos -D "$d" -p hyalos-x86_64-linux
 
 If the checksum does not match, install nothing: the download is not what was published.
 
-While the repository is public, check the binary's provenance too. It must have been built by the release workflow from that tag. This needs `gh` 2.49 or later:
+While the repository is public, check the binary's provenance too. It must have been built by the release workflow from that tag. This needs `gh` 2.68 or later, for `--source-ref`:
 
 ```
 gh attestation verify "$d/hyalos-x86_64-linux" --repo hyaloslabs/hyalos --signer-workflow hyaloslabs/hyalos/.github/workflows/release.yml --source-ref "refs/tags/$v"
