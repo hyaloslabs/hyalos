@@ -1,6 +1,6 @@
 # ADR-0075: The thin CLI: one command for each of the driving agent's tools
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
