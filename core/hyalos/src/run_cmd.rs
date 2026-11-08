@@ -66,6 +66,10 @@ const USAGE: &str = "usage: hyalos run --repo <owner/name>
 /// How long finding a substrate may take. A runtime that does not answer refuses the job rather than
 /// hanging it (ADR-0043, ADR-0050).
 pub const DETECT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// What a run's actor may do on the forge. Its readers ask only `read`, a subset, so these decide every
+/// permission a run's tokens need; `hyalos github check` asks for each (#256).
+pub const ACTOR_ACTIONS: [&str; 3] = ["read", "push", "open_pr"];
 /// How long the broker may take to start and to answer the engine.
 const BROKER_WAIT: Duration = Duration::from_secs(20);
 /// How often the engine looks up from the broker's channel to see whether the sandbox has ended.
@@ -1320,7 +1324,7 @@ impl Run<'_> {
             repo: request.repo.clone(),
             branch_prefix: branch.clone(),
             pr_base: Some(request.base.clone()),
-            actions: ["read", "push", "open_pr"].map(String::from).into(),
+            actions: ACTOR_ACTIONS.map(String::from).into(),
             egress_hosts: request.egress_hosts.clone(),
             tools: BTreeSet::new(),
             // Its data goes to the model and the forge, and to the web only if it may reach a host

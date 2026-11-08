@@ -85,7 +85,7 @@ Run `hyalos setup` again after each step, until it prints `setup: 7 of 7 steps d
 ## 4. The first job
 
 1. Ask the operator for the repository (`owner/name`, the one the App is installed on) and the number of an open issue there.
-2. Run `hyalos github check <owner/name>`. It must exit 0. If it does not, the message says which step to go back to.
+2. Run `hyalos github check <owner/name>`. It must exit 0. It tries each permission a job needs, and if one is refused it names it: the operator fixes it on the App's settings page and then accepts the change on the installation's page, which GitHub asks for separately.
 3. Start the job:
 
    ```
