@@ -59,7 +59,8 @@ impl Runs {
     }
 
     /// `task-<id>.<ext>`: `json` the request, `lock` held by its runner, `log` what the runner
-    /// printed, `cancel` the driving agent's cancel, `failed` a runner that stopped with an error.
+    /// printed, `cancel` the driving agent's cancel, `failed` a runner that stopped with an error,
+    /// `held` the issue a runner holds for the operator to release (ADR-0078).
     pub fn file(&self, task: TaskId, ext: &str) -> PathBuf {
         self.dir.join(format!("task-{}.{ext}", task.seq()))
     }
@@ -74,6 +75,39 @@ impl Runs {
         let recorded = state.tasks().get(&task)?.request;
         let request = read_request(&self.file(task, "json")).ok()?;
         (request_digest(&request) == recorded).then_some(request)
+    }
+
+    /// The handle `task`'s runner holds for the operator to release, with the issue's repository and
+    /// number, as the runner wrote them (ADR-0078), and only while that runner waits: it locks the
+    /// file for as long as it does. Anything running as this user could write the file, so
+    /// `hyalos release` reads the issue again and refuses unless its digest is this handle.
+    pub fn held_handle(&self, task: TaskId) -> Result<HeldIssue, String> {
+        let file = self.file(task, "held");
+        let none = || format!("task {} has no run waiting for your release", task.seq());
+        let opened = File::open(&file).map_err(|_| none())?;
+        if opened.try_lock_shared().is_ok() {
+            return Err(format!("{}: its runner stopped", none()));
+        }
+        let text = std::fs::read_to_string(&file).map_err(|_| none())?;
+        let held: Value = serde_json::from_str(&text)
+            .map_err(|_| format!("{} is not readable", file.display()))?;
+        let handle = held["handle"]
+            .as_str()
+            .and_then(hyalos_types::Digest::parse)
+            .ok_or_else(|| format!("{} names no handle", file.display()))?;
+        let issue = held["issue"]
+            .as_u64()
+            .ok_or_else(|| format!("{} names no issue", file.display()))?;
+        let repo = held["repo"]
+            .as_str()
+            .filter(|r| run_cmd::is_repo(r))
+            .ok_or_else(|| format!("{} names no repository", file.display()))?
+            .to_string();
+        Ok(HeldIssue {
+            handle,
+            repo,
+            issue,
+        })
     }
 
     /// Whether `task`'s last runner stopped with an error, and nothing has retried it since.
@@ -123,6 +157,14 @@ impl Runs {
             Err(e) => e.kind() != std::io::ErrorKind::NotFound,
         }
     }
+}
+
+/// The issue a waiting run holds, as its `.held` file names it (ADR-0078).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldIssue {
+    pub handle: hyalos_types::Digest,
+    pub repo: String,
+    pub issue: u64,
 }
 
 /// Records that `task`'s runner stopped with an error, before it lets go of the lock, so the server
@@ -451,6 +493,9 @@ pub enum Phase {
         of: usize,
         stopped: bool,
         failed: bool,
+        /// The issue the actor's job waits for the operator to release (ADR-0078): the request
+        /// asked for it, the job is running and the log has no release for the task yet.
+        awaiting_release: Option<u64>,
     },
     /// Every step finished: the actor's result, field by field, as the workflow names its options,
     /// and where the values came from: a model that read tainted input unless the workflow shows
@@ -477,7 +522,7 @@ pub struct RunView {
 
 /// `task` as the agent sees it, if the server started it and its request is the one recorded.
 pub fn view(state: &State, runs: &Runs, task: TaskId) -> Option<RunView> {
-    runs.request(state, task)?;
+    let request = runs.request(state, task)?;
     let recorded = state.tasks().get(&task)?;
     let flow = workflow_run::fix_issue().ok()?;
     let actor = flow
@@ -519,6 +564,7 @@ pub fn view(state: &State, runs: &Runs, task: TaskId) -> Option<RunView> {
             of,
             stopped: false,
             failed: false,
+            awaiting_release: awaiting_release(state, task, &request),
         }
     } else if reason.as_deref() == Some(why::CANCELLED) {
         Phase::Cancelled
@@ -548,11 +594,17 @@ pub fn view(state: &State, runs: &Runs, task: TaskId) -> Option<RunView> {
         }
     };
     let phase = match phase {
-        Phase::Working { done, of, .. } => Phase::Working {
+        Phase::Working {
+            done,
+            of,
+            awaiting_release,
+            ..
+        } => Phase::Working {
             done,
             of,
             stopped: !runs.is_running(task),
             failed: runs.has_failed(task),
+            awaiting_release,
         },
         other => other,
     };
@@ -562,6 +614,29 @@ pub fn view(state: &State, runs: &Runs, task: TaskId) -> Option<RunView> {
         updated,
         phase,
     })
+}
+
+/// The issue `task`'s actor waits for the operator to release, read from the log and the request
+/// alone (ADR-0078): the request asked to wait, every step before the actor returned its values, the
+/// actor's job is running, and the log has no release for the task. Only the actor's job waits, before
+/// it mints anything, and any release to the task ends the wait.
+pub fn awaiting_release(state: &State, task: TaskId, request: &Request) -> Option<u64> {
+    if !request.await_release {
+        return None;
+    }
+    let recorded = state.tasks().get(&task)?;
+    let of = workflow_run::fix_issue().ok()?.workflow().steps.len();
+    let jobs: Vec<_> = state.jobs().values().filter(|j| j.task == task).collect();
+    let answered = jobs
+        .iter()
+        .filter(|j| matches!(j.ended, Some((_, JobOutcome::Succeeded))) && j.values.is_some())
+        .count();
+    let waiting = recorded.completed_at.is_none()
+        && recorded.cancelled.is_none()
+        && answered + 1 == of
+        && jobs.last().is_some_and(|j| j.ended.is_none())
+        && !state.handles().iter().any(|h| h.task == task);
+    request.issue_number.filter(|_| waiting)
 }
 
 /// The actor's values by field: a truth value, a number, or the option's own text from the workflow.

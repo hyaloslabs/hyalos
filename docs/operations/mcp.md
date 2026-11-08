@@ -37,7 +37,7 @@ Each tool has one command that makes the same call and prints the same answer ([
 - `stop` asks a run started by `start` or `start_job` to stop, as `tasks/cancel` does. It is not `hyalos cancel`, which is your signed decision on a held task.
 - They need no agent credential: they run as you and decide nothing. Like the server, `start` starts a runner, and `status` or `result` on a run whose runner stopped resumes it (`hyalos run --resume <task> --auto`), which writes to the log with the engine's key.
 
-Your decisions are the other way round: they are commands only, and no MCP tool makes one. These are `approve`, `cancel`, `merge`, `policy approve`, `agent issue`, `agent revoke` and `run --release-issue`. A test fails if the server gains a tool without a command here, or a tool that decides. Setup and maintenance (`init`, `doctor`, `operator`, `github check`, `log ...`, `workflow check`) have no MCP tool either.
+Your decisions are the other way round: they are commands only, and no MCP tool makes one. These are `approve`, `cancel`, `release`, `merge`, `policy approve`, `agent issue`, `agent revoke` and `run --release-issue`. A test fails if the server gains a tool without a command here, or a tool that decides. Setup and maintenance (`init`, `doctor`, `operator`, `github check`, `log ...`, `workflow check`) have no MCP tool either.
 
 ## Which clients can connect
 
@@ -97,7 +97,7 @@ Each request needs `Authorization: Bearer <credential>`. Without a credential in
 
 ## Jobs the agent starts
 
-The agent gives `start_job` a repository (`owner/name`) and an issue number. Nothing else: no text of its own reaches the job. The pull request's base branch is yours, set with `--base` (default `main`). Everything else comes from options you give `hyalos mcp`, as for `hyalos run`:
+The agent gives `start_job` a repository (`owner/name`) and an issue number. Nothing else: no text of its own reaches the job. The run holds the issue, and its actor waits until you release the issue to it with `hyalos release <task>` in your own terminal ([ADR-0078](../adr/0078-agent-started-runs-wait-for-the-operator-to-release-the-issue.md)). Until then, `job_status` says so and `list_approvals` lists it under `releases`. The pull request's base branch is yours, set with `--base` (default `main`). Everything else comes from options you give `hyalos mcp`, as for `hyalos run`:
 
 ```
 hyalos mcp --harness claude-code --minutes 30 --budget-tokens 200000 --base main
@@ -110,6 +110,9 @@ The server does not run the job itself. It starts `hyalos run` as a process of i
 - `task-<id>.log`: what the runner printed. Read it when a job fails.
 - `task-<id>.lock`: held while a runner has it.
 - `task-<id>.failed`: the error its last runner stopped with, if it did.
+- `task-<id>.held`: the digest and number of the issue the actor waits for you to release.
+
+A run whose runner stopped while it held the issue is not resumed, since the broker kept the issue's bytes in memory. Its resume ends the cut job `handle.lost` and completes the task. Start another.
 
 `hyalos log compact` and `hyalos log prune` refuse while a runner holds its lock. Wait for the run to end, or stop its runner, first.
 

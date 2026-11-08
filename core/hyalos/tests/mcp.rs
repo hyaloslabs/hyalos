@@ -966,6 +966,22 @@ fn approvals_are_shown_with_the_operators_commands_and_the_server_cannot_decide_
     assert_eq!(listed["isError"], false, "{listed}");
     let got = &listed["structuredContent"];
     assert_eq!(got["total"], 2, "{got}");
+    // No run waits for a release, and the published schema says releases are always there.
+    assert_eq!(got["releases"], json!([]), "{got}");
+    let schema = answers[0]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "list_approvals")
+        .map(|t| t["outputSchema"].clone())
+        .unwrap();
+    assert!(
+        schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("releases")),
+        "{schema}"
+    );
     // Newest first.
     assert_eq!(
         got["approvals"][0],
