@@ -186,7 +186,20 @@ fn json_string(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::json_string;
+    use super::{Action, json_string};
+    use hyalos_types::capability::{Field, action};
+
+    /// The capability vocabulary's actions, and the action each other field is asked as, are exactly
+    /// the policy's actions (ADR-0085): nothing a manifest or plugin holds goes unasked.
+    #[test]
+    fn the_capability_vocabulary_is_asked_as_the_policy_s_actions() {
+        let mut asked: Vec<&str> = action::ALL.to_vec();
+        asked.extend(Field::ALL.iter().filter_map(|f| f.asked_as()));
+        asked.sort_unstable();
+        let mut policy: Vec<&str> = Action::ALL.iter().map(|a| a.id()).collect();
+        policy.sort_unstable();
+        assert_eq!(asked, policy);
+    }
 
     #[test]
     fn a_string_cannot_end_itself_or_start_a_field() {

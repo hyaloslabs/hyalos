@@ -583,6 +583,36 @@ fn pump(from: &mut impl Read, to: &mut impl Write, ended: &AtomicBool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The capability vocabulary accepts a host exactly when the gate would compare it unchanged
+    /// (ADR-0085), so a manifest's hosts are the names requests are matched against.
+    #[test]
+    fn the_vocabulary_s_hosts_are_the_gate_s_own_form() {
+        use hyalos_types::capability::Field;
+        for name in [
+            "docs.rs",
+            "api.github.com",
+            "localhost",
+            "a-b.example",
+            "Docs.rs",
+            "docs.rs.",
+            "docs.rs:443",
+            "*.example",
+            "127.0.0.1",
+            "127.1",
+            "0x7f000001",
+            "::1",
+            "-a.example",
+            "a..example",
+            "",
+        ] {
+            assert_eq!(
+                Field::EgressHosts.accepts(name),
+                host_name(name).as_deref() == Ok(name),
+                "{name:?}"
+            );
+        }
+    }
     use std::net::TcpListener;
     use std::time::Instant;
 

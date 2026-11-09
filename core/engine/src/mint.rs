@@ -18,6 +18,7 @@
 use std::fmt;
 
 use hyalos_policy::{Action, JobFacts, PolicyRequest, TargetFacts, codes};
+use hyalos_types::capability::Field;
 use hyalos_types::{
     Answer, JobId, Manifest, ManifestError, ManifestKey, ReasonCode, SignedManifest, StepInputs,
     Timestamp,
@@ -42,6 +43,17 @@ pub mod mint_codes {
     /// The manifest declares a data flow this build does not know (ADR-0055).
     pub fn unknown_flow() -> ReasonCode {
         code("mint.unknown_flow")
+    }
+
+    /// The manifest names a tool the capability vocabulary does not accept (ADR-0085).
+    pub fn unknown_tool() -> ReasonCode {
+        code("mint.unknown_tool")
+    }
+
+    /// The manifest names an egress host the capability vocabulary does not accept: not a lower-case
+    /// host name, or with a port or a wildcard (ADR-0085).
+    pub fn unknown_host() -> ReasonCode {
+        code("mint.unknown_host")
     }
 
     /// The manifest's job is not a running job.
@@ -295,10 +307,15 @@ fn asks(manifest: &Manifest, approved: bool) -> Result<Vec<(String, PolicyReques
         }
     }
     for tool in &manifest.tools {
+        if !Field::Tools.accepts(tool) {
+            return Err(MintRefusal::Invalid {
+                reason: mint_codes::unknown_tool(),
+            });
+        }
         asks.push((format!("use_tool:{tool}"), request(Action::UseTool, tool)));
     }
     for flow in &manifest.data_flows {
-        if !hyalos_types::flow::known(flow) {
+        if !Field::DataFlows.accepts(flow) {
             return Err(MintRefusal::Invalid {
                 reason: mint_codes::unknown_flow(),
             });
@@ -306,6 +323,11 @@ fn asks(manifest: &Manifest, approved: bool) -> Result<Vec<(String, PolicyReques
         asks.push((format!("data_flow:{flow}"), request(Action::DataFlow, flow)));
     }
     for host in &manifest.egress_hosts {
+        if !Field::EgressHosts.accepts(host) {
+            return Err(MintRefusal::Invalid {
+                reason: mint_codes::unknown_host(),
+            });
+        }
         asks.push((
             format!("request_host:{host}"),
             request(Action::RequestHost, host),

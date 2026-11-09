@@ -1,65 +1,21 @@
-//! What an installed skill or plugin may do (ADR-0005, ADR-0006, ADR-0066).
+//! What an installed skill or plugin may do (ADR-0005, ADR-0006, ADR-0066, ADR-0085).
 //!
 //! A [`Grant`] is the capabilities a human granted a plugin. Its text ([`crate::PluginText`]) carries
 //! it, so a prompt that holds plugin text also holds the grant, and the job is bounded by both: what an
 //! actor steered by a plugin may do is the intersection of the plugin's grant and the job's manifest.
-//! A grant can only narrow a manifest, never widen it. Until the capability vocabulary is defined
-//! (S6.6), a grant is written in the manifest's own sets.
+//! A grant can only narrow a manifest, never widen it. It is written in the capability vocabulary
+//! ([`crate::capability`]), which the manifest shares.
 
-use std::collections::BTreeSet;
+use crate::Capabilities;
 
-use serde::{Deserialize, Serialize};
-
-use crate::Manifest;
-
-/// The capabilities granted to one plugin, in the manifest's terms. A local install starts with
-/// none (ADR-0006).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Grant {
-    #[serde(default)]
-    pub actions: BTreeSet<String>,
-    #[serde(default)]
-    pub egress_hosts: BTreeSet<String>,
-    #[serde(default)]
-    pub tools: BTreeSet<String>,
-    #[serde(default)]
-    pub data_flows: BTreeSet<String>,
-}
-
-impl Grant {
-    /// No capabilities: what a plugin has before a human grants it any.
-    pub fn none() -> Self {
-        Self::default()
-    }
-
-    /// `manifest` with each capability set cut to what this grant also holds. Everything else is
-    /// kept, so the result is never wider than `manifest`.
-    pub fn bound(&self, manifest: &Manifest) -> Manifest {
-        let cut =
-            |of: &BTreeSet<String>, to: &BTreeSet<String>| of.intersection(to).cloned().collect();
-        Manifest {
-            actions: cut(&manifest.actions, &self.actions),
-            egress_hosts: cut(&manifest.egress_hosts, &self.egress_hosts),
-            tools: cut(&manifest.tools, &self.tools),
-            data_flows: cut(&manifest.data_flows, &self.data_flows),
-            ..manifest.clone()
-        }
-    }
-
-    /// Whether every capability `manifest` holds is in this grant.
-    pub fn allows(&self, manifest: &Manifest) -> bool {
-        manifest.actions.is_subset(&self.actions)
-            && manifest.egress_hosts.is_subset(&self.egress_hosts)
-            && manifest.tools.is_subset(&self.tools)
-            && manifest.data_flows.is_subset(&self.data_flows)
-    }
-}
+/// The capabilities granted to one plugin. A local install starts with none (ADR-0006).
+pub type Grant = Capabilities;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Budget, JobId, MANIFEST_VERSION, Role, Timestamp};
+    use crate::{Budget, JobId, MANIFEST_VERSION, Manifest, Role, Timestamp};
+    use std::collections::BTreeSet;
 
     fn set<const N: usize>(items: [&str; N]) -> BTreeSet<String> {
         items.map(String::from).into()

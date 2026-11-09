@@ -117,6 +117,18 @@ pub struct Manifest {
     pub closes: Option<u64>,
 }
 
+impl Manifest {
+    /// The manifest's capabilities, in the vocabulary a plugin's are written in (ADR-0085).
+    pub fn capabilities(&self) -> crate::Capabilities {
+        crate::Capabilities {
+            actions: self.actions.clone(),
+            egress_hosts: self.egress_hosts.clone(),
+            tools: self.tools.clone(),
+            data_flows: self.data_flows.clone(),
+        }
+    }
+}
+
 /// The data flows a manifest may declare (ADR-0055). A flow names where the job's data may go: the
 /// broker sees what leaves the sandbox, never which of what the sandbox read it came from, so every
 /// flow's source is the job. The broker refuses a call to a sink whose flow is not declared.
