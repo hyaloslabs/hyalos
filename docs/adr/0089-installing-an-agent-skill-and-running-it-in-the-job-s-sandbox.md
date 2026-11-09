@@ -1,6 +1,6 @@
 # ADR-0089: Installing an Agent Skill and running it in the job's sandbox
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
