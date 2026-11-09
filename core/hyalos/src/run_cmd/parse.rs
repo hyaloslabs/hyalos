@@ -85,6 +85,16 @@ pub fn check(request: &Request) -> Result<(), String> {
                 .into(),
         );
     }
+    if !request
+        .egress_hosts
+        .iter()
+        .all(|h| hyalos_types::capability::Field::EgressHosts.accepts(h))
+    {
+        return Err(
+            "--allow-host is a host name in lower case, such as docs.rs: no port, wildcard, scheme or address (ADR-0085)"
+                .into(),
+        );
+    }
     if request.issue_number.is_none() && request.issue.trim().is_empty() {
         return Err("the issue text is empty; give --issue, --issue-file or --issue-number".into());
     }

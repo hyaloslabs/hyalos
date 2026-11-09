@@ -48,7 +48,7 @@ hyalos run --repo octo/repo --issue "The parser drops the last line of a file wi
 - `--base <branch>` is where the pull request goes (default `main`).
 - `--harness claude-code` runs Claude Code instead of Codex.
 - `--minutes` is the deadline (default 30); `--budget-tokens` the model budget (default 200,000).
-- `--allow-host <host>` lets the job reach a web host through the egress gate, if policy allows it. Give the host name alone, in lower case (`docs.rs`): a port, a wildcard, a scheme or an address is refused when the manifest is signed, with `mint.unknown_host` ([ADR-0085](../adr/0085-the-capability-vocabulary.md)).
+- `--allow-host <host>` lets the job reach a web host through the egress gate, if policy allows it. Give the host name alone, in lower case (`docs.rs`): `hyalos run` (and `start_job`) refuses a port, a wildcard, a scheme or an address before the job starts, and the engine refuses to sign such a manifest (`mint.unknown_host`) ([ADR-0085](../adr/0085-the-capability-vocabulary.md)).
 
 The command prints each step: the substrate and its attestation (none of today's substrates can show evidence beyond the engine's word, [ADR-0057](../adr/0057-recording-a-jobs-attestation.md)), the job's id, each gate answer the broker reports and the event it was recorded as, the harness's output (for a workflow's actor, only if its job failed), the revoke, and how the job ended, with the reason code `job.ended` records. It exits 0 only if the job succeeded and its token was revoked.
 

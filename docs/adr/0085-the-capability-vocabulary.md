@@ -61,7 +61,7 @@ A manifest host the gate would have rewritten or refused is now refused at the m
 - `docs.rs:443`, `*.example`, a scheme or an address never matched a request, though it was signed;
 - `Docs.rs` or `docs.rs.` did match, after the gate lower-cased it or dropped the dot.
 
-An operator who gave `--allow-host` in upper case now writes it in lower case. Refusing it is the fail-closed choice: the manifest says exactly the names that are matched.
+`hyalos run` and `start_job` check `--allow-host` against the vocabulary before the task starts, so such a host is refused before any step spends model budget, and the mint's refusal stays as the backstop. An operator who gave `--allow-host` in upper case now writes it in lower case. Refusing it is the fail-closed choice: the manifest says exactly the names that are matched.
 
 Tests:
 - `capability.rs` (unit): each field accepts only its own names; a document is read only whole and in this version, and its error names no refused name; the diff says what an update adds and takes away.
@@ -69,3 +69,4 @@ Tests:
 - `hyalos-policy`: the vocabulary is asked as exactly the policy's actions.
 - `hyalos-broker` (`egress.rs`): the vocabulary's hosts are the gate's own form.
 - `policy_store.rs`: the mint refuses a malformed tool or host.
+- `run_cmd` (unit): `hyalos run` refuses a malformed `--allow-host`.

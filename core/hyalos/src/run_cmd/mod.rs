@@ -455,6 +455,22 @@ mod tests {
             &["--repo", "octo/repo", "--issue-number", "seven"],
             &["--repo", "octo/repo", "--issue-number", "7", "--step-model"],
             &["--repo", "octo/repo", "--issue", "x", "--release-issue"],
+            &[
+                "--repo",
+                "octo/repo",
+                "--issue",
+                "x",
+                "--allow-host",
+                "Docs.rs",
+            ],
+            &[
+                "--repo",
+                "octo/repo",
+                "--issue",
+                "x",
+                "--allow-host",
+                "docs.rs:443",
+            ],
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }
