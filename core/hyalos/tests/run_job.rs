@@ -319,7 +319,7 @@ fn an_issue_number_runs_the_fix_issue_workflow_and_only_the_reader_sees_the_issu
 
     // One GraphQL read, with the reader's own token; two tokens minted (reader, actor), none live.
     let seen = gh.seen();
-    // The pull request closes the run's issue, in a line the broker added to the harness's text
+    // The pull request closes the run's issue, in a line the broker put before the harness's text
     // (ADR-0083).
     let pulls: Vec<_> = seen
         .iter()
@@ -327,7 +327,7 @@ fn an_issue_number_runs_the_fix_issue_workflow_and_only_the_reader_sees_the_issu
         .collect();
     assert_eq!(pulls.len(), 1, "{seen:?}");
     let pull: serde_json::Value = serde_json::from_slice(&pulls[0].body)?;
-    assert_eq!(pull["body"], "Rewords the README.\n\nCloses #7");
+    assert_eq!(pull["body"], "Closes #7\n\nRewords the README.");
     let reads: Vec<_> = seen.iter().filter(|s| s.path == "/graphql").collect();
     assert_eq!(reads.len(), 1, "{seen:?}");
     assert!(reads[0].authorization.starts_with("bearer ghs_"));

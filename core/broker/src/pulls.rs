@@ -7,9 +7,9 @@
 //! once its title and body have passed the content gate. A refusal is a 403 to the harness and the
 //! manifest or content gate's `deny` to the engine, carrying a SHA-256 of what was refused.
 //!
-//! If the manifest names an issue the job fixes, the broker adds a line saying the pull request
-//! closes it, after the harness's text has passed the gate (ADR-0083). The number is the run's own,
-//! not the harness's, so the merge closes the issue whatever the harness wrote.
+//! If the manifest names an issue the job fixes, the broker puts a line saying the pull request
+//! closes it before the harness's text, once that text has passed the gate (ADR-0083). The number is
+//! the run's own, not the harness's, so the merge closes the issue whatever the harness wrote.
 
 use std::io::{BufRead, Cursor, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -168,51 +168,17 @@ pub(crate) fn answer<R: BufRead, W: Write>(
     }
 }
 
-/// GitHub's keywords that close an issue when the pull request merges into the default branch.
-const KEYWORDS: [&str; 9] = [
-    "close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved",
-];
-
-/// `body` with a line of its own saying it closes `issue`, unless it already says so (ADR-0083).
-/// What the harness wrote is kept as it is.
+/// `body` led by a line saying it closes `issue` (ADR-0083). The line comes first, so nothing the
+/// harness wrote after it, such as a code block or a comment it never closes, can hide it from
+/// GitHub. What the harness wrote follows as it is, byte for byte. A body that also says it closes the
+/// issue gets the line all the same: a second closing line is harmless, a missing one is not.
 pub fn closing(body: &str, issue: u64) -> String {
-    if closes(body, issue) {
-        return body.to_string();
-    }
     let line = format!("Closes #{issue}");
-    if body.trim().is_empty() {
+    if body.is_empty() {
         line
     } else {
-        format!("{}\n\n{line}", body.trim_end())
+        format!("{line}\n\n{body}")
     }
-}
-
-/// Whether `body` closes `#issue` with one of GitHub's keywords: the keyword as a word of its own,
-/// then an optional colon, then at least one space, then `#` and exactly that number. When in doubt
-/// it answers no, so the line is added: a second closing line is harmless, a missing one is not.
-fn closes(body: &str, issue: u64) -> bool {
-    let lower = body.to_ascii_lowercase();
-    let number = issue.to_string();
-    let bytes = lower.as_bytes();
-    KEYWORDS.iter().any(|keyword| {
-        lower.match_indices(keyword).any(|(at, _)| {
-            let before = at.checked_sub(1).map(|i| bytes[i]);
-            if before.is_some_and(|b| b.is_ascii_alphanumeric()) {
-                return false;
-            }
-            let rest = &lower[at + keyword.len()..];
-            let rest = rest.strip_prefix(':').unwrap_or(rest);
-            let trimmed = rest.trim_start_matches([' ', '\t']);
-            // GitHub's form has a space before the `#`; anything else gets the line added.
-            if trimmed.len() == rest.len() {
-                return false;
-            }
-            trimmed
-                .strip_prefix('#')
-                .and_then(|r| r.strip_prefix(number.as_str()))
-                .is_some_and(|r| !r.starts_with(|c: char| c.is_ascii_digit()))
-        })
-    })
 }
 
 #[cfg(test)]
@@ -220,35 +186,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_closing_line_is_added_once_and_the_text_kept() {
+    fn the_closing_line_leads_and_the_text_follows_as_it_is() {
         assert_eq!(closing("", 24), "Closes #24");
-        assert_eq!(closing("  \n", 24), "Closes #24");
-        assert_eq!(
-            closing("Clarifies the README.\n", 24),
-            "Clarifies the README.\n\nCloses #24"
-        );
-        for already in [
+        for body in [
+            "Clarifies the README.\n",
+            "  \n",
             "Fixes #24",
-            "fixed: #24 by rewording",
-            "This resolves #24.",
-            "CLOSES #24",
+            // Text that would swallow a line after it: an unclosed code block or comment.
+            "Rewords it.\n\n```\nnever closed",
+            "Rewords it. <!-- never closed",
+            "`fixes #24` in code",
         ] {
-            assert_eq!(closing(already, 24), already, "{already}");
-        }
-        // Another issue, a longer number, or a keyword inside a word is not this issue closed.
-        for other in [
-            "Fixes #240",
-            "Fixes #2",
-            "Refs #24",
-            "prefixes #24",
-            "fixes issue 24",
-            "closes#24",
-        ] {
-            assert_eq!(
-                closing(other, 24),
-                format!("{other}\n\nCloses #24"),
-                "{other}"
-            );
+            assert_eq!(closing(body, 24), format!("Closes #24\n\n{body}"), "{body}");
         }
     }
 

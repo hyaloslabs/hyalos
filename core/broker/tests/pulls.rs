@@ -569,7 +569,7 @@ fn a_job_that_fixes_an_issue_opens_a_pull_request_that_closes_it() -> Res {
     let seen = api.seen();
     assert_eq!(
         seen[0].body["body"],
-        "Rewords the comparison.\n\nCloses #24"
+        "Closes #24\n\nRewords the comparison."
     );
     assert!(job.denials().is_empty());
     // A tainted job's text stays under the content gate's limit, so the line always fits. An
