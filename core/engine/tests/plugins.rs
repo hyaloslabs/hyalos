@@ -306,3 +306,54 @@ fn policy_installs_only_from_a_trusted_index_within_the_ceiling_and_never_a_veri
     );
     Ok(())
 }
+
+#[test]
+fn an_update_waits_for_an_index_install_until_any_install_answers_it() -> Res {
+    let mut e = Engine::open(&path("pending")?, key())?.with_operator(operator());
+    let pending = |version: &str, digest: u8| -> Res<Event> {
+        Ok(Event::PluginUpdatePending {
+            name: name("pdf")?,
+            version: PluginVersion::new(version).ok_or("version")?,
+            digest: Digest::from_bytes([digest; 32]),
+            asks: Grant {
+                actions: ["push".to_string()].into(),
+                ..Grant::none()
+            },
+            location: IndexLocation::new(TRUSTED).ok_or("location")?,
+        })
+    };
+    // Not installed, or installed locally: nothing can wait for it.
+    assert!(matches!(
+        e.submit(at(1), Origin::Engine, pending("2", 2)?),
+        Err(EngineError::Rule(RuleViolation::UpdateNotForAnIndexInstall))
+    ));
+    install_from(
+        &mut e,
+        2,
+        PluginSource::Local,
+        Grant::none(),
+        Decider::Human,
+    )?;
+    assert!(matches!(
+        e.submit(at(3), Origin::Engine, pending("2", 2)?),
+        Err(EngineError::Rule(RuleViolation::UpdateNotForAnIndexInstall))
+    ));
+    install_from(&mut e, 4, from(TRUSTED)?, Grant::none(), Decider::Human)?;
+    // The broker may not say one is waiting.
+    assert!(e.submit(at(5), Origin::Broker, pending("2", 2)?).is_err());
+    e.submit(at(6), Origin::Engine, pending("2", 2)?)?;
+    let waiting = e
+        .state()
+        .pending_updates()
+        .get(&name("pdf")?)
+        .ok_or("waiting")?;
+    assert_eq!(waiting.version.as_str(), "2");
+    // The installed version is still the one in force.
+    assert_eq!(e.state().plugins().get(&name("pdf")?).ok_or("pdf")?.seq, 2);
+    // A later find replaces it; an install of the name answers it.
+    e.submit(at(7), Origin::Engine, pending("3", 3)?)?;
+    assert_eq!(e.state().pending_updates().len(), 1);
+    install_from(&mut e, 8, from(TRUSTED)?, Grant::none(), Decider::Human)?;
+    assert!(e.state().pending_updates().is_empty());
+    Ok(())
+}

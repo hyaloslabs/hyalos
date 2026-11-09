@@ -613,3 +613,116 @@ fn within_the_operators_install_policy_a_skill_installs_without_them() -> Res {
     }
     Ok(())
 }
+
+#[test]
+fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_runs() -> Res {
+    let world = World::new("plugin-update", None)?;
+    let src = skill(
+        &world.root,
+        Some(r#"{"version":1,"egress_hosts":["docs.rs"]}"#),
+    )?;
+    let bundle = world.root.join("bundle");
+    std::fs::create_dir(&bundle)?;
+    let at = bundle.to_string_lossy().into_owned();
+    let ceiling = world.root.join("ceiling.json");
+    std::fs::write(&ceiling, r#"{"version":1,"egress_hosts":["docs.rs"]}"#)?;
+    ok_cli(world.signed(&[
+        "plugin",
+        "policy",
+        "set",
+        "--ceiling",
+        &ceiling.to_string_lossy(),
+        "--index",
+        &at,
+    ])?)?;
+    let one = pack(&world, &src, &bundle, "pdf-1.skill")?;
+    let mut published = vec![("1.0.0".to_string(), one, "pdf-1.skill".to_string())];
+    let publish = |published: &[(String, String, String)]| -> Res {
+        let entries: Vec<(&str, &str, &str)> = published
+            .iter()
+            .map(|(v, d, a)| (v.as_str(), d.as_str(), a.as_str()))
+            .collect();
+        std::fs::write(bundle.join("index.json"), index(&entries))?;
+        Ok(())
+    };
+    publish(&published)?;
+    ok_cli(world.cli(&["plugin", "install", "--index", &at, "pdf-tools"])?)?;
+    let said = ok_cli(world.cli(&["plugin", "update"])?)?;
+    assert!(
+        said.contains("pdf-tools: up to date at version 1.0.0"),
+        "{said}"
+    );
+
+    // A new version within the policy installs by policy, with no one asked.
+    std::fs::write(
+        src.join("SKILL.md"),
+        "---\nname: pdf-tools\n---\nVersion 1.1\n",
+    )?;
+    let next = pack(&world, &src, &bundle, "pdf-1.1.skill")?;
+    published.push(("1.1.0".into(), next.clone(), "pdf-1.1.skill".into()));
+    publish(&published)?;
+    let said = ok_cli(world.cli(&["plugin", "update"])?)?;
+    assert!(
+        said.contains("updated to version 1.1.0") && said.contains("within your install policy"),
+        "{said}"
+    );
+    let installed = |world: &World| -> Res<(String, Resolution)> {
+        installs(world)?
+            .into_iter()
+            .last()
+            .and_then(|e| match e {
+                Event::PluginInstalled { digest, by, .. } => Some((digest.to_string(), by)),
+                _ => None,
+            })
+            .ok_or_else(|| "no install".into())
+    };
+    assert_eq!(installed(&world)?, (next.clone(), Resolution::Policy));
+
+    // One that adds a capability waits, once, and the installed version stays.
+    skill(
+        &world.root,
+        Some(r#"{"version":1,"egress_hosts":["docs.rs"],"actions":["push"]}"#),
+    )?;
+    let wide = pack(&world, &src, &bundle, "pdf-2.skill")?;
+    published.push(("2.0.0".into(), wide.clone(), "pdf-2.skill".into()));
+    publish(&published)?;
+    let said = ok_cli(world.cli(&["plugin", "update"])?)?;
+    assert!(said.contains("version 2.0.0 waits for you"), "{said}");
+    let said = ok_cli(world.cli(&["plugin", "update"])?)?;
+    assert!(said.contains("version 2.0.0 still waits for you"), "{said}");
+    let waiting = world
+        .events()?
+        .into_iter()
+        .filter(|e| matches!(e, Event::PluginUpdatePending { .. }))
+        .count();
+    assert_eq!(waiting, 1);
+    assert_eq!(installed(&world)?, (next, Resolution::Policy));
+    let listed = ok_cli(world.cli(&["plugin", "list"])?)?;
+    assert!(
+        listed.contains("version 2.0.0 waits for you") && listed.contains("actions: push"),
+        "{listed}"
+    );
+
+    // The operator's install of it answers it.
+    ok_cli(world.signed(&["plugin", "install", "--index", &at, "pdf-tools", "--grant"])?)?;
+    assert_eq!(installed(&world)?, (wide, Resolution::Human));
+    let listed = ok_cli(world.cli(&["plugin", "list"])?)?;
+    assert!(!listed.contains("waits for you"), "{listed}");
+    let said = ok_cli(world.cli(&["plugin", "update"])?)?;
+    assert!(said.contains("up to date at version 2.0.0"), "{said}");
+
+    // An index that cannot be read is a failed check, and changes nothing.
+    std::fs::remove_file(bundle.join("index.json"))?;
+    let before = world.events()?.len();
+    let out = world.cli(&["plugin", "update"])?;
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(world.events()?.len(), before);
+    for args in [
+        &["plugin", "update", "--every", "0"][..],
+        &["plugin", "update", "--every", "169"],
+        &["plugin", "update", "--now"],
+    ] {
+        assert_eq!(world.cli(args)?.status.code(), Some(2), "{args:?}");
+    }
+    Ok(())
+}

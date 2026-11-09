@@ -10,13 +10,13 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, AgentName, Answer, Attestation, CommitSha, Digest, Grant, HoldId, InstallPolicy,
-    JobId, MergeMethod, Origin, PluginName, PluginSource, ReasonCode, Schema, Signed, Stakes,
-    SubstrateName, TaskId, TypedValue, Upcast, Value,
+    AgentId, AgentName, Answer, Attestation, CommitSha, Digest, Grant, HoldId, IndexLocation,
+    InstallPolicy, JobId, MergeMethod, Origin, PluginName, PluginSource, ReasonCode, Schema,
+    Signed, Stakes, SubstrateName, TaskId, TypedValue, Upcast, Value,
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 17;
+pub const SCHEMA_VERSION: u32 = 18;
 
 /// What this build reads: version 15, and versions 1 to 14 upcast to it (ADR-0023, ADR-0025, ADR-0027,
 /// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069,
@@ -37,7 +37,8 @@ pub const SCHEMA_VERSION: u32 = 17;
 /// reads as `unrecorded`, any other as `none`. Version 14 added `merge.approved` and changed no
 /// payload. Version 15 added `plugin.installed` and changed no payload. Version 16 added a plugin
 /// index as a `plugin.installed` source (ADR-0090); a payload written before reads as it was. Version
-/// 17 added `plugin.policy_set` and changed no payload.
+/// 17 added `plugin.policy_set` and changed no payload. Version 18 added `plugin.update_pending` and
+/// changed no payload.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -367,6 +368,19 @@ pub enum Event {
         reason: ReasonCode,
         signed: Signed,
     },
+    /// An update check found `version` of plugin `name` in the index at `location`, with digest
+    /// `digest`, asking for `asks`, beyond what the install policy lets install without the operator
+    /// (ADR-0092). It is not installed: the installed version keeps running until a human installs
+    /// this one, or a later check finds it covered. It is not a decision, and an install of the name
+    /// clears it.
+    #[serde(rename = "plugin.update_pending")]
+    PluginUpdatePending {
+        name: PluginName,
+        version: crate::PluginVersion,
+        digest: Digest,
+        asks: Grant,
+        location: IndexLocation,
+    },
     /// The typed values a running job returned: a reader's or planner's answer, or an actor's submitted
     /// result (ADR-0062, ADR-0064, ADR-0069). A choice is its option's index, so no text is stored. It
     /// is written together with the job's ending, so a resumed run finds every finished step's values
@@ -454,6 +468,7 @@ impl Event {
             | Event::MergeApproved { .. }
             | Event::PluginInstalled { .. }
             | Event::PluginPolicySet { .. }
+            | Event::PluginUpdatePending { .. }
             | Event::JobValues { .. } => origin == Origin::Engine,
         }
     }
@@ -533,6 +548,7 @@ impl Event {
             Event::MergeApproved { .. } => "merge.approved",
             Event::PluginInstalled { .. } => "plugin.installed",
             Event::PluginPolicySet { .. } => "plugin.policy_set",
+            Event::PluginUpdatePending { .. } => "plugin.update_pending",
             Event::JobValues { .. } => "job.values",
         }
     }
@@ -543,7 +559,7 @@ impl Event {
     }
 
     /// Every `kind` value, for checking tables and test coverage.
-    pub const KINDS: [&'static str; 18] = [
+    pub const KINDS: [&'static str; 19] = [
         "task.created",
         "task.completed",
         "job.started",
@@ -561,6 +577,7 @@ impl Event {
         "merge.approved",
         "plugin.installed",
         "plugin.policy_set",
+        "plugin.update_pending",
         "job.values",
     ];
 
@@ -811,6 +828,22 @@ mod tests {
                 },
                 r#"{"kind":"plugin.policy_set","policy":{"ceiling":{"actions":[],"egress_hosts":["docs.rs"],"tools":[],"data_flows":[]},"indexes":["https://plugins.example/v1"],"max_snapshot_age_days":90,"max_revocation_age_days":30},"by":"human","reason":"plugin.policy","signed":"unrecorded"}"#
                     .to_string(),
+            ),
+            (
+                Event::PluginUpdatePending {
+                    name: PluginName::new("pdf-tools").unwrap(),
+                    version: crate::PluginVersion::new("2.0.0").unwrap(),
+                    digest: d(7),
+                    asks: Grant {
+                        actions: ["push".to_string()].into(),
+                        ..Grant::none()
+                    },
+                    location: IndexLocation::new("https://plugins.example/v1").unwrap(),
+                },
+                format!(
+                    r#"{{"kind":"plugin.update_pending","name":"pdf-tools","version":"2.0.0","digest":"{}","asks":{{"actions":["push"],"egress_hosts":[],"tools":[],"data_flows":[]}},"location":"https://plugins.example/v1"}}"#,
+                    h(7)
+                ),
             ),
             (
                 Event::JobValues {

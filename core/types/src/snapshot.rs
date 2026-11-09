@@ -13,9 +13,9 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, AgentName, CommitSha, Digest, Gate, Grant, HoldId, HoldReason, InstallPolicy, JobId,
-    JobOutcome, MergeMethod, PluginName, PluginSource, ReasonCode, Resolution, Stakes, TaskId,
-    TypedValue, Value,
+    AgentId, AgentName, CommitSha, Digest, Gate, Grant, HoldId, HoldReason, IndexLocation,
+    InstallPolicy, JobId, JobOutcome, MergeMethod, PluginName, PluginSource, PluginVersion,
+    ReasonCode, Resolution, Stakes, TaskId, TypedValue, Value,
 };
 
 /// The layout [`StateImage`] is written in today.
@@ -30,8 +30,9 @@ use crate::{
 /// Version 9 added the merges approved (ADR-0071); earlier images have none. Version 10 added the
 /// plugins installed (ADR-0089); earlier images have none. Version 11 added a plugin index as where
 /// an installed plugin came from (ADR-0090); an earlier image holds only local installs, which read as
-/// they were. Version 12 added the install policy (ADR-0091); earlier images have none.
-pub const STATE_VERSION: u32 = 12;
+/// they were. Version 12 added the install policy (ADR-0091); earlier images have none. Version 13
+/// added the updates waiting for the operator (ADR-0092); earlier images have none.
+pub const STATE_VERSION: u32 = 13;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +67,22 @@ pub struct StateImage {
     pub plugins: Vec<PluginImage>,
     /// The install policy in force, if the operator set one (ADR-0091).
     pub install_policy: Option<InstallPolicyImage>,
+    /// Each update an update check found waiting for the operator, by name (ADR-0092).
+    pub pending_updates: Vec<PendingUpdateImage>,
+}
+
+/// The latest `plugin.update_pending` event for one name, not yet installed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingUpdateImage {
+    /// The sequence number of the event that found it.
+    pub seq: u64,
+    pub at: u64,
+    pub name: PluginName,
+    pub version: PluginVersion,
+    pub digest: Digest,
+    pub asks: Grant,
+    pub location: IndexLocation,
 }
 
 /// The latest `plugin.policy_set` event.
@@ -359,7 +376,11 @@ impl StateImage {
             object.insert("plugins".into(), Value::Array(Vec::new()));
         }
         // 11 -> 12: no install policy had been set.
-        object.insert("install_policy".into(), Value::Null);
+        if version < 12 {
+            object.insert("install_policy".into(), Value::Null);
+        }
+        // 12 -> 13: no update was waiting.
+        object.insert("pending_updates".into(), Value::Array(Vec::new()));
         // 6 -> 7: no job's reason was kept, and no job had returned values.
         if version >= 7 {
             return serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()));
@@ -531,6 +552,7 @@ mod tests {
             merges: vec![],
             plugins: vec![],
             install_policy: None,
+            pending_updates: vec![],
         }
     }
 

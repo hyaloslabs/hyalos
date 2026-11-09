@@ -9,15 +9,15 @@ use std::fmt;
 
 use hyalos_types::snapshot::{
     AgentImage, CancelledImage, HandleImage, HoldImage, InstallPolicyImage, JobEndImage, JobImage,
-    MergeImage, PluginImage, PolicyImage, PrunedImage, ResolvedImage, RevokedImage, StateImage,
-    TaskImage,
+    MergeImage, PendingUpdateImage, PluginImage, PolicyImage, PrunedImage, ResolvedImage,
+    RevokedImage, StateImage, TaskImage,
 };
 use hyalos_types::workflow::MAX_FIELDS;
 use hyalos_types::{
     AgentId, AgentName, Answer, CommitSha, Digest, Event, Gate, Grant, HoldId, HoldReason,
-    InstallPolicy, JobId, JobOutcome, MAX_POLICY_DOCUMENT, MergeMethod, Origin, PluginName,
-    PluginSource, ReasonCode, Resolution, SIGNED_SINCE, Sensitive, Signed, Stakes, TaskId,
-    Timestamp, TypedValue,
+    IndexLocation, InstallPolicy, JobId, JobOutcome, MAX_POLICY_DOCUMENT, MergeMethod, Origin,
+    PluginName, PluginSource, PluginVersion, ReasonCode, Resolution, SIGNED_SINCE, Sensitive,
+    Signed, Stakes, TaskId, Timestamp, TypedValue,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,6 +221,9 @@ pub enum RuleViolation {
     /// An install policy with a ceiling outside the vocabulary, an age out of range, or too many
     /// indexes.
     InstallPolicyInvalid,
+    /// An update was found for a plugin that is not installed from an index, or asks for a name the
+    /// vocabulary does not accept (ADR-0092).
+    UpdateNotForAnIndexInstall,
     /// A plugin's grant holds a name the capability vocabulary does not accept (ADR-0085).
     PluginGrantInvalid,
     /// A task holds one merge approval, made before any job runs on it.
@@ -334,6 +337,10 @@ impl fmt::Display for RuleViolation {
             RuleViolation::InstallPolicyInvalid => write!(
                 f,
                 "an install policy's ceiling is in the vocabulary, its ages are 1 to 3650 days, and it trusts at most 16 indexes (ADR-0091)"
+            ),
+            RuleViolation::UpdateNotForAnIndexInstall => write!(
+                f,
+                "an update waits only for a plugin installed from an index, asking for names in the vocabulary (ADR-0092)"
             ),
             RuleViolation::PluginGrantInvalid => write!(
                 f,
@@ -454,6 +461,8 @@ pub struct State {
     plugins: BTreeMap<PluginName, InstalledPlugin>,
     /// The install policy in force, if the operator set one (ADR-0091).
     install_policy: Option<SetInstallPolicy>,
+    /// The update each plugin has waiting for the operator, if any (ADR-0092).
+    pending_updates: BTreeMap<PluginName, PendingUpdate>,
     pending: Option<Pending>,
     /// The event of the last decision the operator signed (ADR-0070).
     last_approval: Option<u64>,
@@ -515,6 +524,18 @@ pub struct InstalledPlugin {
     pub source: PluginSource,
     pub by: Resolution,
     pub reason: ReasonCode,
+}
+
+/// An update a check found beyond the install policy, waiting for the operator (ADR-0092).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingUpdate {
+    /// The event that found it.
+    pub seq: u64,
+    pub at: Timestamp,
+    pub version: PluginVersion,
+    pub digest: Digest,
+    pub asks: Grant,
+    pub location: IndexLocation,
 }
 
 /// The install policy the operator set last (ADR-0091).
@@ -589,6 +610,11 @@ impl State {
     /// The install policy in force, if any (ADR-0091).
     pub fn install_policy(&self) -> Option<&SetInstallPolicy> {
         self.install_policy.as_ref()
+    }
+
+    /// The updates waiting for the operator, by name (ADR-0092).
+    pub fn pending_updates(&self) -> &BTreeMap<PluginName, PendingUpdate> {
+        &self.pending_updates
     }
 
     /// The merge approved for `task`, if one was.
@@ -930,6 +956,16 @@ impl State {
                 }
                 Ok(())
             }
+            Event::PluginUpdatePending { name, asks, .. } => {
+                let from_index = self
+                    .plugins
+                    .get(name)
+                    .is_some_and(|p| matches!(p.source, PluginSource::Index { .. }));
+                if !from_index || asks.check().is_err() {
+                    return Err(RuleViolation::UpdateNotForAnIndexInstall);
+                }
+                Ok(())
+            }
             Event::PluginPolicySet { policy, by, .. } => {
                 if !Stakes::irreversible()
                     .touching(Sensitive::CapabilityGrant)
@@ -1224,6 +1260,8 @@ impl State {
                 reason,
                 ..
             } => {
+                // Whatever was waiting for this name, this install answers it.
+                self.pending_updates.remove(name);
                 self.plugins.insert(
                     name.clone(),
                     InstalledPlugin {
@@ -1234,6 +1272,25 @@ impl State {
                         source: source.clone(),
                         by: *by,
                         reason: reason.clone(),
+                    },
+                );
+            }
+            Event::PluginUpdatePending {
+                name,
+                version,
+                digest,
+                asks,
+                location,
+            } => {
+                self.pending_updates.insert(
+                    name.clone(),
+                    PendingUpdate {
+                        seq,
+                        at,
+                        version: version.clone(),
+                        digest: *digest,
+                        asks: asks.clone(),
+                        location: location.clone(),
                     },
                 );
             }
@@ -1318,6 +1375,7 @@ impl State {
             merges,
             plugins,
             install_policy,
+            pending_updates,
             pending,
             last_approval,
             signed_since,
@@ -1332,6 +1390,28 @@ impl State {
             last_at: last_at.map(Timestamp::as_millis),
             last_approval: *last_approval,
             signed_since: *signed_since,
+            pending_updates: pending_updates
+                .iter()
+                .map(|(name, u)| {
+                    let PendingUpdate {
+                        seq,
+                        at,
+                        version,
+                        digest,
+                        asks,
+                        location,
+                    } = u;
+                    PendingUpdateImage {
+                        seq: *seq,
+                        at: at.as_millis(),
+                        name: name.clone(),
+                        version: version.clone(),
+                        digest: *digest,
+                        asks: asks.clone(),
+                        location: location.clone(),
+                    }
+                })
+                .collect(),
             install_policy: install_policy.as_ref().map(|p| {
                 let SetInstallPolicy {
                     seq,
@@ -1582,7 +1662,22 @@ impl State {
             merges,
             plugins,
             install_policy,
+            pending_updates,
         } = image;
+        let mut waiting = BTreeMap::new();
+        for u in pending_updates {
+            let update = PendingUpdate {
+                seq: u.seq,
+                at: Timestamp::from_millis(u.at),
+                version: u.version,
+                digest: u.digest,
+                asks: u.asks,
+                location: u.location,
+            };
+            if waiting.insert(u.name.clone(), update).is_some() {
+                return Err(format!("an update for {} is in the snapshot twice", u.name));
+            }
+        }
         let mut by_name = BTreeMap::new();
         for p in plugins {
             let installed = InstalledPlugin {
@@ -1600,6 +1695,7 @@ impl State {
         }
         let mut state = State {
             plugins: by_name,
+            pending_updates: waiting,
             install_policy: install_policy.map(|p| SetInstallPolicy {
                 seq: p.seq,
                 at: Timestamp::from_millis(p.at),
@@ -1840,6 +1936,22 @@ impl State {
             if p.grant.check().is_err() {
                 out.push(format!(
                     "plugin {name} holds a grant the vocabulary refuses"
+                ));
+            }
+        }
+        for (name, u) in &self.pending_updates {
+            let from_index = self
+                .plugins
+                .get(name)
+                .is_some_and(|p| matches!(p.source, PluginSource::Index { .. }));
+            if !from_index {
+                out.push(format!(
+                    "an update waits for {name}, which is not installed from an index"
+                ));
+            }
+            if u.asks.check().is_err() {
+                out.push(format!(
+                    "the update waiting for {name} asks for names the vocabulary refuses"
                 ));
             }
         }

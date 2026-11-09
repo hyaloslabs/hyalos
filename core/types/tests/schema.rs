@@ -542,6 +542,31 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             signed: Signed::Operator(approval),
         },
     ));
+
+    // Version 18 added `plugin.update_pending` (ADR-0092) and changed no payload.
+    let at_17: Vec<_> = all.iter().filter(|g| g.0 == 17).cloned().collect();
+    for (_, kind, json, event) in at_17 {
+        all.push((18, kind, json, event));
+    }
+    all.push((
+        18,
+        "plugin.update_pending",
+        format!(
+            r#"{{"kind":"plugin.update_pending","name":"lint","version":"2.0.0","digest":"{}","asks":{{"actions":["push"],"egress_hosts":[],"tools":[],"data_flows":[]}},"location":"https://plugins.example/v1"}}"#,
+            hex(8)
+        ),
+        Event::PluginUpdatePending {
+            name: hyalos_types::PluginName::new("lint").ok_or("name")?,
+            version: hyalos_types::PluginVersion::new("2.0.0").ok_or("version")?,
+            digest: d(8),
+            asks: hyalos_types::Grant {
+                actions: ["push".to_string()].into(),
+                ..hyalos_types::Grant::none()
+            },
+            location: hyalos_types::IndexLocation::new("https://plugins.example/v1")
+                .ok_or("location")?,
+        },
+    ));
     Ok(all)
 }
 
@@ -557,6 +582,7 @@ fn introduced(kind: &str) -> u32 {
         "merge.approved" => 14,
         "plugin.installed" => 15,
         "plugin.policy_set" => 17,
+        "plugin.update_pending" => 18,
         _ => 1,
     }
 }

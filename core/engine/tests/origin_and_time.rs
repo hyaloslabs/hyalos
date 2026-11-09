@@ -280,6 +280,29 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
             reason: why(),
             signed: hyalos_types::Signed::Unrecorded,
         },
+        "plugin.update_pending" => {
+            let location =
+                hyalos_types::IndexLocation::new("https://plugins.example/v1").ok_or("location")?;
+            e.install_plugin(
+                at(1),
+                hyalos_types::PluginName::new("pdf").ok_or("name")?,
+                d(2),
+                hyalos_types::Grant::none(),
+                hyalos_types::PluginSource::Index {
+                    location: location.clone(),
+                    version: hyalos_types::PluginVersion::new("1").ok_or("version")?,
+                },
+                Decider::Human,
+                why(),
+            )?;
+            Event::PluginUpdatePending {
+                name: hyalos_types::PluginName::new("pdf").ok_or("name")?,
+                version: hyalos_types::PluginVersion::new("2").ok_or("version")?,
+                digest: d(3),
+                asks: hyalos_types::Grant::none(),
+                location,
+            }
+        }
         "plugin.policy_set" => Event::PluginPolicySet {
             policy: hyalos_types::InstallPolicy {
                 ceiling: hyalos_types::Grant::none(),
