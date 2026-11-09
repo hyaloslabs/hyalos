@@ -1,6 +1,6 @@
 # ADR-0091: The install policy, a capability ceiling the operator signs
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
