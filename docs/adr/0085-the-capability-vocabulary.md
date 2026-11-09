@@ -1,6 +1,6 @@
 # ADR-0085: The capability vocabulary
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
