@@ -518,8 +518,8 @@ mod tests {
         assert_eq!(violations(&v).len(), 2);
     }
 
-    /// Only the binary hosts plugins: the broker, the engine and the deterministic crates never link
-    /// the runtime, and the runtime links no other workspace crate but the types (ADR-0086).
+    /// Only the `hyalos` crate may link the plugin runtime: the broker and engine crates may not, and
+    /// the runtime links no other workspace crate but the types (ADR-0086).
     #[test]
     fn only_the_binary_may_depend_on_the_plugin_runtime() {
         let mut v = good();
