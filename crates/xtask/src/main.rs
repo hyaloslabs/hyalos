@@ -20,6 +20,9 @@ const PART_BUDGETS: &[(&str, usize)] = &[
     ("broker/src/model", 1_200),
     // The MCP protocol layer and its two transports (S5.1, ADR-0067). MCP revises yearly.
     ("hyalos/src/mcp", 1_000),
+    // The plugin runtime: the Wasmtime host, install, Sigstore verification and update checks (S6.8,
+    // ADR-0086). Set before any of it was written.
+    ("plugin/src", 3_000),
 ];
 
 /// For each crate in `core/`, the workspace crates it may depend on outside dev-dependencies.
@@ -39,6 +42,7 @@ const CORE: &[(&str, &[&str])] = &[
         ],
     ),
     ("hyalos-broker", &["hyalos-types"]),
+    ("hyalos-plugin", &["hyalos-types"]),
     (
         "hyalos",
         &[
@@ -48,6 +52,7 @@ const CORE: &[(&str, &[&str])] = &[
             "hyalos-substrate",
             "hyalos-engine",
             "hyalos-broker",
+            "hyalos-plugin",
         ],
     ),
 ];
@@ -511,6 +516,36 @@ mod tests {
             ],
         );
         assert_eq!(violations(&v).len(), 2);
+    }
+
+    /// Only the `hyalos` crate may link the plugin runtime: the broker and engine crates may not, and
+    /// the runtime links no other workspace crate but the types (ADR-0086).
+    #[test]
+    fn only_the_binary_may_depend_on_the_plugin_runtime() {
+        let mut v = good();
+        replace(
+            &mut v,
+            "hyalos-broker",
+            &[("hyalos-types", false), ("hyalos-plugin", false)],
+        );
+        replace(
+            &mut v,
+            "hyalos-engine",
+            &[("hyalos-types", false), ("hyalos-plugin", false)],
+        );
+        replace(
+            &mut v,
+            "hyalos-plugin",
+            &[("hyalos-types", false), ("hyalos-engine", false)],
+        );
+        assert_eq!(
+            violations(&v),
+            [
+                "hyalos-engine must not depend on hyalos-plugin",
+                "hyalos-broker must not depend on hyalos-plugin",
+                "hyalos-plugin must not depend on hyalos-engine",
+            ]
+        );
     }
 
     #[test]
