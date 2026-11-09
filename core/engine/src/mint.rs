@@ -297,7 +297,8 @@ fn asks(manifest: &Manifest, approved: bool) -> Result<Vec<(String, PolicyReques
     };
     let mut asks = Vec::new();
     for name in &manifest.actions {
-        match Action::from_id(name).filter(|a| is_repo_action(*a)) {
+        let known = Field::Actions.accepts(name);
+        match Action::from_id(name).filter(|a| known && is_repo_action(*a)) {
             Some(action) => asks.push((name.clone(), request(action, ""))),
             None => {
                 return Err(MintRefusal::Invalid {

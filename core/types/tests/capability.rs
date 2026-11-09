@@ -70,6 +70,80 @@ fn the_vocabulary_is_version_1_with_four_fields() {
     assert!(every.check().is_ok());
 }
 
+/// What the host and tool fields accept is pinned too, at its edges.
+#[test]
+fn what_hosts_and_tools_accept_is_pinned() {
+    let label = |n: usize| "a".repeat(n);
+    let host_of = |n: usize| {
+        // Labels of 63 joined by dots, then one shorter label, to exactly `n` bytes.
+        let mut h = String::new();
+        while h.len() + 64 < n {
+            h.push_str(&label(63));
+            h.push('.');
+        }
+        h.push_str(&label(n - h.len()));
+        h
+    };
+    let accepted = [
+        "docs.rs".to_string(),
+        "localhost".into(),
+        "a-b.example".into(),
+        "x1.example".into(),
+        format!("{}.example", label(63)),
+        host_of(253),
+    ];
+    let refused = [
+        String::new(),
+        "Docs.rs".into(),
+        "dOcs.rs".into(),
+        "docs.rs.".into(),
+        "docs.rs:443".into(),
+        "docs.rs/x".into(),
+        "*.example".into(),
+        "https://docs.rs".into(),
+        "-a.example".into(),
+        "a-.example".into(),
+        "a..example".into(),
+        "a_b.example".into(),
+        "127.0.0.1".into(),
+        "0x7f000001".into(),
+        "::1".into(),
+        "dôcs.rs".into(),
+        format!("{}.example", label(64)),
+        host_of(254),
+    ];
+    for name in &accepted {
+        assert!(Field::EgressHosts.accepts(name), "{name:?}: {NEEDS_AN_ADR}");
+    }
+    for name in &refused {
+        assert!(
+            !Field::EgressHosts.accepts(name),
+            "{name:?}: {NEEDS_AN_ADR}"
+        );
+    }
+    let tools_accepted = [
+        "Bash".to_string(),
+        "search_issues".into(),
+        "fs.read-1".into(),
+        "x".repeat(128),
+    ];
+    let tools_refused = [
+        String::new(),
+        "a b".into(),
+        "a:b".into(),
+        "a/b".into(),
+        "a@b".into(),
+        "é".into(),
+        "x".repeat(129),
+    ];
+    for name in &tools_accepted {
+        assert!(Field::Tools.accepts(name), "{name:?}: {NEEDS_AN_ADR}");
+    }
+    for name in &tools_refused {
+        assert!(!Field::Tools.accepts(name), "{name:?}: {NEEDS_AN_ADR}");
+    }
+}
+
 /// The manifest holds every field of the vocabulary under the same name, so a plugin's capabilities
 /// and a job's are the same sets.
 #[test]

@@ -18,7 +18,7 @@ Today the four capability sets are plain names:
 | Field | Asked as | Accepts |
 | --- | --- | --- |
 | `actions` | the action's own name | `read`, `push`, `open_pr`, `comment`, `merge`, `change_policy`, `publish`, `spend_over_cap`, `export_credentials` |
-| `egress_hosts` | `request_host` | a host name in the form the broker's egress gate compares (`egress::host_name`): lower case, dot-separated labels of letters, digits and inner hyphens, at most 253 bytes, no trailing dot. No port, no wildcard, no scheme, and no address, including a numeric last label or `0x...` |
+| `egress_hosts` | `request_host` | a host name in the form the broker's egress gate compares (`egress::host_name`): lower case, dot-separated labels of 1 to 63 letters, digits and inner hyphens, at most 253 bytes, no trailing dot. No port, no wildcard, no scheme, and no address, including a numeric last label or `0x...` |
 | `tools` | `use_tool` | 1 to 128 ASCII letters, digits, `_`, `-` and `.`, the names MCP allows |
 | `data_flows` | `data_flow` | `job->model`, `job->forge`, `job->web` ([ADR-0055](0055-data-flows-name-where-the-jobs-data-may-go.md)) |
 
@@ -45,7 +45,7 @@ A test in `hyalos-broker` checks that the vocabulary accepts a host exactly when
 - an unknown field;
 - a name its field does not accept.
 
-The error names the field, never the refused name, since a plugin's document is plugin-authored text.
+The error names the field, never the refused name, since a plugin's document is plugin-authored text. Deserializing `Capabilities` directly checks no name, so anything read from outside, such as a plugin's capabilities at install, goes through `from_document`.
 
 **Changing the vocabulary needs an ADR.** That means a new field, a field removed or renamed, or a field accepting other names. It bumps `CAPABILITY_VERSION`. `core/types/tests/capability.rs` pins the version, the fields in order, what each is asked as, the actions, the flows and the written form, and its failure message says so. Adding a policy action without a field or vocabulary name for it fails the policy test.
 

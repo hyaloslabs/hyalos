@@ -130,6 +130,9 @@ fn is_tool(name: &str) -> bool {
 
 /// A set of capabilities: what a plugin asks for, what a human granted it (a [`crate::Grant`]), or
 /// a manifest's. A plugin installed locally starts with none (ADR-0006).
+///
+/// Deserializing one checks no name. Anything read from outside, such as a plugin's capabilities at
+/// install, is read with [`Capabilities::from_document`], which does.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Capabilities {

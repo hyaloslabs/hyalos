@@ -604,8 +604,30 @@ mod tests {
             "::1",
             "-a.example",
             "a..example",
+            "dOcs.rs",
             "",
-        ] {
+        ]
+        .map(String::from)
+        .into_iter()
+        .chain([
+            format!("{}.example", "a".repeat(63)),
+            format!("{}.example", "a".repeat(64)),
+            format!(
+                "{}.{}.{}.{}",
+                "a".repeat(63),
+                "a".repeat(63),
+                "a".repeat(63),
+                "a".repeat(61)
+            ),
+            format!(
+                "{}.{}.{}.{}",
+                "a".repeat(63),
+                "a".repeat(63),
+                "a".repeat(63),
+                "a".repeat(62)
+            ),
+        ]) {
+            let name = name.as_str();
             assert_eq!(
                 Field::EgressHosts.accepts(name),
                 host_name(name).as_deref() == Ok(name),
