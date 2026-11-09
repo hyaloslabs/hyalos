@@ -46,7 +46,7 @@ Tests that need a tool skip without it unless CI's variable is set: `HYALOS_REQU
 
 - `core/` is the trusted core: everything that runs in the engine or broker process, the CLI included. It has a 30,000-line budget, and parts have their own in `PART_BUDGETS` (`crates/xtask`). Trusted-core paths need code-owner review (`.github/CODEOWNERS`).
 - `crates/` holds the rest: checks, the simulator, test kits, sandbox tools. It is not counted, and `core/` uses it only as dev-dependencies, so none of it is in the binary.
-- Dependency edges are a table in `crates/xtask`: only the engine and the `hyalos` crate (the engine process) depend on `hyalos-log`; the broker never depends on the engine, log or substrate crates; the engine never depends on the broker. A new `core/` crate or edge edits that table and the ADR.
+- Dependency edges are a table in `crates/xtask`: only the engine and the `hyalos` crate (the engine process) depend on `hyalos-log`; the broker never depends on the engine, log or substrate crates; the engine never depends on the broker; only the `hyalos` crate depends on the plugin runtime (`hyalos-plugin`), which depends only on `hyalos-types` (ADR-0086). A new `core/` crate or edge edits that table and the ADR.
 - `hyalos-types`, `hyalos-log`, `hyalos-policy` and `hyalos-engine` are deterministic (ADR-0013). Time comes from `hyalos_types::Clock` and randomness from `hyalos_types::Entropy`. Their `clippy.toml` bans `SystemTime`, `Instant`, `HashMap`, `HashSet`, `RandomState` and `fs::read_dir`, and any external dependency needs an entry in `EXTERNAL_ALLOWED`.
 - `cedar-policy` turns on `serde_json`'s `preserve_order` for the whole build, so nothing may rely on a `serde_json` map's key order. It is pinned `=4.14.1` to match `cedar-policy-symcc`.
 - Licences and advisories are `deny.toml`'s; a new dependency may need an entry there.
@@ -70,6 +70,7 @@ These are pinned by tests. A change to one bumps its version (except where noted
 | `core/engine` | State, holds, cancels, compaction and audit, the policy store, minting, handles, agents, several writers | 0013, 0024, 0025, 0026, 0027, 0028, 0029, 0031, 0034, 0047, 0055, 0063, 0066, 0068, 0069, 0070, 0071, 0083, 0085 |
 | `core/broker` | Channel, model relay and TLS, egress, git proxy, forge, content gates, readers, handles, results, merge | 0035, 0037, 0038, 0039, 0042, 0046, 0047, 0048, 0051, 0054, 0055, 0061, 0063, 0064, 0065, 0071, 0079, 0083, 0085 |
 | `core/substrate` | Containers, gVisor, Firecracker, choosing one, attestation | 0032, 0041, 0043, 0056, 0057, 0058 |
+| `core/plugin` | The plugin runtime: the Wasmtime host, install, Sigstore verification, update checks (part budget 3,000) | 0006, 0007, 0086 |
 | `core/hyalos` | The binary: keys, log commands, the broker process and channel, doctor, GitHub App, `hyalos run`, the fix-issue workflow, MCP server, operator commands and merge, thin CLI, setup | 0018, 0021, 0022, 0026–0028, 0030, 0035, 0038, 0043, 0044, 0045, 0050, 0052, 0053, 0058, 0062, 0063, 0067–0075, 0078, 0080, 0081, 0082, 0083, 0084 |
 | `.github/workflows/release.yml` | A release: the static binary, the image by digest, provenance | 0081 |
 | `site/setup`, `.github/workflows/pages.yml` | The setup page that creates the GitHub App from a manifest | 0084 |
