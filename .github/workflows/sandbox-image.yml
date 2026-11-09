@@ -4,7 +4,7 @@ name: sandbox image
 # channel (S2.9, ADR-0040). It runs when anything that goes into the image, or that the test drives,
 # changes: a pinned harness or SDK version, the image's settings, the sandbox tools, the broker,
 # the substrate whose isolation the test copies, the microVM's init and contract, the engine and the `hyalos` command that run a job
-# end to end in it, or the workspace's build settings.
+# end to end in it (with the plugin runtime it links), or the workspace's build settings.
 on:
   pull_request:
     paths:
@@ -16,6 +16,7 @@ on:
       - "core/hyalos/**"
       - "core/engine/**"
       - "core/policy/**"
+      - "core/plugin/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
@@ -37,6 +38,7 @@ on:
       - "core/hyalos/**"
       - "core/engine/**"
       - "core/policy/**"
+      - "core/plugin/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
