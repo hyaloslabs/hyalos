@@ -88,16 +88,9 @@ Use `podman` in place of `docker` if that is what the machine has. Keep `--targe
 The operator can do this in a browser on any computer, including one other than this machine. Tell them, in these short lines:
 
 1. **A provider key** ([docs/operations/provider-keys.md](../../docs/operations/provider-keys.md)): make a dedicated API key at the provider, set a spend cap on it, and keep it to hand. OpenAI's is for the default harness, Codex. Anthropic's is for Claude Code, and the job then starts with `--harness claude-code`.
-2. **The GitHub App** ([docs/operations/github-app.md](../../docs/operations/github-app.md)): open `github.com/settings/apps/new`, or `github.com/organizations/<org>/settings/apps/new` for an organization's repository, and set:
-   - the name `hyalos-<their name>`, and the homepage `https://github.com`;
-   - under Webhook, clear Active;
-   - Contents, Issues and Pull requests: Read and write; nothing else.
+2. **The GitHub App needs nothing yet.** `hyalos setup walk` creates it with them later ([ADR-0084](../../docs/adr/0084-setup-creates-the-github-app-from-a-manifest.md)): it sends them to Hyalos's setup page, `hyaloslabs.github.io/hyalos/setup`, in a browser on any computer. GitHub creates the App there with the right permissions, and the page shows a one-time code that they paste into their terminal. That gives Hyalos the App's key, so there is no `.pem` to download or copy. Then they install the App on the repository the first job will work on, from a short link the walk prints.
 
-   Then they choose **Create GitHub App**, note the App ID, choose **Generate a private key** (it downloads a `.pem`), and **Install App** on the repository the first job will work on, with "Only select repositories".
-
-If they would rather wait, `hyalos setup github-app` gives the same steps, with a link their terminal can open with the fields filled in.
-
-They keep the key, the App ID and the `.pem`. Nothing is written yet. On a machine they reach over SSH, the `.pem` is on the computer with the browser; `hyalos setup github-app` prints the `scp` line that copies it here, and finds it wherever it lands.
+They keep the key to hand. Nothing is written yet.
 
 **Whenever the operator changes the App's permissions later**, tell them the change does not reach the installation until they accept it there too: on `https://github.com/settings/installations` (for an organization, `https://github.com/organizations/<org>/settings/installations`), they choose **Configure** on the App, then **Review request** in the banner at the top, then **Accept new permissions**. Until then, jobs fail with `forge.no_token`.
 
@@ -121,7 +114,7 @@ It takes each of their steps that is not done, in order, and asks them for what 
 | --- | --- |
 | `operator_key` | A passphrase of 12 or more characters, twice. It signs their decisions, and you must never see it. |
 | `provider_keys` | Which provider, and the key, which it reads without showing. |
-| `github_app` | Whether the App exists yet, its App ID, and which `.pem` to use. It finds GitHub's download (`*.private-key.pem`) in their home directory, `~/Downloads`, Windows' downloads on WSL2, or the config directory. |
+| `github_app` | The account to own the App. It sends them to the setup page, takes the code the page shows (not echoed), checks the App GitHub made, and gives the link to install it. For an App made by hand (or on GitHub Enterprise Server) they answer no, and it asks for the App ID and finds its `.pem`. |
 | `policy` | It prints the starter policy and asks before they approve it with their passphrase. It allows the first job's actions, with data going only to the model and GitHub, and lets them merge its pull request after they review it. |
 | `agent_credential` | That this is the directory they run Claude Code in. It issues a credential and registers this client's server with it, without showing it. It adds `--harness claude-code` when their only key is Anthropic's. |
 

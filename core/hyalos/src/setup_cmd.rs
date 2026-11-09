@@ -144,7 +144,7 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
     step(
         "github_app",
         Who::Operator,
-        "in a terminal of your own: hyalos setup github-app, which says how to create the App and takes its key wherever it was saved",
+        "in a terminal of your own: hyalos setup github-app, which creates the App from Hyalos's setup page in any browser, or takes one made by hand",
         lines(&["hyalos setup github-app"]),
         "docs/operations/github-app.md",
         GitHubApp::load(&config)

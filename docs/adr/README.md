@@ -97,3 +97,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0081](0081-prebuilt-releases.md) | Prebuilt releases: a static binary that names its image by digest | Accepted |
 | [0082](0082-the-starter-policy-permits-merge.md) | The starter policy permits merge | Accepted |
 | [0083](0083-a-fix-issue-pull-request-closes-its-issue.md) | A fix-issue pull request closes its issue | Accepted |
+| [0084](0084-setup-creates-the-github-app-from-a-manifest.md) | Setup creates the GitHub App from a manifest | Proposed |

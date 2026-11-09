@@ -102,6 +102,11 @@ pub fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 }
 
 /// One request the stand-in received.
+/// The App's key the stand-in hands back from the setup page's code.
+pub const APP_PEM: &[u8] = include_bytes!("../fixtures/github-app-test.pem");
+/// A secret GitHub returns with the App, which setup never reads.
+pub const CLIENT_SECRET: &str = "client-secret-marker-41c9";
+
 #[derive(Debug, Clone)]
 pub struct Seen {
     pub method: String,
@@ -219,6 +224,33 @@ fn serve(
             return reply("401 Unauthorized", "{}");
         }
         return git_backend(out, root, &method, path, query, &get, body);
+    }
+    // The setup page's code, exchanged for the App it made (ADR-0084): `goodcode1` is the App setup
+    // asks for, `widecode1` one with more permissions, `elsecode1` one another account owns.
+    if let Some(code) = path
+        .strip_prefix("/app-manifests/")
+        .and_then(|p| p.strip_suffix("/conversions"))
+        .filter(|_| method == "POST")
+    {
+        let mut permissions = serde_json::json!({
+            "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write",
+        });
+        let mut owner = "op";
+        match code {
+            "goodcode1" => {}
+            "widecode1" => permissions["administration"] = "write".into(),
+            "elsecode1" => owner = "someone",
+            _ => return reply("404 Not Found", r#"{"message":"Not Found"}"#),
+        }
+        let app = serde_json::json!({
+            "id": 7, "slug": "hyalos-op", "node_id": "A_1", "name": "hyalos-op",
+            "owner": { "login": owner, "type": "User" },
+            "permissions": permissions, "events": [],
+            "client_id": "Iv1.client", "client_secret": CLIENT_SECRET,
+            "webhook_secret": null,
+            "pem": String::from_utf8_lossy(APP_PEM),
+        });
+        return reply("201 Created", &app.to_string());
     }
     match (method.as_str(), path) {
         // The App's JWT is checked by github_app.rs; here only that one is sent.

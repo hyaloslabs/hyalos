@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use common::{PASSPHRASE, Res, dir};
+use common::{APP_PEM, CLIENT_SECRET, GitHub, PASSPHRASE, Res, dir};
 use hyalos::setup_ask::{Ask, Setup};
 use zeroize::Zeroizing;
 
@@ -130,6 +130,7 @@ fn walk_takes_every_step_on_a_fresh_machine_and_shows_no_secret() -> Res {
         PASSPHRASE, // again
         "anthropic",
         KEY,
+        "n",  // not from the setup page: the App is made by hand
         "",   // created the App already? no, so the browser steps
         "op", // the user name the App is named for
         "7",  // App ID
@@ -252,7 +253,7 @@ fn a_key_already_in_the_config_directory_is_kept_and_made_owner_only() -> Res {
     assert!(refused.is_err_and(|e| e.contains("cannot read")));
     std::fs::remove_dir(&settings)?;
 
-    let mut script = Script::new(&["y", "7", ""]);
+    let mut script = Script::new(&["n", "y", "7", ""]);
     let done = Setup::new(&env, &mut script).github_app(None)?;
     assert!(done.contains("kept the key where it was"), "{done}");
     assert!(
@@ -291,6 +292,88 @@ fn a_key_already_in_the_config_directory_is_kept_and_made_owner_only() -> Res {
         Setup::new(&env, &mut script).github_app(None)?,
         "kept the App as it was"
     );
+    std::fs::remove_dir_all(&m.root).ok();
+    Ok(())
+}
+
+#[test]
+fn the_setup_page_s_code_gives_the_app_checked_and_shows_no_secret() -> Res {
+    // ADR-0084: the code is exchanged for the App's id and key, which are written only once the App
+    // is the operator's and asks for exactly what Hyalos needs.
+    let m = Machine::new("manifest")?;
+    let gh = GitHub::start(&m.root, false)?;
+    let env = m.env();
+    let run = |answers: &[&str]| -> (Result<String, String>, Script) {
+        let mut script = Script::new(answers);
+        let mut setup = Setup::new(&env, &mut script);
+        setup.github_api = gh.base();
+        let done = setup.github_app(None);
+        (done, script)
+    };
+    for (code, owner, why) in [
+        ("widecode1", "op", "other permissions"),
+        ("elsecode1", "op", "for someone, not op"),
+        ("usedcode1", "op", "did not take the code"),
+        ("not a code", "op", "not the code"),
+    ] {
+        let (done, script) = run(&["", owner, code]);
+        let error = done.err().ok_or(code)?;
+        assert!(error.contains(why), "{code}: {error}");
+        assert!(
+            !error.contains(code) && !script.shown.contains(code),
+            "{code}"
+        );
+        assert!(!m.config.join("github.app").exists(), "{code}");
+        assert!(!m.config.join("github-app.pem").exists(), "{code}");
+    }
+    let (done, script) = run(&["", "Op", "goodcode1", ""]);
+    let done = done?;
+    assert!(done.contains("for the App hyalos-op"), "{done}");
+    assert_eq!(std::fs::read(m.config.join("github-app.pem"))?, APP_PEM);
+    assert_eq!(
+        std::fs::read_to_string(m.config.join("github.app"))?,
+        "app_id = 7\n"
+    );
+    for file in ["github-app.pem", "github.app"] {
+        assert_eq!(m.mode(&m.config.join(file))?, 0o600, "{file}");
+    }
+    assert!(
+        script.shown.contains(
+            "open hyaloslabs.github.io/hyalos/setup <https://hyaloslabs.github.io/hyalos/setup/>"
+        ),
+        "{}",
+        script.shown
+    );
+    assert!(
+        script.shown.contains(
+            "github.com/apps/hyalos-op/installations/new <https://github.com/apps/hyalos-op/installations/new>"
+        ),
+        "{}",
+        script.shown
+    );
+    let pem_line = std::str::from_utf8(APP_PEM)?.lines().nth(1).ok_or("pem")?;
+    for secret in ["goodcode1", CLIENT_SECRET, pem_line] {
+        assert!(
+            !script.shown.contains(secret) && !done.contains(secret),
+            "{secret}"
+        );
+    }
+    // The code went in the path, with no credential of any kind.
+    let sent: Vec<_> = gh
+        .seen()
+        .into_iter()
+        .filter(|s| s.path.starts_with("/app-manifests/"))
+        .collect();
+    assert_eq!(sent.len(), 4, "{sent:?}");
+    assert!(
+        sent.iter()
+            .all(|s| s.method == "POST" && s.authorization.is_empty())
+    );
+    let step = hyalos::setup_cmd::steps(&env, Err("no substrate".into()))?
+        .into_iter()
+        .find(|s| s.id == "github_app")
+        .ok_or("github_app")?;
+    assert!(step.done, "{step:?}");
     std::fs::remove_dir_all(&m.root).ok();
     Ok(())
 }
@@ -447,5 +530,21 @@ fn with_no_terminal_each_command_refuses_and_writes_nothing() -> Res {
         assert!(!m.config.exists() && !m.data.exists(), "{command:?}");
     }
     std::fs::remove_dir_all(&m.root).ok();
+    Ok(())
+}
+
+#[test]
+fn the_setup_page_asks_github_for_exactly_what_setup_accepts() -> Res {
+    // ADR-0084: the page's manifest and the check on GitHub's answer are one set of permissions.
+    let manifest: serde_json::Value =
+        serde_json::from_str(include_str!("../../../site/setup/manifest.json"))?;
+    assert_eq!(
+        manifest["default_permissions"],
+        serde_json::to_value(hyalos::app_manifest::permissions())?
+    );
+    assert_eq!(manifest["default_events"], serde_json::json!([]));
+    assert_eq!(manifest["hook_attributes"]["active"], false);
+    assert_eq!(manifest["public"], false);
+    assert_eq!(manifest["redirect_url"], hyalos::app_manifest::SETUP_PAGE);
     Ok(())
 }

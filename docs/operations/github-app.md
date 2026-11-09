@@ -1,6 +1,19 @@
 # The GitHub App: creating and installing it
 
-How to give Hyalos access to a repository. Hyalos never uses a personal access token. The engine holds a GitHub App's private key and, for each job, mints a token for one repository with only the permissions that job's actions need. The broker gets that token, never the key, and the engine revokes it when the job ends. The reasons are in [ADR-0004](../adr/0004-one-signed-manifest-per-job.md) and [ADR-0044](../adr/0044-minting-per-job-github-tokens-from-the-app.md). This page is the procedure. `hyalos setup github-app` takes you through it in your terminal: it says what to do in the browser, then writes the files of steps 2 and 3 for you, taking the key wherever it was saved ([ADR-0080](../adr/0080-setup-asks-the-operator-in-their-own-terminal.md)).
+How to give Hyalos access to a repository. Hyalos never uses a personal access token. The engine holds a GitHub App's private key and, for each job, mints a token for one repository with only the permissions that job's actions need. The broker gets that token, never the key, and the engine revokes it when the job ends. The reasons are in [ADR-0004](../adr/0004-one-signed-manifest-per-job.md) and [ADR-0044](../adr/0044-minting-per-job-github-tokens-from-the-app.md). This page is the procedure by hand. Most operators do not need it: `hyalos setup github-app` (and `hyalos setup walk`) creates the App for you from Hyalos's setup page, as below.
+
+## From the setup page
+
+`hyalos setup github-app` asks which GitHub account will own the App, then sends you to `hyaloslabs.github.io/hyalos/setup` in a browser on any computer ([ADR-0084](../adr/0084-setup-creates-the-github-app-from-a-manifest.md)):
+
+1. On the page, enter that account (tick **It is an organization** if it is one) and choose **Continue to GitHub**. GitHub shows the App it will create: its name, which you can change, and the permissions below in step 1, with no webhook. Choose **Create GitHub App**.
+2. GitHub sends you back to the page, which shows a one-time code. Paste it into the terminal where `hyalos setup` is waiting. It is not shown as you type, and it works once, within an hour.
+3. `hyalos` exchanges the code with GitHub for the App's id and private key, and writes `github.app` and `github-app.pem` owner-only. The key goes from GitHub straight to your terminal's process, never through the page or the driving agent.
+4. Install it from the link it prints, `github.com/apps/<name>/installations/new`, on the repository the jobs will work on (step 4 below), then press Enter.
+
+The page is a static file that holds no secret ([`site/setup`](../../site/setup)). It is not trusted: before writing anything, `hyalos` checks that the App belongs to the account you named and has exactly the permissions of step 1 and no events. If not, it writes nothing and tells you to delete that App. A code GitHub does not take (used, or over an hour old) is refused the same way.
+
+The setup page is for github.com. For GitHub Enterprise Server, or to set the App up yourself, answer no to `Create the App from Hyalos's setup page` and follow the steps below. `hyalos setup github-app` then asks for the App ID and finds the `.pem` wherever it was saved, and writes the files of steps 2 and 3 for you ([ADR-0080](../adr/0080-setup-asks-the-operator-in-their-own-terminal.md)).
 
 ## 1. Create the App
 
