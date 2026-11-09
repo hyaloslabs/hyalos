@@ -1,5 +1,5 @@
-//! The actor's job: choosing a substrate, minting the token, starting the sandbox and waiting for
-//! it to end.
+//! The actor's job: minting its token, starting the sandbox, recording what the broker reports while
+//! it runs, and ending it.
 
 use super::*;
 
@@ -322,66 +322,5 @@ impl Run<'_> {
             .values
             .filter(|_| failure.reason.as_str() == why::SUBMITTED);
         self.end_values(job, out, ended, failure, revoked, values)
-    }
-}
-
-/// Where a reader or planner job runs: in the broker, with no sandbox (ADR-0062).
-pub(super) fn broker_substrate() -> SubstrateName {
-    SubstrateName::new("broker").unwrap_or_else(SubstrateName::unrecorded)
-}
-
-/// A job with no sandbox has nothing to attest.
-pub(super) fn no_sandbox() -> Attestation {
-    Attestation::None(code("attestation.no_sandbox"))
-}
-
-/// Runs `detect` with a timeout, and refuses a host that cannot run a job with what the operator
-/// needs to know. An interrupt while it runs refuses too.
-pub(super) fn choose(
-    image: &str,
-    detect: Detect,
-    timeout: Duration,
-    interrupt: &Interrupt,
-) -> Result<Choice, String> {
-    let (tx, rx) = mpsc::channel();
-    let image_owned = image.to_string();
-    std::thread::spawn(move || {
-        let _ = tx.send(detect(&image_owned));
-    });
-    let interrupted = |signal: &str| {
-        format!("interrupted ({signal}) while finding a substrate, so no job was started")
-    };
-    let mut waited = Duration::ZERO;
-    let detected = loop {
-        if let Some(signal) = interrupt.signal() {
-            return Err(interrupted(signal));
-        }
-        match rx.recv_timeout(POLL) {
-            Ok(detected) => break detected,
-            Err(mpsc::RecvTimeoutError::Timeout) if waited < timeout => waited += POLL,
-            Err(_) => {
-                return Err(format!(
-                    "finding a substrate took longer than {} s, so a container runtime is not \
-                     answering and no job was started. Check that `podman info` or `docker info` \
-                     returns, then run hyalos doctor",
-                    timeout.as_secs()
-                ));
-            }
-        }
-    };
-    // A runtime the same Ctrl-C reached may have failed its check; say why it was.
-    if let Some(signal) = interrupt.signal() {
-        return Err(interrupted(signal));
-    }
-    match detected {
-        Err(unsupported) => Err(unsupported.to_string()),
-        Ok(choice) if choice.chosen.is_none() => {
-            let checked = Ok(choice);
-            let (report, _) = doctor_cmd::report(HOST_OS, &checked, image);
-            Err(format!(
-                "no substrate is ready, so no job was started. hyalos doctor says:\n{report}"
-            ))
-        }
-        Ok(choice) => Ok(choice),
     }
 }

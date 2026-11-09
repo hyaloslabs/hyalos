@@ -1,4 +1,5 @@
-//! A typed step: a reader or a planner, a job the broker runs that returns typed values (ADR-0062).
+//! A typed step: a reader or a planner, a job the broker runs that returns typed values (ADR-0062),
+//! with no sandbox of its own.
 
 use super::*;
 
@@ -153,4 +154,14 @@ impl Run<'_> {
                 .map(Some),
         }
     }
+}
+
+/// Where a reader or planner job runs: in the broker, with no sandbox (ADR-0062).
+pub(super) fn broker_substrate() -> SubstrateName {
+    SubstrateName::new("broker").unwrap_or_else(SubstrateName::unrecorded)
+}
+
+/// A job with no sandbox has nothing to attest.
+fn no_sandbox() -> Attestation {
+    Attestation::None(code("attestation.no_sandbox"))
 }

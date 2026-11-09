@@ -1,4 +1,5 @@
-//! What runs: the actor alone or the fix-issue workflow, the steps' prompts and the actor's.
+//! What runs: the actor alone or the fix-issue workflow, the actor's prompt, the model readers and
+//! planners call, and how the actor's result reads.
 
 use super::*;
 
@@ -118,7 +119,7 @@ pub(super) fn actor_prompt(
 
 /// The engine's steps, after the task. They are made from the operator's request and the job's
 /// branch.
-pub(super) fn steps(
+fn steps(
     request: &Request,
     branch: &str,
     result: Option<&Output>,

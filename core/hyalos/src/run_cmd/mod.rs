@@ -17,9 +17,10 @@
 //! and records how it ended.
 //!
 //! The files follow a run's phases: `parse.rs` reads the command line, `plan.rs` decides what runs
-//! and writes the prompts, `drive.rs` runs the jobs in turn, `step.rs` runs a reader or a planner,
-//! `release.rs` holds the issue for the operator's release, `actor.rs` runs the sandbox, and
-//! `report.rs` reads what the broker says and ends the job. This file holds what they share.
+//! and writes the actor's prompt, `drive.rs` chooses the substrate and runs the jobs in turn,
+//! `step.rs` runs a reader or a planner, `release.rs` holds the issue for the operator's release,
+//! `actor.rs` runs the sandbox, and `report.rs` reads what the broker says and ends the job. This file
+//! holds the command's entry point, what the others share, and the tests.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -59,7 +60,7 @@ mod report;
 mod step;
 pub mod why;
 
-use self::{actor::*, plan::*, release::*, report::*};
+use self::{plan::*, release::*, report::*};
 pub use drive::{resume_job, run_job};
 pub use parse::{STORED_VERSION, Stored, check, is_branch, is_repo, parse, request_digest};
 pub use report::attestation_text;
@@ -382,6 +383,7 @@ struct Run<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::step::broker_substrate;
     use super::*;
     use hyalos_types::Provenance;
     use hyalos_types::workflow::TypedValue;

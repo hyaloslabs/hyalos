@@ -1,4 +1,4 @@
-//! What the broker reports while a job runs, and the events that end it.
+//! What the broker reports while a job runs, the events that end it, and how an attestation reads.
 
 use super::*;
 

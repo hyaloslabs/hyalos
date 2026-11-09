@@ -199,7 +199,7 @@ impl Run<'_> {
 
     /// Records the operator's release of `handle` to this run's task. It is the operator's decision,
     /// made with `--release-issue` and signed with the key unlocked before the run (ADR-0070).
-    pub(super) fn release(
+    fn release(
         &mut self,
         job: JobId,
         number: u64,
