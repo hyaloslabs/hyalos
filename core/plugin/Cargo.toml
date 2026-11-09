@@ -1,6 +1,6 @@
 [package]
 name = "hyalos-plugin"
-description = "The plugin runtime: the Wasmtime host, install and verification (ADR-0006, ADR-0007, ADR-0086)."
+description = "The plugin runtime: the Wasmtime host, install and verification (ADR-0006, ADR-0007, ADR-0086, ADR-0087)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,3 +10,10 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+# The WASM host (S6.1, ADR-0087). Pinned exactly; no WASI, no default features: a plugin reaches the
+# world only through the host imports its capabilities grant.
+wasmtime = { version = "=50.0.1", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
+hyalos-types = { path = "../types" }
+
+[dev-dependencies]
+wat = "1"
