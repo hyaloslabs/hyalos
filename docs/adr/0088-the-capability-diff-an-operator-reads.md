@@ -1,6 +1,6 @@
 # ADR-0088: The capability diff an operator reads
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
