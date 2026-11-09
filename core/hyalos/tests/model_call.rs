@@ -101,6 +101,7 @@ fn manifest(job: u64) -> Manifest {
         approval: None,
         handles: Default::default(),
         result: None,
+        closes: None,
     }
 }
 

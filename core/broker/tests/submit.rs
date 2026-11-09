@@ -72,6 +72,7 @@ fn manifest(job: u64, result: bool) -> Manifest {
             ]
             .into()
         }),
+        closes: None,
     }
 }
 

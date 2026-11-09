@@ -61,6 +61,7 @@ fn manifest(job: u64, role: Role, actions: &[&str], handles: &[Digest]) -> Manif
         approval: None,
         handles: handles.iter().copied().collect(),
         result: None,
+        closes: None,
     }
 }
 

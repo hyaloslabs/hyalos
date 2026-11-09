@@ -314,6 +314,7 @@ fn manifest(job: u64, actions: &[&str]) -> Manifest {
         approval: None,
         handles: Default::default(),
         result: None,
+        closes: None,
     }
 }
 

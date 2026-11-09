@@ -1368,6 +1368,7 @@ impl Run<'_> {
             approval: None,
             handles: Default::default(),
             result: None,
+            closes: None,
         };
         let Some(inputs) = flow.checked().inputs(&step.id).cloned() else {
             let failure = Failure::new(workflow_run::codes::INPUTS_MISMATCH, "no inputs");
@@ -1590,6 +1591,8 @@ impl Run<'_> {
             approval: None,
             handles: handle.into_iter().collect(),
             result: result.clone(),
+            // The fix-issue run's own issue, from the request: its pull request closes it (ADR-0083).
+            closes: request.issue_number,
         };
         // A skill in the prompt never widens the job: its grant cuts the manifest (ADR-0066).
         let manifest = inputs.bound(&manifest);

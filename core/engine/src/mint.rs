@@ -231,6 +231,7 @@ impl Engine {
             && manifest.handles.is_empty()
             && manifest.result.is_none()
             && manifest.pr_base.is_none()
+            && manifest.closes.is_none()
             && manifest.branch_prefix.is_empty();
         if !alone || manifest.tainted {
             return Err(invalid(mint_codes::merge_not_alone()));

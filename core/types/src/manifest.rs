@@ -109,6 +109,12 @@ pub struct Manifest {
     /// the signed bytes, so a manifest without one signs as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Output>,
+    /// The issue of the manifest's repository the job fixes, from the run's own request, never from
+    /// forge text. A pull request the job opens says it closes it, in a line the broker adds
+    /// (ADR-0083). Absent, the broker adds nothing, and the field is left out of the signed bytes, so a
+    /// manifest without one signs as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closes: Option<u64>,
 }
 
 /// The data flows a manifest may declare (ADR-0055). A flow names where the job's data may go: the

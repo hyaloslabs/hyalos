@@ -592,6 +592,7 @@ mod tests {
             approval: None,
             handles: Default::default(),
             result: None,
+            closes: None,
         }
     }
 

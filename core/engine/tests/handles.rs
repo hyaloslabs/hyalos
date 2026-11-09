@@ -102,6 +102,7 @@ fn manifest(job: JobId, handles: &[Digest]) -> Manifest {
         approval: None,
         handles: handles.iter().copied().collect(),
         result: None,
+        closes: None,
     }
 }
 

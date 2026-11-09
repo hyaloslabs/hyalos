@@ -64,6 +64,7 @@ fn manifest(job: u64) -> Res<Manifest> {
         }),
         handles: Default::default(),
         result: None,
+        closes: None,
     })
 }
 

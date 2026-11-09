@@ -123,6 +123,7 @@ fn merge_manifest(job: JobId, approval: u64) -> Res<Manifest> {
         }),
         handles: Default::default(),
         result: None,
+        closes: None,
     })
 }
 
@@ -233,6 +234,7 @@ fn a_merge_job_is_untainted_and_does_nothing_else() -> Res {
         ),
         ("a branch", Box::new(|m| m.branch_prefix = "hyalos/".into())),
         ("a base", Box::new(|m| m.pr_base = Some("main".into()))),
+        ("an issue to close", Box::new(|m| m.closes = Some(24))),
     ];
     for (case, change) in cases {
         let mut m = merge_manifest(job, approval)?;

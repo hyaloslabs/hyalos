@@ -102,6 +102,7 @@ fn manifest() -> Manifest {
         approval: None,
         handles: Default::default(),
         result: None,
+        closes: None,
     }
 }
 
