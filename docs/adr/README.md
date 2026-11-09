@@ -103,3 +103,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0087](0087-plugins-run-in-the-broker-with-capabilities-as-host-imports.md) | Plugins run in the broker, with capabilities as host imports | Accepted |
 | [0088](0088-the-capability-diff-an-operator-reads.md) | The capability diff an operator reads | Accepted |
 | [0089](0089-installing-an-agent-skill-and-running-it-in-the-job-s-sandbox.md) | Installing an Agent Skill and running it in the job's sandbox | Accepted |
+| [0090](0090-a-plugin-index-served-as-release-assets.md) | A plugin index served as release assets | Accepted |

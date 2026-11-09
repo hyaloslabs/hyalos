@@ -45,7 +45,7 @@ pub use manifest::{
 };
 pub use merge::{CommitSha, MergeMethod};
 pub use origin::Origin;
-pub use plugin::{Grant, PluginName, PluginSource};
+pub use plugin::{Grant, IndexLocation, PluginName, PluginSource, PluginVersion};
 pub use prompt::{ActorPrompt, Choice, Choices, ReaderPrompt, Sourced, Typed};
 pub use provenance::{
     ForgeIssue, ForgeText, IssueState, ModelText, OperatorText, PluginText, Provenance, StepInputs,

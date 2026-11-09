@@ -12,10 +12,12 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use hyalos_engine::Decider;
-use hyalos_plugin::skill::{Skill, Store};
+use hyalos_plugin::index::{INDEX_FILE, Index, MAX_INDEX};
+use hyalos_plugin::skill::{MAX_ARCHIVE, Skill, Store, digest_of};
 use hyalos_types::capability::Field;
 use hyalos_types::{
-    Capabilities, Clock, Diff, Grant, MAX_CAPABILITY_DOCUMENT, PluginSource, ReasonCode,
+    Capabilities, Clock, Diff, Grant, IndexLocation, MAX_CAPABILITY_DOCUMENT, PluginName,
+    PluginSource, PluginVersion, ReasonCode,
 };
 
 use crate::clock::SystemClock;
@@ -23,16 +25,26 @@ use crate::mcp_cmd::EngineLog;
 use crate::operator;
 use crate::passphrase;
 use crate::paths::{self, Env};
+use crate::plugin_source;
 
 const USAGE: &str = "usage: hyalos plugin install <dir> [--grant] [--reason <code>] [--passphrase-stdin]
+       hyalos plugin install --index <location> <name> [--version <v>] [--grant] [--reason <code>]
+                             [--passphrase-stdin]
        hyalos plugin list
+       hyalos plugin pack <dir> <file>
        hyalos plugin diff [<installed>] <new>
   install reads the Agent Skill in <dir> (SKILL.md, its scripts, and capabilities.json if it asks for
   any), prints what it asks for against what its name holds now, and installs it. If it asks for a
   capability its name does not hold, read the diff and run again with --grant to grant it. It is your
   decision, signed with your approval key: the passphrase is asked for at the terminal, or read from
   stdin with --passphrase-stdin. A job is given it with hyalos run --skill <name>
-  list shows every skill installed, its digest and what it was granted
+  With --index, it finds <name> in the plugin index at <location> (an https:// URL whose index.json
+  and archives are beside each other, as a release's assets, or a directory holding the same files,
+  as an offline bundle), takes its latest version or --version, and installs it only if its archive
+  has the digest the index gives (ADR-0090)
+  list shows every skill installed, its digest, where it came from and what it was granted
+  pack writes the skill in <dir> as one archive to <file>, a new file, and prints its digest, as an
+  index lists it
   diff prints what <new> adds to the capabilities in <installed>, what it takes away and what it
   keeps. With one file, it is a first install: everything <new> asks for is added. Both are
   capabilities documents ({\"version\": 1, ...}). It writes nothing";
@@ -40,7 +52,7 @@ const USAGE: &str = "usage: hyalos plugin install <dir> [--grant] [--reason <cod
 pub fn run(args: &[String]) -> ExitCode {
     let env = |name: &str| std::env::var(name).ok();
     let result = match args.first().map(String::as_str) {
-        Some("install" | "list") => manage(args, &env),
+        Some("install" | "list" | "pack") => manage(args, &env),
         _ => run_with(args),
     };
     match result {
@@ -73,7 +85,7 @@ pub fn run_with(args: &[String]) -> Result<String, (u8, String)> {
 
 /// `install` and `list`, which read the log and the store. Exit 1 if refused, 2 for usage.
 pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
-    let (args, source) = passphrase::source(args);
+    let (args, source_of_passphrase) = passphrase::source(args);
     let usage = |why: &str| (2, format!("{why}\n{USAGE}"));
     let failed = |e: String| (1, e);
     let log = EngineLog {
@@ -81,21 +93,54 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
         public_key: paths::engine_public_key(env).map_err(failed)?,
     };
     match args.as_slice() {
-        [install, dir, rest @ ..] if install == "install" => {
-            let (mut grant, mut reason) = (false, "plugin.installed");
+        [install, rest @ ..] if install == "install" => {
+            let (mut grant, mut reason, mut index, mut version, mut target) =
+                (false, "plugin.installed", None, None, None);
             let mut rest = rest.iter();
-            while let Some(flag) = rest.next() {
-                match flag.as_str() {
+            while let Some(arg) = rest.next() {
+                let mut value = || {
+                    rest.next()
+                        .ok_or_else(|| usage(&format!("{arg} needs a value")))
+                };
+                match arg.as_str() {
                     "--grant" => grant = true,
-                    "--reason" => {
-                        reason = rest.next().ok_or_else(|| usage("--reason needs a code"))?;
+                    "--reason" => reason = value()?,
+                    "--index" => index = Some(location(value()?).ok_or_else(|| {
+                        usage("--index is an https:// URL, an http:// URL on loopback, or a directory")
+                    })?),
+                    "--version" => {
+                        version = Some(PluginVersion::new(value()?).ok_or_else(|| {
+                            usage("--version is letters, digits, '.', '+' and '-'")
+                        })?)
                     }
-                    _ => return Err(usage("install takes only --grant and --reason <code>")),
+                    other if !other.starts_with("--") && target.is_none() => target = Some(other),
+                    _ => {
+                        return Err(usage(
+                            "install takes a directory, or --index <location> and a name, and only --version <v>, --grant and --reason <code>",
+                        ));
+                    }
                 }
             }
+            let target =
+                target.ok_or_else(|| usage("install needs a directory, or a name with --index"))?;
             let reason = ReasonCode::new(reason)
                 .ok_or_else(|| usage("a reason is a short code, such as plugin.installed"))?;
-            let skill = Skill::read(Path::new(dir)).map_err(|e| failed(format!("{dir}: {e}")))?;
+            let (skill, source) = match index {
+                None if version.is_some() => {
+                    return Err(usage("--version picks a version from --index"));
+                }
+                None => {
+                    let skill = Skill::read(Path::new(target))
+                        .map_err(|e| failed(format!("{target}: {e}")))?;
+                    (skill, PluginSource::Local)
+                }
+                Some(location) => {
+                    let name = PluginName::new(target).ok_or_else(|| {
+                        usage("with --index, install takes a plugin's name: lowercase letters, digits and hyphens")
+                    })?;
+                    from_index(location, &name, version.as_ref()).map_err(failed)?
+                }
+            };
             // Everything that can be checked without the passphrase is checked first.
             let held = if log.log.exists() {
                 log.read()
@@ -109,10 +154,11 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
             };
             let diff = held.diff(&skill.asks);
             let mut out = format!(
-                "skill {} ({} files), digest {}\n{}",
+                "skill {} ({} files), digest {}{}\n{}",
                 skill.name,
                 skill.files.len(),
                 skill.digest(),
+                from(&source),
                 render(&diff)
             );
             if diff.widens() && !grant {
@@ -121,7 +167,7 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
                 )));
             }
             // Unlocked before anything is kept, so a wrong passphrase leaves nothing behind.
-            let mut engine = operator::engine(env, source).map_err(failed)?;
+            let mut engine = operator::engine(env, source_of_passphrase).map_err(failed)?;
             let store = paths::plugin_store(env).map_err(failed)?;
             paths::make_private_dir(&store).map_err(failed)?;
             let digest = Store::new(store)
@@ -133,7 +179,7 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
                     skill.name.clone(),
                     digest,
                     skill.asks.clone(),
-                    PluginSource::Local,
+                    source,
                     Decider::Human,
                     reason,
                 )
@@ -143,6 +189,23 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
                 skill.name, head.seq, skill.name
             ));
             Ok(out)
+        }
+        [pack, dir, file] if pack == "pack" => {
+            let skill = Skill::read(Path::new(dir)).map_err(|e| failed(format!("{dir}: {e}")))?;
+            let archive = skill.archive();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(file)
+                .and_then(|mut f| std::io::Write::write_all(&mut f, &archive))
+                .map_err(|e| failed(format!("{file}: {e}")))?;
+            Ok(format!(
+                "wrote {} ({} files, {} bytes), digest {}\n",
+                skill.name,
+                skill.files.len(),
+                archive.len(),
+                skill.digest()
+            ))
         }
         [list] if list == "list" => {
             if !log.log.exists() {
@@ -155,15 +218,69 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
             let mut out = String::new();
             for (name, p) in state.plugins() {
                 out.push_str(&format!(
-                    "{name}\t{}\tinstalled at event {}\tgranted {}\n",
+                    "{name}\t{}\tinstalled at event {}{}\tgranted {}\n",
                     p.digest,
                     p.seq,
+                    from(&p.source),
                     summary(&p.grant)
                 ));
             }
             Ok(out)
         }
         _ => Err(usage("unknown plugin command")),
+    }
+}
+
+/// `location` as an index location, a relative directory made absolute.
+fn location(text: &str) -> Option<IndexLocation> {
+    if text.contains("://") {
+        return IndexLocation::new(text);
+    }
+    let dir = std::path::absolute(text).ok()?;
+    IndexLocation::new(dir.to_str()?)
+}
+
+/// Resolves `name` in the index at `location`, fetches its archive and checks it has the digest the
+/// index gave before reading it (ADR-0090). The index's Sigstore bundle is not verified yet (S7.12),
+/// so the install is the operator's alone, as a local one is.
+fn from_index(
+    location: IndexLocation,
+    name: &PluginName,
+    version: Option<&PluginVersion>,
+) -> Result<(Skill, PluginSource), String> {
+    let at = location.as_str();
+    let index = plugin_source::fetch(&location, INDEX_FILE, MAX_INDEX)?;
+    let index = Index::parse(&index).map_err(|e| format!("{at}: {e} ({})", e.code()))?;
+    let entry = index
+        .resolve(name, version)
+        .map_err(|e| format!("{at}: {e} ({})", e.code()))?;
+    let archive = plugin_source::fetch(&location, &entry.artifact, MAX_ARCHIVE)?;
+    if digest_of(&archive) != entry.digest {
+        return Err(format!(
+            "{}: its SHA-256 is not the digest the index gives, so it was not read (plugin.digest_mismatch)",
+            entry.artifact
+        ));
+    }
+    let skill = Skill::from_archive(&archive)
+        .map_err(|e| format!("{}: {e} ({})", entry.artifact, e.code()))?;
+    if skill.name != *name {
+        return Err(format!(
+            "{}: the skill in it is not named {name} (plugin.wrong_name)",
+            entry.artifact
+        ));
+    }
+    let source = PluginSource::Index {
+        location,
+        version: entry.version.clone(),
+    };
+    Ok((skill, source))
+}
+
+/// Where a plugin came from, for a line about it: nothing for a local install.
+fn from(source: &PluginSource) -> String {
+    match source {
+        PluginSource::Local => String::new(),
+        PluginSource::Index { location, version } => format!(", version {version} from {location}"),
     }
 }
 

@@ -75,7 +75,7 @@ fn a_human_installs_a_plugin_and_a_later_install_replaces_it() -> Res {
     assert_eq!((pdf.seq, pdf.digest), (1, Digest::from_bytes([1; 32])));
     assert_eq!(pdf.grant, docs());
     assert_eq!(
-        (pdf.source, pdf.by),
+        (pdf.source.clone(), pdf.by),
         (PluginSource::Local, Resolution::Human)
     );
     // An update replaces the earlier install: one name, one set of files, one grant.

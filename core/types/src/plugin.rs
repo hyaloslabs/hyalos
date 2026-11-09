@@ -73,14 +73,111 @@ impl<'de> Deserialize<'de> for PluginName {
     }
 }
 
-/// Where an installed plugin came from (ADR-0006, ADR-0089).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+/// Where an installed plugin came from (ADR-0006, ADR-0089, ADR-0090).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginSource {
     /// Read from a directory on the operator's machine. It has no signature or transparency-log
     /// entry, so every capability it holds was granted by a human (ADR-0006).
     Local,
+    /// Resolved by name in a plugin index (ADR-0090): the index it was found in and the version it
+    /// named. Its files had the digest the index gave.
+    Index {
+        location: IndexLocation,
+        version: PluginVersion,
+    },
 }
+
+/// The longest version a plugin index may give.
+pub const MAX_PLUGIN_VERSION_LEN: usize = 64;
+/// The longest location of a plugin index.
+pub const MAX_INDEX_LOCATION_LEN: usize = 1024;
+
+/// A plugin's version as its index gives it (ADR-0090): 1 to 64 ASCII letters, digits, `.`, `+` and
+/// `-`, starting with a letter or digit. It is compared only for equality; the index's order says
+/// which is the latest.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PluginVersion(String);
+
+impl PluginVersion {
+    pub fn new(text: &str) -> Option<Self> {
+        let valid = (1..=MAX_PLUGIN_VERSION_LEN).contains(&text.len())
+            && text
+                .bytes()
+                .next()
+                .is_some_and(|b| b.is_ascii_alphanumeric())
+            && text
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'+' | b'-'));
+        valid.then(|| Self(text.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Where a plugin index is (ADR-0090): an `https://` URL, an `http://` URL on loopback, or an
+/// absolute path to a directory (an offline bundle). Up to 1,024 characters with no space or control
+/// character. The operator gives it.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct IndexLocation(String);
+
+impl IndexLocation {
+    pub fn new(text: &str) -> Option<Self> {
+        let loopback = ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+            .iter()
+            .any(|base| {
+                text.strip_prefix(base)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
+            });
+        let valid = (1..=MAX_INDEX_LOCATION_LEN).contains(&text.len())
+            && !text.bytes().any(|b| b.is_ascii_control() || b == b' ')
+            && (text.starts_with("https://") || loopback || text.starts_with('/'));
+        valid.then(|| Self(text.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Whether it is a directory on this machine rather than a URL.
+    pub fn is_dir(&self) -> bool {
+        self.0.starts_with('/')
+    }
+}
+
+macro_rules! text_type {
+    ($name:ident, $what:literal) => {
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "{}({})", stringify!($name), self.0)
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(&self.0)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let text = String::deserialize(deserializer)?;
+                $name::new(&text).ok_or_else(|| D::Error::custom($what))
+            }
+        }
+    };
+}
+
+text_type!(PluginVersion, "not a plugin version");
+text_type!(IndexLocation, "not a plugin index location");
 
 #[cfg(test)]
 mod tests {
@@ -112,6 +209,56 @@ mod tests {
             result: None,
             closes: None,
         }
+    }
+
+    #[test]
+    fn a_version_and_an_index_location_are_checked_text() {
+        for good in ["1", "1.2.0", "2.0.0-rc.1+build.5", &"9".repeat(64)] {
+            assert!(PluginVersion::new(good).is_some(), "{good}");
+        }
+        for bad in ["", ".1", "1 2", "1/2", "v1\n", &"9".repeat(65)] {
+            assert!(PluginVersion::new(bad).is_none(), "{bad:?}");
+        }
+        for good in [
+            "https://github.com/o/r/releases/latest/download",
+            "http://localhost:8080/index",
+            "http://127.0.0.1",
+            "/srv/bundle",
+        ] {
+            assert!(IndexLocation::new(good).is_some(), "{good}");
+        }
+        for bad in [
+            "",
+            "http://example.com",
+            "http://localhost.evil.com",
+            "ftp://x",
+            "bundle",
+            "https://a b",
+            "https://x\n",
+            &format!("https://{}", "a".repeat(1020)),
+        ] {
+            assert!(IndexLocation::new(bad).is_none(), "{bad:?}");
+        }
+        let source = PluginSource::Index {
+            location: IndexLocation::new("/srv/bundle").unwrap(),
+            version: PluginVersion::new("1.2.0").unwrap(),
+        };
+        let json = serde_json::to_string(&source).unwrap();
+        assert_eq!(
+            json,
+            r#"{"index":{"location":"/srv/bundle","version":"1.2.0"}}"#
+        );
+        assert_eq!(serde_json::from_str::<PluginSource>(&json).unwrap(), source);
+        assert_eq!(
+            serde_json::to_string(&PluginSource::Local).unwrap(),
+            r#""local""#
+        );
+        assert!(
+            serde_json::from_str::<PluginSource>(
+                r#"{"index":{"location":"http://x.com","version":"1"}}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

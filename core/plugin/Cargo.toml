@@ -16,6 +16,9 @@ wasmtime = { version = "=50.0.1", default-features = false, features = ["runtime
 hyalos-types = { path = "../types" }
 # The digest that binds an install to its files (S6.2, ADR-0089).
 sha2 = "0.11"
+# A plugin index is JSON (S7.9, ADR-0090).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
 wat = "=1.261.0"

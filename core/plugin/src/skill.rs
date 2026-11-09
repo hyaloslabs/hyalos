@@ -1,5 +1,6 @@
-//! Agent Skills on disk (ADR-0006, ADR-0089): reading one from a directory, the digest that binds an
-//! install to its exact files, and the store that keeps installed skills by that digest.
+//! Agent Skills on disk (ADR-0006, ADR-0089): reading one from a directory or from its archive
+//! (ADR-0090), the digest that binds an install to its exact files, and the store that keeps
+//! installed skills by that digest.
 //!
 //! Everything in a skill is plugin-authored: its file names, its `SKILL.md` and its scripts. So a
 //! skill is read within limits, only regular files and directories are taken (never a link, which
@@ -28,8 +29,13 @@ pub const MAX_BYTES: u64 = 8 << 20;
 /// How deep a skill's directories may go.
 pub const MAX_DEPTH: usize = 8;
 
-/// What the digest starts with, so it can never be mistaken for a digest of anything else.
+/// What a skill's archive, and so its digest, starts with, so it can never be mistaken for anything
+/// else.
 const DOMAIN: &[u8] = b"hyalos.skill.v1\n";
+/// The longest path an archive may hold.
+const MAX_PATH: usize = 1024;
+/// The most bytes an archive may hold: the files' bytes, and each file's path and lengths.
+pub const MAX_ARCHIVE: u64 = MAX_BYTES + (MAX_FILES * (MAX_PATH + 13)) as u64 + DOMAIN.len() as u64;
 
 /// One file of a skill.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +128,10 @@ impl Skill {
         let mut files = BTreeMap::new();
         let mut total = 0;
         walk(dir, "", 0, &mut files, &mut total)?;
+        Self::from_files(files)
+    }
+
+    fn from_files(files: BTreeMap<String, SkillFile>) -> Result<Skill, SkillError> {
         let skill_md = files.get(SKILL_FILE).ok_or(SkillError::NoSkillFile)?;
         let name = name_of(&skill_md.bytes).ok_or(SkillError::NoName)?;
         let asks = match files.get(CAPABILITIES_FILE) {
@@ -133,19 +143,59 @@ impl Skill {
         Ok(Skill { name, asks, files })
     }
 
-    /// The SHA-256 of every file's path, mode and bytes, in path order: what an install records, so
-    /// the decision covers exactly these files.
+    /// The SHA-256 of the skill's archive: what an install records, so the decision covers exactly
+    /// these files.
     pub fn digest(&self) -> Digest {
-        let mut hash = Sha256::new();
-        hash.update(DOMAIN);
+        digest_of(&self.archive())
+    }
+
+    /// The skill as one file (ADR-0090): a domain tag, then for each file in path order the path's
+    /// length (4 bytes, big-endian), the path, 1 if it is executable or 0, the length of its bytes
+    /// (8 bytes, big-endian) and the bytes. Its SHA-256 is the skill's digest.
+    pub fn archive(&self) -> Vec<u8> {
+        let mut out = DOMAIN.to_vec();
         for (path, file) in &self.files {
-            hash.update((path.len() as u32).to_be_bytes());
-            hash.update(path.as_bytes());
-            hash.update([u8::from(file.executable)]);
-            hash.update((file.bytes.len() as u64).to_be_bytes());
-            hash.update(&file.bytes);
+            out.extend_from_slice(&(path.len() as u32).to_be_bytes());
+            out.extend_from_slice(path.as_bytes());
+            out.push(u8::from(file.executable));
+            out.extend_from_slice(&(file.bytes.len() as u64).to_be_bytes());
+            out.extend_from_slice(&file.bytes);
         }
-        Digest::from_bytes(hash.finalize().into())
+        out
+    }
+
+    /// Reads an archive with the limits and names a directory is read with. Paths must be in order,
+    /// each once, and none may be a directory of another.
+    pub fn from_archive(bytes: &[u8]) -> Result<Skill, SkillError> {
+        if bytes.len() as u64 > MAX_ARCHIVE {
+            return Err(SkillError::TooLarge);
+        }
+        let mut files: BTreeMap<String, SkillFile> = BTreeMap::new();
+        let mut total = 0u64;
+        let mut rest = bytes.strip_prefix(DOMAIN).ok_or(SkillError::Unreadable)?;
+        while !rest.is_empty() {
+            let (path, file, tail) = entry(rest)?;
+            rest = tail;
+            if files.len() >= MAX_FILES {
+                return Err(SkillError::TooLarge);
+            }
+            total += file.bytes.len() as u64;
+            if total > MAX_BYTES {
+                return Err(SkillError::TooLarge);
+            }
+            let segments: Vec<&str> = path.split('/').collect();
+            if segments.len() > MAX_DEPTH {
+                return Err(SkillError::TooLarge);
+            }
+            let ordered = files.keys().next_back().is_none_or(|last| *last < path);
+            let parent_is_file =
+                (1..segments.len()).any(|n| files.contains_key(&segments[..n].join("/")));
+            if !segments.iter().all(|s| plain(s)) || !ordered || parent_is_file {
+                return Err(SkillError::BadEntry);
+            }
+            files.insert(path, file);
+        }
+        Self::from_files(files)
     }
 
     /// Writes the files under `dir`, which must not exist yet, readable by anyone and writable by
@@ -166,7 +216,50 @@ impl Skill {
     }
 }
 
-fn plain(name: &str) -> bool {
+/// The SHA-256 of an archive, which is the digest of the skill in it.
+pub fn digest_of(archive: &[u8]) -> Digest {
+    Digest::from_bytes(Sha256::digest(archive).into())
+}
+
+/// One entry of an archive: its path, its file and what follows it.
+fn entry(bytes: &[u8]) -> Result<(String, SkillFile, &[u8]), SkillError> {
+    let short = SkillError::Unreadable;
+    let (len, bytes) = bytes.split_first_chunk::<4>().ok_or(short.clone())?;
+    let len = u32::from_be_bytes(*len) as usize;
+    if len == 0 || len > MAX_PATH || bytes.len() < len {
+        return Err(SkillError::BadEntry);
+    }
+    let (path, bytes) = bytes.split_at(len);
+    let path = std::str::from_utf8(path).map_err(|_| SkillError::BadEntry)?;
+    let (mode, bytes) = bytes.split_first().ok_or(short.clone())?;
+    let executable = match mode {
+        0 => false,
+        1 => true,
+        _ => return Err(SkillError::BadEntry),
+    };
+    let (size, bytes) = bytes.split_first_chunk::<8>().ok_or(short.clone())?;
+    let size = u64::from_be_bytes(*size);
+    if size > MAX_BYTES {
+        return Err(SkillError::TooLarge);
+    }
+    let size = size as usize;
+    if bytes.len() < size {
+        return Err(short);
+    }
+    let (content, bytes) = bytes.split_at(size);
+    Ok((
+        path.to_string(),
+        SkillFile {
+            bytes: content.to_vec(),
+            executable,
+        },
+        bytes,
+    ))
+}
+
+/// Whether `name` is a plain file or directory name: letters, digits, `.`, `_` and `-`, starting with
+/// a letter, a digit or `_`, so it is never hidden, `.` or `..`.
+pub fn plain(name: &str) -> bool {
     (1..=128).contains(&name.len())
         && name
             .bytes()
@@ -477,6 +570,78 @@ mod tests {
         );
         let _ = make_writable(&root);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_archive_reads_back_to_the_same_skill_and_hashes_to_its_digest() {
+        let root = scratch("archive");
+        let skill = Skill::read(&skill_dir(&root)).unwrap();
+        let archive = skill.archive();
+        assert_eq!(digest_of(&archive), skill.digest());
+        assert_eq!(Skill::from_archive(&archive).unwrap(), skill);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_archive_out_of_order_with_a_bad_name_or_cut_short_is_refused() {
+        fn archive(entries: &[(&str, u8, &[u8])]) -> Vec<u8> {
+            let mut out = DOMAIN.to_vec();
+            for (path, mode, bytes) in entries {
+                out.extend_from_slice(&(path.len() as u32).to_be_bytes());
+                out.extend_from_slice(path.as_bytes());
+                out.push(*mode);
+                out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+                out.extend_from_slice(bytes);
+            }
+            out
+        }
+        let md: &[u8] = b"---\nname: pdf\n---\n";
+        assert!(Skill::from_archive(&archive(&[("SKILL.md", 0, md)])).is_ok());
+        for (entries, want) in [
+            (
+                vec![("SKILL.md", 0, md), ("A", 0, b"x" as &[u8])],
+                SkillError::BadEntry,
+            ),
+            (
+                vec![("SKILL.md", 0, md), ("SKILL.md", 0, md)],
+                SkillError::BadEntry,
+            ),
+            (
+                vec![("../x", 0, b"x" as &[u8]), ("SKILL.md", 0, md)],
+                SkillError::BadEntry,
+            ),
+            (
+                vec![(".env", 0, b"x" as &[u8]), ("SKILL.md", 0, md)],
+                SkillError::BadEntry,
+            ),
+            (
+                vec![("SKILL.md", 0, md), ("a", 0, b"x"), ("a/b", 0, b"x")],
+                SkillError::BadEntry,
+            ),
+            (vec![("SKILL.md", 2, md)], SkillError::BadEntry),
+            (
+                vec![("a/b/c/d/e/f/g/h/i", 0, b"x" as &[u8])],
+                SkillError::TooLarge,
+            ),
+            (vec![("README", 0, b"x" as &[u8])], SkillError::NoSkillFile),
+        ] {
+            assert_eq!(
+                Skill::from_archive(&archive(&entries)),
+                Err(want),
+                "{entries:?}"
+            );
+        }
+        let whole = archive(&[("SKILL.md", 0, md)]);
+        assert_eq!(
+            Skill::from_archive(&whole[..whole.len() - 1]),
+            Err(SkillError::Unreadable)
+        );
+        assert_eq!(Skill::from_archive(b"tar"), Err(SkillError::Unreadable));
+        let mut huge = DOMAIN.to_vec();
+        huge.extend_from_slice(&8u32.to_be_bytes());
+        huge.extend_from_slice(b"SKILL.md\0");
+        huge.extend_from_slice(&u64::MAX.to_be_bytes());
+        assert_eq!(Skill::from_archive(&huge), Err(SkillError::TooLarge));
     }
 
     #[test]

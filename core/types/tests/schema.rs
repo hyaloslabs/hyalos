@@ -473,6 +473,42 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             signed: Signed::Operator(approval),
         },
     ));
+
+    // Version 16 added an index as a `plugin.installed` source (ADR-0090) and changed no payload, so
+    // every kind written at version 15 reads as it did. Its `plugin.installed` sample is from an index.
+    let at_15: Vec<_> = all
+        .iter()
+        .filter(|g| g.0 == 15 && g.1 != "plugin.installed")
+        .cloned()
+        .collect();
+    for (_, kind, json, event) in at_15 {
+        all.push((16, kind, json, event));
+    }
+    let approval = hyalos_types::OperatorKey::from_seed(&[7; 32]).approve(&[1; 32], 3, d(4), b"q");
+    all.push((
+        16,
+        "plugin.installed",
+        format!(
+            r#"{{"kind":"plugin.installed","name":"lint","digest":"{}","grant":{{"actions":[],"egress_hosts":[],"tools":[],"data_flows":[]}},"source":{{"index":{{"location":"https://plugins.example/v1","version":"1.2.0"}}}},"by":"human","reason":"plugin.installed","signed":{{"operator":{{"operator":"{}","after":3,"after_hash":"{}","signature":"{}"}}}}}}"#,
+            hex(7),
+            approval.operator,
+            hex(4),
+            hyalos_types::hex::to_hex(approval.signature.as_bytes())
+        ),
+        Event::PluginInstalled {
+            name: hyalos_types::PluginName::new("lint").ok_or("name")?,
+            digest: d(7),
+            grant: hyalos_types::Grant::none(),
+            source: hyalos_types::PluginSource::Index {
+                location: hyalos_types::IndexLocation::new("https://plugins.example/v1")
+                    .ok_or("location")?,
+                version: hyalos_types::PluginVersion::new("1.2.0").ok_or("version")?,
+            },
+            by: Resolution::Human,
+            reason: ReasonCode::new("plugin.installed").ok_or("reason")?,
+            signed: Signed::Operator(approval),
+        },
+    ));
     Ok(all)
 }
 
