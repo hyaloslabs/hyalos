@@ -1,6 +1,6 @@
 # ADR-0083: A fix-issue pull request closes its issue
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
