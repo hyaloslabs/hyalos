@@ -13,7 +13,7 @@ You are setting up Hyalos for the person you work for, the **operator**. The goa
 
 Hyalos has two principals ([ADR-0010](../../docs/adr/0010-mcp-primary-interface-two-principals.md)): you, the driving agent, and the operator. These keep that split true while you set it up:
 
-- **Never read, print, copy or ask for a secret.** That covers the operator's passphrase, a provider API key, and the files `provider.keys`, `github-app.pem`, `operator.key` and `engine.key`. If the operator pastes one to you, tell them to revoke or rotate it.
+- **Never read, print, copy or ask for a secret.** That covers the operator's passphrase, a provider API key, the one-time code the setup page shows, and the files `provider.keys`, `github-app.pem`, `operator.key` and `engine.key`. If the operator pastes one to you, tell them to revoke or rotate it. A pasted setup-page code means deleting that App (`github.com/settings/apps`) and running `hyalos setup github-app` again, since whoever exchanges the code first holds the App's key.
 - **Never write or summarise a document the operator signs.** They read it and sign it themselves, so what they sign is what they read.
 - **Never run a decision.** That means `hyalos approve`, `cancel`, `release`, `merge`, `policy approve`, `agent issue`, `agent revoke` and `run --release-issue`. The operator runs them in **a terminal of their own**, not through you and not with a `!` command here, because what they type and what the command prints would land in this conversation.
 - **Never run `hyalos setup` with a subcommand** (`walk`, `operator-key`, `provider-key`, `github-app`, `policy`, `agent`). They ask for secrets and make decisions. Yours are `hyalos setup`, `hyalos setup --json` and `hyalos setup --next`, which only read.

@@ -23,6 +23,10 @@ use crate::github::{Access, permissions_for};
 /// The setup page, which posts the manifest and shows the code GitHub sends back.
 pub const SETUP_PAGE: &str = "https://hyaloslabs.github.io/hyalos/setup/";
 
+/// The App's homepage, and the address of its webhook, which is never active. A webhook anywhere
+/// else is refused, so no one else learns where the App is installed.
+pub const HOMEPAGE: &str = "https://hyaloslabs.github.io/hyalos/";
+
 /// The API the code is exchanged with. The manifest flow is GitHub.com's; an App on GitHub
 /// Enterprise Server is set up by hand.
 pub const GITHUB_API: &str = "https://api.github.com";
@@ -53,6 +57,20 @@ pub struct Created {
     pub owner: String,
     /// The App's private key, PEM.
     pub pem: Zeroizing<Vec<u8>>,
+}
+
+impl Created {
+    /// What to tell the operator when something fails after GitHub made the App: which App, and to
+    /// delete it, since its key is not kept.
+    pub fn made(&self, why: &str) -> String {
+        format!(
+            "GitHub made the App {} (App ID {}) for {}, but {why}, so nothing was kept. Delete it ({}), then run this again",
+            self.slug,
+            self.id,
+            self.owner,
+            settings_page(&self.owner, &self.slug)
+        )
+    }
 }
 
 impl fmt::Debug for Created {
@@ -108,12 +126,15 @@ pub fn convert(api: &str, code: &str, owner: &str) -> Result<Created, String> {
         )
         .map_err(|e| format!("GitHub could not be reached ({})", e.0))?;
     let status = response.status;
-    let mut raw = Zeroizing::new(Vec::new());
-    response
-        .body
-        .take(RESPONSE_LIMIT + 1)
-        .read_to_end(&mut raw)
-        .map_err(|_| "GitHub's answer could not be read".to_string())?;
+    // Sized once, so the buffer holding the key never moves and leaves a copy behind.
+    let mut raw = Zeroizing::new(Vec::with_capacity(RESPONSE_LIMIT as usize + 1));
+    // Once GitHub has taken the code, the App may exist, and its key is lost with this answer.
+    let maybe = |why: &str| {
+        format!(
+            "{why}. GitHub may have made the App: if so, delete it (github.com/settings/apps, or the organization's), then run this again"
+        )
+    };
+    let read = response.body.take(RESPONSE_LIMIT + 1).read_to_end(&mut raw);
     match status {
         201 => {}
         404 | 422 => {
@@ -125,12 +146,20 @@ pub fn convert(api: &str, code: &str, owner: &str) -> Result<Created, String> {
         }
         other => return Err(format!("GitHub answered {other} to the code")),
     }
+    if read.is_err() {
+        return Err(maybe("GitHub's answer could not be read"));
+    }
     if raw.len() as u64 > RESPONSE_LIMIT {
-        return Err("GitHub's answer was too large".into());
+        return Err(maybe("GitHub's answer was too large"));
     }
     let answer: Conversion = serde_json::from_slice(&raw)
-        .map_err(|_| "GitHub's answer was not the App it documents".to_string())?;
+        .map_err(|_| maybe("GitHub's answer was not the App it documents"))?;
     let pem = Zeroizing::new(answer.pem.into_bytes());
+    let named =
+        |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    if !named(&answer.slug) || !named(&answer.owner.login) {
+        return Err(maybe("GitHub's answer named the App or its owner oddly"));
+    }
     let delete = |why: &str| {
         format!(
             "{why}, so nothing was written. Delete that App ({}), then run this again",

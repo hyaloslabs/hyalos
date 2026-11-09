@@ -313,12 +313,20 @@ fn the_setup_page_s_code_gives_the_app_checked_and_shows_no_secret() -> Res {
     for (code, owner, why) in [
         ("widecode1", "op", "other permissions"),
         ("elsecode1", "op", "for someone, not op"),
+        ("hookcode1", "op", "its webhook goes somewhere else"),
         ("usedcode1", "op", "did not take the code"),
         ("not a code", "op", "not the code"),
     ] {
         let (done, script) = run(&["", owner, code]);
         let error = done.err().ok_or(code)?;
         assert!(error.contains(why), "{code}: {error}");
+        // Once GitHub made the App, the operator is told which, and to delete it.
+        if code.ends_with("code1") && code != "usedcode1" {
+            assert!(
+                error.contains("hyalos-op") && error.contains("elete"),
+                "{code}: {error}"
+            );
+        }
         assert!(
             !error.contains(code) && !script.shown.contains(code),
             "{code}"
@@ -364,7 +372,7 @@ fn the_setup_page_s_code_gives_the_app_checked_and_shows_no_secret() -> Res {
         .into_iter()
         .filter(|s| s.path.starts_with("/app-manifests/"))
         .collect();
-    assert_eq!(sent.len(), 4, "{sent:?}");
+    assert_eq!(sent.len(), 5, "{sent:?}");
     assert!(
         sent.iter()
             .all(|s| s.method == "POST" && s.authorization.is_empty())
@@ -546,5 +554,43 @@ fn the_setup_page_asks_github_for_exactly_what_setup_accepts() -> Res {
     assert_eq!(manifest["hook_attributes"]["active"], false);
     assert_eq!(manifest["public"], false);
     assert_eq!(manifest["redirect_url"], hyalos::app_manifest::SETUP_PAGE);
+    assert_eq!(manifest["url"], hyalos::app_manifest::HOMEPAGE);
+    assert_eq!(
+        manifest["hook_attributes"]["url"],
+        hyalos::app_manifest::HOMEPAGE
+    );
+    Ok(())
+}
+
+#[test]
+fn another_api_s_app_is_made_by_hand_and_api_github_com_is_not_another() -> Res {
+    // The manifest flow is GitHub.com's (ADR-0084): a github.app naming GitHub Enterprise Server's
+    // API never offers the setup page, and one naming api.github.com still does.
+    let m = Machine::new("ghes")?;
+    std::fs::create_dir_all(&m.config)?;
+    std::fs::set_permissions(&m.config, std::fs::Permissions::from_mode(0o700))?;
+    let settings = m.config.join("github.app");
+    let env = m.env();
+    std::fs::write(
+        &settings,
+        "api = https://ghe.example.com/api/v3\ngit = https://ghe.example.com\n",
+    )?;
+    // No to "created the App already?", then the user name for the steps, then no App ID.
+    let mut script = Script::new(&["", "op", ""]);
+    let _ = Setup::new(&env, &mut script).github_app(None);
+    assert!(!script.shown.contains("setup page"), "{}", script.shown);
+    assert!(script.shown.contains("Have you created the App already?"));
+
+    std::fs::write(&settings, "api = https://api.github.com/\n")?;
+    let mut script = Script::new(&["n", "", "op", ""]);
+    let _ = Setup::new(&env, &mut script).github_app(None);
+    assert!(
+        script
+            .shown
+            .contains("Create the App from Hyalos's setup page"),
+        "{}",
+        script.shown
+    );
+    std::fs::remove_dir_all(&m.root).ok();
     Ok(())
 }

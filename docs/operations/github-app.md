@@ -11,7 +11,12 @@ How to give Hyalos access to a repository. Hyalos never uses a personal access t
 3. `hyalos` exchanges the code with GitHub for the App's id and private key, and writes `github.app` and `github-app.pem` owner-only. The key goes from GitHub straight to your terminal's process, never through the page or the driving agent.
 4. Install it from the link it prints, `github.com/apps/<name>/installations/new`, on the repository the jobs will work on (step 4 below), then press Enter.
 
-The page is a static file that holds no secret ([`site/setup`](../../site/setup)). It is not trusted: before writing anything, `hyalos` checks that the App belongs to the account you named and has exactly the permissions of step 1 and no events. If not, it writes nothing and tells you to delete that App. A code GitHub does not take (used, or over an hour old) is refused the same way.
+The page is a static file that holds no secret ([`site/setup`](../../site/setup)). It is not trusted. Before writing anything, `hyalos` checks the App:
+- it belongs to the account you named;
+- it has exactly the permissions of step 1, and no events;
+- its webhook is absent or at Hyalos's site.
+
+If not, it writes nothing and tells you to delete that App. On GitHub's page, also check that the App is not public and asks for no OAuth on install, which `hyalos` does not check. A code GitHub does not take (used, or over an hour old) is refused the same way.
 
 The setup page is for github.com. For GitHub Enterprise Server, or to set the App up yourself, answer no to `Create the App from Hyalos's setup page` and follow the steps below. `hyalos setup github-app` then asks for the App ID and finds the `.pem` wherever it was saved, and writes the files of steps 2 and 3 for you ([ADR-0080](../adr/0080-setup-asks-the-operator-in-their-own-terminal.md)).
 

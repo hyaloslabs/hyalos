@@ -265,7 +265,12 @@ impl<'a> Setup<'a> {
             }
             _ => {
                 // The manifest flow is GitHub.com's: an App on another API is made by hand.
-                let elsewhere = current.lines().any(|l| l.trim_start().starts_with("api"));
+                let elsewhere = current.lines().any(|l| {
+                    l.split_once('=').is_some_and(|(n, v)| {
+                        n.trim() == "api"
+                            && v.trim().trim_end_matches('/') != app_manifest::GITHUB_API
+                    })
+                });
                 if pem.is_none()
                     && !elsewhere
                     && self.yes(
@@ -344,6 +349,9 @@ impl<'a> Setup<'a> {
         {
             return Err("a GitHub account is letters, digits and '-'; nothing was written".into());
         }
+        // Checked before GitHub makes the App, so its key always has somewhere to go.
+        private_dir(config)?;
+        writable(config)?;
         self.ask
             .say("In a browser, on this computer or any other, signed in to GitHub:");
         self.ask.link(
@@ -358,16 +366,34 @@ impl<'a> Setup<'a> {
             .say("  3. the page then shows a code: paste it here. It works once, within an hour");
         let code = self.ask.secret("code (not shown): ")?;
         let created = app_manifest::convert(&self.github_api, code.trim(), &owner)?;
+        let made = |why: String| created.made(&why);
         let settings = with_app_id(current, created.id);
         let settings_path = config.join(GITHUB_APP_FILE);
-        let parsed = AppSettings::parse(&settings)
-            .map_err(|e| format!("{}: {e}; nothing was written", settings_path.display()))?;
-        GitHubApp::new(&parsed, &created.pem)
-            .map_err(|e| format!("GitHub's key for the App: {e}; nothing was written"))?;
-        private_dir(config)?;
-        write_private(&config.join(GITHUB_KEY_FILE), &created.pem)?;
-        write_private(&settings_path, settings.as_bytes())?;
-        GitHubApp::load(config).map_err(|e| e.to_string())?;
+        let parsed = AppSettings::parse(&settings).map_err(|e| made(format!("github.app: {e}")))?;
+        // The webhook is what the conversion does not say: it must be the manifest's, never active
+        // anywhere else (ADR-0084). Asked with the new key, at the API the code was exchanged with.
+        let probe = AppSettings {
+            app_id: created.id,
+            api: self.github_api.trim_end_matches('/').to_string(),
+            git: parsed.git.clone(),
+        };
+        let app = GitHubApp::new(&probe, &created.pem)
+            .map_err(|e| made(format!("its key could not be read ({e})")))?;
+        let now = Clock::now(&SystemClock);
+        match app.hook_url(now) {
+            Ok(None) => {}
+            Ok(Some(url))
+                if url.trim_end_matches('/') == app_manifest::HOMEPAGE.trim_end_matches('/') => {}
+            Ok(Some(_)) => return Err(made("its webhook goes somewhere else".into())),
+            Err(e) => return Err(made(format!("its webhook could not be read ({e})"))),
+        }
+        write_private(&config.join(GITHUB_KEY_FILE), &created.pem)
+            .map_err(|e| made(format!("github-app.pem could not be written ({e})")))?;
+        if let Err(e) = write_private(&settings_path, settings.as_bytes()) {
+            let _ = fs::remove_file(config.join(GITHUB_KEY_FILE));
+            return Err(made(format!("github.app could not be written ({e})")));
+        }
+        GitHubApp::load(config).map_err(|e| made(e.to_string()))?;
         self.ask.say(&format!(
             "GitHub created the App {} (App ID {}) for {}, and its key is in github-app.pem.",
             created.slug, created.id, created.owner
@@ -698,6 +724,24 @@ fn private_dir(config: &Path) -> Result<(), String> {
 }
 
 /// `bytes` at `path`, owner-only, through a new file renamed over it, so no reader sees half a file.
+/// Whether `dir` takes a new owner-only file, tried with one that is removed at once.
+fn writable(dir: &Path) -> Result<(), String> {
+    let probe = dir.join(".setup-write-check");
+    let _ = fs::remove_file(&probe);
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&probe)
+        .map_err(|e| {
+            format!(
+                "cannot write in {}: {e}; nothing was written",
+                dir.display()
+            )
+        })?;
+    fs::remove_file(&probe).map_err(|e| format!("cannot remove {}: {e}", probe.display()))
+}
+
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let name = path
         .file_name()

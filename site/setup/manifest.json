@@ -1,9 +1,9 @@
 {
   "name": "hyalos",
-  "url": "https://github.com/hyaloslabs/hyalos",
+  "url": "https://hyaloslabs.github.io/hyalos/",
   "description": "Runs coding agents in sandboxes that hold no secrets, for the operator who installs it.",
   "hook_attributes": {
-    "url": "https://github.com/hyaloslabs/hyalos",
+    "url": "https://hyaloslabs.github.io/hyalos/",
     "active": false
   },
   "redirect_url": "https://hyaloslabs.github.io/hyalos/setup/",

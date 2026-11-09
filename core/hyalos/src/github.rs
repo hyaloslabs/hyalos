@@ -440,6 +440,25 @@ impl GitHubApp {
         }
     }
 
+    /// Where GitHub delivers this App's webhook, `None` when it has none (ADR-0084). Any other
+    /// answer than the config or a 404 is a refusal.
+    pub fn hook_url(&self, now: Timestamp) -> Result<Option<String>, MintError> {
+        let jwt = self.jwt(now)?;
+        let (status, body) = self.call("GET", "/app/hook/config", &jwt, None)?;
+        match status {
+            200 => Ok(body
+                .get("url")
+                .and_then(Value::as_str)
+                .filter(|u| !u.is_empty())
+                .map(str::to_string)),
+            404 => Ok(None),
+            status => Err(MintError::Refused {
+                step: "read the App's webhook",
+                status,
+            }),
+        }
+    }
+
     /// One API call, with `bearer` as its credential. Returns the status and the JSON body (`null`
     /// when there is none).
     fn call(
