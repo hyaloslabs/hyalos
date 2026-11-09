@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action https://github.com; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Hyalos setup</title>
+<link rel="stylesheet" href="style.css">
+<script src="setup.js" defer></script>
+</head>
+<body>
+<main>
+<h1>Create your Hyalos GitHub App</h1>
+
+<section id="start">
+<p>Hyalos works on GitHub as an App of your own. This page asks GitHub to create it with what Hyalos needs and nothing more:</p>
+<ul>
+<li>Contents, Issues and Pull requests: read and write</li>
+<li>Metadata: read (every App has it)</li>
+<li>No webhook, no events, private to your account</li>
+</ul>
+<p>GitHub shows you all of it before anything is created. The page holds no secret and sends nothing anywhere but GitHub. The App's key goes from GitHub straight to <code>hyalos setup</code> in your terminal.</p>
+<form id="create">
+<label for="owner">GitHub account to own the App: the one you gave <code>hyalos setup</code></label>
+<input id="owner" name="owner" autocomplete="username" required maxlength="39" pattern="[A-Za-z0-9\-]{1,39}" spellcheck="false">
+<label class="check"><input type="checkbox" id="org"> It is an organization</label>
+<label for="name">App name (must be unique on GitHub; you can change it on the next page)</label>
+<input id="name" name="name" maxlength="34" spellcheck="false" placeholder="hyalos-your-account">
+<button type="submit">Continue to GitHub</button>
+<p id="problem" role="alert" hidden></p>
+</form>
+</section>
+
+<section id="done" hidden>
+<p>GitHub created the App. Paste this code into the terminal where <code>hyalos setup</code> is waiting:</p>
+<p class="code"><code id="code"></code> <button type="button" id="copy">Copy</button></p>
+<p>It works once, within an hour. Then close this page.</p>
+</section>
+
+<p class="small">Hyalos runs coding agents in sandboxes that hold no secrets. This page is static: it keeps nothing, and posts only to GitHub.</p>
+</main>
+</body>
+</html>

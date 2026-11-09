@@ -3,6 +3,7 @@
 //! channel without going through the command line.
 
 pub mod agent_cmd;
+pub mod app_manifest;
 pub mod broker_cmd;
 pub mod channel;
 pub mod clock;

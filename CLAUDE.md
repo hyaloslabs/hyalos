@@ -70,8 +70,9 @@ These are pinned by tests. A change to one bumps its version (except where noted
 | `core/engine` | State, holds, cancels, compaction and audit, the policy store, minting, handles, agents, several writers | 0013, 0024, 0025, 0026, 0027, 0028, 0029, 0031, 0034, 0047, 0055, 0063, 0066, 0068, 0069, 0070, 0071, 0083 |
 | `core/broker` | Channel, model relay and TLS, egress, git proxy, forge, content gates, readers, handles, results, merge | 0035, 0037, 0038, 0039, 0042, 0046, 0047, 0048, 0051, 0054, 0055, 0061, 0063, 0064, 0065, 0071, 0079, 0083 |
 | `core/substrate` | Containers, gVisor, Firecracker, choosing one, attestation | 0032, 0041, 0043, 0056, 0057, 0058 |
-| `core/hyalos` | The binary: keys, log commands, the broker process and channel, doctor, GitHub App, `hyalos run`, the fix-issue workflow, MCP server, operator commands and merge, thin CLI, setup | 0018, 0021, 0022, 0026–0028, 0030, 0035, 0038, 0043, 0044, 0045, 0050, 0052, 0053, 0058, 0062, 0063, 0067–0075, 0078, 0080, 0081, 0082, 0083 |
+| `core/hyalos` | The binary: keys, log commands, the broker process and channel, doctor, GitHub App, `hyalos run`, the fix-issue workflow, MCP server, operator commands and merge, thin CLI, setup | 0018, 0021, 0022, 0026–0028, 0030, 0035, 0038, 0043, 0044, 0045, 0050, 0052, 0053, 0058, 0062, 0063, 0067–0075, 0078, 0080, 0081, 0082, 0083, 0084 |
 | `.github/workflows/release.yml` | A release: the static binary, the image by digest, provenance | 0081 |
+| `site/setup`, `.github/workflows/pages.yml` | The setup page that creates the GitHub App from a manifest | 0084 |
 | `crates/xtask` | `layout` and `lines` | 0017 |
 | `crates/sim`, `crates/world` | Deterministic simulation and the simulated world | 0013, 0036 |
 | `crates/substrate-contract`, `crates/vm-init` | The contract every substrate passes; the microVM's init | 0032, 0041, 0056, 0058 |

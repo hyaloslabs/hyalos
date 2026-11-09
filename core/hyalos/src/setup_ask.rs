@@ -21,6 +21,7 @@ use hyalos_types::{AgentId, AgentName, Clock, ReasonCode};
 use zeroize::Zeroizing;
 
 use crate::agent_cmd::{credential_digest, fresh_credential};
+use crate::app_manifest;
 use crate::clock::SystemClock;
 use crate::github::{AppSettings, GITHUB_APP_FILE, GITHUB_KEY_FILE, GitHubApp};
 use crate::keys::{self, OsSeed};
@@ -88,6 +89,8 @@ pub struct Setup<'a> {
     pub claude: String,
     /// The command the registered server runs: this binary, so the operator's PATH does not matter.
     pub hyalos: String,
+    /// Where the setup page's code is exchanged for the App (ADR-0084).
+    pub github_api: String,
     engine: Option<Engine>,
 }
 
@@ -102,6 +105,7 @@ impl<'a> Setup<'a> {
             ask,
             claude: "claude".to_string(),
             hyalos,
+            github_api: app_manifest::GITHUB_API.to_string(),
             engine: None,
         }
     }
@@ -231,8 +235,8 @@ impl<'a> Setup<'a> {
         Ok(format!("wrote {name} to {}, owner-only", path.display()))
     }
 
-    /// The GitHub App: what to do in a browser, its id, and its private key from wherever it was
-    /// saved, including the config directory itself (#274).
+    /// The GitHub App: created from the setup page (ADR-0084), or one made by hand, with its id and
+    /// its private key from wherever it was saved, including the config directory itself (#274).
     pub fn github_app(&mut self, pem: Option<PathBuf>) -> Result<String, String> {
         let config = paths::config_dir(self.env)?;
         let settings_path = config.join(GITHUB_APP_FILE);
@@ -260,6 +264,22 @@ impl<'a> Setup<'a> {
                 settings.app_id
             }
             _ => {
+                // The manifest flow is GitHub.com's: an App on another API is made by hand.
+                let elsewhere = current.lines().any(|l| {
+                    l.split_once('=').is_some_and(|(n, v)| {
+                        n.trim() == "api"
+                            && v.trim().trim_end_matches('/') != app_manifest::GITHUB_API
+                    })
+                });
+                if pem.is_none()
+                    && !elsewhere
+                    && self.yes(
+                        "Create the App from Hyalos's setup page, which fills everything in?",
+                        true,
+                    )?
+                {
+                    return self.app_from_setup_page(&config, &current);
+                }
                 if !self.yes("Have you created the App already?", false)? {
                     self.browser_steps()?;
                 }
@@ -308,6 +328,86 @@ impl<'a> Setup<'a> {
         };
         Ok(format!(
             "wrote github.app and github-app.pem ({from}). Check the App can reach your repository: hyalos github check <owner/repo>"
+        ))
+    }
+
+    /// The App created from the setup page: GitHub hands back a one-time code, the operator types it
+    /// here, and its exchange gives the App's id and key, checked before anything is written.
+    fn app_from_setup_page(&mut self, config: &Path, current: &str) -> Result<String, String> {
+        self.ask
+            .say("Hyalos works on GitHub as an App of your own, installed on the repositories");
+        self.ask
+            .say("its jobs work on. The setup page asks GitHub to create it with the permissions");
+        self.ask
+            .say("Hyalos needs: Contents, Issues and Pull requests, read and write; no webhook.");
+        let owner = self
+            .ask
+            .answer("GitHub account to own it, your user name or an organization's: ")?;
+        if owner.is_empty()
+            || owner.len() > 39
+            || !owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
+            return Err("a GitHub account is letters, digits and '-'; nothing was written".into());
+        }
+        // Checked before GitHub makes the App, so its key always has somewhere to go.
+        private_dir(config)?;
+        writable(config)?;
+        self.ask
+            .say("In a browser, on this computer or any other, signed in to GitHub:");
+        self.ask.link(
+            "  1. open ",
+            "hyaloslabs.github.io/hyalos/setup",
+            app_manifest::SETUP_PAGE,
+        );
+        self.ask.say(&format!(
+            "  2. enter {owner}, then press Create GitHub App on GitHub's page"
+        ));
+        self.ask
+            .say("  3. the page then shows a code: paste it here. It works once, within an hour");
+        let code = self.ask.secret("code (not shown): ")?;
+        let created = app_manifest::convert(&self.github_api, code.trim(), &owner)?;
+        let made = |why: String| created.made(&why);
+        let settings = with_app_id(current, created.id);
+        let settings_path = config.join(GITHUB_APP_FILE);
+        let parsed = AppSettings::parse(&settings).map_err(|e| made(format!("github.app: {e}")))?;
+        // The webhook is what the conversion does not say: it must be the manifest's, never active
+        // anywhere else (ADR-0084). Asked with the new key, at the API the code was exchanged with.
+        let probe = AppSettings {
+            app_id: created.id,
+            api: self.github_api.trim_end_matches('/').to_string(),
+            git: parsed.git.clone(),
+        };
+        let app = GitHubApp::new(&probe, &created.pem)
+            .map_err(|e| made(format!("its key could not be read ({e})")))?;
+        let now = Clock::now(&SystemClock);
+        match app.hook_url(now) {
+            Ok(None) => {}
+            Ok(Some(url))
+                if url.trim_end_matches('/') == app_manifest::HOMEPAGE.trim_end_matches('/') => {}
+            Ok(Some(_)) => return Err(made("its webhook goes somewhere else".into())),
+            Err(e) => return Err(made(format!("its webhook could not be read ({e})"))),
+        }
+        write_private(&config.join(GITHUB_KEY_FILE), &created.pem)
+            .map_err(|e| made(format!("github-app.pem could not be written ({e})")))?;
+        if let Err(e) = write_private(&settings_path, settings.as_bytes()) {
+            let _ = fs::remove_file(config.join(GITHUB_KEY_FILE));
+            return Err(made(format!("github.app could not be written ({e})")));
+        }
+        GitHubApp::load(config).map_err(|e| made(e.to_string()))?;
+        self.ask.say(&format!(
+            "GitHub created the App {} (App ID {}) for {}, and its key is in github-app.pem.",
+            created.slug, created.id, created.owner
+        ));
+        let install = app_manifest::install_page(&created.slug);
+        self.ask.link(
+            "  4. install it on the repository the jobs will work on: ",
+            install.trim_start_matches("https://"),
+            &install,
+        );
+        self.ask.answer("Press Enter once it is installed: ")?;
+        Ok(format!(
+            "wrote github.app and github-app.pem for the App {}. Check it reaches your repository: hyalos github check <owner/repo>",
+            created.slug
         ))
     }
 
@@ -624,6 +724,24 @@ fn private_dir(config: &Path) -> Result<(), String> {
 }
 
 /// `bytes` at `path`, owner-only, through a new file renamed over it, so no reader sees half a file.
+/// Whether `dir` takes a new owner-only file, tried with one that is removed at once.
+fn writable(dir: &Path) -> Result<(), String> {
+    let probe = dir.join(".setup-write-check");
+    let _ = fs::remove_file(&probe);
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&probe)
+        .map_err(|e| {
+            format!(
+                "cannot write in {}: {e}; nothing was written",
+                dir.display()
+            )
+        })?;
+    fs::remove_file(&probe).map_err(|e| format!("cannot remove {}: {e}", probe.display()))
+}
+
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let name = path
         .file_name()

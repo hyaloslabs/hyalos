@@ -1,6 +1,6 @@
 # ADR-0080: Setup asks the operator in their own terminal
 
-**Status:** Accepted. Supersedes [ADR-0077](0077-handing-the-operator-one-step-at-a-time.md).
+**Status:** Accepted. Supersedes [ADR-0077](0077-handing-the-operator-one-step-at-a-time.md). Its account of `github-app` is superseded by [ADR-0084](0084-setup-creates-the-github-app-from-a-manifest.md), for an App not set up yet.
 
 ## Context
 

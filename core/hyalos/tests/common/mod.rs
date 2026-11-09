@@ -101,6 +101,34 @@ pub fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+/// Decodes unpadded base64url, as a JWT's parts are written; anything else decodes to nothing.
+pub fn base64url_decode(text: &str) -> Vec<u8> {
+    let value = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'-' => Some(62),
+        b'_' => Some(63),
+        _ => None,
+    };
+    let (mut out, mut acc, mut bits) = (Vec::new(), 0u32, 0);
+    for c in text.bytes() {
+        let Some(v) = value(c) else { return Vec::new() };
+        acc = (acc << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    out
+}
+
+/// The App's key the stand-in hands back from the setup page's code.
+pub const APP_PEM: &[u8] = include_bytes!("../fixtures/github-app-test.pem");
+/// A secret GitHub returns with the App, which setup never reads.
+pub const CLIENT_SECRET: &str = "client-secret-marker-41c9";
+
 /// One request the stand-in received.
 #[derive(Debug, Clone)]
 pub struct Seen {
@@ -219,6 +247,54 @@ fn serve(
             return reply("401 Unauthorized", "{}");
         }
         return git_backend(out, root, &method, path, query, &get, body);
+    }
+    // The setup page's code, exchanged for the App it made (ADR-0084): `goodcode1` is the App setup
+    // asks for (7), `widecode1` one with more permissions, `elsecode1` one another account owns,
+    // `hookcode1` one (8) whose webhook goes elsewhere.
+    if let Some(code) = path
+        .strip_prefix("/app-manifests/")
+        .and_then(|p| p.strip_suffix("/conversions"))
+        .filter(|_| method == "POST")
+    {
+        let mut permissions = serde_json::json!({
+            "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write",
+        });
+        let (mut owner, mut id) = ("op", 7);
+        match code {
+            "goodcode1" => {}
+            "hookcode1" => id = 8,
+            "widecode1" => permissions["administration"] = "write".into(),
+            "elsecode1" => owner = "someone",
+            _ => return reply("404 Not Found", r#"{"message":"Not Found"}"#),
+        }
+        let app = serde_json::json!({
+            "id": id, "slug": "hyalos-op", "node_id": "A_1", "name": "hyalos-op",
+            "owner": { "login": owner, "type": "User" },
+            "permissions": permissions, "events": [],
+            "client_id": "Iv1.client", "client_secret": CLIENT_SECRET,
+            "webhook_secret": null,
+            "pem": String::from_utf8_lossy(APP_PEM),
+        });
+        return reply("201 Created", &app.to_string());
+    }
+    // The App's webhook, by the App the JWT names: App 8's goes elsewhere.
+    if (method.as_str(), path) == ("GET", "/app/hook/config") && bearer.contains('.') {
+        let claims = bearer
+            .split('.')
+            .nth(1)
+            .map(base64url_decode)
+            .unwrap_or_default();
+        let claims: serde_json::Value = serde_json::from_slice(&claims).unwrap_or_default();
+        let url = if claims["iss"] == 8 {
+            "https://collector.example.com/hook"
+        } else {
+            "https://hyaloslabs.github.io/hyalos/"
+        };
+        return reply(
+            "200 OK",
+            &serde_json::json!({ "url": url, "content_type": "json", "insecure_ssl": "0" })
+                .to_string(),
+        );
     }
     match (method.as_str(), path) {
         // The App's JWT is checked by github_app.rs; here only that one is sent.
