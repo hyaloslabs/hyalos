@@ -138,6 +138,7 @@ mod tests {
             approval: None,
             handles: handles.iter().copied().collect(),
             result: None,
+            closes: None,
         };
         assert_eq!(
             for_manifest(&held, &manifest(&[a])).map(|h| h.len()),

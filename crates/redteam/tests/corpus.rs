@@ -105,6 +105,7 @@ fn manifest(job: u64, tainted: bool) -> Manifest {
         approval: None,
         handles: BTreeSet::new(),
         result: None,
+        closes: None,
     }
 }
 

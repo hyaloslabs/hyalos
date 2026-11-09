@@ -322,6 +322,7 @@ fn attempt(
         }),
         handles: Default::default(),
         result: None,
+        closes: None,
     };
     let key = fresh_manifest_key()
         .map_err(|e| Failure::new(why::NO_MANIFEST, format!("no manifest key: {e}")))?;

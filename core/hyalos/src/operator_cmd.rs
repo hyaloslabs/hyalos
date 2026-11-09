@@ -237,6 +237,7 @@ fn issue_digest(
         approval: None,
         handles: Default::default(),
         result: None,
+        closes: None,
     };
     let forge = hyalos_broker::forge::Forge::with_base(&app.forge_bases().api);
     let read = forge.read_issue(&manifest, Some(&minted.token), held.issue);

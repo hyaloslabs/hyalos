@@ -491,6 +491,7 @@ pub fn job_spec(port: u16, seq: u64, spec: Spec<'_>) -> Res<Job> {
         approval: None,
         handles: Default::default(),
         result,
+        closes: None,
     };
     let answer = broker.handle(
         ToBroker::StartJob {

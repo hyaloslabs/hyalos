@@ -6,6 +6,10 @@
 //! action, from a branch inside the manifest's branch prefix, into the manifest's `pr_base`, and only
 //! once its title and body have passed the content gate. A refusal is a 403 to the harness and the
 //! manifest or content gate's `deny` to the engine, carrying a SHA-256 of what was refused.
+//!
+//! If the manifest names an issue the job fixes, the broker puts a line saying the pull request
+//! closes it before the harness's text, once that text has passed the gate (ADR-0083). The number is
+//! the run's own, not the harness's, so the merge closes the issue whatever the harness wrote.
 
 use std::io::{BufRead, Cursor, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -137,6 +141,16 @@ pub(crate) fn answer<R: BufRead, W: Write>(
             return deny(gates.content, code, &format!("{}\n{text}", pull.title));
         }
     }
+    let pull = match manifest.closes {
+        Some(issue) => PullRequest {
+            body: Some(closing(text, issue)),
+            ..pull
+        },
+        None => pull,
+    };
+    if pull.body.as_deref().unwrap_or_default().chars().count() > MAX_BODY {
+        return refused(422, "forge.bad_request");
+    }
     if ended.load(Ordering::SeqCst) {
         return refused(403, "admission.ended");
     }
@@ -154,9 +168,38 @@ pub(crate) fn answer<R: BufRead, W: Write>(
     }
 }
 
+/// `body` led by a line saying it closes `issue` (ADR-0083). The line comes first, so nothing the
+/// harness wrote after it, such as a code block or a comment it never closes, can hide it from
+/// GitHub. What the harness wrote follows as it is, byte for byte. A body that also says it closes the
+/// issue gets the line all the same: a second closing line is harmless, a missing one is not.
+pub fn closing(body: &str, issue: u64) -> String {
+    let line = format!("Closes #{issue}");
+    if body.is_empty() {
+        line
+    } else {
+        format!("{line}\n\n{body}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_closing_line_leads_and_the_text_follows_as_it_is() {
+        assert_eq!(closing("", 24), "Closes #24");
+        for body in [
+            "Clarifies the README.\n",
+            "  \n",
+            "Fixes #24",
+            // Text that would swallow a line after it: an unclosed code block or comment.
+            "Rewords it.\n\n```\nnever closed",
+            "Rewords it. <!-- never closed",
+            "`fixes #24` in code",
+        ] {
+            assert_eq!(closing(body, 24), format!("Closes #24\n\n{body}"), "{body}");
+        }
+    }
 
     #[test]
     fn only_a_post_to_a_repositorys_pulls_is_served() {

@@ -132,6 +132,8 @@ fn a_job_pushes_its_branch_opens_a_pull_request_and_records_its_gates() -> Res {
     assert_eq!(pull["head"], branch.as_str());
     assert_eq!(pull["base"], "main");
     assert_eq!(pull["title"], "Add a CHANGES file");
+    // A run with no issue number closes nothing: the body is the harness's alone.
+    assert_eq!(pull["body"], "Closes the issue.");
     let token = pulls[0]
         .authorization
         .strip_prefix("Bearer ")
@@ -245,6 +247,7 @@ fn an_issue_number_runs_the_fix_issue_workflow_and_only_the_reader_sees_the_issu
         return Err("harness".into());
     };
     command.push("mode:submit".into());
+    command.push("pr:open".into());
     command.push(r#"result:{"outcome":"pr_opened","tests_added":true}"#.into());
     let mut asked = request(Harness::Command(command));
     asked.issue = String::new();
@@ -316,6 +319,15 @@ fn an_issue_number_runs_the_fix_issue_workflow_and_only_the_reader_sees_the_issu
 
     // One GraphQL read, with the reader's own token; two tokens minted (reader, actor), none live.
     let seen = gh.seen();
+    // The pull request closes the run's issue, in a line the broker put before the harness's text
+    // (ADR-0083).
+    let pulls: Vec<_> = seen
+        .iter()
+        .filter(|s| s.method == "POST" && s.path == "/repos/octo/repo/pulls")
+        .collect();
+    assert_eq!(pulls.len(), 1, "{seen:?}");
+    let pull: serde_json::Value = serde_json::from_slice(&pulls[0].body)?;
+    assert_eq!(pull["body"], "Closes #7\n\nRewords the README.");
     let reads: Vec<_> = seen.iter().filter(|s| s.path == "/graphql").collect();
     assert_eq!(reads.len(), 1, "{seen:?}");
     assert!(reads[0].authorization.starts_with("bearer ghs_"));
@@ -1179,6 +1191,21 @@ fn harness_entry() -> Res {
         let prompt = std::env::args().next_back().unwrap_or_default();
         std::fs::write(out.join("prompt"), &prompt)?;
         println!("{CHAT}");
+        // With `pr:open`, it opens a pull request from its branch first, whose body names no issue.
+        if arg("pr:").is_some_and(|m| m == Path::new("open")) {
+            let pull = serde_json::json!({
+                "title": "Clarify the README", "body": "Rewords the README.", "head": branch, "base": "main",
+            })
+            .to_string();
+            let (status, body) = call(
+                port,
+                "POST /forge/repos/octo/repo/pulls HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/json\r\n",
+                pull.as_bytes(),
+            )?;
+            if !status.contains(" 201 ") {
+                return Err(format!("the pull request was not opened: {status} {body}").into());
+            }
+        }
         let result = std::env::args().find_map(|a| a.strip_prefix("result:").map(String::from));
         return match result {
             Some(result) => {

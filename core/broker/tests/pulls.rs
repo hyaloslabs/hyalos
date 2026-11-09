@@ -68,6 +68,7 @@ fn manifest(job: u64, actions: &[&str], pr_base: Option<&str>) -> Manifest {
         approval: None,
         handles: Default::default(),
         result: None,
+        closes: None,
     }
 }
 
@@ -548,5 +549,39 @@ fn what_github_answers_is_mapped_and_never_relayed() -> Res {
             !answer.to_string().contains("already exists") && !answer.to_string().contains("stack")
         );
     }
+    Ok(())
+}
+
+#[test]
+fn a_job_that_fixes_an_issue_opens_a_pull_request_that_closes_it() -> Res {
+    // ADR-0083: the manifest's issue, not the harness's text, decides what the merge closes.
+    let api = Api::start()?;
+    let mut fixes = manifest(10, &["open_pr"], Some("main"));
+    fixes.closes = Some(24);
+    let job = start(&api, &fixes, Some(TOKEN))?;
+    let (status, answer) = job.open(&pull(
+        "Clarify the README",
+        "Rewords the comparison.",
+        "hyalos/fix-12",
+        "main",
+    ))?;
+    assert_eq!(status, 201, "{answer}");
+    let seen = api.seen();
+    assert_eq!(
+        seen[0].body["body"],
+        "Closes #24\n\nRewords the comparison."
+    );
+    assert!(job.denials().is_empty());
+    // A tainted job's text stays under the content gate's limit, so the line always fits. An
+    // untainted job's body at GitHub's limit has no room for it: refused, and nothing reaches GitHub.
+    let mut untainted = manifest(11, &["open_pr"], Some("main"));
+    untainted.tainted = false;
+    untainted.closes = Some(24);
+    let job = start(&api, &untainted, Some(TOKEN))?;
+    let full = "a".repeat(hyalos_broker::pulls::MAX_BODY);
+    let (status, _) = job.open(&pull("Clarify", &full, "hyalos/fix-12", "main"))?;
+    assert_eq!(status, 422);
+    assert_eq!(api.seen().len(), 1);
+    assert!(job.denials().is_empty());
     Ok(())
 }

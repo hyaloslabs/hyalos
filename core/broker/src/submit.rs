@@ -134,6 +134,7 @@ mod tests {
                 ]
                 .into()
             }),
+            closes: None,
         }
     }
 

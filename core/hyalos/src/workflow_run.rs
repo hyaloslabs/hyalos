@@ -655,6 +655,7 @@ mod tests {
             approval: None,
             handles: BTreeSet::new(),
             result: None,
+            closes: None,
         };
         let bounded = inputs.bound(&manifest);
         assert_eq!(bounded.actions, ["push", "read"].map(String::from).into());

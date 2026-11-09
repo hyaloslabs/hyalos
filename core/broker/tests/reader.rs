@@ -165,6 +165,7 @@ fn manifest(job: u64, role: Role) -> Manifest {
         approval: None,
         handles: Default::default(),
         result: None,
+        closes: None,
     }
 }
 

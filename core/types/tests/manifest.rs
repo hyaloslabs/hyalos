@@ -39,6 +39,7 @@ fn manifest() -> Manifest {
         }),
         handles: Default::default(),
         result: None,
+        closes: None,
     }
 }
 
@@ -139,6 +140,19 @@ fn a_result_is_signed_when_present_and_absent_otherwise() -> Res {
         payload.ends_with(r#""result":{"outcome":{"choice":["done","blocked"]},"tested":"bool"}}"#),
         "{payload}"
     );
+    assert_eq!(signed.open(&key().public())?, with);
+    Ok(())
+}
+
+#[test]
+fn the_issue_it_closes_is_signed_when_present_and_absent_otherwise() -> Res {
+    // Absent, it is left out, so a manifest without one signs as it did before ADR-0083.
+    assert!(!PINNED_PAYLOAD.contains("closes"));
+    let mut with = manifest();
+    with.closes = Some(24);
+    let signed = key().sign(&with)?;
+    let payload = String::from_utf8(signed.payload().to_vec())?;
+    assert!(payload.ends_with(r#","closes":24}"#), "{payload}");
     assert_eq!(signed.open(&key().public())?, with);
     Ok(())
 }

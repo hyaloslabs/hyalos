@@ -83,6 +83,7 @@ mod tests {
             approval: None,
             handles: BTreeSet::new(),
             result: None,
+            closes: None,
         }
     }
 
