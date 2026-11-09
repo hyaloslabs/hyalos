@@ -8,7 +8,7 @@ image="${1:-}"
 builder="rust:1.99.1-slim-bookworm@sha256:ed2c95ca377d6571b124b05e75e01207973ded639dce7d5542eb7bcd797e32aa"
 target="x86_64-unknown-linux-musl"
 
-# Static, with musl, so it runs on any x86_64 Linux. The C parts (ring, SQLite) need musl-gcc.
+# Static, with musl, so it runs on any x86_64 Linux. The C parts (ring, SQLite, aws-lc) need musl-gcc.
 # In the Containerfile's own builder, so the binary and the sandbox tools build alike.
 docker run --rm -v "$PWD:/src" -w /src -e HYALOS_RELEASE_IMAGE="$image" -e TARGET="$target" "$builder" bash -c '
   set -euo pipefail

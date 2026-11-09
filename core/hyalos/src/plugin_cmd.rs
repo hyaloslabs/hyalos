@@ -6,6 +6,9 @@
 //! operator's signed decision. A skill that asks for a capability its name does not hold installs
 //! only with `--grant`, after the operator has read the diff. `diff` reads capabilities documents and
 //! writes nothing.
+//!
+//! An install or update from an index verifies the release's Sigstore bundle first (S7.12, ADR-0093),
+//! against the trust this build pins: nothing from an index is read without it.
 
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -14,6 +17,7 @@ use std::process::ExitCode;
 
 use hyalos_engine::Decider;
 use hyalos_plugin::index::{INDEX_FILE, Index, MAX_INDEX};
+use hyalos_plugin::sigstore::{MAX_BUNDLE, Trust};
 use hyalos_plugin::skill::{MAX_ARCHIVE, Skill, Store, digest_of};
 use hyalos_types::capability::Field;
 use hyalos_types::{
@@ -51,8 +55,9 @@ const USAGE: &str = "usage: hyalos plugin install <dir> [--grant] [--reason <cod
   With --index, it finds <name> in the plugin index at <location> (an https:// URL whose index.json
   and archives are beside each other, as a release's assets, or a directory holding the same files,
   as an offline bundle), takes its latest version or --version, and installs it only if its archive
-  has the digest the index gives (ADR-0090). If your install policy trusts that index and the skill
-  asks for nothing beyond its ceiling, it installs without your passphrase (ADR-0091)
+  has the digest the index gives (ADR-0090) and its Sigstore bundle shows the Hyalos marketplace
+  pipeline signed it, verified offline (ADR-0093). If your install policy trusts that index and the
+  skill asks for nothing beyond its ceiling, it installs without your passphrase (ADR-0091)
   policy set is your decision, signed with your approval key: a plugin from one of the indexes,
   asking for no more than the capabilities document <file>, then installs without you. Anything else
   stays your decision each time. The ages (default 90 and 30 days) bound how old a trusted root and a
@@ -103,11 +108,29 @@ pub fn run_with(args: &[String]) -> Result<String, (u8, String)> {
     Ok(render(&installed.diff(&new)))
 }
 
-/// `install` and `list`, which read the log and the store. Exit 1 if refused, 2 for usage.
+/// `install` and `list`, which read the log and the store. Exit 1 if refused, 2 for usage. A release
+/// from an index is verified against the trust this build pins.
 pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
+    let trust = Trust::pinned().map_err(|e| (1, format!("{e} ({})", e.code())))?;
+    manage_with(args, env, &trust, None)
+}
+
+/// As [`manage`], verifying releases against `trust`, and with the operator's passphrase given
+/// rather than read where the arguments say. The binary always calls [`manage`]; this is for tests,
+/// which sign releases with a Sigstore of their own.
+pub fn manage_with(
+    args: &[String],
+    env: Env<'_>,
+    trust: &Trust,
+    passphrase: Option<&str>,
+) -> Result<String, (u8, String)> {
     let (args, source_of_passphrase) = passphrase::source(args);
     let usage = |why: &str| (2, format!("{why}\n{USAGE}"));
     let failed = |e: String| (1, e);
+    let unlock = || match passphrase {
+        Some(passphrase) => operator::engine_with(env, passphrase),
+        None => operator::engine(env, source_of_passphrase),
+    };
     let log = EngineLog {
         log: paths::log_file(env).map_err(failed)?,
         public_key: paths::engine_public_key(env).map_err(failed)?,
@@ -158,7 +181,7 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
                     let name = PluginName::new(target).ok_or_else(|| {
                         usage("with --index, install takes a plugin's name: lowercase letters, digits and hyphens")
                     })?;
-                    from_index(location, &name, version.as_ref()).map_err(failed)?
+                    from_index(location, &name, version.as_ref(), trust).map_err(failed)?
                 }
             };
             // Everything that can be checked without the passphrase is checked first.
@@ -195,10 +218,7 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
             let (mut engine, decider) = if by_policy {
                 (policy_cmd::open(env).map_err(failed)?, Decider::Policy)
             } else {
-                (
-                    operator::engine(env, source_of_passphrase).map_err(failed)?,
-                    Decider::Human,
-                )
+                (unlock().map_err(failed)?, Decider::Human)
             };
             let store = paths::plugin_store(env).map_err(failed)?;
             paths::make_private_dir(&store).map_err(failed)?;
@@ -308,7 +328,7 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
                 render(&old.diff(&new.ceiling)),
                 describe(&new)
             );
-            let mut engine = operator::engine(env, source_of_passphrase).map_err(failed)?;
+            let mut engine = unlock().map_err(failed)?;
             let head = engine
                 .set_install_policy(SystemClock.now(), new, Decider::Human, reason)
                 .map_err(|e| failed(e.to_string()))?;
@@ -379,12 +399,12 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
                 _ => return Err(usage("update takes only --every <hours>")),
             };
             let Some(hours) = every else {
-                let (out, clean) = check_updates(env, &log);
+                let (out, clean) = check_updates(env, &log, trust);
                 return if clean { Ok(out) } else { Err((1, out)) };
             };
             // On a schedule: a failed check is reported and the next one still runs.
             loop {
-                let (out, _) = check_updates(env, &log);
+                let (out, _) = check_updates(env, &log, trust);
                 print!("{out}");
                 std::thread::sleep(std::time::Duration::from_secs(hours * 3600));
             }
@@ -400,7 +420,7 @@ const MAX_EVERY_HOURS: u64 = 168;
 /// newer version the install policy covers is installed by policy. One beyond it is recorded as
 /// waiting for the operator, once, and the installed version keeps running. Returns what it did,
 /// one line a plugin, and whether every check went through.
-fn check_updates(env: Env<'_>, log: &EngineLog) -> (String, bool) {
+fn check_updates(env: Env<'_>, log: &EngineLog, trust: &Trust) -> (String, bool) {
     if !log.log.exists() {
         return ("no skill is installed\n".into(), true);
     }
@@ -424,7 +444,7 @@ fn check_updates(env: Env<'_>, log: &EngineLog) -> (String, bool) {
     }
     let (mut out, mut clean) = (String::new(), true);
     for (name, digest, location) in installed {
-        match update_one(env, &mut engine, &name, digest, location) {
+        match update_one(env, &mut engine, &name, digest, location, trust) {
             Ok(line) => out.push_str(&format!("{name}: {line}\n")),
             Err(e) => {
                 clean = false;
@@ -441,8 +461,9 @@ fn update_one(
     name: &PluginName,
     installed: Digest,
     location: IndexLocation,
+    trust: &Trust,
 ) -> Result<String, String> {
-    let (skill, source) = from_index(location.clone(), name, None)?;
+    let (skill, source) = from_index(location.clone(), name, None, trust)?;
     let PluginSource::Index { version, .. } = &source else {
         return Err("not from an index".into());
     };
@@ -512,13 +533,14 @@ fn location(text: &str) -> Option<IndexLocation> {
     IndexLocation::new(dir.to_str()?)
 }
 
-/// Resolves `name` in the index at `location`, fetches its archive and checks it has the digest the
-/// index gave before reading it (ADR-0090). The index's Sigstore bundle is not verified yet (S7.12),
-/// so the install is the operator's alone, as a local one is.
+/// Resolves `name` in the index at `location`, fetches its archive, and reads it only once it has
+/// the digest the index gave (ADR-0090) and its Sigstore bundle verifies against `trust` (ADR-0093).
+/// A release with no bundle, or one that does not verify, is refused.
 fn from_index(
     location: IndexLocation,
     name: &PluginName,
     version: Option<&PluginVersion>,
+    trust: &Trust,
 ) -> Result<(Skill, PluginSource), String> {
     let at = location.as_str();
     let index = plugin_source::fetch(&location, INDEX_FILE, MAX_INDEX)?;
@@ -533,6 +555,15 @@ fn from_index(
             entry.artifact
         ));
     }
+    let bundle = plugin_source::fetch(&location, &entry.bundle, MAX_BUNDLE)?;
+    trust.verify(&archive, &bundle).map_err(|e| {
+        format!(
+            "{}: {e}, so {} was not read ({})",
+            entry.bundle,
+            entry.artifact,
+            e.code()
+        )
+    })?;
     let skill = Skill::from_archive(&archive)
         .map_err(|e| format!("{}: {e} ({})", entry.artifact, e.code()))?;
     if skill.name != *name {

@@ -14,6 +14,7 @@
 //! only the `hyalos` crate depends on it.
 
 pub mod index;
+pub mod sigstore;
 pub mod skill;
 
 use std::collections::BTreeSet;

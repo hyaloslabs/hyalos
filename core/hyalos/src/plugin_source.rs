@@ -1,7 +1,7 @@
 //! Fetching from a plugin index (ADR-0090): `index.json` and the files beside it, from a directory
 //! (an offline bundle) or over HTTPS (a release's assets). What is fetched is untrusted: it is read
-//! within a size limit, an archive is used only once its SHA-256 is the digest the index gave, and an
-//! error names the file asked for, never what came back.
+//! within a size limit, an archive is used only once its SHA-256 is the digest the index gave and its
+//! Sigstore bundle verifies (ADR-0093), and an error names the file asked for, never what came back.
 
 use std::io::Read;
 use std::path::Path;
