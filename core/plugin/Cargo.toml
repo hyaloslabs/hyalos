@@ -16,4 +16,4 @@ wasmtime = { version = "=50.0.1", default-features = false, features = ["runtime
 hyalos-types = { path = "../types" }
 
 [dev-dependencies]
-wat = "1"
+wat = "=1.261.0"

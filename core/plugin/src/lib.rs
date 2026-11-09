@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 
 use hyalos_types::{Grant, PluginText, ReasonCode};
 use wasmtime::component::{Component, Linker, TypedFunc};
-use wasmtime::{Config, Engine, Store, StoreContextMut, StoreLimits, StoreLimitsBuilder, Trap};
+use wasmtime::{Config, Engine, ResourceLimiter, Store, StoreContextMut, Trap};
 
 /// The host imports, one interface per capability a plugin can call (ADR-0087). Versioned with the
 /// capability vocabulary (ADR-0085).
@@ -35,8 +35,21 @@ pub mod interface {
 /// The fuel one instantiation or one call may burn before it is stopped: about a second of work.
 pub const FUEL: u64 = 2_000_000_000;
 
-/// The most linear memory an instance may hold.
+/// The most linear memory a plugin may hold, across all its memories.
 pub const MEMORY: usize = 64 << 20;
+
+/// The most core instances, memories and tables a plugin may create.
+pub const INSTANCES: usize = 16;
+
+/// The most elements any one table may hold.
+pub const TABLE_ELEMENTS: usize = 10_000;
+
+/// The most bytes the broker reads from a plugin's memory for one host call: its arguments.
+pub const ARGUMENTS: usize = 1 << 20;
+
+/// The most host calls one instantiation or one run may make. Past it, a call is refused without
+/// asking the host.
+pub const CALLS: u32 = 256;
 
 /// The reason codes a plugin's run ends with or a call is refused with.
 pub mod codes {
@@ -87,6 +100,12 @@ pub mod codes {
     pub fn not_granted() -> ReasonCode {
         code("capability.not_granted")
     }
+
+    /// The plugin made more than [`CALLS`](crate::CALLS) host calls in one run. The host is not
+    /// called.
+    pub fn too_many_calls() -> ReasonCode {
+        code("plugin.too_many_calls")
+    }
 }
 
 /// What the broker does for a plugin's granted calls. Each argument is plugin-authored, and each
@@ -108,7 +127,59 @@ pub struct Plugin(Component);
 struct State<H> {
     grant: Grant,
     host: H,
-    limits: StoreLimits,
+    limits: Limits,
+    calls: u32,
+}
+
+/// One memory budget for the whole plugin, however many memories it makes, and small counts of
+/// everything else. A grow past a limit traps.
+#[derive(Default)]
+struct Limits {
+    memory: usize,
+}
+
+impl ResourceLimiter for Limits {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        match desired
+            .checked_sub(current)
+            .and_then(|more| self.memory.checked_add(more))
+        {
+            Some(total) if total <= MEMORY => {
+                self.memory = total;
+                Ok(true)
+            }
+            _ => Err(wasmtime::Error::msg("memory")),
+        }
+    }
+
+    fn table_growing(
+        &mut self,
+        _: usize,
+        desired: usize,
+        _: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        match desired <= TABLE_ELEMENTS {
+            true => Ok(true),
+            false => Err(wasmtime::Error::msg("table")),
+        }
+    }
+
+    fn instances(&self) -> usize {
+        INSTANCES
+    }
+
+    fn tables(&self) -> usize {
+        INSTANCES
+    }
+
+    fn memories(&self) -> usize {
+        INSTANCES
+    }
 }
 
 /// A plugin instantiated with its grant, ready to run.
@@ -153,13 +224,12 @@ impl Runtime {
         let state = State {
             grant: grant.clone(),
             host,
-            limits: StoreLimitsBuilder::new()
-                .memory_size(MEMORY)
-                .trap_on_grow_failure(true)
-                .build(),
+            limits: Limits::default(),
+            calls: 0,
         };
         let mut store = Store::new(&self.engine, state);
         store.limiter(|s| &mut s.limits);
+        store.set_hostcall_fuel(ARGUMENTS);
         store.set_fuel(FUEL).map_err(|_| codes::runtime())?;
         let pre = linker
             .instantiate_pre(&plugin.0)
@@ -181,6 +251,7 @@ impl<H: Host> Running<H> {
     /// plugin-authored text bounded by its grant.
     pub fn run(&mut self, input: &str) -> Result<Result<PluginText, PluginText>, ReasonCode> {
         self.store.set_fuel(FUEL).map_err(|_| codes::runtime())?;
+        self.store.data_mut().calls = 0;
         let (answer,) = self
             .run
             .call(&mut self.store, (input.to_string(),))
@@ -194,6 +265,23 @@ impl<H: Host> Running<H> {
     /// The host, for the broker to read what its calls did.
     pub fn host(&self) -> &H {
         &self.store.data().host
+    }
+}
+
+impl<H> State<H> {
+    /// Counts a host call and checks its name against the grant's field. The host is asked only
+    /// when this is `Ok`.
+    fn admit(
+        &mut self,
+        field: fn(&Grant) -> &BTreeSet<String>,
+        name: &str,
+    ) -> Result<(), ReasonCode> {
+        self.calls = self.calls.saturating_add(1);
+        match (self.calls <= CALLS, field(&self.grant).contains(name)) {
+            (false, _) => Err(codes::too_many_calls()),
+            (true, false) => Err(codes::not_granted()),
+            (true, true) => Ok(()),
+        }
     }
 }
 
@@ -221,9 +309,9 @@ fn link<H: Host>(
             "get",
             |mut cx: StoreContextMut<'_, State<H>>, (host, path): (String, String)| {
                 let s = cx.data_mut();
-                answer(match s.grant.egress_hosts.contains(&host) {
-                    true => s.host.egress_get(&host, &path),
-                    false => Err(codes::not_granted()),
+                answer(match s.admit(|g| &g.egress_hosts, &host) {
+                    Ok(()) => s.host.egress_get(&host, &path),
+                    Err(refused) => Err(refused),
                 })
             },
         )?;
@@ -234,9 +322,9 @@ fn link<H: Host>(
             "call",
             |mut cx: StoreContextMut<'_, State<H>>, (name, input): (String, String)| {
                 let s = cx.data_mut();
-                answer(match s.grant.tools.contains(&name) {
-                    true => s.host.tool_call(&name, &input),
-                    false => Err(codes::not_granted()),
+                answer(match s.admit(|g| &g.tools, &name) {
+                    Ok(()) => s.host.tool_call(&name, &input),
+                    Err(refused) => Err(refused),
                 })
             },
         )?;
@@ -247,9 +335,9 @@ fn link<H: Host>(
             "act",
             |mut cx: StoreContextMut<'_, State<H>>, (action, input): (String, String)| {
                 let s = cx.data_mut();
-                answer(match s.grant.actions.contains(&action) {
-                    true => s.host.forge_act(&action, &input),
-                    false => Err(codes::not_granted()),
+                answer(match s.admit(|g| &g.actions, &action) {
+                    Ok(()) => s.host.forge_act(&action, &input),
+                    Err(refused) => Err(refused),
                 })
             },
         )?;
