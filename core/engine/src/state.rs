@@ -1173,7 +1173,7 @@ impl State {
                         at,
                         digest: *digest,
                         grant: grant.clone(),
-                        source: *source,
+                        source: source.clone(),
                         by: *by,
                         reason: reason.clone(),
                     },
@@ -1280,7 +1280,7 @@ impl State {
                         name: name.clone(),
                         digest: *digest,
                         grant: grant.clone(),
-                        source: *source,
+                        source: source.clone(),
                         by: *by,
                         reason: reason.clone(),
                     }

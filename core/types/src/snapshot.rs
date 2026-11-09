@@ -28,8 +28,10 @@ use crate::{
 /// (ADR-0069). An earlier job ended for an unrecorded reason and returned none. Version 8 added the
 /// last decision the operator signed and the first event at the signed schema version (ADR-0070).
 /// Version 9 added the merges approved (ADR-0071); earlier images have none. Version 10 added the
-/// plugins installed (ADR-0089); earlier images have none.
-pub const STATE_VERSION: u32 = 10;
+/// plugins installed (ADR-0089); earlier images have none. Version 11 added a plugin index as where
+/// an installed plugin came from (ADR-0090); an earlier image holds only local installs, which read as
+/// they were.
+pub const STATE_VERSION: u32 = 11;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -338,8 +340,10 @@ impl StateImage {
         if version < 9 {
             object.insert("merges".into(), Value::Array(Vec::new()));
         }
-        // 9 -> 10: no plugin had been installed.
-        object.insert("plugins".into(), Value::Array(Vec::new()));
+        // 9 -> 10: no plugin had been installed. 10 -> 11 changes nothing stored.
+        if version < 10 {
+            object.insert("plugins".into(), Value::Array(Vec::new()));
+        }
         // 6 -> 7: no job's reason was kept, and no job had returned values.
         if version >= 7 {
             return serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()));

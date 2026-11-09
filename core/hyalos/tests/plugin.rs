@@ -9,7 +9,12 @@ use std::time::Duration;
 use hyalos::run_cmd::{Harness, Request, run_job};
 use hyalos_substrate::{Substrate, choose};
 use hyalos_substrate_contract::LocalProcessSubstrate;
-use hyalos_types::{Event, JobOutcome, PluginName, PluginSource, Resolution, Signed};
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
+
+use hyalos_types::{
+    Event, IndexLocation, JobOutcome, PluginName, PluginSource, PluginVersion, Resolution, Signed,
+};
 
 mod common;
 
@@ -80,7 +85,7 @@ fn a_skill_asking_for_capabilities_installs_only_with_the_operators_grant() -> R
     };
     assert_eq!(name, &PluginName::new("pdf-tools").ok_or("name")?);
     assert_eq!(grant.egress_hosts, ["docs.rs".to_string()].into());
-    assert_eq!((*source, *by), (PluginSource::Local, Resolution::Human));
+    assert_eq!((source, *by), (&PluginSource::Local, Resolution::Human));
     assert!(matches!(signed, Signed::Operator(_)));
     let listed = ok_cli(world.cli(&["plugin", "list"])?)?;
     assert!(
@@ -240,4 +245,229 @@ fn last_ended(world: &World) -> Res<String> {
             _ => None,
         })
         .ok_or("no job ended")?)
+}
+
+/// Packs the skill in `dir` into `out/<file>` and returns its digest, as the pack command prints it.
+fn pack(world: &World, dir: &Path, out: &Path, file: &str) -> Res<String> {
+    let said = ok_cli(world.cli(&[
+        "plugin",
+        "pack",
+        &dir.to_string_lossy(),
+        &out.join(file).to_string_lossy(),
+    ])?)?;
+    Ok(said
+        .trim_end()
+        .rsplit_once("digest ")
+        .ok_or("no digest")?
+        .1
+        .to_string())
+}
+
+fn index(entries: &[(&str, &str, &str)]) -> String {
+    let versions: Vec<String> = entries
+        .iter()
+        .map(|(version, digest, artifact)| {
+            format!(
+                r#"{{"version":"{version}","digest":"{digest}","artifact":"{artifact}","bundle":"{artifact}.sigstore.json"}}"#
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"version":1,"plugins":{{"pdf-tools":[{}]}}}}"#,
+        versions.join(",")
+    )
+}
+
+#[test]
+fn a_skill_installs_by_name_from_a_directory_index_only_with_its_digest() -> Res {
+    let world = World::new("plugin-index-dir", None)?;
+    let src = skill(
+        &world.root,
+        Some(r#"{"version":1,"egress_hosts":["docs.rs"]}"#),
+    )?;
+    let bundle = world.root.join("bundle");
+    std::fs::create_dir(&bundle)?;
+    let old = pack(&world, &src, &bundle, "pdf-1.0.0.skill")?;
+    skill(&world.root, None)?;
+    let new = pack(&world, &src, &bundle, "pdf-1.1.0.skill")?;
+    assert_ne!(old, new);
+    std::fs::write(
+        bundle.join("index.json"),
+        index(&[
+            ("1.0.0", &old, "pdf-1.0.0.skill"),
+            ("1.1.0", &new, "pdf-1.1.0.skill"),
+        ]),
+    )?;
+    let at = bundle.to_string_lossy().into_owned();
+
+    // The latest, which asks for nothing, needs no --grant.
+    let out = ok_cli(world.signed(&["plugin", "install", "--index", &at, "pdf-tools"])?)?;
+    assert!(
+        out.contains(&format!("digest {new}, version 1.1.0 from {at}")),
+        "{out}"
+    );
+    // An older version that asks for more needs it, as a local install does.
+    let refused = world.signed(&[
+        "plugin",
+        "install",
+        "pdf-tools",
+        "--index",
+        &at,
+        "--version",
+        "1.0.0",
+    ])?;
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("+ docs.rs"));
+    ok_cli(world.signed(&[
+        "plugin",
+        "install",
+        "pdf-tools",
+        "--index",
+        &at,
+        "--version",
+        "1.0.0",
+        "--grant",
+    ])?)?;
+    let recorded = installs(&world)?;
+    let sources: Vec<PluginSource> = recorded
+        .iter()
+        .filter_map(|e| match e {
+            Event::PluginInstalled { source, .. } => Some(source.clone()),
+            _ => None,
+        })
+        .collect();
+    let from = |v: &str| -> Res<PluginSource> {
+        Ok(PluginSource::Index {
+            location: IndexLocation::new(&at).ok_or("location")?,
+            version: PluginVersion::new(v).ok_or("version")?,
+        })
+    };
+    assert_eq!(sources, vec![from("1.1.0")?, from("1.0.0")?]);
+    let listed = ok_cli(world.cli(&["plugin", "list"])?)?;
+    assert!(listed.contains("version 1.0.0 from"), "{listed}");
+
+    // An archive that is not what the index says is never read, whatever it holds.
+    let mut archive = std::fs::read(bundle.join("pdf-1.1.0.skill"))?;
+    archive.push(b'x');
+    std::fs::write(bundle.join("pdf-1.1.0.skill"), &archive)?;
+    let out = world.signed(&["plugin", "install", "--index", &at, "pdf-tools"])?;
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("plugin.digest_mismatch"));
+    // A name the index does not hold, and an archive whose skill has another name.
+    let out = world.signed(&["plugin", "install", "--index", &at, "lint"])?;
+    assert!(String::from_utf8_lossy(&out.stderr).contains("index.no_such_plugin"));
+    std::fs::write(
+        bundle.join("index.json"),
+        index(&[("1.0.0", &old, "pdf-1.0.0.skill")]).replace("\"pdf-tools\"", "\"other\""),
+    )?;
+    let out = world.signed(&["plugin", "install", "--index", &at, "other"])?;
+    assert!(String::from_utf8_lossy(&out.stderr).contains("plugin.wrong_name"));
+    assert_eq!(installs(&world)?.len(), 2);
+    for args in [
+        &[
+            "plugin",
+            "install",
+            "--index",
+            "http://example.com",
+            "pdf-tools",
+        ][..],
+        &["plugin", "install", "--index", &at, "Bad_Name"],
+        &["plugin", "install", &at, "--version", "1"],
+        &["plugin", "install", "--index", &at],
+    ] {
+        assert_eq!(world.cli(args)?.status.code(), Some(2), "{args:?}");
+    }
+    Ok(())
+}
+
+/// Serves `files` on loopback: `/dl/<name>` redirects to `/store/<name>`, which answers the file.
+fn serve(files: Vec<(String, Vec<u8>)>) -> Res<String> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let base = format!("http://{}", listener.local_addr()?);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() {
+                continue;
+            }
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).map_or(true, |n| n == 0) || header == "\r\n" {
+                    break;
+                }
+            }
+            let path = line.split(' ').nth(1).unwrap_or("").to_string();
+            let mut stream = &stream;
+            let reply = if let Some(name) = path.strip_prefix("/dl/") {
+                format!(
+                    "HTTP/1.1 302 Found\r\nlocation: /store/{name}\r\ncontent-length: 0\r\n\r\n"
+                )
+                .into_bytes()
+            } else if let Some((_, bytes)) = path
+                .strip_prefix("/store/")
+                .and_then(|name| files.iter().find(|(n, _)| n == name))
+            {
+                let mut reply =
+                    format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", bytes.len())
+                        .into_bytes();
+                reply.extend_from_slice(bytes);
+                reply
+            } else {
+                b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n".to_vec()
+            };
+            let _ = stream.write_all(&reply);
+        }
+    });
+    Ok(base)
+}
+
+#[test]
+fn a_skill_installs_by_name_from_an_index_served_as_release_assets() -> Res {
+    let world = World::new("plugin-index-http", None)?;
+    let src = skill(&world.root, None)?;
+    let out = world.root.join("packed");
+    std::fs::create_dir(&out)?;
+    let digest = pack(&world, &src, &out, "pdf.skill")?;
+    let base = serve(vec![
+        (
+            "index.json".into(),
+            index(&[("2.0.0", &digest, "pdf.skill")]).into_bytes(),
+        ),
+        ("pdf.skill".into(), std::fs::read(out.join("pdf.skill"))?),
+    ])?;
+    let at = format!("{base}/dl");
+    let said = ok_cli(world.signed(&["plugin", "install", "--index", &at, "pdf-tools"])?)?;
+    assert!(
+        said.contains("version 2.0.0 from http://127.0.0.1"),
+        "{said}"
+    );
+    let recorded = installs(&world)?;
+    let [
+        Event::PluginInstalled {
+            source,
+            digest: got,
+            ..
+        },
+    ] = recorded.as_slice()
+    else {
+        return Err("one install".into());
+    };
+    assert_eq!(got.to_string(), digest);
+    assert!(matches!(source, PluginSource::Index { location, .. } if location.as_str() == at));
+    // A file the index names that is not there.
+    let missing = serve(vec![(
+        "index.json".into(),
+        index(&[("2.0.0", &digest, "gone.skill")]).into_bytes(),
+    )])?;
+    let out = world.signed(&[
+        "plugin",
+        "install",
+        "--index",
+        &format!("{missing}/dl"),
+        "pdf-tools",
+    ])?;
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("gone.skill: not found"));
+    Ok(())
 }

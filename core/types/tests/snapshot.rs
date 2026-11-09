@@ -1,7 +1,7 @@
 //! The state a snapshot carries, as each released version wrote it (ADR-0026).
 //!
 //! A snapshot sits in the log for good, signed, so a build must read every version it has ever written.
-//! These bytes are what versions 1 to 10 store. Never edit a row: when `STATE_VERSION` is bumped, add the new
+//! These bytes are what versions 1 to 11 store. Never edit a row: when `STATE_VERSION` is bumped, add the new
 //! version's row and the step that brings the old one up to it.
 
 use hyalos_types::snapshot::STATE_VERSION;
@@ -10,9 +10,9 @@ use hyalos_types::snapshot::{
     PluginImage, PolicyImage, PrunedImage, ResolvedImage, RevokedImage, StateImage, TaskImage,
 };
 use hyalos_types::{
-    AgentId, AgentName, CommitSha, Digest, Gate, Grant, HoldId, HoldReason, JobId, JobOutcome,
-    MergeMethod, PluginName, PluginSource, ReasonCode, Resolution, Sensitive, Stakes, TaskId,
-    TypedValue,
+    AgentId, AgentName, CommitSha, Digest, Gate, Grant, HoldId, HoldReason, IndexLocation, JobId,
+    JobOutcome, MergeMethod, PluginName, PluginSource, PluginVersion, ReasonCode, Resolution,
+    Sensitive, Stakes, TaskId, TypedValue,
 };
 
 fn d(byte: u8) -> Digest {
@@ -285,26 +285,49 @@ fn golden() -> Vec<(u32, String, StateImage)> {
         // Version 9 added the merges approved; the older versions read as having none.
         (9, PINNED_V9.to_string(), v9_image()),
         // Version 10 added the plugins installed; the older versions read as having none.
-        (10, PINNED_V10.to_string(), {
-            let mut image = v9_image();
+        (10, PINNED_V10.to_string(), v10_image()),
+        // Version 11 added an index as where a plugin came from; version 10 reads as it was.
+        (11, PINNED_V11.to_string(), {
+            let mut image = v10_image();
             image.plugins.push(PluginImage {
-                seq: 25,
-                at: 6_100,
-                name: PluginName::new("pdf-tools").unwrap_or_else(|| unreachable!()),
-                digest: d(12),
-                grant: Grant {
-                    actions: ["read".to_string()].into(),
-                    egress_hosts: ["docs.rs".to_string()].into(),
-                    data_flows: ["job->web".to_string()].into(),
-                    ..Grant::none()
+                seq: 26,
+                at: 6_200,
+                name: PluginName::new("lint").unwrap_or_else(|| unreachable!()),
+                digest: d(13),
+                grant: Grant::none(),
+                source: PluginSource::Index {
+                    location: IndexLocation::new("https://plugins.example/v1")
+                        .unwrap_or_else(|| unreachable!()),
+                    version: PluginVersion::new("1.2.0").unwrap_or_else(|| unreachable!()),
                 },
-                source: PluginSource::Local,
                 by: Resolution::Human,
                 reason: ReasonCode::unavailable(),
             });
             image
         }),
     ]
+}
+
+fn v10_image() -> StateImage {
+    {
+        let mut image = v9_image();
+        image.plugins.push(PluginImage {
+            seq: 25,
+            at: 6_100,
+            name: PluginName::new("pdf-tools").unwrap_or_else(|| unreachable!()),
+            digest: d(12),
+            grant: Grant {
+                actions: ["read".to_string()].into(),
+                egress_hosts: ["docs.rs".to_string()].into(),
+                data_flows: ["job->web".to_string()].into(),
+                ..Grant::none()
+            },
+            source: PluginSource::Local,
+            by: Resolution::Human,
+            reason: ReasonCode::unavailable(),
+        });
+        image
+    }
 }
 
 const PINNED_V1: &str = r#"{"last_seq":17,"last_at":4000,"tasks":[{"id":1,"created_at":1000,"request":"0101010101010101010101010101010101010101010101010101010101010101","completed_at":null,"open_holds":[5]},{"id":8,"created_at":2000,"request":"0303030303030303030303030303030303030303030303030303030303030303","completed_at":3000,"open_holds":[]}],"jobs":[{"id":2,"task":1,"started_at":1500,"ended":{"at":1800,"outcome":"held"}},{"id":7,"task":6,"started_at":2500,"ended":null}],"holds":[{"id":5,"task":1,"gate":"egress","inputs":"0202020202020202020202020202020202020202020202020202020202020202","reason":"unknown","stakes":{"tier":"irreversible","touches":["credentials"]},"opened_at":1800,"resolved":null},{"id":16,"task":12,"gate":"content","inputs":"0404040404040404040404040404040404040404040404040404040404040404","reason":"timed_out","stakes":{"tier":"routine","touches":[]},"opened_at":3500,"resolved":{"at":3900,"by":"policy","reason":"gate.unavailable"}}]}"#;
@@ -376,6 +399,8 @@ fn an_old_image_is_refused_if_it_is_damaged_not_just_old() {
 }
 
 const PINNED_V9: &str = r#"{"last_seq":17,"last_at":4000,"tasks":[{"id":1,"created_at":1000,"request":"0101010101010101010101010101010101010101010101010101010101010101","completed_at":null,"open_holds":[5],"cancelled":null},{"id":8,"created_at":2000,"request":"0303030303030303030303030303030303030303030303030303030303030303","completed_at":3000,"open_holds":[],"cancelled":null},{"id":20,"created_at":5000,"request":"0808080808080808080808080808080808080808080808080808080808080808","completed_at":null,"open_holds":[],"cancelled":{"at":5500,"by":"human","reason":"gate.unavailable"}}],"jobs":[{"id":2,"task":1,"started_at":1500,"ended":{"at":1800,"outcome":"held","reason":"gate.unavailable"},"values":null},{"id":7,"task":6,"started_at":2500,"ended":null,"values":[{"choice":1},{"integer":-2}]}],"holds":[{"id":5,"task":1,"gate":"egress","inputs":"0202020202020202020202020202020202020202020202020202020202020202","reason":"unknown","stakes":{"tier":"irreversible","touches":["credentials"]},"opened_at":1800,"resolved":null},{"id":16,"task":12,"gate":"content","inputs":"0404040404040404040404040404040404040404040404040404040404040404","reason":"timed_out","stakes":{"tier":"routine","touches":[]},"opened_at":3500,"resolved":{"at":3900,"by":"policy","reason":"gate.unavailable"}}],"pruned":[{"seq":10,"at":4100,"last_seq":3,"last_hash":"0505050505050505050505050505050505050505050505050505050505050505"},{"seq":18,"at":4800,"last_seq":9,"last_hash":"0606060606060606060606060606060606060606060606060606060606060606"}],"policy":{"seq":19,"at":5200,"by":"human","reason":"gate.unavailable","document":"permit (principal, action, resource);"},"handles":[{"seq":21,"at":5600,"task":1,"handle":"0909090909090909090909090909090909090909090909090909090909090909","by":"human","reason":"gate.unavailable"}],"agents":[{"id":22,"at":5700,"name":"claude-code","credential":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","by":"human","reason":"gate.unavailable","revoked":{"at":5900,"by":"human","reason":"gate.unavailable"}},{"id":23,"at":5800,"name":"hermes","credential":"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","by":"human","reason":"gate.unavailable","revoked":null}],"last_approval":21,"signed_since":19,"merges":[{"seq":24,"at":6000,"task":20,"repo":"octo/repo","pr":42,"head":"0123456789abcdef0123456789abcdef01234567","method":"squash","by":"human","reason":"gate.unavailable"}]}"#;
+
+const PINNED_V11: &str = r#"{"last_seq":17,"last_at":4000,"tasks":[{"id":1,"created_at":1000,"request":"0101010101010101010101010101010101010101010101010101010101010101","completed_at":null,"open_holds":[5],"cancelled":null},{"id":8,"created_at":2000,"request":"0303030303030303030303030303030303030303030303030303030303030303","completed_at":3000,"open_holds":[],"cancelled":null},{"id":20,"created_at":5000,"request":"0808080808080808080808080808080808080808080808080808080808080808","completed_at":null,"open_holds":[],"cancelled":{"at":5500,"by":"human","reason":"gate.unavailable"}}],"jobs":[{"id":2,"task":1,"started_at":1500,"ended":{"at":1800,"outcome":"held","reason":"gate.unavailable"},"values":null},{"id":7,"task":6,"started_at":2500,"ended":null,"values":[{"choice":1},{"integer":-2}]}],"holds":[{"id":5,"task":1,"gate":"egress","inputs":"0202020202020202020202020202020202020202020202020202020202020202","reason":"unknown","stakes":{"tier":"irreversible","touches":["credentials"]},"opened_at":1800,"resolved":null},{"id":16,"task":12,"gate":"content","inputs":"0404040404040404040404040404040404040404040404040404040404040404","reason":"timed_out","stakes":{"tier":"routine","touches":[]},"opened_at":3500,"resolved":{"at":3900,"by":"policy","reason":"gate.unavailable"}}],"pruned":[{"seq":10,"at":4100,"last_seq":3,"last_hash":"0505050505050505050505050505050505050505050505050505050505050505"},{"seq":18,"at":4800,"last_seq":9,"last_hash":"0606060606060606060606060606060606060606060606060606060606060606"}],"policy":{"seq":19,"at":5200,"by":"human","reason":"gate.unavailable","document":"permit (principal, action, resource);"},"handles":[{"seq":21,"at":5600,"task":1,"handle":"0909090909090909090909090909090909090909090909090909090909090909","by":"human","reason":"gate.unavailable"}],"agents":[{"id":22,"at":5700,"name":"claude-code","credential":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","by":"human","reason":"gate.unavailable","revoked":{"at":5900,"by":"human","reason":"gate.unavailable"}},{"id":23,"at":5800,"name":"hermes","credential":"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","by":"human","reason":"gate.unavailable","revoked":null}],"last_approval":21,"signed_since":19,"merges":[{"seq":24,"at":6000,"task":20,"repo":"octo/repo","pr":42,"head":"0123456789abcdef0123456789abcdef01234567","method":"squash","by":"human","reason":"gate.unavailable"}],"plugins":[{"seq":25,"at":6100,"name":"pdf-tools","digest":"0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c","grant":{"actions":["read"],"egress_hosts":["docs.rs"],"tools":[],"data_flows":["job->web"]},"source":"local","by":"human","reason":"gate.unavailable"},{"seq":26,"at":6200,"name":"lint","digest":"0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d","grant":{"actions":[],"egress_hosts":[],"tools":[],"data_flows":[]},"source":{"index":{"location":"https://plugins.example/v1","version":"1.2.0"}},"by":"human","reason":"gate.unavailable"}]}"#;
 
 const PINNED_V10: &str = r#"{"last_seq":17,"last_at":4000,"tasks":[{"id":1,"created_at":1000,"request":"0101010101010101010101010101010101010101010101010101010101010101","completed_at":null,"open_holds":[5],"cancelled":null},{"id":8,"created_at":2000,"request":"0303030303030303030303030303030303030303030303030303030303030303","completed_at":3000,"open_holds":[],"cancelled":null},{"id":20,"created_at":5000,"request":"0808080808080808080808080808080808080808080808080808080808080808","completed_at":null,"open_holds":[],"cancelled":{"at":5500,"by":"human","reason":"gate.unavailable"}}],"jobs":[{"id":2,"task":1,"started_at":1500,"ended":{"at":1800,"outcome":"held","reason":"gate.unavailable"},"values":null},{"id":7,"task":6,"started_at":2500,"ended":null,"values":[{"choice":1},{"integer":-2}]}],"holds":[{"id":5,"task":1,"gate":"egress","inputs":"0202020202020202020202020202020202020202020202020202020202020202","reason":"unknown","stakes":{"tier":"irreversible","touches":["credentials"]},"opened_at":1800,"resolved":null},{"id":16,"task":12,"gate":"content","inputs":"0404040404040404040404040404040404040404040404040404040404040404","reason":"timed_out","stakes":{"tier":"routine","touches":[]},"opened_at":3500,"resolved":{"at":3900,"by":"policy","reason":"gate.unavailable"}}],"pruned":[{"seq":10,"at":4100,"last_seq":3,"last_hash":"0505050505050505050505050505050505050505050505050505050505050505"},{"seq":18,"at":4800,"last_seq":9,"last_hash":"0606060606060606060606060606060606060606060606060606060606060606"}],"policy":{"seq":19,"at":5200,"by":"human","reason":"gate.unavailable","document":"permit (principal, action, resource);"},"handles":[{"seq":21,"at":5600,"task":1,"handle":"0909090909090909090909090909090909090909090909090909090909090909","by":"human","reason":"gate.unavailable"}],"agents":[{"id":22,"at":5700,"name":"claude-code","credential":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","by":"human","reason":"gate.unavailable","revoked":{"at":5900,"by":"human","reason":"gate.unavailable"}},{"id":23,"at":5800,"name":"hermes","credential":"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","by":"human","reason":"gate.unavailable","revoked":null}],"last_approval":21,"signed_since":19,"merges":[{"seq":24,"at":6000,"task":20,"repo":"octo/repo","pr":42,"head":"0123456789abcdef0123456789abcdef01234567","method":"squash","by":"human","reason":"gate.unavailable"}],"plugins":[{"seq":25,"at":6100,"name":"pdf-tools","digest":"0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c","grant":{"actions":["read"],"egress_hosts":["docs.rs"],"tools":[],"data_flows":["job->web"]},"source":"local","by":"human","reason":"gate.unavailable"}]}"#;
 

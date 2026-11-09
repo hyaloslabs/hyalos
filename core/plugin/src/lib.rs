@@ -13,6 +13,7 @@
 //! Layout rule (ADR-0086): this crate depends only on `hyalos-types` among the workspace crates, and
 //! only the `hyalos` crate depends on it.
 
+pub mod index;
 pub mod skill;
 
 use std::collections::BTreeSet;

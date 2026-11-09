@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 15;
+pub const SCHEMA_VERSION: u32 = 16;
 
 /// What this build reads: version 15, and versions 1 to 14 upcast to it (ADR-0023, ADR-0025, ADR-0027,
 /// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069,
@@ -35,7 +35,8 @@ pub const SCHEMA_VERSION: u32 = 15;
 /// changed no payload. Version 13 added `signed` to every decision (`hold.resolved`, `task.cancelled`,
 /// `policy.approved`, `handle.released`, `agent.issued`, `agent.revoked`): an older human decision
 /// reads as `unrecorded`, any other as `none`. Version 14 added `merge.approved` and changed no
-/// payload. Version 15 added `plugin.installed` and changed no payload.
+/// payload. Version 15 added `plugin.installed` and changed no payload. Version 16 added a plugin
+/// index as a `plugin.installed` source (ADR-0090); a payload written before reads as it was.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[

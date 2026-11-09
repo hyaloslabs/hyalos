@@ -25,6 +25,7 @@ pub mod operator_cmd;
 pub mod passphrase;
 pub mod paths;
 pub mod plugin_cmd;
+pub mod plugin_source;
 pub mod policy_cmd;
 pub mod run_cmd;
 pub mod runs;
