@@ -112,6 +112,7 @@ fn an_install_is_refused_for_a_bad_skill_or_without_the_passphrase() -> Res {
     let out = world.signed_with(&["plugin", "install", &path], "not the passphrase")?;
     assert_eq!(out.status.code(), Some(1));
     assert!(installs(&world)?.is_empty());
+    assert!(!world.data.join("plugins").exists(), "nothing kept");
     for args in [
         &["plugin"][..],
         &["plugin", "install"],

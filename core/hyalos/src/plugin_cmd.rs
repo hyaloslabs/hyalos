@@ -120,12 +120,13 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
                     "{out}it was not installed: read what it asks for above, and run again with --grant to grant it"
                 )));
             }
+            // Unlocked before anything is kept, so a wrong passphrase leaves nothing behind.
+            let mut engine = operator::engine(env, source).map_err(failed)?;
             let store = paths::plugin_store(env).map_err(failed)?;
             paths::make_private_dir(&store).map_err(failed)?;
             let digest = Store::new(store)
                 .put(&skill)
                 .map_err(|e| failed(format!("cannot keep the skill: {e}")))?;
-            let mut engine = operator::engine(env, source).map_err(failed)?;
             let head = engine
                 .install_plugin(
                     SystemClock.now(),
