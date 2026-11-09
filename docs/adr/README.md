@@ -100,3 +100,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0084](0084-setup-creates-the-github-app-from-a-manifest.md) | Setup creates the GitHub App from a manifest | Accepted |
 | [0085](0085-the-capability-vocabulary.md) | The capability vocabulary | Accepted |
 | [0086](0086-the-plugin-runtime-s-crate-and-line-budget.md) | The plugin runtime's crate and line budget | Accepted |
+| [0087](0087-plugins-run-in-the-broker-with-capabilities-as-host-imports.md) | Plugins run in the broker, with capabilities as host imports | Accepted |

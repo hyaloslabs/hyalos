@@ -56,6 +56,10 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # Line tables only: full debug info for every test binary, with Wasmtime's in the build (ADR-0087),
+    # fills the runner's disk, and the linker dies with a bus error. Backtraces still name lines.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -88,6 +92,9 @@ jobs:
         run: cargo xtask layout
       - name: Trusted-core size (ADR-0017)
         run: cargo xtask lines
+      - name: Disk left
+        if: ${{ always() }}
+        run: df -h / "$GITHUB_WORKSPACE"; du -sh target 2>/dev/null || true
 
   deny:
     name: dependency audit
