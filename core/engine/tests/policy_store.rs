@@ -512,6 +512,29 @@ fn a_manifest_the_engine_does_not_mint_is_refused_whatever_policy_says() -> Res 
             "{name:?}"
         );
     }
+    // A tool and an egress host are names the capability vocabulary accepts (ADR-0085).
+    for name in ["", "a b", "a/b"] {
+        let mut m = manifest(job);
+        m.tools.insert(name.into());
+        assert_eq!(
+            refusal(e.mint_manifest(&m, &StepInputs::default(), &key, at(20)))?,
+            MintRefusal::Invalid {
+                reason: mint_codes::unknown_tool()
+            },
+            "{name:?}"
+        );
+    }
+    for name in ["", "Docs.rs", "docs.rs:443", "*.example", "https://docs.rs"] {
+        let mut m = manifest(job);
+        m.egress_hosts.insert(name.into());
+        assert_eq!(
+            refusal(e.mint_manifest(&m, &StepInputs::default(), &key, at(20)))?,
+            MintRefusal::Invalid {
+                reason: mint_codes::unknown_host()
+            },
+            "{name:?}"
+        );
+    }
     // A result is one a step may return: well-named, well-formed fields, at least one (ADR-0064).
     use hyalos_types::workflow::{Field, IntegerRange};
     let bad_results = [
