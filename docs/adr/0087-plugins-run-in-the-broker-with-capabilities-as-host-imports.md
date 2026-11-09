@@ -1,6 +1,6 @@
 # ADR-0087: Plugins run in the broker, with capabilities as host imports
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
