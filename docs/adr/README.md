@@ -105,3 +105,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0089](0089-installing-an-agent-skill-and-running-it-in-the-job-s-sandbox.md) | Installing an Agent Skill and running it in the job's sandbox | Accepted |
 | [0090](0090-a-plugin-index-served-as-release-assets.md) | A plugin index served as release assets | Accepted |
 | [0091](0091-the-install-policy-a-capability-ceiling-the-operator-signs.md) | The install policy, a capability ceiling the operator signs | Accepted |
+| [0092](0092-update-checks-that-keep-the-old-version-running.md) | Update checks that keep the old version running | Proposed |

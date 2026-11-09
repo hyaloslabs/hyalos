@@ -17,8 +17,8 @@ use hyalos_plugin::index::{INDEX_FILE, Index, MAX_INDEX};
 use hyalos_plugin::skill::{MAX_ARCHIVE, Skill, Store, digest_of};
 use hyalos_types::capability::Field;
 use hyalos_types::{
-    Capabilities, Clock, Diff, Grant, IndexLocation, InstallPolicy, MAX_CAPABILITY_DOCUMENT,
-    PluginName, PluginSource, PluginVersion, ReasonCode,
+    Capabilities, Clock, Diff, Digest, Event, Grant, IndexLocation, InstallPolicy,
+    MAX_CAPABILITY_DOCUMENT, Origin, PluginName, PluginSource, PluginVersion, ReasonCode,
 };
 
 use crate::clock::SystemClock;
@@ -40,6 +40,7 @@ const USAGE: &str = "usage: hyalos plugin install <dir> [--grant] [--reason <cod
        hyalos plugin policy set --ceiling <file> [--index <location>]... [--max-snapshot-age-days <n>]
                                 [--max-revocation-age-days <n>] [--reason <code>] [--passphrase-stdin]
        hyalos plugin policy show
+       hyalos plugin update [--every <hours>]
        hyalos plugin pack <dir> <file>
        hyalos plugin diff [<installed>] <new>
   install reads the Agent Skill in <dir> (SKILL.md, its scripts, and capabilities.json if it asks for
@@ -56,7 +57,12 @@ const USAGE: &str = "usage: hyalos plugin install <dir> [--grant] [--reason <cod
   asking for no more than the capabilities document <file>, then installs without you. Anything else
   stays your decision each time. The ages (default 90 and 30 days) bound how old a trusted root and a
   revocation list may be (ADR-0007). policy show prints the policy in force
-  list shows every skill installed, its digest, where it came from and what it was granted
+  update looks up each skill installed from an index there again. A newer version your install
+  policy covers is installed; one that asks for more is recorded as waiting for you, and the
+  installed version keeps running until you install it. With --every, it checks again on that
+  schedule until stopped (ADR-0092). Exit 1 if a check failed
+  list shows every skill installed, its digest, where it came from, what it was granted, and any
+  update waiting for you
   pack writes the skill in <dir> as one archive to <file>, a new file, and prints its digest, as an
   index lists it
   diff prints what <new> adds to the capabilities in <installed>, what it takes away and what it
@@ -66,7 +72,7 @@ const USAGE: &str = "usage: hyalos plugin install <dir> [--grant] [--reason <cod
 pub fn run(args: &[String]) -> ExitCode {
     let env = |name: &str| std::env::var(name).ok();
     let result = match args.first().map(String::as_str) {
-        Some("install" | "list" | "pack" | "policy") => manage(args, &env),
+        Some("install" | "list" | "pack" | "policy" | "update") => manage(args, &env),
         _ => run_with(args),
     };
     match result {
@@ -346,11 +352,155 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
                     from(&p.source),
                     summary(&p.grant)
                 ));
+                if let Some(u) = state.pending_updates().get(name) {
+                    out.push_str(&format!(
+                        "  version {} waits for you since event {}: it asks for {}; install it with hyalos plugin install --index {} {name}\n",
+                        u.version,
+                        u.seq,
+                        summary(&u.asks),
+                        u.location
+                    ));
+                }
             }
             Ok(out)
         }
+        [update, rest @ ..] if update == "update" => {
+            let every = match rest {
+                [] => None,
+                [flag, hours] if flag == "--every" => Some(
+                    hours
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|h| (1..=MAX_EVERY_HOURS).contains(h))
+                        .ok_or_else(|| {
+                            usage(&format!("--every is 1 to {MAX_EVERY_HOURS} hours"))
+                        })?,
+                ),
+                _ => return Err(usage("update takes only --every <hours>")),
+            };
+            let Some(hours) = every else {
+                let (out, clean) = check_updates(env, &log);
+                return if clean { Ok(out) } else { Err((1, out)) };
+            };
+            // On a schedule: a failed check is reported and the next one still runs.
+            loop {
+                let (out, _) = check_updates(env, &log);
+                print!("{out}");
+                std::thread::sleep(std::time::Duration::from_secs(hours * 3600));
+            }
+        }
         _ => Err(usage("unknown plugin command")),
     }
+}
+
+/// The longest interval `update --every` takes: a week.
+const MAX_EVERY_HOURS: u64 = 168;
+
+/// One update check (ADR-0092): each plugin installed from an index is looked up there again. A
+/// newer version the install policy covers is installed by policy. One beyond it is recorded as
+/// waiting for the operator, once, and the installed version keeps running. Returns what it did,
+/// one line a plugin, and whether every check went through.
+fn check_updates(env: Env<'_>, log: &EngineLog) -> (String, bool) {
+    if !log.log.exists() {
+        return ("no skill is installed\n".into(), true);
+    }
+    let mut engine = match policy_cmd::open(env) {
+        Ok(engine) => engine,
+        Err(e) => return (format!("{e}\n"), false),
+    };
+    let installed: Vec<(PluginName, Digest, IndexLocation)> = engine
+        .state()
+        .plugins()
+        .iter()
+        .filter_map(|(name, p)| match &p.source {
+            PluginSource::Index { location, .. } => {
+                Some((name.clone(), p.digest, location.clone()))
+            }
+            PluginSource::Local => None,
+        })
+        .collect();
+    if installed.is_empty() {
+        return ("no skill is installed from an index\n".into(), true);
+    }
+    let (mut out, mut clean) = (String::new(), true);
+    for (name, digest, location) in installed {
+        match update_one(env, &mut engine, &name, digest, location) {
+            Ok(line) => out.push_str(&format!("{name}: {line}\n")),
+            Err(e) => {
+                clean = false;
+                out.push_str(&format!("{name}: {e}\n"));
+            }
+        }
+    }
+    (out, clean)
+}
+
+fn update_one(
+    env: Env<'_>,
+    engine: &mut hyalos_engine::Engine,
+    name: &PluginName,
+    installed: Digest,
+    location: IndexLocation,
+) -> Result<String, String> {
+    let (skill, source) = from_index(location.clone(), name, None)?;
+    let PluginSource::Index { version, .. } = &source else {
+        return Err("not from an index".into());
+    };
+    let version = version.clone();
+    let digest = skill.digest();
+    if digest == installed {
+        return Ok(format!("up to date at version {version}"));
+    }
+    let state = engine.state();
+    let covered = state
+        .install_policy()
+        .is_some_and(|p| p.policy.covers(&source, &skill.asks));
+    if covered {
+        let store = paths::plugin_store(env)?;
+        paths::make_private_dir(&store)?;
+        Store::new(store)
+            .put(&skill)
+            .map_err(|e| format!("cannot keep the skill: {e}"))?;
+        let head = engine
+            .install_plugin(
+                SystemClock.now(),
+                name.clone(),
+                digest,
+                skill.asks.clone(),
+                source,
+                Decider::Policy,
+                ReasonCode::new("plugin.updated").unwrap_or_else(ReasonCode::unavailable),
+            )
+            .map_err(|e| e.to_string())?;
+        return Ok(format!(
+            "updated to version {version} at event {}, within your install policy",
+            head.seq
+        ));
+    }
+    if state
+        .pending_updates()
+        .get(name)
+        .is_some_and(|u| u.digest == digest)
+    {
+        return Ok(format!("version {version} still waits for you"));
+    }
+    let head = engine
+        .submit(
+            SystemClock.now(),
+            Origin::Engine,
+            Event::PluginUpdatePending {
+                name: name.clone(),
+                version: version.clone(),
+                digest,
+                asks: skill.asks.clone(),
+                location: location.clone(),
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(format!(
+        "version {version} waits for you (event {}): it asks for more than your install policy lets install without you. The installed version keeps running. Read it and decide with hyalos plugin install --index {location} {name}",
+        head.seq
+    ))
 }
 
 /// `location` as an index location, a relative directory made absolute.
