@@ -122,7 +122,7 @@ It takes each of their steps that is not done, in order, and asks them for what 
 | `operator_key` | A passphrase of 12 or more characters, twice. It signs their decisions, and you must never see it. |
 | `provider_keys` | Which provider, and the key, which it reads without showing. |
 | `github_app` | Whether the App exists yet, its App ID, and which `.pem` to use. It finds GitHub's download (`*.private-key.pem`) in their home directory, `~/Downloads`, Windows' downloads on WSL2, or the config directory. |
-| `policy` | It prints the starter policy and asks before they approve it with their passphrase. It allows the first job's actions, with data going only to the model and GitHub. |
+| `policy` | It prints the starter policy and asks before they approve it with their passphrase. It allows the first job's actions, with data going only to the model and GitHub, and lets them merge its pull request after they review it. |
 | `agent_credential` | That this is the directory they run Claude Code in. It issues a credential and registers this client's server with it, without showing it. It adds `--harness claude-code` when their only key is Anthropic's. |
 
 Each step is also its own command (`hyalos setup provider-key`, `github-app`, `policy`, `agent`), safe to run again, which asks before it replaces anything. If a step fails, `walk` says what was not written; once they fix it, they run `hyalos setup walk` again.
@@ -157,5 +157,18 @@ Look for a line starting `hyalos:`. Never run `claude mcp get hyalos`: it shows 
 
    You do not run it. Keep checking until the run is over, then show `hyalos result <task>`. A run that succeeds has opened a pull request on the branch `hyalos/job-<id>`. Waiting for the release counts against the run's 30 minutes.
 6. If the run is held, `hyalos approvals` shows what is waiting and the command the operator runs to decide it. You do not decide it.
+7. Once the run has opened its pull request, find it and its head commit:
+
+   ```
+   gh pr list --repo <owner/name> --state open --json number,url,headRefName,headRefOid,createdAt --jq '.[] | select(.headRefName | startswith("hyalos/job-"))'
+   ```
+
+   The branch is named after the job, whose id is not the task's, so match the prefix and take the one whose `createdAt` is this run's. Tell the operator that merging is theirs and comes after review: they read the pull request on GitHub, then, if they want it, run this in their own terminal:
+
+   ```
+   hyalos merge <owner/name> <number> --head <headRefOid>
+   ```
+
+   You do not run it. If it fails with `no manifest: policy does not allow merge`, their policy is older than the starter that permits it: they run `hyalos setup policy` in their terminal, answer yes to both of its questions (replacing the policy in force, then approving the starter), give their passphrase, and run the merge again. For any other refusal, [approvals.md](../../docs/operations/approvals.md#merging) says what each code means. `merge.not_mergeable` is a conflict, checks still running, a closed pull request, or the repository's settings: if checks are running, the operator runs it again once they pass. `forge.upstream_refused` is the repository's settings, such as required reviews or allowed merge methods ([github-app.md](../../docs/operations/github-app.md), section 6).
 
 After this, in a new session with the MCP server, use the tools `start_job`, `job_status`, `job_result` and `list_approvals` in place of the commands.
