@@ -4,7 +4,7 @@
 
 ## Context
 
-The trusted core has a budget of 30,000 lines ([ADR-0017](0017-workspace-layout-and-trusted-core-boundary.md)). At the end of M2 it stood at 23,740 lines (79.1%), and `core/hyalos` alone at 9,875. Splitting `run_cmd.rs` (#269) and the capability vocabulary ([ADR-0085](0085-the-capability-vocabulary.md)) add about 255 more. That leaves about 6,000 lines for M3.
+The trusted core has a budget of 30,000 lines ([ADR-0017](0017-workspace-layout-and-trusted-core-boundary.md)). At the end of M2 it stood at 23,740 lines (79.1%), and `core/hyalos` alone at 9,875. Splitting `run_cmd.rs` (#269) and the capability vocabulary ([ADR-0085](0085-the-capability-vocabulary.md)) brought it to 24,006 (80.0%). That leaves 5,994 lines for M3.
 
 M3 has to fit the following into those lines:
 - the plugin runtime:
