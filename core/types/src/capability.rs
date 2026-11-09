@@ -19,6 +19,9 @@ use crate::manifest::flow;
 /// The version of the vocabulary a plugin's capabilities are written in.
 pub const CAPABILITY_VERSION: u32 = 1;
 
+/// The most bytes a capabilities document may hold. A larger one is refused unread.
+pub const MAX_CAPABILITY_DOCUMENT: usize = 64 * 1024;
+
 /// The actions a job may be given on its repository. Each is asked of the policy by its own name.
 pub mod action {
     /// Clone and fetch, and read issues and pull requests.
@@ -195,6 +198,9 @@ impl Capabilities {
     /// this build does not read, a field it does not know, or a name a field does not accept is
     /// refused, never skipped.
     pub fn from_document(bytes: &[u8]) -> Result<Self, CapabilityError> {
+        if bytes.len() > MAX_CAPABILITY_DOCUMENT {
+            return Err(CapabilityError::Malformed);
+        }
         let document: Document =
             serde_json::from_slice(bytes).map_err(|_| CapabilityError::Malformed)?;
         if document.version != CAPABILITY_VERSION {
@@ -274,24 +280,28 @@ impl Capabilities {
         manifest.capabilities().within(self)
     }
 
-    /// What `newer` adds to these capabilities and what it takes away, field by field: what an
-    /// operator reads before an install or an update (S6.4).
+    /// What `newer` adds to these capabilities, what it takes away and what it keeps, field by
+    /// field: what an operator reads before an install or an update (ADR-0088). A first install is
+    /// the diff from [`Capabilities::none`].
     pub fn diff(&self, newer: &Capabilities) -> Diff {
         let mut diff = Diff::default();
         for field in Field::ALL {
             let (old, new) = (self.field(field), newer.field(field));
             *diff.added.field_mut(field) = new.difference(old).cloned().collect();
             *diff.removed.field_mut(field) = old.difference(new).cloned().collect();
+            *diff.unchanged.field_mut(field) = old.intersection(new).cloned().collect();
         }
         diff
     }
 }
 
-/// How one set of capabilities differs from another.
+/// How one set of capabilities differs from another. Every name of either set is in exactly one of
+/// the three.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Diff {
     pub added: Capabilities,
     pub removed: Capabilities,
+    pub unchanged: Capabilities,
 }
 
 impl Diff {
@@ -366,6 +376,14 @@ mod tests {
         ] {
             assert_eq!(Capabilities::from_document(bytes), Err(want));
         }
+        let big = format!(
+            r#"{{"version":1,"tools":["{}"]}}"#,
+            " ".repeat(MAX_CAPABILITY_DOCUMENT)
+        );
+        assert_eq!(
+            Capabilities::from_document(big.as_bytes()),
+            Err(CapabilityError::Malformed)
+        );
         // An error names the field, never the name it refused.
         let shown = CapabilityError::Unknown(Field::EgressHosts).to_string();
         assert!(shown.contains("egress_hosts") && !shown.contains("example"));
@@ -389,13 +407,22 @@ mod tests {
         assert_eq!(diff.added.tools, set(["search"]));
         assert_eq!(diff.removed.actions, set(["push"]));
         assert!(diff.added.egress_hosts.is_empty() && diff.removed.egress_hosts.is_empty());
+        assert_eq!(diff.unchanged.actions, set(["read"]));
+        assert_eq!(diff.unchanged.egress_hosts, set(["docs.rs"]));
+        assert!(diff.unchanged.tools.is_empty() && diff.unchanged.data_flows.is_empty());
         assert!(diff.widens());
         // Taking capabilities away, or changing nothing, needs no consent.
-        assert!(!old.diff(&old).widens() && old.diff(&old) == Diff::default());
+        let same = old.diff(&old);
+        assert!(!same.widens() && same.added.is_empty() && same.removed.is_empty());
+        assert_eq!(same.unchanged, old);
         let narrower = Capabilities {
             actions: set(["read"]),
             ..Capabilities::none()
         };
         assert!(!old.diff(&narrower).widens());
+        // A first install is the diff from nothing: everything is added.
+        let first = Capabilities::none().diff(&new);
+        assert_eq!(first.added, new);
+        assert!(first.removed.is_empty() && first.unchanged.is_empty());
     }
 }
