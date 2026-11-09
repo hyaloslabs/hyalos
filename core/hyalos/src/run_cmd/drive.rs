@@ -91,6 +91,13 @@ fn drive(
     }
     // Other runs write the same log; each write follows the latest event, whoever wrote it.
     engine.stamp_forward();
+    // The skills, read back from the store and checked against what the operator installed, still
+    // before anything is written (ADR-0089).
+    let skills = installed_skills(
+        request,
+        &engine,
+        &Store::new(log.with_file_name(paths::PLUGIN_STORE_DIR)),
+    )?;
     // Never before the log's last event, which another process may have written.
     let mut clock = Stamps(
         SystemClock.now().max(
@@ -159,6 +166,7 @@ fn drive(
         awaiting: None,
         held_file: runs_dir.join(format!("task-{}.held", task.seq())),
         held_lock: None,
+        skills,
     };
     let summary = match &planned {
         Planned::Workflow(flow, _) => {
@@ -529,4 +537,27 @@ fn choose(
         }
         Ok(choice) => Ok(choice),
     }
+}
+
+/// Each skill `request` names, as installed: its files from `store`, checked against the digest the
+/// install recorded, and the grant a human gave it. A skill not installed, or whose files changed
+/// since, refuses the run.
+fn installed_skills(
+    request: &Request,
+    engine: &Engine,
+    store: &Store,
+) -> Result<Vec<(Skill, Grant)>, String> {
+    request
+        .skills
+        .iter()
+        .map(|name| {
+            let installed = engine.state().plugins().get(name).ok_or_else(|| {
+                format!("there is no skill {name} installed; install it with hyalos plugin install")
+            })?;
+            let skill = store
+                .load(&installed.digest, name)
+                .map_err(|e| format!("skill {name}: {e} ({})", e.code()))?;
+            Ok((skill, installed.grant.clone()))
+        })
+        .collect()
 }

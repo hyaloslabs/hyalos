@@ -716,6 +716,10 @@ impl Substrate for MicroVmSubstrate {
 
     fn start(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, StartError> {
         spec.validate().map_err(StartError::Spec)?;
+        // The VM's only disk is the image's; a job's skills would need another (ADR-0089).
+        if spec.skills.is_some() {
+            return Err(StartError::Spec(crate::SpecError::SkillsUnsupported));
+        }
         self.available().map_err(StartError::Unavailable)?;
         let disk = self.disk_for(&spec.image).map_err(StartError::Refused)?;
         let (mut env, workdir) = self

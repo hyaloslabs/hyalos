@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use hyalos_types::{Attestation, SubstrateName};
 
-use crate::spec::{BROKER_SOCKET_IN_SANDBOX, OUTPUT_LIMIT};
+use crate::spec::{BROKER_SOCKET_IN_SANDBOX, OUTPUT_LIMIT, SKILLS_IN_SANDBOX};
 use crate::{
     Ending, Isolation, Outcome, Sandbox, SandboxSpec, StartError, StopHandle, Substrate,
     Unavailable,
@@ -317,6 +317,13 @@ impl Substrate for ContainerSubstrate {
                 "type=bind,src={},dst={BROKER_SOCKET_IN_SANDBOX}",
                 spec.broker_socket.display()
             ));
+        if let Some(skills) = &spec.skills {
+            // Read-only, so nothing in the sandbox can change what the operator installed.
+            create.arg("--mount").arg(format!(
+                "type=bind,src={},dst={SKILLS_IN_SANDBOX},readonly",
+                skills.display()
+            ));
+        }
         if self.gvisor {
             let n = spec.max_processes;
             create.args(["--ulimit", &format!("nproc={n}:{n}")]);

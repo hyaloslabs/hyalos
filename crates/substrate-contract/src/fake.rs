@@ -53,6 +53,12 @@ impl Substrate for LocalProcessSubstrate {
 
     fn start(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, StartError> {
         spec.validate().map_err(StartError::Spec)?;
+        // It runs the command on the host, where no mount can put skills read-only.
+        if spec.skills.is_some() {
+            return Err(StartError::Spec(
+                hyalos_substrate::SpecError::SkillsUnsupported,
+            ));
+        }
         if spec.image != self.image {
             return Err(StartError::Refused(format!(
                 "no such image: {}",

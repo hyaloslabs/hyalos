@@ -32,6 +32,8 @@ pub const BROKER_SOCKET: &str = "/run/broker.sock";
 pub const MAX_CONNECTIONS: usize = 64;
 /// The Codex settings the image ships, copied into `$CODEX_HOME` before the harness starts.
 pub const CODEX_SEED: &str = "/etc/hyalos/codex";
+/// Where a job's skills are mounted, read-only, when it was given any (ADR-0089).
+pub const SKILLS: &str = "/opt/hyalos/skills";
 /// A request body or answer larger than this is refused before it is sent or read in full.
 pub const MAX_SUBMISSION: usize = 1024 * 1024;
 /// The largest result the broker reads (`hyalos_types::workflow::MAX_SUBMISSION`, ADR-0064).
@@ -117,6 +119,37 @@ pub fn prepare(
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// Points each harness's own skills directory at `skills`, if the job was given any: Claude Code's
+/// `$HOME/.claude/skills` and Codex's `$CODEX_HOME/skills`. They are links, so the files stay where
+/// the sandbox mounted them, read-only.
+pub fn link_skills(
+    home: Option<&Path>,
+    codex_home: Option<&Path>,
+    skills: &Path,
+) -> io::Result<()> {
+    if !skills.is_dir() {
+        return Ok(());
+    }
+    let link = |dir: &Path| -> io::Result<()> {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+        let at = dir.join("skills");
+        if fs::symlink_metadata(&at).is_err() {
+            std::os::unix::fs::symlink(skills, &at)?;
+        }
+        Ok(())
+    };
+    if let Some(home) = home {
+        link(&home.join(".claude"))?;
+    }
+    if let Some(codex) = codex_home {
+        link(codex)?;
     }
     Ok(())
 }

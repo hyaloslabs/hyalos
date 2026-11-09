@@ -21,7 +21,15 @@ pub const OPERATOR_PUBLIC_KEY_FILE: &str = "operator.pub";
 /// The provider API keys the broker reads (ADR-0038), owner-only like `engine.key`.
 pub const PROVIDER_KEYS_FILE: &str = "provider.keys";
 
+/// Where installed skills are kept, by digest, in the data directory (ADR-0089).
+pub const PLUGIN_STORE_DIR: &str = "plugins";
+
 pub type Env<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+/// The plugin store, beside `events.db` in the data directory.
+pub fn plugin_store(env: Env<'_>) -> Result<PathBuf, String> {
+    Ok(data_dir(env)?.join(PLUGIN_STORE_DIR))
+}
 
 /// `events.db` in the data directory. Only the data directory is looked up.
 pub fn log_file(env: Env<'_>) -> Result<PathBuf, String> {

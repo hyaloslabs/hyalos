@@ -15,6 +15,7 @@ hyalos-log = { path = "../log" }
 hyalos-policy = { path = "../policy" }
 hyalos-substrate = { path = "../substrate" }
 hyalos-engine = { path = "../engine" }
+hyalos-plugin = { path = "../plugin" }
 hyalos-broker = { path = "../broker" }
 getrandom = "0.4"
 zeroize = "1"

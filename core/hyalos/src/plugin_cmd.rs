@@ -1,23 +1,49 @@
-//! `hyalos plugin diff`: the capability diff an operator reads before an install or an update
-//! (ADR-0006, ADR-0085, ADR-0088).
+//! `hyalos plugin install|list|diff`: installing an Agent Skill and the capability diff an operator
+//! reads first (ADR-0006, ADR-0085, ADR-0088, ADR-0089).
 //!
-//! It reads capabilities documents, writes nothing, and prints every capability as added, removed or
-//! unchanged, field by field. Install and update print the same diff with [`render`] before they ask
-//! for consent.
+//! `install` reads a skill from a directory, prints what it asks for as a diff against what its name
+//! holds now, keeps its files in the plugin store by digest, and records the install as the
+//! operator's signed decision. A skill that asks for a capability its name does not hold installs
+//! only with `--grant`, after the operator has read the diff. `diff` reads capabilities documents and
+//! writes nothing.
 
 use std::io::Read;
+use std::path::Path;
 use std::process::ExitCode;
 
+use hyalos_engine::Decider;
+use hyalos_plugin::skill::{Skill, Store};
 use hyalos_types::capability::Field;
-use hyalos_types::{Capabilities, Diff, MAX_CAPABILITY_DOCUMENT};
+use hyalos_types::{
+    Capabilities, Clock, Diff, Grant, MAX_CAPABILITY_DOCUMENT, PluginSource, ReasonCode,
+};
 
-const USAGE: &str = "usage: hyalos plugin diff [<installed>] <new>
+use crate::clock::SystemClock;
+use crate::mcp_cmd::EngineLog;
+use crate::operator;
+use crate::passphrase;
+use crate::paths::{self, Env};
+
+const USAGE: &str = "usage: hyalos plugin install <dir> [--grant] [--reason <code>] [--passphrase-stdin]
+       hyalos plugin list
+       hyalos plugin diff [<installed>] <new>
+  install reads the Agent Skill in <dir> (SKILL.md, its scripts, and capabilities.json if it asks for
+  any), prints what it asks for against what its name holds now, and installs it. If it asks for a
+  capability its name does not hold, read the diff and run again with --grant to grant it. It is your
+  decision, signed with your approval key: the passphrase is asked for at the terminal, or read from
+  stdin with --passphrase-stdin. A job is given it with hyalos run --skill <name>
+  list shows every skill installed, its digest and what it was granted
   diff prints what <new> adds to the capabilities in <installed>, what it takes away and what it
   keeps. With one file, it is a first install: everything <new> asks for is added. Both are
   capabilities documents ({\"version\": 1, ...}). It writes nothing";
 
 pub fn run(args: &[String]) -> ExitCode {
-    match run_with(args) {
+    let env = |name: &str| std::env::var(name).ok();
+    let result = match args.first().map(String::as_str) {
+        Some("install" | "list") => manage(args, &env),
+        _ => run_with(args),
+    };
+    match result {
         Ok(text) => {
             print!("{text}");
             ExitCode::SUCCESS
@@ -43,6 +69,118 @@ pub fn run_with(args: &[String]) -> Result<String, (u8, String)> {
         _ => return Err((2, USAGE.to_string())),
     };
     Ok(render(&installed.diff(&new)))
+}
+
+/// `install` and `list`, which read the log and the store. Exit 1 if refused, 2 for usage.
+pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
+    let (args, source) = passphrase::source(args);
+    let usage = |why: &str| (2, format!("{why}\n{USAGE}"));
+    let failed = |e: String| (1, e);
+    let log = EngineLog {
+        log: paths::log_file(env).map_err(failed)?,
+        public_key: paths::engine_public_key(env).map_err(failed)?,
+    };
+    match args.as_slice() {
+        [install, dir, rest @ ..] if install == "install" => {
+            let (mut grant, mut reason) = (false, "plugin.installed");
+            let mut rest = rest.iter();
+            while let Some(flag) = rest.next() {
+                match flag.as_str() {
+                    "--grant" => grant = true,
+                    "--reason" => {
+                        reason = rest.next().ok_or_else(|| usage("--reason needs a code"))?;
+                    }
+                    _ => return Err(usage("install takes only --grant and --reason <code>")),
+                }
+            }
+            let reason = ReasonCode::new(reason)
+                .ok_or_else(|| usage("a reason is a short code, such as plugin.installed"))?;
+            let skill = Skill::read(Path::new(dir)).map_err(|e| failed(format!("{dir}: {e}")))?;
+            // Everything that can be checked without the passphrase is checked first.
+            let held = if log.log.exists() {
+                log.read()
+                    .map_err(failed)?
+                    .plugins()
+                    .get(&skill.name)
+                    .map(|p| p.grant.clone())
+                    .unwrap_or_default()
+            } else {
+                Grant::none()
+            };
+            let diff = held.diff(&skill.asks);
+            let mut out = format!(
+                "skill {} ({} files), digest {}\n{}",
+                skill.name,
+                skill.files.len(),
+                skill.digest(),
+                render(&diff)
+            );
+            if diff.widens() && !grant {
+                return Err(failed(format!(
+                    "{out}it was not installed: read what it asks for above, and run again with --grant to grant it"
+                )));
+            }
+            let store = paths::plugin_store(env).map_err(failed)?;
+            paths::make_private_dir(&store).map_err(failed)?;
+            let digest = Store::new(store)
+                .put(&skill)
+                .map_err(|e| failed(format!("cannot keep the skill: {e}")))?;
+            let mut engine = operator::engine(env, source).map_err(failed)?;
+            let head = engine
+                .install_plugin(
+                    SystemClock.now(),
+                    skill.name.clone(),
+                    digest,
+                    skill.asks.clone(),
+                    PluginSource::Local,
+                    Decider::Human,
+                    reason,
+                )
+                .map_err(|e| failed(e.to_string()))?;
+            out.push_str(&format!(
+                "installed {} at event {}, signed by you; give it to a job with hyalos run --skill {}\n",
+                skill.name, head.seq, skill.name
+            ));
+            Ok(out)
+        }
+        [list] if list == "list" => {
+            if !log.log.exists() {
+                return Ok("no skill is installed\n".into());
+            }
+            let state = log.read().map_err(failed)?;
+            if state.plugins().is_empty() {
+                return Ok("no skill is installed\n".into());
+            }
+            let mut out = String::new();
+            for (name, p) in state.plugins() {
+                out.push_str(&format!(
+                    "{name}\t{}\tinstalled at event {}\tgranted {}\n",
+                    p.digest,
+                    p.seq,
+                    summary(&p.grant)
+                ));
+            }
+            Ok(out)
+        }
+        _ => Err(usage("unknown plugin command")),
+    }
+}
+
+/// A grant on one line, field by field, or `nothing`.
+fn summary(grant: &Grant) -> String {
+    let fields: Vec<String> = Field::ALL
+        .iter()
+        .filter(|f| !grant.field(**f).is_empty())
+        .map(|f| {
+            let names: Vec<&str> = grant.field(*f).iter().map(String::as_str).collect();
+            format!("{}: {}", f.name(), names.join(", "))
+        })
+        .collect();
+    if fields.is_empty() {
+        "nothing".into()
+    } else {
+        fields.join("; ")
+    }
 }
 
 /// The diff as an operator reads it: a count, then each field with its names marked `+` (added),

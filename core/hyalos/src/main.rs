@@ -55,7 +55,7 @@ fn command(args: &[String]) -> ExitCode {
         Some("broker") => broker_cmd::run(args.get(1..).unwrap_or_default()),
         Some(other) => {
             eprintln!(
-                "hyalos: unknown command {other}\nusage: hyalos [--version | init | doctor [--image <image>] | setup [--next] [--json] | setup walk|operator-key|provider-key|github-app|policy|agent | github check <owner/repo> | run --repo <owner/name> --issue <text> ... | operator init|show | approve <hold> | cancel <task> | release <task> | merge <owner/repo> <pr> --head <commit> | policy check|approve|show ... | workflow check <file> | plugin diff [<installed>] <new> | agent issue|revoke|list ... | mcp [--listen <127.0.0.1:port>] | tasks | start <owner/repo> <issue> | status <task> | result <task> | approvals | stop <task> | log verify|audit|backup|restore|compact|prune ...]"
+                "hyalos: unknown command {other}\nusage: hyalos [--version | init | doctor [--image <image>] | setup [--next] [--json] | setup walk|operator-key|provider-key|github-app|policy|agent | github check <owner/repo> | run --repo <owner/name> --issue <text> ... | operator init|show | approve <hold> | cancel <task> | release <task> | merge <owner/repo> <pr> --head <commit> | policy check|approve|show ... | workflow check <file> | plugin install|list|diff ... | agent issue|revoke|list ... | mcp [--listen <127.0.0.1:port>] | tasks | start <owner/repo> <issue> | status <task> | result <task> | approvals | stop <task> | log verify|audit|backup|restore|compact|prune ...]"
             );
             ExitCode::from(2)
         }

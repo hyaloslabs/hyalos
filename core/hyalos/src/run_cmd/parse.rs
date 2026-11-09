@@ -17,6 +17,7 @@ pub fn parse(args: &[String]) -> Result<Request, String> {
         release_issue: false,
         await_release: false,
         nonce: None,
+        skills: BTreeSet::new(),
     };
     let mut args = args.iter();
     while let Some(flag) = args.next() {
@@ -57,6 +58,12 @@ pub fn parse(args: &[String]) -> Result<Request, String> {
             "--step-model" => request.step_model = Some(value()?),
             "--release-issue" => request.release_issue = true,
             "--await-release" => request.await_release = true,
+            "--skill" => {
+                let name = PluginName::new(&value()?).ok_or(
+                    "--skill is an installed skill's name: lowercase letters, digits and hyphens",
+                )?;
+                request.skills.insert(name);
+            }
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -154,6 +161,9 @@ pub struct Stored {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub await_release: bool,
     pub nonce: Option<String>,
+    /// Left out when empty, so a document written before it has the same digest.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub skills: BTreeSet<PluginName>,
 }
 
 /// The version of [`Stored`] written today.
@@ -181,6 +191,7 @@ impl Request {
             release_issue: self.release_issue,
             await_release: self.await_release,
             nonce: self.nonce.clone(),
+            skills: self.skills.clone(),
         }
     }
 
@@ -211,6 +222,7 @@ impl Request {
             release_issue: stored.release_issue,
             await_release: stored.await_release,
             nonce: stored.nonce,
+            skills: stored.skills,
         };
         check(&request)?;
         Ok(request)

@@ -981,6 +981,7 @@ dependencies = [
  "hyalos-broker",
  "hyalos-engine",
  "hyalos-log",
+ "hyalos-plugin",
  "hyalos-policy",
  "hyalos-substrate",
  "hyalos-substrate-contract",
@@ -1044,6 +1045,7 @@ name = "hyalos-plugin"
 version = "0.1.4"
 dependencies = [
  "hyalos-types",
+ "sha2 0.11.1",
  "wasmtime",
  "wat",
 ]

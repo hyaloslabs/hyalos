@@ -9,7 +9,7 @@ use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::thread;
 
-use hyalos_sandbox_tools::{DnsLog, forward, prepare, question, submit};
+use hyalos_sandbox_tools::{DnsLog, forward, link_skills, prepare, question, submit};
 
 type Res = Result<(), Box<dyn std::error::Error>>;
 
@@ -123,6 +123,26 @@ fn the_harness_directories_are_made_and_codex_gets_its_settings() -> Res {
     // Running again, with the directories there, is fine; nothing named is nothing made.
     prepare(Some(&home), Some(&codex), &seed)?;
     prepare(None, None, &seed)?;
+    let _ = std::fs::remove_dir_all(&d);
+    Ok(())
+}
+
+#[test]
+fn a_jobs_skills_are_linked_into_each_harness_when_it_has_any() -> Res {
+    let d = dir("skills")?;
+    let (home, codex, skills) = (d.join("home"), d.join("codex"), d.join("skills"));
+    // No skills mounted: nothing is linked.
+    link_skills(Some(&home), Some(&codex), &skills)?;
+    assert!(!home.join(".claude/skills").exists() && !codex.join("skills").exists());
+    std::fs::create_dir_all(skills.join("pdf"))?;
+    std::fs::write(skills.join("pdf/SKILL.md"), "---\nname: pdf\n---\n")?;
+    link_skills(Some(&home), Some(&codex), &skills)?;
+    for link in [home.join(".claude/skills"), codex.join("skills")] {
+        assert_eq!(std::fs::read_link(&link)?, skills);
+        assert!(link.join("pdf/SKILL.md").is_file());
+    }
+    // Again is fine.
+    link_skills(Some(&home), Some(&codex), &skills)?;
     let _ = std::fs::remove_dir_all(&d);
     Ok(())
 }

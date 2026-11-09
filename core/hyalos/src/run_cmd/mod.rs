@@ -38,9 +38,12 @@ use hyalos_types::wire::{Protocol, ToBroker, ToEngine};
 use hyalos_types::workflow::{Output, Step, TypedValue, values_fit};
 use hyalos_types::{
     ActorPrompt, Answer, Attestation, Budget, Clock, CredentialTier, Digest, Event, ForgeToken,
-    HoldReason, JobId, JobOutcome, MANIFEST_VERSION, Manifest, ManifestKey, OperatorText, Origin,
-    ReasonCode, Role, SignedManifest, Stakes, StepInputs, SubstrateName, TaskId, Timestamp, flow,
+    Grant, HoldReason, JobId, JobOutcome, MANIFEST_VERSION, Manifest, ManifestKey, OperatorText,
+    Origin, PluginName, ReasonCode, Role, SignedManifest, Stakes, StepInputs, SubstrateName,
+    TaskId, Timestamp, flow,
 };
+
+use hyalos_plugin::skill::{Skill, Store};
 
 use crate::clock::SystemClock;
 use crate::doctor_cmd::{self, DEFAULT_IMAGE};
@@ -68,7 +71,7 @@ pub use report::attestation_text;
 const USAGE: &str = "usage: hyalos run --repo <owner/name>
                   (--issue <text> | --issue-file <file> | --issue-number <n>) [--base <branch>] [--harness codex|claude-code] [--image <image>]
                   [--budget-tokens <n>] [--minutes <n>] [--allow-host <host>]... [--step-model <model>]
-                  [--release-issue [--passphrase-stdin] | --await-release]
+                  [--release-issue [--passphrase-stdin] | --await-release] [--skill <name>]...
   runs a harness in a sandbox on <owner/name>: it pushes the branch hyalos/job-<id> and opens a
   pull request into --base (default main). With --issue or --issue-file it works on your text.
   --issue-number runs the fix-issue workflow on issue <n> of <owner/name>: a reader in the broker
@@ -83,6 +86,8 @@ const USAGE: &str = "usage: hyalos run --repo <owner/name>
   policy that allows read, push, open_pr and data_flow (hyalos policy approve), provider.keys and
   the GitHub App (github.app, github-app.pem) in the config directory, and a ready substrate (hyalos
   doctor). --allow-host lets the job reach a web host through the egress gate, if policy allows it.
+  --skill gives the harness an installed skill (hyalos plugin install), read-only in its sandbox; the
+  job may then do only what the skill was granted as well (ADR-0089).
   Defaults: harness codex, image hyalos-sandbox:latest (or the one a release names by digest),
   200000 tokens, 30 minutes";
 
@@ -138,6 +143,9 @@ pub struct Request {
     /// The MCP server's start nonce (ADR-0069), so each run it starts has a request of its own and
     /// [`request_digest`] names exactly one task. `None` from the command line.
     pub nonce: Option<String>,
+    /// The installed skills the actor is given (ADR-0089): their files, read-only in its sandbox,
+    /// and their grants, which cut its manifest.
+    pub skills: BTreeSet<PluginName>,
 }
 
 /// The program the sandbox runs.
@@ -376,6 +384,8 @@ struct Run<'a> {
     awaiting: Option<(Digest, u64)>,
     /// Where an awaited handle is written for `hyalos release` (`runs/task-<id>.held`).
     held_file: PathBuf,
+    /// The skills of [`Request::skills`], read from the store and checked against their install.
+    skills: Vec<(Skill, Grant)>,
     /// The lock on `held_file` while the actor waits: `hyalos release` refuses a file nobody holds,
     /// so a run whose runner stopped is never released to.
     held_lock: Option<std::fs::File>,

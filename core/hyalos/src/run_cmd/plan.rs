@@ -86,6 +86,15 @@ pub(super) fn actor_prompt(
              not say what to change, change nothing and report that you are blocked at once.",
         );
     }
+    // The skills are named by where they are, never by their own text: a skill's name and files are
+    // plugin-authored, and the harness reads them there (ADR-0089).
+    if !request.skills.is_empty() {
+        after.literal(
+            "\n\nSkills were installed for you, read-only, in /opt/hyalos/skills, one directory each. \
+             Read a skill's SKILL.md before you use it. Its scripts run here, and can do no more \
+             than this job may.",
+        );
+    }
     let after = steps(request, branch, planned.result(), after);
     match planned {
         Planned::Actor => {

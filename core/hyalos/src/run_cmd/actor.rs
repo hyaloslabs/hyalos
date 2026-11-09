@@ -64,6 +64,9 @@ impl Run<'_> {
             // The fix-issue run's own issue, from the request: its pull request closes it (ADR-0083).
             closes: request.issue_number,
         };
+        // The skills given to the job steer it, so their grants bound it as plugin text does
+        // (ADR-0066, ADR-0089).
+        let inputs = inputs.with_grants(self.skills.iter().map(|(_, grant)| grant.clone()));
         // A skill in the prompt never widens the job: its grant cuts the manifest (ADR-0066).
         let manifest = inputs.bound(&manifest);
         let signed = match self
@@ -123,6 +126,16 @@ impl Run<'_> {
             job_dir.socket(),
         );
         spec.deadline = self.remaining();
+        if !self.skills.is_empty() {
+            match write_skills(&self.skills, job_dir.path()) {
+                Ok(dir) => spec.skills = Some(dir),
+                Err(e) => {
+                    let revoked = finish(self, job_dir, out);
+                    let failure = Failure::new(why::SANDBOX_NOT_STARTED, e);
+                    return self.end(job, out, JobOutcome::Failed, failure, revoked);
+                }
+            }
+        }
         spec.env = BTreeMap::from([
             ("HYALOS_REPO".into(), request.repo.clone()),
             ("HYALOS_BRANCH".into(), branch.clone()),
@@ -323,4 +336,20 @@ impl Run<'_> {
             .filter(|_| failure.reason.as_str() == why::SUBMITTED);
         self.end_values(job, out, ended, failure, revoked, values)
     }
+}
+
+/// Writes each skill under `job_dir/skills/<name>`, read-only, for the sandbox to mount there. The
+/// files were checked against their install when the run started.
+fn write_skills(skills: &[(Skill, Grant)], job_dir: &std::path::Path) -> Result<PathBuf, String> {
+    let dir = job_dir.join("skills");
+    std::fs::create_dir(&dir).map_err(|e| format!("cannot write the skills: {e}"))?;
+    for (skill, _) in skills {
+        skill
+            .write_to(&dir.join(skill.name.as_str()))
+            .map_err(|e| format!("skill {}: {e}", skill.name))?;
+    }
+    // The sandbox's unprivileged user reads them through this directory.
+    std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .map_err(|e| format!("cannot write the skills: {e}"))?;
+    Ok(dir)
 }
