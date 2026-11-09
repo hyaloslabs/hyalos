@@ -158,6 +158,8 @@ pub enum CapabilityError {
     Version(u32),
     /// A name the field does not accept.
     Unknown(Field),
+    /// Larger than [`MAX_CAPABILITY_DOCUMENT`], so it was not read.
+    TooLarge,
 }
 
 impl fmt::Display for CapabilityError {
@@ -169,6 +171,10 @@ impl fmt::Display for CapabilityError {
                 "capabilities version {v}; this build reads version {CAPABILITY_VERSION}"
             ),
             Self::Unknown(field) => write!(f, "a name {} does not accept", field.name()),
+            Self::TooLarge => write!(
+                f,
+                "larger than a capabilities document may be ({MAX_CAPABILITY_DOCUMENT} bytes)"
+            ),
         }
     }
 }
@@ -199,7 +205,7 @@ impl Capabilities {
     /// refused, never skipped.
     pub fn from_document(bytes: &[u8]) -> Result<Self, CapabilityError> {
         if bytes.len() > MAX_CAPABILITY_DOCUMENT {
-            return Err(CapabilityError::Malformed);
+            return Err(CapabilityError::TooLarge);
         }
         let document: Document =
             serde_json::from_slice(bytes).map_err(|_| CapabilityError::Malformed)?;
@@ -382,7 +388,7 @@ mod tests {
         );
         assert_eq!(
             Capabilities::from_document(big.as_bytes()),
-            Err(CapabilityError::Malformed)
+            Err(CapabilityError::TooLarge)
         );
         // An error names the field, never the name it refused.
         let shown = CapabilityError::Unknown(Field::EgressHosts).to_string();

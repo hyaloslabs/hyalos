@@ -23,7 +23,7 @@ Install and update print this same text before they ask for consent, so an opera
 
 **`hyalos plugin diff [<installed>] <new>`** reads one or two capabilities documents, writes nothing and prints the rendering. With one file, it shows a first install. Exit 0 means the documents were read, 1 that one could not be read or was refused, and 2 is usage. It is an operator tool with no MCP tool, like `workflow check` ([ADR-0075](0075-the-thin-cli-for-the-agents-tools.md)): it inspects files on the operator's machine and decides nothing.
 
-**A capabilities document is at most 64 KiB** (`MAX_CAPABILITY_DOCUMENT`). `from_document` refuses a larger one as malformed before parsing it, so every reader is bounded, not only this command.
+**A capabilities document is at most 64 KiB** (`MAX_CAPABILITY_DOCUMENT`). `from_document` refuses a larger one before parsing it, with its own error that names the limit, so every reader is bounded, not only this command.
 
 ## Consequences
 

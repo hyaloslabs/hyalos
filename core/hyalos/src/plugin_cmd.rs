@@ -193,7 +193,12 @@ mod tests {
         let version = file(&dir, "v2.json", r#"{"version":2}"#);
         assert_eq!(run_with(&args(&["diff", &version])).unwrap_err().0, 1);
         let big = file(&dir, "big.json", &" ".repeat(MAX_CAPABILITY_DOCUMENT + 1));
-        assert_eq!(run_with(&args(&["diff", &big])).unwrap_err().0, 1);
+        let (code, message) = run_with(&args(&["diff", &big])).unwrap_err();
+        assert_eq!(code, 1);
+        assert!(
+            message.contains("larger than a capabilities document may be"),
+            "{message}"
+        );
         let missing = dir.join("missing.json").display().to_string();
         assert_eq!(run_with(&args(&["diff", &missing])).unwrap_err().0, 1);
         let _ = std::fs::remove_dir_all(dir);
