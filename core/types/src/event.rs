@@ -10,13 +10,13 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, AgentName, Answer, Attestation, CommitSha, Digest, Grant, HoldId, JobId, MergeMethod,
-    Origin, PluginName, PluginSource, ReasonCode, Schema, Signed, Stakes, SubstrateName, TaskId,
-    TypedValue, Upcast, Value,
+    AgentId, AgentName, Answer, Attestation, CommitSha, Digest, Grant, HoldId, InstallPolicy,
+    JobId, MergeMethod, Origin, PluginName, PluginSource, ReasonCode, Schema, Signed, Stakes,
+    SubstrateName, TaskId, TypedValue, Upcast, Value,
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 16;
+pub const SCHEMA_VERSION: u32 = 17;
 
 /// What this build reads: version 15, and versions 1 to 14 upcast to it (ADR-0023, ADR-0025, ADR-0027,
 /// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069,
@@ -36,7 +36,8 @@ pub const SCHEMA_VERSION: u32 = 16;
 /// `policy.approved`, `handle.released`, `agent.issued`, `agent.revoked`): an older human decision
 /// reads as `unrecorded`, any other as `none`. Version 14 added `merge.approved` and changed no
 /// payload. Version 15 added `plugin.installed` and changed no payload. Version 16 added a plugin
-/// index as a `plugin.installed` source (ADR-0090); a payload written before reads as it was.
+/// index as a `plugin.installed` source (ADR-0090); a payload written before reads as it was. Version
+/// 17 added `plugin.policy_set` and changed no payload.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -356,6 +357,16 @@ pub enum Event {
         reason: ReasonCode,
         signed: Signed,
     },
+    /// The operator set the install policy (ADR-0007, ADR-0091): a plugin from one of its indexes that
+    /// asks for nothing beyond its ceiling may then be installed by policy. It replaces any earlier
+    /// one. Setting it decides what installs without a human, so only a human sets it.
+    #[serde(rename = "plugin.policy_set")]
+    PluginPolicySet {
+        policy: InstallPolicy,
+        by: Resolution,
+        reason: ReasonCode,
+        signed: Signed,
+    },
     /// The typed values a running job returned: a reader's or planner's answer, or an actor's submitted
     /// result (ADR-0062, ADR-0064, ADR-0069). A choice is its option's index, so no text is stored. It
     /// is written together with the job's ending, so a resumed run finds every finished step's values
@@ -442,11 +453,12 @@ impl Event {
             | Event::AgentRevoked { .. }
             | Event::MergeApproved { .. }
             | Event::PluginInstalled { .. }
+            | Event::PluginPolicySet { .. }
             | Event::JobValues { .. } => origin == Origin::Engine,
         }
     }
 
-    /// Who decided, for the eight kinds that record a decision (ADR-0070, ADR-0071, ADR-0089).
+    /// Who decided, for the nine kinds that record a decision (ADR-0070, ADR-0071, ADR-0089, ADR-0091).
     pub fn decided_by(&self) -> Option<Resolution> {
         match self {
             Event::HoldResolved { by, .. }
@@ -456,12 +468,13 @@ impl Event {
             | Event::AgentIssued { by, .. }
             | Event::AgentRevoked { by, .. }
             | Event::MergeApproved { by, .. }
-            | Event::PluginInstalled { by, .. } => Some(*by),
+            | Event::PluginInstalled { by, .. }
+            | Event::PluginPolicySet { by, .. } => Some(*by),
             _ => None,
         }
     }
 
-    /// The signature a decision carries, for the same eight kinds.
+    /// The signature a decision carries, for the same nine kinds.
     pub fn signed(&self) -> Option<&Signed> {
         match self {
             Event::HoldResolved { signed, .. }
@@ -471,7 +484,8 @@ impl Event {
             | Event::AgentIssued { signed, .. }
             | Event::AgentRevoked { signed, .. }
             | Event::MergeApproved { signed, .. }
-            | Event::PluginInstalled { signed, .. } => Some(signed),
+            | Event::PluginInstalled { signed, .. }
+            | Event::PluginPolicySet { signed, .. } => Some(signed),
             _ => None,
         }
     }
@@ -486,7 +500,8 @@ impl Event {
             | Event::AgentIssued { signed, .. }
             | Event::AgentRevoked { signed, .. }
             | Event::MergeApproved { signed, .. }
-            | Event::PluginInstalled { signed, .. } => *signed = value,
+            | Event::PluginInstalled { signed, .. }
+            | Event::PluginPolicySet { signed, .. } => *signed = value,
             _ => {}
         }
         self
@@ -517,6 +532,7 @@ impl Event {
             Event::AgentRevoked { .. } => "agent.revoked",
             Event::MergeApproved { .. } => "merge.approved",
             Event::PluginInstalled { .. } => "plugin.installed",
+            Event::PluginPolicySet { .. } => "plugin.policy_set",
             Event::JobValues { .. } => "job.values",
         }
     }
@@ -527,7 +543,7 @@ impl Event {
     }
 
     /// Every `kind` value, for checking tables and test coverage.
-    pub const KINDS: [&'static str; 17] = [
+    pub const KINDS: [&'static str; 18] = [
         "task.created",
         "task.completed",
         "job.started",
@@ -544,6 +560,7 @@ impl Event {
         "agent.revoked",
         "merge.approved",
         "plugin.installed",
+        "plugin.policy_set",
         "job.values",
     ];
 
@@ -775,6 +792,25 @@ mod tests {
                     r#"{{"kind":"plugin.installed","name":"pdf-tools","digest":"{}","grant":{{"actions":[],"egress_hosts":["docs.rs"],"tools":[],"data_flows":[]}},"source":"local","by":"human","reason":"plugin.local_install","signed":"unrecorded"}}"#,
                     h(6)
                 ),
+            ),
+            (
+                Event::PluginPolicySet {
+                    policy: InstallPolicy {
+                        ceiling: Grant {
+                            egress_hosts: ["docs.rs".to_string()].into(),
+                            ..Grant::none()
+                        },
+                        indexes: [crate::IndexLocation::new("https://plugins.example/v1").unwrap()]
+                            .into(),
+                        max_snapshot_age_days: 90,
+                        max_revocation_age_days: 30,
+                    },
+                    by: Resolution::Human,
+                    reason: ReasonCode::new("plugin.policy").unwrap(),
+                    signed: Signed::Unrecorded,
+                },
+                r#"{"kind":"plugin.policy_set","policy":{"ceiling":{"actions":[],"egress_hosts":["docs.rs"],"tools":[],"data_flows":[]},"indexes":["https://plugins.example/v1"],"max_snapshot_age_days":90,"max_revocation_age_days":30},"by":"human","reason":"plugin.policy","signed":"unrecorded"}"#
+                    .to_string(),
             ),
             (
                 Event::JobValues {

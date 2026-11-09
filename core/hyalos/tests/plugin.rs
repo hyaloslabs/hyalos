@@ -471,3 +471,145 @@ fn a_skill_installs_by_name_from_an_index_served_as_release_assets() -> Res {
     assert!(String::from_utf8_lossy(&out.stderr).contains("gone.skill: not found"));
     Ok(())
 }
+
+#[test]
+fn within_the_operators_install_policy_a_skill_installs_without_them() -> Res {
+    let world = World::new("plugin-policy", None)?;
+    let src = skill(
+        &world.root,
+        Some(r#"{"version":1,"egress_hosts":["docs.rs"]}"#),
+    )?;
+    let bundle = world.root.join("bundle");
+    std::fs::create_dir(&bundle)?;
+    let narrow = pack(&world, &src, &bundle, "pdf-1.0.0.skill")?;
+    skill(
+        &world.root,
+        Some(r#"{"version":1,"egress_hosts":["docs.rs"],"actions":["push"]}"#),
+    )?;
+    let wide = pack(&world, &src, &bundle, "pdf-2.0.0.skill")?;
+    std::fs::write(
+        bundle.join("index.json"),
+        index(&[
+            ("1.0.0", &narrow, "pdf-1.0.0.skill"),
+            ("2.0.0", &wide, "pdf-2.0.0.skill"),
+        ]),
+    )?;
+    let at = bundle.to_string_lossy().into_owned();
+    let ceiling = world.root.join("ceiling.json");
+    std::fs::write(&ceiling, r#"{"version":1,"egress_hosts":["docs.rs"]}"#)?;
+    let ceiling = ceiling.to_string_lossy().into_owned();
+
+    // No policy: an index install that adds a capability is the operator's decision.
+    let shown = ok_cli(world.cli(&["plugin", "policy", "show"])?)?;
+    assert!(shown.contains("no install policy"), "{shown}");
+    let out = world.cli(&[
+        "plugin",
+        "install",
+        "--index",
+        &at,
+        "pdf-tools",
+        "--version",
+        "1.0.0",
+    ])?;
+    assert_eq!(out.status.code(), Some(1));
+    assert!(installs(&world)?.is_empty());
+
+    // Setting it is a decision, and needs the passphrase.
+    let out = world.cli(&[
+        "plugin",
+        "policy",
+        "set",
+        "--ceiling",
+        &ceiling,
+        "--index",
+        &at,
+    ])?;
+    assert_eq!(out.status.code(), Some(1));
+    let set = ok_cli(world.signed(&[
+        "plugin",
+        "policy",
+        "set",
+        "--ceiling",
+        &ceiling,
+        "--index",
+        &at,
+    ])?)?;
+    assert!(
+        set.contains("+ docs.rs") && set.contains("signed by you"),
+        "{set}"
+    );
+    let shown = ok_cli(world.cli(&["plugin", "policy", "show"])?)?;
+    assert!(shown.contains(&format!("indexes: {at}")), "{shown}");
+    assert!(
+        shown.contains("trusted root 90 days, revocation list 30 days"),
+        "{shown}"
+    );
+    let set = world
+        .events()?
+        .into_iter()
+        .find_map(|e| match e {
+            Event::PluginPolicySet { by, signed, .. } => Some((by, signed)),
+            _ => None,
+        })
+        .ok_or("no policy event")?;
+    assert!(matches!(set, (Resolution::Human, Signed::Operator(_))));
+
+    // Within it: no passphrase, recorded as policy's.
+    let out = ok_cli(world.cli(&[
+        "plugin",
+        "install",
+        "--index",
+        &at,
+        "pdf-tools",
+        "--version",
+        "1.0.0",
+    ])?)?;
+    assert!(out.contains("within your install policy"), "{out}");
+    let recorded = installs(&world)?;
+    let [Event::PluginInstalled { by, signed, .. }] = recorded.as_slice() else {
+        return Err("one install".into());
+    };
+    assert_eq!((*by, signed), (Resolution::Policy, &Signed::None));
+
+    // Beyond the ceiling: the operator's again, even from the trusted index.
+    let out = world.cli(&["plugin", "install", "--index", &at, "pdf-tools", "--grant"])?;
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(installs(&world)?.len(), 1);
+    ok_cli(world.signed(&["plugin", "install", "--index", &at, "pdf-tools", "--grant"])?)?;
+    let recorded = installs(&world)?;
+    assert!(matches!(
+        recorded.last(),
+        Some(Event::PluginInstalled {
+            by: Resolution::Human,
+            ..
+        })
+    ));
+    // A local install never goes by policy, whatever it asks for.
+    skill(&world.root, None)?;
+    let out = world.cli(&["plugin", "install", &src.to_string_lossy()])?;
+    assert_eq!(out.status.code(), Some(1));
+    for args in [
+        &["plugin", "policy", "set"][..],
+        &[
+            "plugin",
+            "policy",
+            "set",
+            "--ceiling",
+            &ceiling,
+            "--max-revocation-age-days",
+            "0",
+        ],
+        &[
+            "plugin",
+            "policy",
+            "set",
+            "--ceiling",
+            &ceiling,
+            "--index",
+            "http://x.example",
+        ],
+    ] {
+        assert_eq!(world.cli(args)?.status.code(), Some(2), "{args:?}");
+    }
+    Ok(())
+}

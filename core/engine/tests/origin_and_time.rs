@@ -100,6 +100,9 @@ fn accept(e: &mut Engine, n: u64, event: Event) -> Res {
         } => {
             e.install_plugin(at(n), name, digest, grant, source, Decider::Human, reason)?;
         }
+        Event::PluginPolicySet { policy, reason, .. } => {
+            e.set_install_policy(at(n), policy, Decider::Human, reason)?;
+        }
         other => {
             e.submit(at(n), Origin::Engine, other)?;
         }
@@ -273,6 +276,17 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
             digest: d(2),
             grant: hyalos_types::Grant::none(),
             source: hyalos_types::PluginSource::Local,
+            by: Resolution::Human,
+            reason: why(),
+            signed: hyalos_types::Signed::Unrecorded,
+        },
+        "plugin.policy_set" => Event::PluginPolicySet {
+            policy: hyalos_types::InstallPolicy {
+                ceiling: hyalos_types::Grant::none(),
+                indexes: Default::default(),
+                max_snapshot_age_days: 90,
+                max_revocation_age_days: 30,
+            },
             by: Resolution::Human,
             reason: why(),
             signed: hyalos_types::Signed::Unrecorded,

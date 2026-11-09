@@ -13,9 +13,9 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, AgentName, CommitSha, Digest, Gate, Grant, HoldId, HoldReason, JobId, JobOutcome,
-    MergeMethod, PluginName, PluginSource, ReasonCode, Resolution, Stakes, TaskId, TypedValue,
-    Value,
+    AgentId, AgentName, CommitSha, Digest, Gate, Grant, HoldId, HoldReason, InstallPolicy, JobId,
+    JobOutcome, MergeMethod, PluginName, PluginSource, ReasonCode, Resolution, Stakes, TaskId,
+    TypedValue, Value,
 };
 
 /// The layout [`StateImage`] is written in today.
@@ -30,8 +30,8 @@ use crate::{
 /// Version 9 added the merges approved (ADR-0071); earlier images have none. Version 10 added the
 /// plugins installed (ADR-0089); earlier images have none. Version 11 added a plugin index as where
 /// an installed plugin came from (ADR-0090); an earlier image holds only local installs, which read as
-/// they were.
-pub const STATE_VERSION: u32 = 11;
+/// they were. Version 12 added the install policy (ADR-0091); earlier images have none.
+pub const STATE_VERSION: u32 = 12;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +64,20 @@ pub struct StateImage {
     pub merges: Vec<MergeImage>,
     /// Every plugin installed, the latest install of each name, in name order (ADR-0089).
     pub plugins: Vec<PluginImage>,
+    /// The install policy in force, if the operator set one (ADR-0091).
+    pub install_policy: Option<InstallPolicyImage>,
+}
+
+/// The latest `plugin.policy_set` event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstallPolicyImage {
+    /// The sequence number of the event that set it.
+    pub seq: u64,
+    pub at: u64,
+    pub policy: InstallPolicy,
+    pub by: Resolution,
+    pub reason: ReasonCode,
 }
 
 /// The latest `plugin.installed` event for one name: which files a job may be given under that name,
@@ -344,6 +358,8 @@ impl StateImage {
         if version < 10 {
             object.insert("plugins".into(), Value::Array(Vec::new()));
         }
+        // 11 -> 12: no install policy had been set.
+        object.insert("install_policy".into(), Value::Null);
         // 6 -> 7: no job's reason was kept, and no job had returned values.
         if version >= 7 {
             return serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()));
@@ -514,6 +530,7 @@ mod tests {
             signed_since: Some(2),
             merges: vec![],
             plugins: vec![],
+            install_policy: None,
         }
     }
 
