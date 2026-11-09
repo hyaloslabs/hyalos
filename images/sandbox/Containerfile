@@ -41,6 +41,8 @@ RUN npm ci --omit=dev --no-audit --no-fund \
 COPY --from=tools /src/target/release/hyalos-forward /src/target/release/hyalos-submit /src/target/release/hyalos-pr /src/target/release/hyalos-handle /usr/local/bin/
 COPY images/sandbox/etc/codex/config.toml /etc/hyalos/codex/config.toml
 COPY images/sandbox/etc/claude-code/managed-settings.json /etc/claude-code/managed-settings.json
+# Where a job's skills are mounted read-only (ADR-0089); empty in the image.
+RUN mkdir -p /opt/hyalos/skills
 
 # Every setting ADR-0016 lists, so a harness started here makes no call but its model's.
 # The keys are placeholders: the broker drops them and adds the real one. $HOME and $CODEX_HOME

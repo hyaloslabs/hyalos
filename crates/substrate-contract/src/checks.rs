@@ -10,7 +10,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use hyalos_substrate::{
-    BROKER_SOCKET_IN_SANDBOX, Ending, OUTPUT_LIMIT, Outcome, SandboxSpec, StartError, Substrate,
+    BROKER_SOCKET_IN_SANDBOX, Ending, OUTPUT_LIMIT, Outcome, SKILLS_IN_SANDBOX, SandboxSpec,
+    SpecError, StartError, Substrate,
 };
 use hyalos_types::JobId;
 
@@ -319,6 +320,17 @@ fn bad_specs(s: &dyn Substrate, c: &Ctx) -> Result<(), String> {
         spec.broker_socket = socket.into();
         cases.push(("socket path", spec));
     }
+    for skills in [
+        "",
+        "relative",
+        "/tmp/a,readonly=false",
+        "/tmp/a:b",
+        "/tmp/a\nb",
+    ] {
+        let mut spec = c.sh("exit 0");
+        spec.skills = Some(skills.into());
+        cases.push(("skills path", spec));
+    }
     let mut spec = c.sh("exit 0");
     spec.deadline = Duration::ZERO;
     cases.push(("zero deadline", spec));
@@ -409,6 +421,39 @@ touch /hyalos-test 2>/dev/null && echo root-writable || echo root-not-writable; 
         Ending::Exited(0),
         "root-mounted-ro\nroot-not-writable\ntmp-writable\n",
     )
+}
+
+/// A job's skills are readable at their place and nothing in the sandbox can change them (ADR-0089).
+/// A driver that cannot carry them must refuse the spec, never start without them.
+fn skills(s: &dyn Substrate, c: &Ctx) -> Result<(), String> {
+    let dir = c.fx.work_dir.join("skills");
+    let skill = dir.join("pdf");
+    let _ = std::fs::set_permissions(&skill, std::fs::Permissions::from_mode(0o755));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&skill).map_err(|e| format!("mkdir: {e}"))?;
+    let file = skill.join("SKILL.md");
+    std::fs::write(&file, "skill-text\n")
+        .and_then(|()| std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o444)))
+        .and_then(|()| std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)))
+        .map_err(|e| format!("write: {e}"))?;
+    let mut spec = c.sh(&format!(
+        r#"cat {SKILLS_IN_SANDBOX}/pdf/SKILL.md
+awk '$2 == "{SKILLS_IN_SANDBOX}" {{ n = split($4, o, ","); for (i = 1; i <= n; i++) if (o[i] == "ro") print "skills-mounted-ro" }}' /proc/mounts
+touch {SKILLS_IN_SANDBOX}/pdf/x 2>/dev/null && echo skills-writable || echo skills-not-writable"#
+    ));
+    spec.skills = Some(dir.clone());
+    let result = match s.start(&spec) {
+        Err(StartError::Spec(SpecError::SkillsUnsupported)) => Ok(()),
+        Err(other) => Err(format!("skills: {other}")),
+        Ok(mut sandbox) => expect(
+            "skills",
+            &sandbox.wait(),
+            Ending::Exited(0),
+            "skill-text\nskills-mounted-ro\nskills-not-writable\n",
+        ),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    result
 }
 
 fn no_privileges(s: &dyn Substrate, c: &Ctx) -> Result<(), String> {
@@ -523,6 +568,7 @@ const ISOLATION: &[(&str, Check)] = &[
     ("there is no network, only loopback", no_network),
     ("the sandbox does not run as root", not_root),
     ("the root filesystem is read-only", read_only_root),
+    ("skills are read-only at their place, or refused", skills),
     ("no capabilities and no new privileges", no_privileges),
     (
         "the broker's socket is reachable and is the way out",

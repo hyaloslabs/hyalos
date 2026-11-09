@@ -54,6 +54,7 @@ fn waiting(started: &Path) -> Request {
         release_issue: false,
         await_release: false,
         nonce: None,
+        skills: Default::default(),
     }
 }
 

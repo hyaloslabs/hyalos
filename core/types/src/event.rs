@@ -10,16 +10,17 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, AgentName, Answer, Attestation, CommitSha, Digest, HoldId, JobId, MergeMethod, Origin,
-    ReasonCode, Schema, Signed, Stakes, SubstrateName, TaskId, TypedValue, Upcast, Value,
+    AgentId, AgentName, Answer, Attestation, CommitSha, Digest, Grant, HoldId, JobId, MergeMethod,
+    Origin, PluginName, PluginSource, ReasonCode, Schema, Signed, Stakes, SubstrateName, TaskId,
+    TypedValue, Upcast, Value,
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 14;
+pub const SCHEMA_VERSION: u32 = 15;
 
-/// What this build reads: version 14, and versions 1 to 13 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// What this build reads: version 15, and versions 1 to 14 upcast to it (ADR-0023, ADR-0025, ADR-0027,
 /// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069,
-/// ADR-0070, ADR-0071).
+/// ADR-0070, ADR-0071, ADR-0089).
 ///
 /// Version 2 added the stakes of a hold and the reason for resolving one. A version 1 hold is given the
 /// most cautious stakes, so only a human can release it; a version 1 resolution is given an explicit
@@ -34,7 +35,7 @@ pub const SCHEMA_VERSION: u32 = 14;
 /// changed no payload. Version 13 added `signed` to every decision (`hold.resolved`, `task.cancelled`,
 /// `policy.approved`, `handle.released`, `agent.issued`, `agent.revoked`): an older human decision
 /// reads as `unrecorded`, any other as `none`. Version 14 added `merge.approved` and changed no
-/// payload.
+/// payload. Version 15 added `plugin.installed` and changed no payload.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -338,6 +339,22 @@ pub enum Event {
         reason: ReasonCode,
         signed: Signed,
     },
+    /// A human installed plugin `name`, whose files have SHA-256 `digest` in the plugin store, and
+    /// granted it `grant` (ADR-0006, ADR-0089). The files are never in the log: the digest binds the
+    /// decision to exactly those bytes, and they are checked against it each time they are used. A
+    /// later install of the same name replaces this one. Granting a plugin capabilities is an
+    /// irreversible capability grant, so the state refuses anyone but a human, and a grant with a name
+    /// the vocabulary does not accept (ADR-0085).
+    #[serde(rename = "plugin.installed")]
+    PluginInstalled {
+        name: PluginName,
+        digest: Digest,
+        grant: Grant,
+        source: PluginSource,
+        by: Resolution,
+        reason: ReasonCode,
+        signed: Signed,
+    },
     /// The typed values a running job returned: a reader's or planner's answer, or an actor's submitted
     /// result (ADR-0062, ADR-0064, ADR-0069). A choice is its option's index, so no text is stored. It
     /// is written together with the job's ending, so a resumed run finds every finished step's values
@@ -423,11 +440,12 @@ impl Event {
             | Event::AgentIssued { .. }
             | Event::AgentRevoked { .. }
             | Event::MergeApproved { .. }
+            | Event::PluginInstalled { .. }
             | Event::JobValues { .. } => origin == Origin::Engine,
         }
     }
 
-    /// Who decided, for the seven kinds that record a decision (ADR-0070, ADR-0071).
+    /// Who decided, for the eight kinds that record a decision (ADR-0070, ADR-0071, ADR-0089).
     pub fn decided_by(&self) -> Option<Resolution> {
         match self {
             Event::HoldResolved { by, .. }
@@ -436,12 +454,13 @@ impl Event {
             | Event::HandleReleased { by, .. }
             | Event::AgentIssued { by, .. }
             | Event::AgentRevoked { by, .. }
-            | Event::MergeApproved { by, .. } => Some(*by),
+            | Event::MergeApproved { by, .. }
+            | Event::PluginInstalled { by, .. } => Some(*by),
             _ => None,
         }
     }
 
-    /// The signature a decision carries, for the same six kinds.
+    /// The signature a decision carries, for the same eight kinds.
     pub fn signed(&self) -> Option<&Signed> {
         match self {
             Event::HoldResolved { signed, .. }
@@ -450,7 +469,8 @@ impl Event {
             | Event::HandleReleased { signed, .. }
             | Event::AgentIssued { signed, .. }
             | Event::AgentRevoked { signed, .. }
-            | Event::MergeApproved { signed, .. } => Some(signed),
+            | Event::MergeApproved { signed, .. }
+            | Event::PluginInstalled { signed, .. } => Some(signed),
             _ => None,
         }
     }
@@ -464,7 +484,8 @@ impl Event {
             | Event::HandleReleased { signed, .. }
             | Event::AgentIssued { signed, .. }
             | Event::AgentRevoked { signed, .. }
-            | Event::MergeApproved { signed, .. } => *signed = value,
+            | Event::MergeApproved { signed, .. }
+            | Event::PluginInstalled { signed, .. } => *signed = value,
             _ => {}
         }
         self
@@ -494,6 +515,7 @@ impl Event {
             Event::AgentIssued { .. } => "agent.issued",
             Event::AgentRevoked { .. } => "agent.revoked",
             Event::MergeApproved { .. } => "merge.approved",
+            Event::PluginInstalled { .. } => "plugin.installed",
             Event::JobValues { .. } => "job.values",
         }
     }
@@ -504,7 +526,7 @@ impl Event {
     }
 
     /// Every `kind` value, for checking tables and test coverage.
-    pub const KINDS: [&'static str; 16] = [
+    pub const KINDS: [&'static str; 17] = [
         "task.created",
         "task.completed",
         "job.started",
@@ -520,6 +542,7 @@ impl Event {
         "agent.issued",
         "agent.revoked",
         "merge.approved",
+        "plugin.installed",
         "job.values",
     ];
 
@@ -733,6 +756,24 @@ mod tests {
                 },
                 r#"{"kind":"merge.approved","task":1,"repo":"octo/repo","pr":42,"head":"0123456789abcdef0123456789abcdef01234567","method":"squash","by":"human","reason":"merge.operator","signed":"unrecorded"}"#
                     .to_string(),
+            ),
+            (
+                Event::PluginInstalled {
+                    name: PluginName::new("pdf-tools").unwrap(),
+                    digest: d(6),
+                    grant: Grant {
+                        egress_hosts: ["docs.rs".to_string()].into(),
+                        ..Grant::none()
+                    },
+                    source: PluginSource::Local,
+                    by: Resolution::Human,
+                    reason: ReasonCode::new("plugin.local_install").unwrap(),
+                    signed: Signed::Unrecorded,
+                },
+                format!(
+                    r#"{{"kind":"plugin.installed","name":"pdf-tools","digest":"{}","grant":{{"actions":[],"egress_hosts":["docs.rs"],"tools":[],"data_flows":[]}},"source":"local","by":"human","reason":"plugin.local_install","signed":"unrecorded"}}"#,
+                    h(6)
+                ),
             ),
             (
                 Event::JobValues {

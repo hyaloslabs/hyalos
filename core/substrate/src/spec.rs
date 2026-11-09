@@ -12,6 +12,9 @@ use hyalos_types::JobId;
 /// about 107 characters.
 pub const BROKER_SOCKET_IN_SANDBOX: &str = "/run/broker.sock";
 
+/// Where a job's installed skills appear inside the sandbox, read-only (ADR-0089).
+pub const SKILLS_IN_SANDBOX: &str = "/opt/hyalos/skills";
+
 /// The most output a sandbox's stdout or stderr is kept to. The rest is read and thrown away, so a
 /// sandbox cannot make the engine hold unbounded memory.
 pub const OUTPUT_LIMIT: usize = 64 * 1024;
@@ -42,6 +45,10 @@ pub struct SandboxSpec {
     /// The broker's Unix socket on the host. It appears at [`BROKER_SOCKET_IN_SANDBOX`] and is the
     /// only way out. It must be connectable by the unprivileged user the sandbox runs as.
     pub broker_socket: PathBuf,
+    /// A directory on the host holding the skills the job was given, one directory each, which
+    /// appears read-only at [`SKILLS_IN_SANDBOX`] (ADR-0089). A driver that cannot carry it refuses
+    /// the spec rather than start without it.
+    pub skills: Option<PathBuf>,
     /// How long the sandbox may run, from the start. At the deadline it is killed.
     pub deadline: Duration,
     /// Memory the sandbox may use.
@@ -61,6 +68,7 @@ impl SandboxSpec {
             command,
             env: BTreeMap::new(),
             broker_socket,
+            skills: None,
             deadline: Duration::from_secs(3600),
             memory_bytes: Self::DEFAULT_MEMORY_BYTES,
             max_processes: Self::DEFAULT_MAX_PROCESSES,
@@ -87,20 +95,28 @@ impl SandboxSpec {
                 return Err(SpecError::Env(key.clone()));
             }
         }
-        let socket = self.broker_socket.to_string_lossy();
-        let socket_ok = self.broker_socket.is_absolute()
-            && !socket.is_empty()
-            && !socket
-                .bytes()
-                .any(|b| matches!(b, b',' | b':' | b'\0' | b'\n'));
-        if !socket_ok {
+        if !mount_source_ok(&self.broker_socket) {
             return Err(SpecError::Socket);
+        }
+        if self.skills.as_ref().is_some_and(|p| !mount_source_ok(p)) {
+            return Err(SpecError::Skills);
         }
         if self.deadline.is_zero() || self.memory_bytes == 0 || self.max_processes == 0 {
             return Err(SpecError::Limits);
         }
         Ok(())
     }
+}
+
+/// Whether `path` can be named in a mount option: absolute, with no character the option reads as
+/// syntax.
+fn mount_source_ok(path: &std::path::Path) -> bool {
+    let text = path.to_string_lossy();
+    path.is_absolute()
+        && !text.is_empty()
+        && !text
+            .bytes()
+            .any(|b| matches!(b, b',' | b':' | b'\0' | b'\n'))
 }
 
 /// Whether `image` is a plain image reference, one that cannot be read as a runtime option.
@@ -126,6 +142,11 @@ pub enum SpecError {
     Socket,
     /// A zero deadline, memory or process limit.
     Limits,
+    /// The skills directory is not an absolute path, or has a character a mount option reads as
+    /// syntax.
+    Skills,
+    /// The job was given skills and this driver cannot carry them into the sandbox.
+    SkillsUnsupported,
 }
 
 impl fmt::Display for SpecError {
@@ -138,6 +159,12 @@ impl fmt::Display for SpecError {
                 "the broker socket must be an absolute path without ',' ':' or line breaks",
             ),
             SpecError::Limits => f.write_str("the deadline and the limits must not be zero"),
+            SpecError::Skills => f.write_str(
+                "the skills directory must be an absolute path without ',' ':' or line breaks",
+            ),
+            SpecError::SkillsUnsupported => f.write_str(
+                "this substrate cannot carry skills into the sandbox yet; choose a container or gVisor substrate for a job with skills",
+            ),
         }
     }
 }

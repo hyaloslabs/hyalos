@@ -1,12 +1,15 @@
 //! `hyalos-forward <program> [<args>...]`: relays `127.0.0.1:8089` to the broker's socket at
-//! `/run/broker.sock`, makes `$HOME` and `$CODEX_HOME`, then runs the program and exits as it did.
+//! `/run/broker.sock`, makes `$HOME` and `$CODEX_HOME`, links the job's skills into both if it has
+//! any, then runs the program and exits as it did.
 //! `HYALOS_FORWARDER` and `HYALOS_BROKER_SOCKET` override the two addresses (for tests).
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use hyalos_sandbox_tools::{BROKER_SOCKET, CODEX_SEED, FORWARDER, forward, prepare, run};
+use hyalos_sandbox_tools::{
+    BROKER_SOCKET, CODEX_SEED, FORWARDER, SKILLS, forward, link_skills, prepare, run,
+};
 
 fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -25,6 +28,14 @@ fn main() -> ExitCode {
         Path::new(CODEX_SEED),
     ) {
         eprintln!("hyalos-forward: cannot make the harness's directories: {e}");
+        return ExitCode::from(1);
+    }
+    if let Err(e) = link_skills(
+        path("HOME").as_deref(),
+        path("CODEX_HOME").as_deref(),
+        Path::new(SKILLS),
+    ) {
+        eprintln!("hyalos-forward: cannot show the harness its skills: {e}");
         return ExitCode::from(1);
     }
     // Listening before the program starts, so its first call finds the port open.

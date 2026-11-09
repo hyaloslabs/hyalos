@@ -13,8 +13,9 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, AgentName, CommitSha, Digest, Gate, HoldId, HoldReason, JobId, JobOutcome,
-    MergeMethod, ReasonCode, Resolution, Stakes, TaskId, TypedValue, Value,
+    AgentId, AgentName, CommitSha, Digest, Gate, Grant, HoldId, HoldReason, JobId, JobOutcome,
+    MergeMethod, PluginName, PluginSource, ReasonCode, Resolution, Stakes, TaskId, TypedValue,
+    Value,
 };
 
 /// The layout [`StateImage`] is written in today.
@@ -26,8 +27,9 @@ use crate::{
 /// (ADR-0068). Earlier images have none. Version 7 added why each job ended and the values it returned
 /// (ADR-0069). An earlier job ended for an unrecorded reason and returned none. Version 8 added the
 /// last decision the operator signed and the first event at the signed schema version (ADR-0070).
-/// Version 9 added the merges approved (ADR-0071); earlier images have none.
-pub const STATE_VERSION: u32 = 9;
+/// Version 9 added the merges approved (ADR-0071); earlier images have none. Version 10 added the
+/// plugins installed (ADR-0089); earlier images have none.
+pub const STATE_VERSION: u32 = 10;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +60,24 @@ pub struct StateImage {
     pub signed_since: Option<u64>,
     /// Every merge approved, in the order it was recorded (ADR-0071).
     pub merges: Vec<MergeImage>,
+    /// Every plugin installed, the latest install of each name, in name order (ADR-0089).
+    pub plugins: Vec<PluginImage>,
+}
+
+/// The latest `plugin.installed` event for one name: which files a job may be given under that name,
+/// and the grant that bounds the job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginImage {
+    /// The sequence number of the event that installed it.
+    pub seq: u64,
+    pub at: u64,
+    pub name: PluginName,
+    pub digest: Digest,
+    pub grant: Grant,
+    pub source: PluginSource,
+    pub by: Resolution,
+    pub reason: ReasonCode,
 }
 
 /// A `merge.approved` event, kept: a merge job's manifest is minted only from it.
@@ -315,7 +335,11 @@ impl StateImage {
             object.insert("signed_since".into(), Value::Null);
         }
         // 8 -> 9: no merge had been approved.
-        object.insert("merges".into(), Value::Array(Vec::new()));
+        if version < 9 {
+            object.insert("merges".into(), Value::Array(Vec::new()));
+        }
+        // 9 -> 10: no plugin had been installed.
+        object.insert("plugins".into(), Value::Array(Vec::new()));
         // 6 -> 7: no job's reason was kept, and no job had returned values.
         if version >= 7 {
             return serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()));
@@ -485,6 +509,7 @@ mod tests {
             last_approval: Some(3),
             signed_since: Some(2),
             merges: vec![],
+            plugins: vec![],
         }
     }
 

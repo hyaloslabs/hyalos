@@ -30,7 +30,7 @@ pub const COMMANDS: [(&str, &str); 5] = [
 pub const TASK_METHODS: [(&str, &str); 1] = [("stop", "tasks/cancel")];
 
 /// The operator's decisions, as commands. None of them is an MCP tool, or ever may be.
-pub const DECISIONS: [&str; 11] = [
+pub const DECISIONS: [&str; 12] = [
     "approve",
     "cancel",
     "release",
@@ -38,6 +38,7 @@ pub const DECISIONS: [&str; 11] = [
     "policy approve",
     "agent issue",
     "agent revoke",
+    "plugin install",
     "run --release-issue",
     "setup walk",
     "setup policy",
@@ -291,7 +292,9 @@ mod tests {
         }
         // No tool is named for a decision.
         for (_, tool) in COMMANDS {
-            for word in ["approve", "cancel", "merge", "release", "revoke", "policy"] {
+            for word in [
+                "approve", "cancel", "merge", "release", "revoke", "policy", "install", "grant",
+            ] {
                 assert!(!tool.contains(word), "{tool}");
             }
         }

@@ -11,8 +11,9 @@ use hyalos_policy::{GateRequest, LoadError, Outcome, Policies};
 use hyalos_types::event::SCHEMA;
 use hyalos_types::snapshot::{STATE_VERSION, StateImage};
 use hyalos_types::{
-    AgentId, AgentName, Answer, CommitSha, Digest, Event, EventError, HoldId, JobId, MergeMethod,
-    OperatorKey, OperatorPublic, Origin, ReasonCode, Resolution, Schema, Signed, TaskId, Timestamp,
+    AgentId, AgentName, Answer, CommitSha, Digest, Event, EventError, Grant, HoldId, JobId,
+    MergeMethod, OperatorKey, OperatorPublic, Origin, PluginName, PluginSource, ReasonCode,
+    Resolution, Schema, Signed, TaskId, Timestamp,
 };
 
 use crate::state::{Pruned, RuleViolation, State};
@@ -301,7 +302,8 @@ fn through_the_api(origin: Origin, event: &Event) -> Option<RuleViolation> {
         | Event::HandleReleased { .. }
         | Event::AgentIssued { .. }
         | Event::AgentRevoked { .. }
-        | Event::MergeApproved { .. } => {
+        | Event::MergeApproved { .. }
+        | Event::PluginInstalled { .. } => {
             Some(RuleViolation::ThroughTheEngineApi { kind: event.kind() })
         }
         _ => None,
@@ -977,6 +979,37 @@ impl Engine {
                 pr,
                 head,
                 method,
+                by: decider.resolution(),
+                reason,
+                signed: Signed::None,
+            },
+        )
+    }
+
+    /// Records a human installing plugin `name`, whose files have SHA-256 `digest` in the plugin
+    /// store, with `grant` (ADR-0006, ADR-0089). Installing grants capabilities, so any decider but a
+    /// human is refused, and a human's needs the operator's key (ADR-0070); a grant the vocabulary
+    /// refuses is refused too. A later install of the same name replaces this one. Nothing is
+    /// written if refused. `reason` is a short code, never free text.
+    #[allow(clippy::too_many_arguments)]
+    pub fn install_plugin(
+        &mut self,
+        at: Timestamp,
+        name: PluginName,
+        digest: Digest,
+        grant: Grant,
+        source: PluginSource,
+        decider: Decider,
+        reason: ReasonCode,
+    ) -> Result<Head, EngineError> {
+        self.submit_checked(
+            at,
+            Origin::Engine,
+            Event::PluginInstalled {
+                name,
+                digest,
+                grant,
+                source,
                 by: decider.resolution(),
                 reason,
                 signed: Signed::None,

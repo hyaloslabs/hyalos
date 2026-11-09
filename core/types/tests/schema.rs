@@ -440,6 +440,39 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             signed: Signed::Operator(approval),
         },
     ));
+
+    // Version 15 added `plugin.installed` (ADR-0089) and changed no payload, so the sixteen older
+    // kinds read as they did at version 14.
+    let at_14: Vec<_> = all.iter().filter(|g| g.0 == 14).cloned().collect();
+    for (_, kind, json, event) in at_14 {
+        all.push((15, kind, json, event));
+    }
+    let approval = hyalos_types::OperatorKey::from_seed(&[7; 32]).approve(&[1; 32], 2, d(3), b"p");
+    all.push((
+        15,
+        "plugin.installed",
+        format!(
+            r#"{{"kind":"plugin.installed","name":"pdf-tools","digest":"{}","grant":{{"actions":["read"],"egress_hosts":["docs.rs"],"tools":[],"data_flows":["job->web"]}},"source":"local","by":"human","reason":"plugin.local_install","signed":{{"operator":{{"operator":"{}","after":2,"after_hash":"{}","signature":"{}"}}}}}}"#,
+            hex(6),
+            approval.operator,
+            hex(3),
+            hyalos_types::hex::to_hex(approval.signature.as_bytes())
+        ),
+        Event::PluginInstalled {
+            name: hyalos_types::PluginName::new("pdf-tools").ok_or("name")?,
+            digest: d(6),
+            grant: hyalos_types::Grant {
+                actions: ["read".to_string()].into(),
+                egress_hosts: ["docs.rs".to_string()].into(),
+                data_flows: ["job->web".to_string()].into(),
+                ..hyalos_types::Grant::none()
+            },
+            source: hyalos_types::PluginSource::Local,
+            by: Resolution::Human,
+            reason: ReasonCode::new("plugin.local_install").ok_or("reason")?,
+            signed: Signed::Operator(approval),
+        },
+    ));
     Ok(all)
 }
 
@@ -453,6 +486,7 @@ fn introduced(kind: &str) -> u32 {
         "agent.issued" | "agent.revoked" => 11,
         "job.values" => 12,
         "merge.approved" => 14,
+        "plugin.installed" => 15,
         _ => 1,
     }
 }

@@ -9,13 +9,13 @@ use std::fmt;
 
 use hyalos_types::snapshot::{
     AgentImage, CancelledImage, HandleImage, HoldImage, JobEndImage, JobImage, MergeImage,
-    PolicyImage, PrunedImage, ResolvedImage, RevokedImage, StateImage, TaskImage,
+    PluginImage, PolicyImage, PrunedImage, ResolvedImage, RevokedImage, StateImage, TaskImage,
 };
 use hyalos_types::workflow::MAX_FIELDS;
 use hyalos_types::{
-    AgentId, AgentName, Answer, CommitSha, Digest, Event, Gate, HoldId, HoldReason, JobId,
-    JobOutcome, MAX_POLICY_DOCUMENT, MergeMethod, Origin, ReasonCode, Resolution, SIGNED_SINCE,
-    Sensitive, Signed, Stakes, TaskId, Timestamp, TypedValue,
+    AgentId, AgentName, Answer, CommitSha, Digest, Event, Gate, Grant, HoldId, HoldReason, JobId,
+    JobOutcome, MAX_POLICY_DOCUMENT, MergeMethod, Origin, PluginName, PluginSource, ReasonCode,
+    Resolution, SIGNED_SINCE, Sensitive, Signed, Stakes, TaskId, Timestamp, TypedValue,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +206,12 @@ pub enum RuleViolation {
     MergeNeedsAHuman {
         by: Resolution,
     },
+    /// Installing a plugin grants it capabilities, so only a human does it (ADR-0012, ADR-0089).
+    PluginNeedsAHuman {
+        by: Resolution,
+    },
+    /// A plugin's grant holds a name the capability vocabulary does not accept (ADR-0085).
+    PluginGrantInvalid,
     /// A task holds one merge approval, made before any job runs on it.
     MergeAlreadyApproved(TaskId),
     /// A second job on a task whose merge approval a job has already had.
@@ -305,6 +311,14 @@ impl fmt::Display for RuleViolation {
             RuleViolation::MergeNeedsAHuman { by } => write!(
                 f,
                 "a merge needs a human's approval; {by:?} may not approve one (ADR-0012, ADR-0071)"
+            ),
+            RuleViolation::PluginNeedsAHuman { by } => write!(
+                f,
+                "installing a plugin grants it capabilities and needs a human; {by:?} may not (ADR-0012, ADR-0089)"
+            ),
+            RuleViolation::PluginGrantInvalid => write!(
+                f,
+                "a plugin's grant holds a name the capability vocabulary does not accept (ADR-0085)"
             ),
             RuleViolation::MergeAlreadyApproved(task) => write!(
                 f,
@@ -417,6 +431,8 @@ pub struct State {
     handles: Vec<ReleasedHandle>,
     agents: BTreeMap<AgentId, Agent>,
     merges: Vec<ApprovedMerge>,
+    /// The latest install of each plugin, by name (ADR-0089).
+    plugins: BTreeMap<PluginName, InstalledPlugin>,
     pending: Option<Pending>,
     /// The event of the last decision the operator signed (ADR-0070).
     last_approval: Option<u64>,
@@ -462,6 +478,20 @@ pub struct ApprovedMerge {
     pub pr: u64,
     pub head: CommitSha,
     pub method: MergeMethod,
+    pub by: Resolution,
+    pub reason: ReasonCode,
+}
+
+/// The latest install of one plugin (ADR-0089): the files with SHA-256 `digest` in the plugin store,
+/// and the capabilities a human granted them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledPlugin {
+    /// The event that installed it.
+    pub seq: u64,
+    pub at: Timestamp,
+    pub digest: Digest,
+    pub grant: Grant,
+    pub source: PluginSource,
     pub by: Resolution,
     pub reason: ReasonCode,
 }
@@ -517,6 +547,11 @@ impl State {
     /// Every merge approved, in the order it was recorded (ADR-0071).
     pub fn merges(&self) -> &[ApprovedMerge] {
         &self.merges
+    }
+
+    /// The latest install of every plugin, by name (ADR-0089).
+    pub fn plugins(&self) -> &BTreeMap<PluginName, InstalledPlugin> {
+        &self.plugins
     }
 
     /// The merge approved for `task`, if one was.
@@ -836,6 +871,19 @@ impl State {
                 }
                 Ok(())
             }
+            Event::PluginInstalled { grant, by, .. } => {
+                // The authority table (ADR-0025) for an irreversible capability grant: a human only.
+                if !Stakes::irreversible()
+                    .touching(Sensitive::CapabilityGrant)
+                    .may_be_resolved_by(*by)
+                {
+                    return Err(RuleViolation::PluginNeedsAHuman { by: *by });
+                }
+                if grant.check().is_err() {
+                    return Err(RuleViolation::PluginGrantInvalid);
+                }
+                Ok(())
+            }
             Event::AgentIssued {
                 name,
                 credential,
@@ -1109,6 +1157,28 @@ impl State {
                 by: *by,
                 reason: reason.clone(),
             }),
+            Event::PluginInstalled {
+                name,
+                digest,
+                grant,
+                source,
+                by,
+                reason,
+                ..
+            } => {
+                self.plugins.insert(
+                    name.clone(),
+                    InstalledPlugin {
+                        seq,
+                        at,
+                        digest: *digest,
+                        grant: grant.clone(),
+                        source: *source,
+                        by: *by,
+                        reason: reason.clone(),
+                    },
+                );
+            }
             Event::AgentIssued {
                 name,
                 credential,
@@ -1177,6 +1247,7 @@ impl State {
             handles,
             agents,
             merges,
+            plugins,
             pending,
             last_approval,
             signed_since,
@@ -1191,6 +1262,30 @@ impl State {
             last_at: last_at.map(Timestamp::as_millis),
             last_approval: *last_approval,
             signed_since: *signed_since,
+            plugins: plugins
+                .iter()
+                .map(|(name, p)| {
+                    let InstalledPlugin {
+                        seq,
+                        at,
+                        digest,
+                        grant,
+                        source,
+                        by,
+                        reason,
+                    } = p;
+                    PluginImage {
+                        seq: *seq,
+                        at: at.as_millis(),
+                        name: name.clone(),
+                        digest: *digest,
+                        grant: grant.clone(),
+                        source: *source,
+                        by: *by,
+                        reason: reason.clone(),
+                    }
+                })
+                .collect(),
             merges: merges
                 .iter()
                 .map(|m| {
@@ -1399,8 +1494,25 @@ impl State {
             last_approval,
             signed_since,
             merges,
+            plugins,
         } = image;
+        let mut by_name = BTreeMap::new();
+        for p in plugins {
+            let installed = InstalledPlugin {
+                seq: p.seq,
+                at: Timestamp::from_millis(p.at),
+                digest: p.digest,
+                grant: p.grant,
+                source: p.source,
+                by: p.by,
+                reason: p.reason,
+            };
+            if by_name.insert(p.name.clone(), installed).is_some() {
+                return Err(format!("plugin {} is in the snapshot twice", p.name));
+            }
+        }
         let mut state = State {
+            plugins: by_name,
             last_approval,
             signed_since,
             merges: merges
@@ -1620,6 +1732,16 @@ impl State {
             }
             if self.merges[..i].iter().any(|n| n.task == m.task) {
                 out.push(format!("task {} has two merges approved", m.task));
+            }
+        }
+        for (name, p) in &self.plugins {
+            if p.by != Resolution::Human {
+                out.push(format!("plugin {name} was installed by {:?}", p.by));
+            }
+            if p.grant.check().is_err() {
+                out.push(format!(
+                    "plugin {name} holds a grant the vocabulary refuses"
+                ));
             }
         }
         for (id, a) in &self.agents {

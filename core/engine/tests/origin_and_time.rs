@@ -90,6 +90,16 @@ fn accept(e: &mut Engine, n: u64, event: Event) -> Res {
         } => {
             e.approve_merge(at(n), task, &repo, pr, head, method, Decider::Human, reason)?;
         }
+        Event::PluginInstalled {
+            name,
+            digest,
+            grant,
+            source,
+            reason,
+            ..
+        } => {
+            e.install_plugin(at(n), name, digest, grant, source, Decider::Human, reason)?;
+        }
         other => {
             e.submit(at(n), Origin::Engine, other)?;
         }
@@ -258,6 +268,15 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
                 signed: hyalos_types::Signed::Unrecorded,
             }
         }
+        "plugin.installed" => Event::PluginInstalled {
+            name: hyalos_types::PluginName::new("pdf").ok_or("name")?,
+            digest: d(2),
+            grant: hyalos_types::Grant::none(),
+            source: hyalos_types::PluginSource::Local,
+            by: Resolution::Human,
+            reason: why(),
+            signed: hyalos_types::Signed::Unrecorded,
+        },
         "job.values" => {
             let task = TaskId::from_seq(go(&mut e, 1, Event::TaskCreated { request: d(1) })?);
             let job = JobId::from_seq(go(

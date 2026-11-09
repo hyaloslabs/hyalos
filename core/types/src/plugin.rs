@@ -6,10 +6,81 @@
 //! A grant can only narrow a manifest, never widen it. It is written in the capability vocabulary
 //! ([`crate::capability`]), which the manifest shares.
 
+use std::fmt;
+
+use serde::de::{Deserialize, Deserializer, Error};
+use serde::{Serialize, Serializer};
+
 use crate::Capabilities;
 
 /// The capabilities granted to one plugin. A local install starts with none (ADR-0006).
 pub type Grant = Capabilities;
+
+/// The longest name a plugin may have, as the Agent Skills format allows.
+pub const MAX_PLUGIN_NAME_LEN: usize = 64;
+
+/// An installed plugin's name (ADR-0089): 1 to 64 lowercase letters, digits and hyphens, not starting
+/// or ending with a hyphen and with no two in a row, as the Agent Skills format names a skill. The name
+/// comes from the plugin's own `SKILL.md`, so it is plugin-authored, but a name of this syntax can hold
+/// nothing but those characters, so it may be printed, stored and used as a directory name.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PluginName(String);
+
+impl PluginName {
+    pub fn new(name: &str) -> Option<Self> {
+        let valid = !name.is_empty()
+            && name.len() <= MAX_PLUGIN_NAME_LEN
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && !name.starts_with('-')
+            && !name.ends_with('-')
+            && !name.contains("--");
+        valid.then(|| Self(name.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for PluginName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl fmt::Debug for PluginName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PluginName({})", self.0)
+    }
+}
+
+impl Serialize for PluginName {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for PluginName {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        PluginName::new(&text).ok_or_else(|| {
+            D::Error::custom(
+                "a plugin name is 1 to 64 lowercase letters, digits and single hyphens",
+            )
+        })
+    }
+}
+
+/// Where an installed plugin came from (ADR-0006, ADR-0089).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginSource {
+    /// Read from a directory on the operator's machine. It has no signature or transparency-log
+    /// entry, so every capability it holds was granted by a human (ADR-0006).
+    Local,
+}
 
 #[cfg(test)]
 mod tests {
@@ -41,6 +112,35 @@ mod tests {
             result: None,
             closes: None,
         }
+    }
+
+    #[test]
+    fn a_plugin_name_is_the_agent_skills_syntax() {
+        for good in ["pdf", "pdf-tools", "a1", &"a".repeat(64)] {
+            assert!(PluginName::new(good).is_some(), "{good}");
+        }
+        for bad in [
+            "",
+            "PDF",
+            "-pdf",
+            "pdf-",
+            "pdf--tools",
+            "pdf_tools",
+            "pdf.tools",
+            "../x",
+            "a b",
+            "p\u{1b}",
+            &"a".repeat(65),
+        ] {
+            assert!(PluginName::new(bad).is_none(), "{bad}");
+        }
+        let name = PluginName::new("pdf-tools").unwrap();
+        assert_eq!(serde_json::to_string(&name).unwrap(), r#""pdf-tools""#);
+        assert!(serde_json::from_str::<PluginName>(r#""../etc""#).is_err());
+        assert_eq!(
+            serde_json::to_string(&PluginSource::Local).unwrap(),
+            r#""local""#
+        );
     }
 
     #[test]

@@ -61,6 +61,14 @@ The command prints each step: the substrate and its attestation (none of today's
 
 It needs the run's request in `runs/task-<id>.json` in the data directory, which `hyalos mcp` writes for the jobs an agent starts. A run started from the command line has none, so it cannot be resumed. The MCP server resumes its own runs by itself ([mcp.md](mcp.md)).
 
+**Giving a job a skill.** An Agent Skill is a directory with a `SKILL.md` and its scripts, and a `capabilities.json` if it asks for any. Install it first, in your own terminal, since installing is your signed decision ([ADR-0089](../adr/0089-installing-an-agent-skill-and-running-it-in-the-job-s-sandbox.md)):
+
+```
+hyalos plugin install ./pdf-tools
+```
+
+It prints what the skill asks for. If that adds a capability, read it and run the command again with `--grant`. Then `hyalos run ... --skill pdf-tools` puts the skill read-only in the job's sandbox, at `/opt/hyalos/skills`. The job may then do only what both it and the skill were granted, so a skill granted nothing leaves the job unable to push. `hyalos plugin list` shows what is installed. The microVM substrate cannot carry skills yet and refuses such a job.
+
 ## 3. Merge the pull request
 
 A job opens a pull request and merges nothing. Merging is yours ([ADR-0071](../adr/0071-merging-after-the-operators-approval.md)): review the pull request on GitHub, then in your own terminal:
