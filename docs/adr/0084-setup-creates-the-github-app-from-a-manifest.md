@@ -1,6 +1,6 @@
 # ADR-0084: Setup creates the GitHub App from a manifest
 
-**Status:** Proposed. Supersedes [ADR-0080](0080-setup-asks-the-operator-in-their-own-terminal.md)'s account of `github-app`, for an App not set up yet.
+**Status:** Accepted. Supersedes [ADR-0080](0080-setup-asks-the-operator-in-their-own-terminal.md)'s account of `github-app`, for an App not set up yet.
 
 ## Context
 
