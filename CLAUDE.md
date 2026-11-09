@@ -17,7 +17,7 @@ This file holds the rules. The design is in the ADRs: start at [`docs/adr/README
 
 The driving agent and the operator are different principals, and an agent working on this repository is held to the same split:
 - Never read, print or ask for a secret: `engine.key`, `operator.key`, `provider.keys`, `github-app.pem`, the operator's passphrase, an agent credential.
-- Never run a decision: `hyalos approve`, `cancel`, `release`, `merge`, `policy approve`, `agent issue|revoke`, `plugin install`, `run --release-issue`. The operator runs them in a terminal of their own (`tools_cmd::DECISIONS`).
+- Never run a decision: `hyalos approve`, `cancel`, `release`, `merge`, `policy approve`, `agent issue|revoke`, `plugin install`, `plugin policy set`, `run --release-issue`. The operator runs them in a terminal of their own (`tools_cmd::DECISIONS`).
 - No MCP tool decides. A new MCP tool needs its thin-CLI command in the same change (`tools_cmd::COMMANDS`, ADR-0075).
 
 ## Rules for the code
@@ -55,7 +55,7 @@ Tests that need a tool skip without it unless CI's variable is set: `HYALOS_REQU
 
 These are pinned by tests. A change to one bumps its version (except where noted) and updates the ADR that owns it, or adds one:
 - **Events** (ADR-0019, ADR-0023): the closed `hyalos_types::Event` set. A new or changed payload bumps `SCHEMA_VERSION`, adds the version's pinned payloads to `core/types/tests/schema.rs` and its upcast steps. The log is never rewritten. A change to what the state keeps bumps the `StateImage` version (ADR-0026).
-- **Decisions** (ADR-0025, ADR-0070): `hold.resolved`, `task.cancelled`, `policy.approved`, `handle.released`, `agent.issued|revoked`, `merge.approved` and `plugin.installed` are written only by their `Engine` method, signed by the operator's key for a human; `submit` refuses them raw and the broker may not send them.
+- **Decisions** (ADR-0025, ADR-0070): `hold.resolved`, `task.cancelled`, `policy.approved`, `handle.released`, `agent.issued|revoked`, `merge.approved`, `plugin.installed` (a human's, or policy's within the install policy) and `plugin.policy_set` are written only by their `Engine` method, signed by the operator's key for a human; `submit` refuses them raw and the broker may not send them.
 - **The engine–broker channel** (ADR-0035): the closed `hyalos_types::wire` set. A new message bumps the wire version.
 - **The manifest** (ADR-0031): pinned bytes and signature in `core/types/tests/manifest.rs`. A new optional field left out of the signed bytes when empty needs no version bump, since older manifests sign the same; anything else bumps the manifest version.
 - **Reasons** are `ReasonCode`s, never free text. Forge and model text are tainted types with no `as_str` (ADR-0047, ADR-0059); never add a way out.
@@ -64,14 +64,14 @@ These are pinned by tests. A change to one bumps its version (except where noted
 
 | Code | What | ADRs |
 | --- | --- | --- |
-| `core/types` | Events, schema, manifest, capabilities, wire, provenance, prompts, workflows, results, plugin grants, approvals, merges | 0019, 0023, 0024, 0031, 0035, 0043, 0045, 0047, 0057, 0059, 0060, 0063, 0064, 0066, 0068, 0070, 0071, 0079, 0083, 0085, 0088, 0089, 0090 |
+| `core/types` | Events, schema, manifest, capabilities, wire, provenance, prompts, workflows, results, plugin grants, approvals, merges | 0019, 0023, 0024, 0031, 0035, 0043, 0045, 0047, 0057, 0059, 0060, 0063, 0064, 0066, 0068, 0070, 0071, 0079, 0083, 0085, 0088, 0089, 0090, 0091 |
 | `core/log` | The signed SQLite log, compaction, pruning, backup | 0018, 0021, 0026, 0027, 0028 |
 | `core/policy` | Cedar, the shipped baseline and schema, gates | 0008, 0009, 0020, 0033, 0085 |
-| `core/engine` | State, holds, cancels, compaction and audit, the policy store, minting, handles, agents, several writers | 0013, 0024, 0025, 0026, 0027, 0028, 0029, 0031, 0034, 0047, 0055, 0063, 0066, 0068, 0069, 0070, 0071, 0083, 0085, 0089 |
+| `core/engine` | State, holds, cancels, compaction and audit, the policy store, minting, handles, agents, several writers | 0013, 0024, 0025, 0026, 0027, 0028, 0029, 0031, 0034, 0047, 0055, 0063, 0066, 0068, 0069, 0070, 0071, 0083, 0085, 0089, 0091 |
 | `core/broker` | Channel, model relay and TLS, egress, git proxy, forge, content gates, readers, handles, results, merge | 0035, 0037, 0038, 0039, 0042, 0046, 0047, 0048, 0051, 0054, 0055, 0061, 0063, 0064, 0065, 0071, 0079, 0083, 0085 |
 | `core/substrate` | Containers, gVisor, Firecracker, choosing one, attestation | 0032, 0041, 0043, 0056, 0057, 0058, 0089 |
 | `core/plugin` | The plugin runtime: the Wasmtime host, install, Sigstore verification, update checks (part budget 3,000) | 0006, 0007, 0086, 0087, 0089, 0090 |
-| `core/hyalos` | The binary: keys, log commands, the broker process and channel, doctor, GitHub App, `hyalos run`, the fix-issue workflow, MCP server, operator commands and merge, thin CLI, setup, the capability diff | 0018, 0021, 0022, 0026–0028, 0030, 0035, 0038, 0043, 0044, 0045, 0050, 0052, 0053, 0058, 0062, 0063, 0067–0075, 0078, 0080, 0081, 0082, 0083, 0084, 0088, 0089, 0090 |
+| `core/hyalos` | The binary: keys, log commands, the broker process and channel, doctor, GitHub App, `hyalos run`, the fix-issue workflow, MCP server, operator commands and merge, thin CLI, setup, the capability diff | 0018, 0021, 0022, 0026–0028, 0030, 0035, 0038, 0043, 0044, 0045, 0050, 0052, 0053, 0058, 0062, 0063, 0067–0075, 0078, 0080, 0081, 0082, 0083, 0084, 0088, 0089, 0090, 0091 |
 | `.github/workflows/release.yml` | A release: the static binary, the image by digest, provenance | 0081 |
 | `site/setup`, `.github/workflows/pages.yml` | The setup page that creates the GitHub App from a manifest | 0084 |
 | `crates/xtask` | `layout` and `lines` | 0017 |

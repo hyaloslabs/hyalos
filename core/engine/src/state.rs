@@ -8,14 +8,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use hyalos_types::snapshot::{
-    AgentImage, CancelledImage, HandleImage, HoldImage, JobEndImage, JobImage, MergeImage,
-    PluginImage, PolicyImage, PrunedImage, ResolvedImage, RevokedImage, StateImage, TaskImage,
+    AgentImage, CancelledImage, HandleImage, HoldImage, InstallPolicyImage, JobEndImage, JobImage,
+    MergeImage, PluginImage, PolicyImage, PrunedImage, ResolvedImage, RevokedImage, StateImage,
+    TaskImage,
 };
 use hyalos_types::workflow::MAX_FIELDS;
 use hyalos_types::{
-    AgentId, AgentName, Answer, CommitSha, Digest, Event, Gate, Grant, HoldId, HoldReason, JobId,
-    JobOutcome, MAX_POLICY_DOCUMENT, MergeMethod, Origin, PluginName, PluginSource, ReasonCode,
-    Resolution, SIGNED_SINCE, Sensitive, Signed, Stakes, TaskId, Timestamp, TypedValue,
+    AgentId, AgentName, Answer, CommitSha, Digest, Event, Gate, Grant, HoldId, HoldReason,
+    InstallPolicy, JobId, JobOutcome, MAX_POLICY_DOCUMENT, MergeMethod, Origin, PluginName,
+    PluginSource, ReasonCode, Resolution, SIGNED_SINCE, Sensitive, Signed, Stakes, TaskId,
+    Timestamp, TypedValue,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,10 +208,19 @@ pub enum RuleViolation {
     MergeNeedsAHuman {
         by: Resolution,
     },
-    /// Installing a plugin grants it capabilities, so only a human does it (ADR-0012, ADR-0089).
+    /// Installing a plugin grants it capabilities, so only a human does it, or policy within the
+    /// install policy the human set (ADR-0012, ADR-0089, ADR-0091).
     PluginNeedsAHuman {
         by: Resolution,
     },
+    /// Setting the install policy decides what installs without a human, so only a human sets it
+    /// (ADR-0012, ADR-0091).
+    InstallPolicyNeedsAHuman {
+        by: Resolution,
+    },
+    /// An install policy with a ceiling outside the vocabulary, an age out of range, or too many
+    /// indexes.
+    InstallPolicyInvalid,
     /// A plugin's grant holds a name the capability vocabulary does not accept (ADR-0085).
     PluginGrantInvalid,
     /// A task holds one merge approval, made before any job runs on it.
@@ -315,6 +326,14 @@ impl fmt::Display for RuleViolation {
             RuleViolation::PluginNeedsAHuman { by } => write!(
                 f,
                 "installing a plugin grants it capabilities and needs a human; {by:?} may not (ADR-0012, ADR-0089)"
+            ),
+            RuleViolation::InstallPolicyNeedsAHuman { by } => write!(
+                f,
+                "the install policy decides what installs without a human, so a human sets it; {by:?} may not (ADR-0012, ADR-0091)"
+            ),
+            RuleViolation::InstallPolicyInvalid => write!(
+                f,
+                "an install policy's ceiling is in the vocabulary, its ages are 1 to 3650 days, and it trusts at most 16 indexes (ADR-0091)"
             ),
             RuleViolation::PluginGrantInvalid => write!(
                 f,
@@ -433,6 +452,8 @@ pub struct State {
     merges: Vec<ApprovedMerge>,
     /// The latest install of each plugin, by name (ADR-0089).
     plugins: BTreeMap<PluginName, InstalledPlugin>,
+    /// The install policy in force, if the operator set one (ADR-0091).
+    install_policy: Option<SetInstallPolicy>,
     pending: Option<Pending>,
     /// The event of the last decision the operator signed (ADR-0070).
     last_approval: Option<u64>,
@@ -496,6 +517,17 @@ pub struct InstalledPlugin {
     pub reason: ReasonCode,
 }
 
+/// The install policy the operator set last (ADR-0091).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetInstallPolicy {
+    /// The event that set it.
+    pub seq: u64,
+    pub at: Timestamp,
+    pub policy: InstallPolicy,
+    pub by: Resolution,
+    pub reason: ReasonCode,
+}
+
 /// A credential a human issued to a driving agent (ADR-0068). The MCP server admits a caller who
 /// presents a secret whose SHA-256 is `credential`, until it is revoked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -552,6 +584,11 @@ impl State {
     /// The latest install of every plugin, by name (ADR-0089).
     pub fn plugins(&self) -> &BTreeMap<PluginName, InstalledPlugin> {
         &self.plugins
+    }
+
+    /// The install policy in force, if any (ADR-0091).
+    pub fn install_policy(&self) -> Option<&SetInstallPolicy> {
+        self.install_policy.as_ref()
     }
 
     /// The merge approved for `task`, if one was.
@@ -871,16 +908,37 @@ impl State {
                 }
                 Ok(())
             }
-            Event::PluginInstalled { grant, by, .. } => {
-                // The authority table (ADR-0025) for an irreversible capability grant: a human only.
-                if !Stakes::irreversible()
+            Event::PluginInstalled {
+                grant, source, by, ..
+            } => {
+                // The authority table (ADR-0025) for an irreversible capability grant: a human only,
+                // or policy where the human's install policy already covers it (ADR-0091). Never a
+                // verifier (ADR-0012).
+                let human = Stakes::irreversible()
                     .touching(Sensitive::CapabilityGrant)
-                    .may_be_resolved_by(*by)
-                {
+                    .may_be_resolved_by(*by);
+                let within_policy = *by == Resolution::Policy
+                    && self
+                        .install_policy
+                        .as_ref()
+                        .is_some_and(|p| p.policy.covers(source, grant));
+                if !human && !within_policy {
                     return Err(RuleViolation::PluginNeedsAHuman { by: *by });
                 }
                 if grant.check().is_err() {
                     return Err(RuleViolation::PluginGrantInvalid);
+                }
+                Ok(())
+            }
+            Event::PluginPolicySet { policy, by, .. } => {
+                if !Stakes::irreversible()
+                    .touching(Sensitive::CapabilityGrant)
+                    .may_be_resolved_by(*by)
+                {
+                    return Err(RuleViolation::InstallPolicyNeedsAHuman { by: *by });
+                }
+                if !policy.is_valid() {
+                    return Err(RuleViolation::InstallPolicyInvalid);
                 }
                 Ok(())
             }
@@ -1179,6 +1237,17 @@ impl State {
                     },
                 );
             }
+            Event::PluginPolicySet {
+                policy, by, reason, ..
+            } => {
+                self.install_policy = Some(SetInstallPolicy {
+                    seq,
+                    at,
+                    policy: policy.clone(),
+                    by: *by,
+                    reason: reason.clone(),
+                });
+            }
             Event::AgentIssued {
                 name,
                 credential,
@@ -1248,6 +1317,7 @@ impl State {
             agents,
             merges,
             plugins,
+            install_policy,
             pending,
             last_approval,
             signed_since,
@@ -1262,6 +1332,22 @@ impl State {
             last_at: last_at.map(Timestamp::as_millis),
             last_approval: *last_approval,
             signed_since: *signed_since,
+            install_policy: install_policy.as_ref().map(|p| {
+                let SetInstallPolicy {
+                    seq,
+                    at,
+                    policy,
+                    by,
+                    reason,
+                } = p;
+                InstallPolicyImage {
+                    seq: *seq,
+                    at: at.as_millis(),
+                    policy: policy.clone(),
+                    by: *by,
+                    reason: reason.clone(),
+                }
+            }),
             plugins: plugins
                 .iter()
                 .map(|(name, p)| {
@@ -1495,6 +1581,7 @@ impl State {
             signed_since,
             merges,
             plugins,
+            install_policy,
         } = image;
         let mut by_name = BTreeMap::new();
         for p in plugins {
@@ -1513,6 +1600,13 @@ impl State {
         }
         let mut state = State {
             plugins: by_name,
+            install_policy: install_policy.map(|p| SetInstallPolicy {
+                seq: p.seq,
+                at: Timestamp::from_millis(p.at),
+                policy: p.policy,
+                by: p.by,
+                reason: p.reason,
+            }),
             last_approval,
             signed_since,
             merges: merges
@@ -1735,13 +1829,26 @@ impl State {
             }
         }
         for (name, p) in &self.plugins {
-            if p.by != Resolution::Human {
+            // An install by policy was checked against the policy of its day, which may since have
+            // changed; one by anyone else was never allowed.
+            if !matches!(p.by, Resolution::Human | Resolution::Policy) {
                 out.push(format!("plugin {name} was installed by {:?}", p.by));
+            }
+            if p.by == Resolution::Policy && p.source == PluginSource::Local {
+                out.push(format!("plugin {name} was installed locally by policy"));
             }
             if p.grant.check().is_err() {
                 out.push(format!(
                     "plugin {name} holds a grant the vocabulary refuses"
                 ));
+            }
+        }
+        if let Some(p) = &self.install_policy {
+            if p.by != Resolution::Human {
+                out.push(format!("the install policy was set by {:?}", p.by));
+            }
+            if !p.policy.is_valid() {
+                out.push("the install policy is not valid".into());
             }
         }
         for (id, a) in &self.agents {

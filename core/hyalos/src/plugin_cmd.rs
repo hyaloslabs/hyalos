@@ -7,6 +7,7 @@
 //! only with `--grant`, after the operator has read the diff. `diff` reads capabilities documents and
 //! writes nothing.
 
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
@@ -16,8 +17,8 @@ use hyalos_plugin::index::{INDEX_FILE, Index, MAX_INDEX};
 use hyalos_plugin::skill::{MAX_ARCHIVE, Skill, Store, digest_of};
 use hyalos_types::capability::Field;
 use hyalos_types::{
-    Capabilities, Clock, Diff, Grant, IndexLocation, MAX_CAPABILITY_DOCUMENT, PluginName,
-    PluginSource, PluginVersion, ReasonCode,
+    Capabilities, Clock, Diff, Grant, IndexLocation, InstallPolicy, MAX_CAPABILITY_DOCUMENT,
+    PluginName, PluginSource, PluginVersion, ReasonCode,
 };
 
 use crate::clock::SystemClock;
@@ -26,11 +27,19 @@ use crate::operator;
 use crate::passphrase;
 use crate::paths::{self, Env};
 use crate::plugin_source;
+use crate::policy_cmd;
+use hyalos_types::plugin::{
+    DEFAULT_MAX_REVOCATION_AGE_DAYS, DEFAULT_MAX_SNAPSHOT_AGE_DAYS, MAX_AGE_DAYS,
+    MAX_POLICY_INDEXES,
+};
 
 const USAGE: &str = "usage: hyalos plugin install <dir> [--grant] [--reason <code>] [--passphrase-stdin]
        hyalos plugin install --index <location> <name> [--version <v>] [--grant] [--reason <code>]
                              [--passphrase-stdin]
        hyalos plugin list
+       hyalos plugin policy set --ceiling <file> [--index <location>]... [--max-snapshot-age-days <n>]
+                                [--max-revocation-age-days <n>] [--reason <code>] [--passphrase-stdin]
+       hyalos plugin policy show
        hyalos plugin pack <dir> <file>
        hyalos plugin diff [<installed>] <new>
   install reads the Agent Skill in <dir> (SKILL.md, its scripts, and capabilities.json if it asks for
@@ -41,7 +50,12 @@ const USAGE: &str = "usage: hyalos plugin install <dir> [--grant] [--reason <cod
   With --index, it finds <name> in the plugin index at <location> (an https:// URL whose index.json
   and archives are beside each other, as a release's assets, or a directory holding the same files,
   as an offline bundle), takes its latest version or --version, and installs it only if its archive
-  has the digest the index gives (ADR-0090)
+  has the digest the index gives (ADR-0090). If your install policy trusts that index and the skill
+  asks for nothing beyond its ceiling, it installs without your passphrase (ADR-0091)
+  policy set is your decision, signed with your approval key: a plugin from one of the indexes,
+  asking for no more than the capabilities document <file>, then installs without you. Anything else
+  stays your decision each time. The ages (default 90 and 30 days) bound how old a trusted root and a
+  revocation list may be (ADR-0007). policy show prints the policy in force
   list shows every skill installed, its digest, where it came from and what it was granted
   pack writes the skill in <dir> as one archive to <file>, a new file, and prints its digest, as an
   index lists it
@@ -52,7 +66,7 @@ const USAGE: &str = "usage: hyalos plugin install <dir> [--grant] [--reason <cod
 pub fn run(args: &[String]) -> ExitCode {
     let env = |name: &str| std::env::var(name).ok();
     let result = match args.first().map(String::as_str) {
-        Some("install" | "list" | "pack") => manage(args, &env),
+        Some("install" | "list" | "pack" | "policy") => manage(args, &env),
         _ => run_with(args),
     };
     match result {
@@ -142,16 +156,21 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
                 }
             };
             // Everything that can be checked without the passphrase is checked first.
-            let held = if log.log.exists() {
-                log.read()
-                    .map_err(failed)?
-                    .plugins()
-                    .get(&skill.name)
-                    .map(|p| p.grant.clone())
-                    .unwrap_or_default()
+            let state = if log.log.exists() {
+                Some(log.read().map_err(failed)?)
             } else {
-                Grant::none()
+                None
             };
+            let held = state
+                .as_ref()
+                .and_then(|s| s.plugins().get(&skill.name))
+                .map(|p| p.grant.clone())
+                .unwrap_or_default();
+            // Within the install policy the operator signed, it installs without them (ADR-0091).
+            let by_policy = state
+                .as_ref()
+                .and_then(|s| s.install_policy())
+                .is_some_and(|p| p.policy.covers(&source, &skill.asks));
             let diff = held.diff(&skill.asks);
             let mut out = format!(
                 "skill {} ({} files), digest {}{}\n{}",
@@ -161,13 +180,20 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
                 from(&source),
                 render(&diff)
             );
-            if diff.widens() && !grant {
+            if diff.widens() && !grant && !by_policy {
                 return Err(failed(format!(
                     "{out}it was not installed: read what it asks for above, and run again with --grant to grant it"
                 )));
             }
             // Unlocked before anything is kept, so a wrong passphrase leaves nothing behind.
-            let mut engine = operator::engine(env, source_of_passphrase).map_err(failed)?;
+            let (mut engine, decider) = if by_policy {
+                (policy_cmd::open(env).map_err(failed)?, Decider::Policy)
+            } else {
+                (
+                    operator::engine(env, source_of_passphrase).map_err(failed)?,
+                    Decider::Human,
+                )
+            };
             let store = paths::plugin_store(env).map_err(failed)?;
             paths::make_private_dir(&store).map_err(failed)?;
             let digest = Store::new(store)
@@ -180,13 +206,109 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
                     digest,
                     skill.asks.clone(),
                     source,
-                    Decider::Human,
+                    decider,
                     reason,
                 )
                 .map_err(|e| failed(e.to_string()))?;
+            let how = if by_policy {
+                "within your install policy"
+            } else {
+                "signed by you"
+            };
             out.push_str(&format!(
-                "installed {} at event {}, signed by you; give it to a job with hyalos run --skill {}\n",
+                "installed {} at event {}, {how}; give it to a job with hyalos run --skill {}\n",
                 skill.name, head.seq, skill.name
+            ));
+            Ok(out)
+        }
+        [policy, show] if policy == "policy" && show == "show" => {
+            let set = if log.log.exists() {
+                log.read().map_err(failed)?.install_policy().cloned()
+            } else {
+                None
+            };
+            Ok(match set {
+                None => "no install policy is set: every install is your decision\n".into(),
+                Some(set) => format!(
+                    "install policy set at event {}\n{}",
+                    set.seq,
+                    describe(&set.policy)
+                ),
+            })
+        }
+        [policy, set, rest @ ..] if policy == "policy" && set == "set" => {
+            let (mut ceiling, mut indexes, mut reason) =
+                (None, BTreeSet::new(), "plugin.policy_set");
+            let (mut snapshot, mut revocation) = (
+                DEFAULT_MAX_SNAPSHOT_AGE_DAYS,
+                DEFAULT_MAX_REVOCATION_AGE_DAYS,
+            );
+            let mut rest = rest.iter();
+            while let Some(arg) = rest.next() {
+                let mut value = || {
+                    rest.next()
+                        .ok_or_else(|| usage(&format!("{arg} needs a value")))
+                };
+                let days = |text: &str| {
+                    text.parse::<u32>()
+                        .ok()
+                        .filter(|d| (1..=MAX_AGE_DAYS).contains(d))
+                        .ok_or_else(|| usage(&format!("an age is 1 to {MAX_AGE_DAYS} days")))
+                };
+                match arg.as_str() {
+                    "--ceiling" => ceiling = Some(value()?),
+                    "--index" => {
+                        indexes.insert(location(value()?).ok_or_else(|| {
+                            usage("--index is an https:// URL, an http:// URL on loopback, or a directory")
+                        })?);
+                    }
+                    "--max-snapshot-age-days" => snapshot = days(value()?)?,
+                    "--max-revocation-age-days" => revocation = days(value()?)?,
+                    "--reason" => reason = value()?,
+                    _ => {
+                        return Err(usage(
+                            "policy set takes --ceiling <file>, --index <location>..., --max-snapshot-age-days <n>, --max-revocation-age-days <n> and --reason <code>",
+                        ));
+                    }
+                }
+            }
+            let ceiling = ceiling.ok_or_else(|| {
+                usage("policy set needs --ceiling <file>, a capabilities document")
+            })?;
+            let reason = ReasonCode::new(reason)
+                .ok_or_else(|| usage("a reason is a short code, such as plugin.policy_set"))?;
+            let new = InstallPolicy {
+                ceiling: read(ceiling)?,
+                indexes,
+                max_snapshot_age_days: snapshot,
+                max_revocation_age_days: revocation,
+            };
+            if !new.is_valid() {
+                return Err(usage(&format!(
+                    "a policy trusts at most {MAX_POLICY_INDEXES} indexes"
+                )));
+            }
+            let old = if log.log.exists() {
+                log.read()
+                    .map_err(failed)?
+                    .install_policy()
+                    .map(|p| p.policy.ceiling.clone())
+                    .unwrap_or_default()
+            } else {
+                Grant::none()
+            };
+            let mut out = format!(
+                "the ceiling, against the policy in force:\n{}{}",
+                render(&old.diff(&new.ceiling)),
+                describe(&new)
+            );
+            let mut engine = operator::engine(env, source_of_passphrase).map_err(failed)?;
+            let head = engine
+                .set_install_policy(SystemClock.now(), new, Decider::Human, reason)
+                .map_err(|e| failed(e.to_string()))?;
+            out.push_str(&format!(
+                "set at event {}, signed by you: a plugin from those indexes asking for no more than the ceiling now installs without you\n",
+                head.seq
             ));
             Ok(out)
         }
@@ -274,6 +396,22 @@ fn from_index(
         version: entry.version.clone(),
     };
     Ok((skill, source))
+}
+
+/// A policy as the operator reads it: the ceiling, the indexes and the ages.
+fn describe(policy: &InstallPolicy) -> String {
+    let indexes: Vec<&str> = policy.indexes.iter().map(IndexLocation::as_str).collect();
+    format!(
+        "ceiling: {}\nindexes: {}\nmaximum ages: trusted root {} days, revocation list {} days\n",
+        summary(&policy.ceiling),
+        if indexes.is_empty() {
+            "none, so nothing installs without you".to_string()
+        } else {
+            indexes.join(", ")
+        },
+        policy.max_snapshot_age_days,
+        policy.max_revocation_age_days
+    )
 }
 
 /// Where a plugin came from, for a line about it: nothing for a local install.

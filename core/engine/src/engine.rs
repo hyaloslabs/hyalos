@@ -11,8 +11,8 @@ use hyalos_policy::{GateRequest, LoadError, Outcome, Policies};
 use hyalos_types::event::SCHEMA;
 use hyalos_types::snapshot::{STATE_VERSION, StateImage};
 use hyalos_types::{
-    AgentId, AgentName, Answer, CommitSha, Digest, Event, EventError, Grant, HoldId, JobId,
-    MergeMethod, OperatorKey, OperatorPublic, Origin, PluginName, PluginSource, ReasonCode,
+    AgentId, AgentName, Answer, CommitSha, Digest, Event, EventError, Grant, HoldId, InstallPolicy,
+    JobId, MergeMethod, OperatorKey, OperatorPublic, Origin, PluginName, PluginSource, ReasonCode,
     Resolution, Schema, Signed, TaskId, Timestamp,
 };
 
@@ -303,7 +303,8 @@ fn through_the_api(origin: Origin, event: &Event) -> Option<RuleViolation> {
         | Event::AgentIssued { .. }
         | Event::AgentRevoked { .. }
         | Event::MergeApproved { .. }
-        | Event::PluginInstalled { .. } => {
+        | Event::PluginInstalled { .. }
+        | Event::PluginPolicySet { .. } => {
             Some(RuleViolation::ThroughTheEngineApi { kind: event.kind() })
         }
         _ => None,
@@ -1010,6 +1011,28 @@ impl Engine {
                 digest,
                 grant,
                 source,
+                by: decider.resolution(),
+                reason,
+                signed: Signed::None,
+            },
+        )
+    }
+
+    /// Sets the install policy (ADR-0091): from then on, a plugin from one of its indexes asking for
+    /// nothing beyond its ceiling may be installed by [`Decider::Policy`]. Only a human sets it,
+    /// signed with the operator's key.
+    pub fn set_install_policy(
+        &mut self,
+        at: Timestamp,
+        policy: InstallPolicy,
+        decider: Decider,
+        reason: ReasonCode,
+    ) -> Result<Head, EngineError> {
+        self.submit_checked(
+            at,
+            Origin::Engine,
+            Event::PluginPolicySet {
+                policy,
                 by: decider.resolution(),
                 reason,
                 signed: Signed::None,

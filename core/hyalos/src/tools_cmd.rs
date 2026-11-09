@@ -30,7 +30,7 @@ pub const COMMANDS: [(&str, &str); 5] = [
 pub const TASK_METHODS: [(&str, &str); 1] = [("stop", "tasks/cancel")];
 
 /// The operator's decisions, as commands. None of them is an MCP tool, or ever may be.
-pub const DECISIONS: [&str; 12] = [
+pub const DECISIONS: [&str; 13] = [
     "approve",
     "cancel",
     "release",
@@ -39,6 +39,7 @@ pub const DECISIONS: [&str; 12] = [
     "agent issue",
     "agent revoke",
     "plugin install",
+    "plugin policy set",
     "run --release-issue",
     "setup walk",
     "setup policy",

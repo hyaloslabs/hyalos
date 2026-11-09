@@ -509,6 +509,39 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             signed: Signed::Operator(approval),
         },
     ));
+
+    // Version 17 added `plugin.policy_set` (ADR-0091) and changed no payload.
+    let at_16: Vec<_> = all.iter().filter(|g| g.0 == 16).cloned().collect();
+    for (_, kind, json, event) in at_16 {
+        all.push((17, kind, json, event));
+    }
+    let approval = hyalos_types::OperatorKey::from_seed(&[7; 32]).approve(&[1; 32], 4, d(5), b"r");
+    all.push((
+        17,
+        "plugin.policy_set",
+        format!(
+            r#"{{"kind":"plugin.policy_set","policy":{{"ceiling":{{"actions":["read"],"egress_hosts":[],"tools":[],"data_flows":[]}},"indexes":["https://plugins.example/v1"],"max_snapshot_age_days":90,"max_revocation_age_days":30}},"by":"human","reason":"plugin.policy_set","signed":{{"operator":{{"operator":"{}","after":4,"after_hash":"{}","signature":"{}"}}}}}}"#,
+            approval.operator,
+            hex(5),
+            hyalos_types::hex::to_hex(approval.signature.as_bytes())
+        ),
+        Event::PluginPolicySet {
+            policy: hyalos_types::InstallPolicy {
+                ceiling: hyalos_types::Grant {
+                    actions: ["read".to_string()].into(),
+                    ..hyalos_types::Grant::none()
+                },
+                indexes: [hyalos_types::IndexLocation::new("https://plugins.example/v1")
+                    .ok_or("location")?]
+                .into(),
+                max_snapshot_age_days: 90,
+                max_revocation_age_days: 30,
+            },
+            by: Resolution::Human,
+            reason: ReasonCode::new("plugin.policy_set").ok_or("reason")?,
+            signed: Signed::Operator(approval),
+        },
+    ));
     Ok(all)
 }
 
@@ -523,6 +556,7 @@ fn introduced(kind: &str) -> u32 {
         "job.values" => 12,
         "merge.approved" => 14,
         "plugin.installed" => 15,
+        "plugin.policy_set" => 17,
         _ => 1,
     }
 }

@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use hyalos_engine::{Decider, Engine, EngineError, RuleViolation, approvals};
 use hyalos_log::{Head, LogKey};
 use hyalos_types::{
-    Digest, Event, Grant, OperatorKey, Origin, PluginName, PluginSource, ReasonCode, Resolution,
-    Signed, Timestamp,
+    Digest, Event, Grant, IndexLocation, InstallPolicy, OperatorKey, Origin, PluginName,
+    PluginSource, PluginVersion, ReasonCode, Resolution, Signed, Timestamp,
 };
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -158,5 +158,151 @@ fn an_install_is_signed_survives_compaction_and_verifies() -> Res {
     let e = Engine::open(&p, key())?.with_operator(operator());
     let kept = e.state().plugins().get(&name("pdf")?).ok_or("lost")?;
     assert_eq!((kept.seq, kept.grant.clone()), (1, docs()));
+    Ok(())
+}
+
+const TRUSTED: &str = "https://plugins.example/v1";
+
+fn from(location: &str) -> Res<PluginSource> {
+    Ok(PluginSource::Index {
+        location: IndexLocation::new(location).ok_or("location")?,
+        version: PluginVersion::new("1.0.0").ok_or("version")?,
+    })
+}
+
+fn policy() -> Res<InstallPolicy> {
+    Ok(InstallPolicy {
+        ceiling: docs(),
+        indexes: [IndexLocation::new(TRUSTED).ok_or("location")?].into(),
+        max_snapshot_age_days: 90,
+        max_revocation_age_days: 30,
+    })
+}
+
+fn install_from(
+    e: &mut Engine,
+    n: u64,
+    source: PluginSource,
+    grant: Grant,
+    by: Decider,
+) -> Result<Head, EngineError> {
+    e.install_plugin(
+        at(n),
+        PluginName::new("pdf").unwrap_or_else(|| unreachable!()),
+        Digest::from_bytes([1; 32]),
+        grant,
+        source,
+        by,
+        why(),
+    )
+}
+
+#[test]
+fn only_a_human_sets_the_install_policy_and_only_a_valid_one() -> Res {
+    let mut e = Engine::open(&path("policy-set")?, key())?.with_operator(operator());
+    for by in [Decider::Policy, Decider::Verifier] {
+        assert!(matches!(
+            e.set_install_policy(at(1), policy()?, by, why()),
+            Err(EngineError::Rule(
+                RuleViolation::InstallPolicyNeedsAHuman { .. }
+            ))
+        ));
+    }
+    let mut bad = policy()?;
+    bad.max_revocation_age_days = 0;
+    assert!(matches!(
+        e.set_install_policy(at(1), bad, Decider::Human, why()),
+        Err(EngineError::Rule(RuleViolation::InstallPolicyInvalid))
+    ));
+    let raw = Event::PluginPolicySet {
+        policy: policy()?,
+        by: Resolution::Human,
+        reason: why(),
+        signed: Signed::Unrecorded,
+    };
+    assert!(matches!(
+        e.submit(at(2), Origin::Engine, raw),
+        Err(EngineError::Rule(RuleViolation::ThroughTheEngineApi { .. }))
+    ));
+    assert!(e.state().install_policy().is_none());
+    e.set_install_policy(at(3), policy()?, Decider::Human, why())?;
+    let set = e.state().install_policy().ok_or("no policy")?;
+    assert_eq!((set.seq, &set.policy), (1, &policy()?));
+    Ok(())
+}
+
+#[test]
+fn policy_installs_only_from_a_trusted_index_within_the_ceiling_and_never_a_verifier() -> Res {
+    let p = path("policy-install")?;
+    let mut e = Engine::open(&p, key())?.with_operator(operator());
+    let refused = |r: Result<Head, EngineError>| {
+        matches!(
+            r,
+            Err(EngineError::Rule(RuleViolation::PluginNeedsAHuman { .. }))
+        )
+    };
+    // No policy yet: policy installs nothing.
+    assert!(refused(install_from(
+        &mut e,
+        1,
+        from(TRUSTED)?,
+        Grant::none(),
+        Decider::Policy
+    )));
+    e.set_install_policy(at(2), policy()?, Decider::Human, why())?;
+    // Within the ceiling, from the trusted index: installed, by policy, unsigned.
+    let within = Grant {
+        egress_hosts: ["docs.rs".to_string()].into(),
+        ..Grant::none()
+    };
+    install_from(&mut e, 3, from(TRUSTED)?, within.clone(), Decider::Policy)?;
+    let pdf = e.state().plugins().get(&name("pdf")?).ok_or("pdf")?;
+    assert_eq!(pdf.by, Resolution::Policy);
+    // Beyond the ceiling, from another index, or local: a human's decision.
+    let beyond = Grant {
+        actions: ["push".to_string()].into(),
+        ..Grant::none()
+    };
+    assert!(refused(install_from(
+        &mut e,
+        4,
+        from(TRUSTED)?,
+        beyond.clone(),
+        Decider::Policy
+    )));
+    assert!(refused(install_from(
+        &mut e,
+        5,
+        from("https://other.example/v1")?,
+        within.clone(),
+        Decider::Policy
+    )));
+    assert!(refused(install_from(
+        &mut e,
+        6,
+        PluginSource::Local,
+        Grant::none(),
+        Decider::Policy
+    )));
+    // A verifier never grants, even within the policy (ADR-0012).
+    assert!(refused(install_from(
+        &mut e,
+        7,
+        from(TRUSTED)?,
+        within,
+        Decider::Verifier
+    )));
+    // The human still may.
+    install_from(&mut e, 8, from(TRUSTED)?, beyond, Decider::Human)?;
+    // Only the human decisions are signed, and the policy survives compaction.
+    let checked = approvals(&p, &[], &key().public(), Some(&operator().public()))?;
+    assert_eq!(checked.signed, vec![1, 3]);
+    e.compact(at(9), &p.with_file_name("archive.db"))?;
+    drop(e);
+    let e = Engine::open(&p, key())?.with_operator(operator());
+    assert_eq!(
+        e.state().install_policy().map(|s| s.policy.clone()),
+        Some(policy()?)
+    );
     Ok(())
 }

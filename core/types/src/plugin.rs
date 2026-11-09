@@ -6,6 +6,7 @@
 //! A grant can only narrow a manifest, never widen it. It is written in the capability vocabulary
 //! ([`crate::capability`]), which the manifest shares.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use serde::de::{Deserialize, Deserializer, Error};
@@ -86,6 +87,51 @@ pub enum PluginSource {
         location: IndexLocation,
         version: PluginVersion,
     },
+}
+
+/// How old a trusted-root snapshot may be, by default, before installs are refused (ADR-0007).
+pub const DEFAULT_MAX_SNAPSHOT_AGE_DAYS: u32 = 90;
+/// How old an install bundle's revocation list may be, by default (ADR-0007).
+pub const DEFAULT_MAX_REVOCATION_AGE_DAYS: u32 = 30;
+/// The longest maximum age an install policy may set.
+pub const MAX_AGE_DAYS: u32 = 3650;
+/// The most index locations an install policy may trust.
+pub const MAX_POLICY_INDEXES: usize = 16;
+
+/// What the operator lets install without them (ADR-0007, ADR-0091): a plugin from one of
+/// `indexes`, asking for nothing beyond `ceiling`. Anything else is the operator's decision each
+/// time. It also holds the maximum ages of ADR-0007, which only a new policy changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstallPolicy {
+    pub ceiling: Capabilities,
+    pub indexes: BTreeSet<IndexLocation>,
+    pub max_snapshot_age_days: u32,
+    pub max_revocation_age_days: u32,
+}
+
+impl InstallPolicy {
+    /// Whether the ceiling is in the vocabulary, the ages are 1 to [`MAX_AGE_DAYS`], and there are
+    /// at most [`MAX_POLICY_INDEXES`] indexes.
+    pub fn is_valid(&self) -> bool {
+        let age = 1..=MAX_AGE_DAYS;
+        self.ceiling.check().is_ok()
+            && age.contains(&self.max_snapshot_age_days)
+            && age.contains(&self.max_revocation_age_days)
+            && self.indexes.len() <= MAX_POLICY_INDEXES
+    }
+
+    /// Whether a plugin from `source` granted `grant` may install under this policy alone: it came
+    /// from an index the policy trusts, and asks for nothing the ceiling does not hold. A local
+    /// install never does.
+    pub fn covers(&self, source: &PluginSource, grant: &Grant) -> bool {
+        match source {
+            PluginSource::Local => false,
+            PluginSource::Index { location, .. } => {
+                self.indexes.contains(location) && !self.ceiling.diff(grant).widens()
+            }
+        }
+    }
 }
 
 /// The longest version a plugin index may give.
