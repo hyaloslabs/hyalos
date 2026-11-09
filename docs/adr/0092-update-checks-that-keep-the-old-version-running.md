@@ -1,6 +1,6 @@
 # ADR-0092: Update checks that keep the old version running
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
