@@ -1,6 +1,6 @@
 # ADR-0090: A plugin index served as release assets
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
