@@ -1,6 +1,6 @@
 # ADR-0086: The plugin runtime's crate and line budget
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
