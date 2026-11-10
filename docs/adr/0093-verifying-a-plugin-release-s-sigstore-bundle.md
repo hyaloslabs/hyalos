@@ -1,6 +1,6 @@
 # ADR-0093: Verifying a plugin release's Sigstore bundle with one pinned library
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

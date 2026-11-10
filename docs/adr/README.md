@@ -106,4 +106,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0090](0090-a-plugin-index-served-as-release-assets.md) | A plugin index served as release assets | Accepted |
 | [0091](0091-the-install-policy-a-capability-ceiling-the-operator-signs.md) | The install policy, a capability ceiling the operator signs | Accepted |
 | [0092](0092-update-checks-that-keep-the-old-version-running.md) | Update checks that keep the old version running | Accepted |
-| [0093](0093-verifying-a-plugin-release-s-sigstore-bundle.md) | Verifying a plugin release's Sigstore bundle with one pinned library | Proposed |
+| [0093](0093-verifying-a-plugin-release-s-sigstore-bundle.md) | Verifying a plugin release's Sigstore bundle with one pinned library | Accepted |
