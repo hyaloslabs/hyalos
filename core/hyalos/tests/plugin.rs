@@ -46,6 +46,7 @@ impl Release {
         let signer = Signer {
             subject: PIPELINE.subject,
             issuer: PIPELINE.issuer,
+            repository: PIPELINE.repository,
             git_ref: PIPELINE.git_ref,
         };
         let bundle = self

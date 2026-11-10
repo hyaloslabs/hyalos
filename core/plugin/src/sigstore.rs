@@ -1,13 +1,15 @@
 //! Verifying a release's Sigstore bundle (S7.12, ADR-0007, ADR-0093).
 //!
 //! One library does the check: sigstore-verify, pinned to the version spike #73 tested. A bundle is
-//! accepted only if all of this holds, with no network and never against the local clock:
+//! accepted only if all of this holds, with no network. The certificate is checked against the
+//! bundle's signed times, never the local clock, which is read only to refuse a signed time from the
+//! future and, inside the library, to choose which of the snapshot's log keys are in force:
 //!
 //! - the signature is over the artifact, by a certificate that chains to an authority the
 //!   trusted-root snapshot lists, valid at every signed time the bundle proves and carrying a
 //!   certificate-transparency timestamp from a log the snapshot lists;
-//! - the certificate names the pinned identity: its subject, its issuer and the ref it was issued
-//!   for;
+//! - the certificate names the pinned identity: its subject, its issuer, and for a CI workload the
+//!   repository and ref it ran for;
 //! - the bundle holds at least one transparency-log entry, each with its inclusion proof and signed
 //!   checkpoint, from a log the snapshot lists;
 //! - the bundle holds at least one verified signed time (the log's or a timestamp authority's).
@@ -23,7 +25,7 @@ use hyalos_types::ReasonCode;
 use sigstore_verify::trust_root::TrustedRoot;
 use sigstore_verify::types::Bundle;
 use sigstore_verify::{
-    CertificateError, Error, TransparencyLogError, VerificationPolicy, Verifier,
+    CertificateError, Error, IdentityMatcher, TransparencyLogError, VerificationPolicy, Verifier,
 };
 
 /// The most bytes a bundle may hold. A release's bundle is a few kilobytes.
@@ -36,22 +38,31 @@ pub const SNAPSHOT: &str = include_str!("../trust/trusted_root.json");
 /// When [`SNAPSHOT`] was taken.
 pub const SNAPSHOT_DATE: &str = "2026-11-02";
 
-/// The identity a plugin release is signed by: the Hyalos marketplace pipeline's release workflow
-/// (ADR-0007). Not the plugin author's, whose own CI says nothing about the pipeline's checks.
+/// The identity a plugin release is signed by: the Hyalos marketplace pipeline's release workflow,
+/// run for the marketplace repository's main branch (ADR-0007). Not the plugin author's, whose own CI
+/// says nothing about the pipeline's checks.
 pub const PIPELINE: Identity<'static> = Identity {
     subject: "https://github.com/hyaloslabs/marketplace/.github/workflows/release.yml@refs/heads/main",
     issuer: "https://token.actions.githubusercontent.com",
+    repository: Some("https://github.com/hyaloslabs/marketplace"),
     git_ref: Some("refs/heads/main"),
 };
 
 /// Who must have signed: the certificate's subject (its SAN), its OIDC issuer and, for a CI
-/// workload, the ref the certificate was issued for (Fulcio's `1.3.6.1.4.1.57264.1.14`). Each is
-/// compared exactly.
+/// workload, the repository and ref the workflow ran for (Fulcio's `1.3.6.1.4.1.57264.1.12` and
+/// `.1.14`). Each is compared exactly.
+///
+/// The subject alone does not name the repository: on GitHub it is the workflow file that ran, and
+/// another repository that calls that file as a reusable workflow gets the same subject, with its
+/// own repository and ref in the certificate. So a CI identity pins both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Identity<'a> {
+    /// A URI (`scheme://...`) for a workflow, otherwise an email address. Its kind must match too.
     pub subject: &'a str,
     pub issuer: &'a str,
     /// `None` only for an identity that is not a CI workload, such as a person's email address.
+    pub repository: Option<&'a str>,
+    /// `None` only for an identity that is not a CI workload.
     pub git_ref: Option<&'a str>,
 }
 
@@ -59,6 +70,7 @@ pub struct Identity<'a> {
 pub struct Trust {
     verifier: Verifier,
     policy: VerificationPolicy,
+    repository: Option<String>,
     git_ref: Option<String>,
 }
 
@@ -71,7 +83,7 @@ pub enum Refusal {
     Malformed,
     /// The trusted root cannot be used.
     Snapshot,
-    /// Signed by another identity: subject, issuer or ref.
+    /// Signed by another identity: subject, issuer, repository or ref.
     Identity,
     /// The bundle is not about this artifact.
     Digest,
@@ -142,9 +154,15 @@ impl Trust {
     pub fn new(root: &str, identity: Identity<'_>) -> Result<Trust, Refusal> {
         let root = TrustedRoot::from_json(root).map_err(|_| Refusal::Snapshot)?;
         let verifier = Verifier::new(&root).map_err(|_| Refusal::Snapshot)?;
+        let subject = if identity.subject.contains("://") {
+            IdentityMatcher::Uri(identity.subject.to_string())
+        } else {
+            IdentityMatcher::Email(identity.subject.to_string())
+        };
         Ok(Trust {
             verifier,
-            policy: VerificationPolicy::new(identity.subject, identity.issuer),
+            policy: VerificationPolicy::new(subject, identity.issuer),
+            repository: identity.repository.map(str::to_string),
             git_ref: identity.git_ref.map(str::to_string),
         })
     }
@@ -176,13 +194,18 @@ impl Trust {
         if result.verified_timestamps().is_empty() {
             return Err(Refusal::Time);
         }
-        if let Some(want) = &self.git_ref {
-            let got = result
-                .certificate()
-                .and_then(|c| c.ci_claims.source_repository_ref.as_deref());
-            if got != Some(want.as_str()) {
-                return Err(Refusal::Identity);
-            }
+        let claims = result.certificate().map(|c| &c.ci_claims);
+        let claim_is = |want: &Option<String>, got: Option<&str>| {
+            want.as_deref().is_none_or(|want| got == Some(want))
+        };
+        if !claim_is(
+            &self.repository,
+            claims.and_then(|c| c.source_repository_uri.as_deref()),
+        ) || !claim_is(
+            &self.git_ref,
+            claims.and_then(|c| c.source_repository_ref.as_deref()),
+        ) {
+            return Err(Refusal::Identity);
         }
         Ok(())
     }

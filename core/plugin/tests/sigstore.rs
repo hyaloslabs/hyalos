@@ -25,6 +25,7 @@ const REKOR_V2_BUNDLE: &[u8] =
 const COSIGN: Identity<'static> = Identity {
     subject: "keyless@projectsigstore.iam.gserviceaccount.com",
     issuer: "https://accounts.google.com",
+    repository: None,
     git_ref: None,
 };
 
@@ -32,6 +33,7 @@ const COSIGN: Identity<'static> = Identity {
 const WORKFLOW: Identity<'static> = Identity {
     subject: "https://github.com/prefix-dev/sigstore-example/.github/workflows/action.yaml@refs/heads/main",
     issuer: "https://token.actions.githubusercontent.com",
+    repository: Some("https://github.com/prefix-dev/sigstore-example"),
     git_ref: Some("refs/heads/main"),
 };
 
@@ -39,6 +41,7 @@ const WORKFLOW: Identity<'static> = Identity {
 const STAGING_SIGNER: Identity<'static> = Identity {
     subject: "jku@goto.fi",
     issuer: "https://github.com/login/oauth",
+    repository: None,
     git_ref: None,
 };
 
@@ -192,6 +195,18 @@ fn a_github_actions_workflow_identity_verifies_offline_with_its_ref() -> Res {
         other_ref.verify(CONDA, CONDA_BUNDLE),
         Err(Refusal::Identity)
     );
+    // The same workflow file run for another repository, as a reusable workflow is.
+    let other_repository = Trust::new(
+        SNAPSHOT,
+        Identity {
+            repository: Some("https://github.com/attacker/plugin"),
+            ..WORKFLOW
+        },
+    )?;
+    assert_eq!(
+        other_repository.verify(CONDA, CONDA_BUNDLE),
+        Err(Refusal::Identity)
+    );
     Ok(())
 }
 
@@ -270,6 +285,7 @@ fn a_bundle_from_a_test_sigstore_verifies_against_its_root_and_no_other() -> Res
     let signer = Signer {
         subject: PIPELINE.subject,
         issuer: PIPELINE.issuer,
+        repository: PIPELINE.repository,
         git_ref: PIPELINE.git_ref,
     };
     let artifact = b"a skill archive";
@@ -294,5 +310,22 @@ fn a_bundle_from_a_test_sigstore_verifies_against_its_root_and_no_other() -> Res
         Trust::new(&root, PIPELINE)?.verify(artifact, &wrong_ref),
         Err(Refusal::Identity)
     );
+    // The pipeline's workflow file called as a reusable workflow from another repository has the
+    // same subject, issuer and ref: only the repository tells them apart.
+    for repository in [Some("https://github.com/attacker/plugin"), None] {
+        let borrowed = sigstore
+            .sign(
+                artifact,
+                Signer {
+                    repository,
+                    ..signer
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            Trust::new(&root, PIPELINE)?.verify(artifact, &borrowed),
+            Err(Refusal::Identity)
+        );
+    }
     Ok(())
 }

@@ -48,6 +48,8 @@ const CODE_SIGNING: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5
 const SCT_LIST: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.11129.2.4.2");
 /// Fulcio's OIDC issuer, a DER UTF8String.
 const FULCIO_ISSUER: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.57264.1.8");
+/// Fulcio's source repository URI, a DER UTF8String.
+const FULCIO_REPOSITORY: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.57264.1.12");
 /// Fulcio's source repository ref, a DER UTF8String.
 const FULCIO_REF: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.4.1.57264.1.14");
 
@@ -60,6 +62,7 @@ pub struct Signer<'a> {
     /// The SAN: a URI for a workflow, otherwise an email address.
     pub subject: &'a str,
     pub issuer: &'a str,
+    pub repository: Option<&'a str>,
     pub git_ref: Option<&'a str>,
 }
 
@@ -244,6 +247,13 @@ impl TestSigstore {
             extension(SUBJECT_ALT_NAME, true, &SubjectAltName(vec![san]))?,
             extension(FULCIO_ISSUER, false, &Utf8StringRef::new(signer.issuer)?)?,
         ];
+        if let Some(repository) = signer.repository {
+            extensions.push(extension(
+                FULCIO_REPOSITORY,
+                false,
+                &Utf8StringRef::new(repository)?,
+            )?);
+        }
         if let Some(git_ref) = signer.git_ref {
             extensions.push(extension(FULCIO_REF, false, &Utf8StringRef::new(git_ref)?)?);
         }

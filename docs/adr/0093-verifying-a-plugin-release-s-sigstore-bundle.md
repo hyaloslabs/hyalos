@@ -17,15 +17,15 @@ Two questions are left open by those ADRs. Whose identity does this build pin, w
 **The check.** `Trust::verify(artifact, bundle)` accepts a bundle only if every step below holds, with no network:
 
 - The bundle is at most 256 KiB, parses, and has at least one transparency-log entry, each with an inclusion proof. This is checked before the library runs, so it does not depend on what the library does when they are missing.
-- The library verifies with a policy naming the subject and issuer exactly. It checks the signature over the artifact, the certificate chain to an authority the snapshot lists, the certificate at every signed time the bundle proves, its SCT, and the inclusion proof and checkpoint against a log the snapshot lists. There must be at least one signed time, from the log's entry timestamp or an RFC 3161 timestamp. The local clock is used only to refuse a signed time from the future.
+- The library verifies with a policy naming the subject, as a URI or an email address as it is written, and the issuer, exactly. It checks the signature over the artifact, the certificate chain to an authority the snapshot lists, the certificate at every signed time the bundle proves, its SCT, and the inclusion proof and checkpoint against a log the snapshot lists. There must be at least one signed time, from the log's entry timestamp or an RFC 3161 timestamp. The certificate is checked only at those signed times, never at the local clock's. The clock is read only to refuse a signed time from the future and, inside the library, to choose which of the snapshot's log keys are in force.
 - The result must report the certificate, the SCT, the log and the identity as checked, with at least one verified signed time. Anything less is a refusal.
-- For a CI identity, the certificate's source-repository ref (Fulcio's `1.3.6.1.4.1.57264.1.14`) must equal the pinned ref.
+- For a CI identity, the certificate's source repository and ref (Fulcio's `1.3.6.1.4.1.57264.1.12` and `.1.14`) must equal the pinned ones. A missing claim is a refusal. The subject alone is not enough: on GitHub it names the workflow file that ran, and a workflow in another repository that calls that file as a reusable workflow gets the same subject, with its own repository and a ref it chooses.
 
 A refusal is a `Refusal`, one of `sigstore.too_large`, `.malformed`, `.snapshot`, `.identity`, `.digest`, `.signature`, `.certificate`, `.log`, `.time` and `.refused`. The library's error text is never shown: it can carry values from the bundle, which is untrusted.
 
 **The pinned trust.** `Trust::pinned()` is what an install uses, and nothing outside the release changes it:
 
-- The identity is `PIPELINE`: subject `https://github.com/hyaloslabs/marketplace/.github/workflows/release.yml@refs/heads/main`, issuer `https://token.actions.githubusercontent.com`, ref `refs/heads/main`. The release workflow runs on the protected main branch of a `marketplace` repository, so the subject does not change per release. S7.2 builds that pipeline. If it settles on another repository or workflow, it changes this constant in the same pull request.
+- The identity is `PIPELINE`: subject `https://github.com/hyaloslabs/marketplace/.github/workflows/release.yml@refs/heads/main`, issuer `https://token.actions.githubusercontent.com`, repository `https://github.com/hyaloslabs/marketplace`, ref `refs/heads/main`. The release workflow runs on the protected main branch of a `marketplace` repository, so the subject does not change per release. S7.2 builds that pipeline. If it settles on another repository or workflow, it changes this constant in the same pull request.
 - The snapshot is `core/plugin/trust/trusted_root.json`: Sigstore's production trusted root of November 2, 2026, the spike's. S7.11 replaces it with the pipeline's signed snapshot and its import rules. Until then it changes only with a Hyalos release.
 
 **Install verifies before it reads.** `hyalos plugin install --index` and `hyalos plugin update` fetch the archive, check its digest against the index, fetch the bundle the index names (at most 256 KiB) and verify it against the archive, in that order. Only then is the archive read. A release with no bundle, or one that does not verify, is refused and nothing is written. This holds for an install by the operator and an install by policy alike, so a listed index is no longer trusted by its location alone (ADR-0091).
@@ -36,10 +36,10 @@ A refusal is a `Refusal`, one of `sigstore.too_large`, `.malformed`, `.snapshot`
 
 - `tests/sigstore.rs` in `hyalos-plugin` runs on every build, offline:
   - spike #73's matrix: the fresh and year-old cosign releases are accepted. A changed artifact, a wrong identity or issuer, a flipped signature, a removed log entry, a removed inclusion proof and a bundle with no signed time are each refused.
-  - A GitHub Actions bundle verifies with its workflow, issuer and ref, and is refused with another ref and by the pinned trust.
+  - A GitHub Actions bundle verifies with its workflow, issuer, repository and ref, and is refused with another repository, another ref, and by the pinned trust.
   - A Rekor v2 bundle verifies against a snapshot listing its log and is refused against one without it. It is from Sigstore's staging instance; no production Rekor v2 bundle was available.
   - A snapshot missing the authority a bundle used refuses it.
-  - The test kit's bundles verify against its root and are refused by the pinned trust.
+  - The test kit's bundles verify against its root and are refused by the pinned trust. One signed by the pipeline's workflow file for another repository, or with no repository, is refused.
 - A CI job checks out sigstore-rust at the commit the pinned version's tag names. It runs the library's own tests and Sigstore's conformance suite (`sigstore/sigstore-conformance`, signing tests skipped) against it. The job pins the version and commit, and fails if `Cargo.lock` locks another version, so changing the library means changing that job and re-running both.
 - The same vectors run for every platform Hyalos supports: x86_64 Linux in the main build, the static musl target, and aarch64 Linux cross-compiled and run under QEMU, since the repository has no arm64 runner.
 
