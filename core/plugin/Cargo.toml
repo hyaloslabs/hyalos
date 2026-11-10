@@ -19,6 +19,12 @@ sha2 = "0.11"
 # A plugin index is JSON (S7.9, ADR-0090).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The one Sigstore verifier (S7.12, ADR-0007, ADR-0093), at the version spike #73 tested. No network
+# features: no TUF client, no Rekor or TSA client. Its only crypto backend is aws-lc-rs.
+sigstore-verify = { version = "=0.15.1", default-features = false, features = ["aws-lc-rs"] }
 
 [dev-dependencies]
 wat = "=1.261.0"
+# Flipping a bit of a bundle's signature in the vectors test.
+base64 = "0.23"
+hyalos-sigstore-testkit = { path = "../../crates/sigstore-testkit" }

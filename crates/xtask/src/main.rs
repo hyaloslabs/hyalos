@@ -338,10 +338,11 @@ fn lines(root: &Path) -> Result<(), String> {
         };
         let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
         let in_src = parts.next().is_some_and(|c| c.as_os_str() == "src");
-        let text = fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        // Only what is counted is read, so a binary test fixture under core/ is not an error.
+        let read = || fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()));
         let n = match ext {
-            "rs" if in_src => count_rust(&text),
-            "cedar" | "cedarschema" => count_cedar(&text),
+            "rs" if in_src => count_rust(&read()?),
+            "cedar" | "cedarschema" => count_cedar(&read()?),
             _ => 0,
         };
         *per_crate.entry(krate).or_default() += n;

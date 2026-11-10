@@ -1,12 +1,19 @@
 //! S6.2: installing an Agent Skill is the operator's signed decision, made after reading what it asks
 //! for, and a job given the skill gets it only as installed, never without its sandbox mount
 //! (ADR-0006, ADR-0012, ADR-0088, ADR-0089).
+//!
+//! An install from an index verifies the release's Sigstore bundle (S7.12, ADR-0093). The binary
+//! trusts only the pipeline's identity under Sigstore's own root, which cannot sign a test's archive,
+//! so those installs run in-process against a [`Release`]: a Sigstore of the test's own, signing as
+//! the pipeline. The binary itself is shown refusing what that Sigstore signed.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use hyalos::run_cmd::{Harness, Request, run_job};
+use hyalos_plugin::sigstore::{PIPELINE, Trust};
+use hyalos_sigstore_testkit::{Signer, TestSigstore};
 use hyalos_substrate::{Substrate, choose};
 use hyalos_substrate_contract::LocalProcessSubstrate;
 use std::io::{BufRead, BufReader, Write};
@@ -18,7 +25,76 @@ use hyalos_types::{
 
 mod common;
 
-use common::{GitHub, Res, World, dir, have_git, ok_cli, repository};
+use common::{GitHub, PASSPHRASE, Res, World, dir, have_git, ok_cli, repository};
+
+/// Releases signed as the pipeline by a Sigstore of the test's own, and install commands run
+/// in-process against its trust.
+struct Release {
+    sigstore: TestSigstore,
+    trust: Trust,
+}
+
+impl Release {
+    fn new() -> Res<Self> {
+        let sigstore = TestSigstore::new().map_err(|e| e.to_string())?;
+        let trust = Trust::new(&sigstore.root().map_err(|e| e.to_string())?, PIPELINE)?;
+        Ok(Self { sigstore, trust })
+    }
+
+    /// Writes `<file>.sigstore.json` beside the archive `dir/<file>`, as the pipeline would.
+    fn sign(&self, dir: &Path, file: &str) -> Res {
+        let signer = Signer {
+            subject: PIPELINE.subject,
+            issuer: PIPELINE.issuer,
+            repository: PIPELINE.repository,
+            git_ref: PIPELINE.git_ref,
+        };
+        let bundle = self
+            .sigstore
+            .sign(&std::fs::read(dir.join(file))?, signer)
+            .map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(format!("{file}.sigstore.json")), bundle)?;
+        Ok(())
+    }
+
+    /// `hyalos <args>` against this trust, with the operator's passphrase.
+    fn signed(&self, world: &World, args: &[&str]) -> Result<String, (u8, String)> {
+        self.run(world, args, PASSPHRASE)
+    }
+
+    /// `hyalos <args>` against this trust, by someone without the passphrase.
+    fn cli(&self, world: &World, args: &[&str]) -> Result<String, (u8, String)> {
+        self.run(world, args, "not the operator's passphrase")
+    }
+
+    fn run(&self, world: &World, args: &[&str], passphrase: &str) -> Result<String, (u8, String)> {
+        let (config, data, runtime) = (
+            world.config.to_string_lossy().into_owned(),
+            world.data.to_string_lossy().into_owned(),
+            world.runtime.to_string_lossy().into_owned(),
+        );
+        let env = move |name: &str| match name {
+            "HYALOS_CONFIG_DIR" => Some(config.clone()),
+            "HYALOS_DATA_DIR" => Some(data.clone()),
+            "HYALOS_RUNTIME_DIR" => Some(runtime.clone()),
+            _ => None,
+        };
+        let args: Vec<String> = args
+            .iter()
+            .skip_while(|a| **a == "plugin")
+            .map(|a| a.to_string())
+            .collect();
+        hyalos::plugin_cmd::manage_with(&args, &env, &self.trust, Some(passphrase))
+    }
+}
+
+/// The message of a refused command, or an error if it was not refused with `code`.
+fn refused(result: Result<String, (u8, String)>, code: u8) -> Res<String> {
+    match result {
+        Err((got, message)) if got == code => Ok(message),
+        other => Err(format!("expected exit {code}, got {other:?}").into()),
+    }
+}
 
 fn skill(root: &Path, asks: Option<&str>) -> Res<PathBuf> {
     let dir = root.join("pdf-tools");
@@ -281,6 +357,7 @@ fn index(entries: &[(&str, &str, &str)]) -> String {
 #[test]
 fn a_skill_installs_by_name_from_a_directory_index_only_with_its_digest() -> Res {
     let world = World::new("plugin-index-dir", None)?;
+    let release = Release::new()?;
     let src = skill(
         &world.root,
         Some(r#"{"version":1,"egress_hosts":["docs.rs"]}"#),
@@ -291,6 +368,8 @@ fn a_skill_installs_by_name_from_a_directory_index_only_with_its_digest() -> Res
     skill(&world.root, None)?;
     let new = pack(&world, &src, &bundle, "pdf-1.1.0.skill")?;
     assert_ne!(old, new);
+    release.sign(&bundle, "pdf-1.0.0.skill")?;
+    release.sign(&bundle, "pdf-1.1.0.skill")?;
     std::fs::write(
         bundle.join("index.json"),
         index(&[
@@ -300,34 +379,57 @@ fn a_skill_installs_by_name_from_a_directory_index_only_with_its_digest() -> Res
     )?;
     let at = bundle.to_string_lossy().into_owned();
 
+    // The binary trusts only the pipeline under Sigstore's own root, so it refuses what this test's
+    // Sigstore signed, and reads nothing of the archive.
+    let out = world.signed(&["plugin", "install", "--index", &at, "pdf-tools"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("pdf-1.1.0.skill.sigstore.json:") && said.contains("(sigstore."),
+        "{said}"
+    );
+    assert!(installs(&world)?.is_empty());
+
     // The latest, which asks for nothing, needs no --grant.
-    let out = ok_cli(world.signed(&["plugin", "install", "--index", &at, "pdf-tools"])?)?;
+    let out = release
+        .signed(&world, &["plugin", "install", "--index", &at, "pdf-tools"])
+        .map_err(|e| e.1)?;
     assert!(
         out.contains(&format!("digest {new}, version 1.1.0 from {at}")),
         "{out}"
     );
     // An older version that asks for more needs it, as a local install does.
-    let refused = world.signed(&[
-        "plugin",
-        "install",
-        "pdf-tools",
-        "--index",
-        &at,
-        "--version",
-        "1.0.0",
-    ])?;
-    assert_eq!(refused.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("+ docs.rs"));
-    ok_cli(world.signed(&[
-        "plugin",
-        "install",
-        "pdf-tools",
-        "--index",
-        &at,
-        "--version",
-        "1.0.0",
-        "--grant",
-    ])?)?;
+    let said = refused(
+        release.signed(
+            &world,
+            &[
+                "plugin",
+                "install",
+                "pdf-tools",
+                "--index",
+                &at,
+                "--version",
+                "1.0.0",
+            ],
+        ),
+        1,
+    )?;
+    assert!(said.contains("+ docs.rs"), "{said}");
+    release
+        .signed(
+            &world,
+            &[
+                "plugin",
+                "install",
+                "pdf-tools",
+                "--index",
+                &at,
+                "--version",
+                "1.0.0",
+                "--grant",
+            ],
+        )
+        .map_err(|e| e.1)?;
     let recorded = installs(&world)?;
     let sources: Vec<PluginSource> = recorded
         .iter()
@@ -346,22 +448,41 @@ fn a_skill_installs_by_name_from_a_directory_index_only_with_its_digest() -> Res
     let listed = ok_cli(world.cli(&["plugin", "list"])?)?;
     assert!(listed.contains("version 1.0.0 from"), "{listed}");
 
+    // A release without its bundle, or with another release's, is refused before it is read.
+    let install = ["plugin", "install", "--index", &at, "pdf-tools"];
+    let signature = bundle.join("pdf-1.1.0.skill.sigstore.json");
+    let kept = std::fs::read(&signature)?;
+    std::fs::remove_file(&signature)?;
+    let said = refused(release.signed(&world, &install), 1)?;
+    assert!(
+        said.contains("pdf-1.1.0.skill.sigstore.json: not in"),
+        "{said}"
+    );
+    std::fs::copy(bundle.join("pdf-1.0.0.skill.sigstore.json"), &signature)?;
+    let said = refused(release.signed(&world, &install), 1)?;
+    assert!(said.contains("(sigstore.digest)"), "{said}");
+    std::fs::write(&signature, kept)?;
     // An archive that is not what the index says is never read, whatever it holds.
     let mut archive = std::fs::read(bundle.join("pdf-1.1.0.skill"))?;
     archive.push(b'x');
     std::fs::write(bundle.join("pdf-1.1.0.skill"), &archive)?;
-    let out = world.signed(&["plugin", "install", "--index", &at, "pdf-tools"])?;
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("plugin.digest_mismatch"));
+    let said = refused(release.signed(&world, &install), 1)?;
+    assert!(said.contains("plugin.digest_mismatch"), "{said}");
     // A name the index does not hold, and an archive whose skill has another name.
-    let out = world.signed(&["plugin", "install", "--index", &at, "lint"])?;
-    assert!(String::from_utf8_lossy(&out.stderr).contains("index.no_such_plugin"));
+    let said = refused(
+        release.signed(&world, &["plugin", "install", "--index", &at, "lint"]),
+        1,
+    )?;
+    assert!(said.contains("index.no_such_plugin"), "{said}");
     std::fs::write(
         bundle.join("index.json"),
         index(&[("1.0.0", &old, "pdf-1.0.0.skill")]).replace("\"pdf-tools\"", "\"other\""),
     )?;
-    let out = world.signed(&["plugin", "install", "--index", &at, "other"])?;
-    assert!(String::from_utf8_lossy(&out.stderr).contains("plugin.wrong_name"));
+    let said = refused(
+        release.signed(&world, &["plugin", "install", "--index", &at, "other"]),
+        1,
+    )?;
+    assert!(said.contains("plugin.wrong_name"), "{said}");
     assert_eq!(installs(&world)?.len(), 2);
     for args in [
         &[
@@ -425,19 +546,27 @@ fn serve(files: Vec<(String, Vec<u8>)>) -> Res<String> {
 #[test]
 fn a_skill_installs_by_name_from_an_index_served_as_release_assets() -> Res {
     let world = World::new("plugin-index-http", None)?;
+    let release = Release::new()?;
     let src = skill(&world.root, None)?;
     let out = world.root.join("packed");
     std::fs::create_dir(&out)?;
     let digest = pack(&world, &src, &out, "pdf.skill")?;
+    release.sign(&out, "pdf.skill")?;
     let base = serve(vec![
         (
             "index.json".into(),
             index(&[("2.0.0", &digest, "pdf.skill")]).into_bytes(),
         ),
         ("pdf.skill".into(), std::fs::read(out.join("pdf.skill"))?),
+        (
+            "pdf.skill.sigstore.json".into(),
+            std::fs::read(out.join("pdf.skill.sigstore.json"))?,
+        ),
     ])?;
     let at = format!("{base}/dl");
-    let said = ok_cli(world.signed(&["plugin", "install", "--index", &at, "pdf-tools"])?)?;
+    let said = release
+        .signed(&world, &["plugin", "install", "--index", &at, "pdf-tools"])
+        .map_err(|e| e.1)?;
     assert!(
         said.contains("version 2.0.0 from http://127.0.0.1"),
         "{said}"
@@ -455,26 +584,41 @@ fn a_skill_installs_by_name_from_an_index_served_as_release_assets() -> Res {
     };
     assert_eq!(got.to_string(), digest);
     assert!(matches!(source, PluginSource::Index { location, .. } if location.as_str() == at));
-    // A file the index names that is not there.
+    // A file the index names that is not there: the archive, or its bundle.
     let missing = serve(vec![(
         "index.json".into(),
         index(&[("2.0.0", &digest, "gone.skill")]).into_bytes(),
     )])?;
-    let out = world.signed(&[
-        "plugin",
-        "install",
-        "--index",
-        &format!("{missing}/dl"),
-        "pdf-tools",
+    let at = format!("{missing}/dl");
+    let said = refused(
+        release.signed(&world, &["plugin", "install", "--index", &at, "pdf-tools"]),
+        1,
+    )?;
+    assert!(said.contains("gone.skill: not found"), "{said}");
+    let unsigned = serve(vec![
+        (
+            "index.json".into(),
+            index(&[("2.0.0", &digest, "pdf.skill")]).into_bytes(),
+        ),
+        ("pdf.skill".into(), std::fs::read(out.join("pdf.skill"))?),
     ])?;
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("gone.skill: not found"));
+    let at = format!("{unsigned}/dl");
+    let said = refused(
+        release.signed(&world, &["plugin", "install", "--index", &at, "pdf-tools"]),
+        1,
+    )?;
+    assert!(
+        said.contains("pdf.skill.sigstore.json: not found"),
+        "{said}"
+    );
+    assert_eq!(installs(&world)?.len(), 1);
     Ok(())
 }
 
 #[test]
 fn within_the_operators_install_policy_a_skill_installs_without_them() -> Res {
     let world = World::new("plugin-policy", None)?;
+    let release = Release::new()?;
     let src = skill(
         &world.root,
         Some(r#"{"version":1,"egress_hosts":["docs.rs"]}"#),
@@ -487,6 +631,8 @@ fn within_the_operators_install_policy_a_skill_installs_without_them() -> Res {
         Some(r#"{"version":1,"egress_hosts":["docs.rs"],"actions":["push"]}"#),
     )?;
     let wide = pack(&world, &src, &bundle, "pdf-2.0.0.skill")?;
+    release.sign(&bundle, "pdf-1.0.0.skill")?;
+    release.sign(&bundle, "pdf-2.0.0.skill")?;
     std::fs::write(
         bundle.join("index.json"),
         index(&[
@@ -502,7 +648,7 @@ fn within_the_operators_install_policy_a_skill_installs_without_them() -> Res {
     // No policy: an index install that adds a capability is the operator's decision.
     let shown = ok_cli(world.cli(&["plugin", "policy", "show"])?)?;
     assert!(shown.contains("no install policy"), "{shown}");
-    let out = world.cli(&[
+    let narrow_install = [
         "plugin",
         "install",
         "--index",
@@ -510,8 +656,8 @@ fn within_the_operators_install_policy_a_skill_installs_without_them() -> Res {
         "pdf-tools",
         "--version",
         "1.0.0",
-    ])?;
-    assert_eq!(out.status.code(), Some(1));
+    ];
+    refused(release.cli(&world, &narrow_install), 1)?;
     assert!(installs(&world)?.is_empty());
 
     // Setting it is a decision, and needs the passphrase.
@@ -554,16 +700,15 @@ fn within_the_operators_install_policy_a_skill_installs_without_them() -> Res {
         .ok_or("no policy event")?;
     assert!(matches!(set, (Resolution::Human, Signed::Operator(_))));
 
-    // Within it: no passphrase, recorded as policy's.
-    let out = ok_cli(world.cli(&[
-        "plugin",
-        "install",
-        "--index",
-        &at,
-        "pdf-tools",
-        "--version",
-        "1.0.0",
-    ])?)?;
+    // Listing the index is not enough for the binary: the release must be the pipeline's, and this
+    // one is not, so nothing installs by policy.
+    let out = world.cli(&narrow_install)?;
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("(sigstore."));
+    assert!(installs(&world)?.is_empty());
+
+    // Within it, from a release the pipeline signed: no passphrase, recorded as policy's.
+    let out = release.cli(&world, &narrow_install).map_err(|e| e.1)?;
     assert!(out.contains("within your install policy"), "{out}");
     let recorded = installs(&world)?;
     let [Event::PluginInstalled { by, signed, .. }] = recorded.as_slice() else {
@@ -572,10 +717,10 @@ fn within_the_operators_install_policy_a_skill_installs_without_them() -> Res {
     assert_eq!((*by, signed), (Resolution::Policy, &Signed::None));
 
     // Beyond the ceiling: the operator's again, even from the trusted index.
-    let out = world.cli(&["plugin", "install", "--index", &at, "pdf-tools", "--grant"])?;
-    assert_eq!(out.status.code(), Some(1));
+    let wide_install = ["plugin", "install", "--index", &at, "pdf-tools", "--grant"];
+    refused(release.cli(&world, &wide_install), 1)?;
     assert_eq!(installs(&world)?.len(), 1);
-    ok_cli(world.signed(&["plugin", "install", "--index", &at, "pdf-tools", "--grant"])?)?;
+    release.signed(&world, &wide_install).map_err(|e| e.1)?;
     let recorded = installs(&world)?;
     assert!(matches!(
         recorded.last(),
@@ -617,6 +762,7 @@ fn within_the_operators_install_policy_a_skill_installs_without_them() -> Res {
 #[test]
 fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_runs() -> Res {
     let world = World::new("plugin-update", None)?;
+    let release = Release::new()?;
     let src = skill(
         &world.root,
         Some(r#"{"version":1,"egress_hosts":["docs.rs"]}"#),
@@ -642,12 +788,18 @@ fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_ru
             .iter()
             .map(|(v, d, a)| (v.as_str(), d.as_str(), a.as_str()))
             .collect();
+        for (_, _, artifact) in published {
+            release.sign(&bundle, artifact)?;
+        }
         std::fs::write(bundle.join("index.json"), index(&entries))?;
         Ok(())
     };
+    let update = || release.cli(&world, &["plugin", "update"]).map_err(|e| e.1);
     publish(&published)?;
-    ok_cli(world.cli(&["plugin", "install", "--index", &at, "pdf-tools"])?)?;
-    let said = ok_cli(world.cli(&["plugin", "update"])?)?;
+    release
+        .cli(&world, &["plugin", "install", "--index", &at, "pdf-tools"])
+        .map_err(|e| e.1)?;
+    let said = update()?;
     assert!(
         said.contains("pdf-tools: up to date at version 1.0.0"),
         "{said}"
@@ -661,7 +813,14 @@ fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_ru
     let next = pack(&world, &src, &bundle, "pdf-1.1.skill")?;
     published.push(("1.1.0".into(), next.clone(), "pdf-1.1.skill".into()));
     publish(&published)?;
-    let said = ok_cli(world.cli(&["plugin", "update"])?)?;
+    // The binary checks the same index and refuses the release, which the pipeline did not sign:
+    // a failed check, and nothing written.
+    let before = world.events()?.len();
+    let out = world.cli(&["plugin", "update"])?;
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("(sigstore."));
+    assert_eq!(world.events()?.len(), before);
+    let said = update()?;
     assert!(
         said.contains("updated to version 1.1.0") && said.contains("within your install policy"),
         "{said}"
@@ -686,9 +845,9 @@ fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_ru
     let wide = pack(&world, &src, &bundle, "pdf-2.skill")?;
     published.push(("2.0.0".into(), wide.clone(), "pdf-2.skill".into()));
     publish(&published)?;
-    let said = ok_cli(world.cli(&["plugin", "update"])?)?;
+    let said = update()?;
     assert!(said.contains("version 2.0.0 waits for you"), "{said}");
-    let said = ok_cli(world.cli(&["plugin", "update"])?)?;
+    let said = update()?;
     assert!(said.contains("version 2.0.0 still waits for you"), "{said}");
     let waiting = world
         .events()?
@@ -704,18 +863,22 @@ fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_ru
     );
 
     // The operator's install of it answers it.
-    ok_cli(world.signed(&["plugin", "install", "--index", &at, "pdf-tools", "--grant"])?)?;
+    release
+        .signed(
+            &world,
+            &["plugin", "install", "--index", &at, "pdf-tools", "--grant"],
+        )
+        .map_err(|e| e.1)?;
     assert_eq!(installed(&world)?, (wide, Resolution::Human));
     let listed = ok_cli(world.cli(&["plugin", "list"])?)?;
     assert!(!listed.contains("waits for you"), "{listed}");
-    let said = ok_cli(world.cli(&["plugin", "update"])?)?;
+    let said = update()?;
     assert!(said.contains("up to date at version 2.0.0"), "{said}");
 
     // An index that cannot be read is a failed check, and changes nothing.
     std::fs::remove_file(bundle.join("index.json"))?;
     let before = world.events()?.len();
-    let out = world.cli(&["plugin", "update"])?;
-    assert_eq!(out.status.code(), Some(1));
+    refused(release.cli(&world, &["plugin", "update"]), 1)?;
     assert_eq!(world.events()?.len(), before);
     for args in [
         &["plugin", "update", "--every", "0"][..],

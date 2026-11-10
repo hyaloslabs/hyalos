@@ -1,0 +1,19 @@
+[package]
+name = "hyalos-sigstore-testkit"
+description = "A Sigstore of our own for tests: a certificate authority, a certificate-transparency log and a transparency log whose keys live only in the test, so a test can sign a release and an install can verify it offline (S7.12, ADR-0093). Not part of the trusted core, and never a dependency of it outside tests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# The same library the install verifies with, for its key generation and signing.
+sigstore-verify = { version = "=0.15.1", default-features = false, features = ["aws-lc-rs"] }
+x509-cert = { version = "0.2", features = ["sct"] }
+tls_codec = "0.4"
+base64 = "0.23"
+serde_json = "1"
+sha2 = "0.11"

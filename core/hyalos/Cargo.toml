@@ -36,6 +36,9 @@ signal-hook = { version = "0.3.18", default-features = false, features = ["itera
 # The fake substrate runs the end-to-end leak test's sandbox (S3.2). Never linked into the binary.
 hyalos-substrate-contract = { path = "../../crates/substrate-contract" }
 rusqlite = { version = "0.41", features = ["bundled"] }
+# A Sigstore of the tests' own, to sign the releases an index install verifies (S7.12, ADR-0093). The
+# binary's trust is pinned; a test passes this one to the install code in-process.
+hyalos-sigstore-testkit = { path = "../../crates/sigstore-testkit" }
 
 # Runs on its own main thread, as the binary does, not on a test harness thread (#280). The release
 # check runs it built for musl.

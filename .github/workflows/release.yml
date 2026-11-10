@@ -19,6 +19,8 @@ on:
       - "core/hyalos/src/stack.rs"
       - "core/hyalos/tests/main_thread.rs"
       - "core/policy/Cargo.toml"
+      # The Sigstore verifier's crypto, C built with musl-gcc for the static binary (ADR-0093).
+      - "core/plugin/Cargo.toml"
 
 permissions:
   contents: read

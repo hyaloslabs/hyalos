@@ -172,3 +172,78 @@ jobs:
           else
             echo "The base branch has no baseline yet; nothing to compare with." | tee -a "${GITHUB_STEP_SUMMARY}"
           fi
+
+  # The Sigstore library an install verifies with (S7.12, ADR-0093), at the version Cargo.lock locks:
+  # its own tests and Sigstore's conformance suite, at the commit that version's tag names. Changing the
+  # library means changing these two lines, so both run again, as the vectors do in the build above.
+  sigstore-library:
+    name: sigstore library conformance
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SIGSTORE_VERSION: "0.15.1"
+      # sigstore-rust's tag sigstore-verify-v0.15.1.
+      SIGSTORE_COMMIT: fc308a2f0bcef92f10c199c6d75fa72441b329f7
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The version tested here is the one the binary locks
+        run: |
+          locked="$(grep -A1 '^name = "sigstore-verify"$' Cargo.lock | sed -n 's/^version = "\(.*\)"$/\1/p')"
+          echo "Cargo.lock: sigstore-verify ${locked}; this job: ${SIGSTORE_VERSION}"
+          test "${locked}" = "${SIGSTORE_VERSION}"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: sigstore/sigstore-rust
+          ref: ${{ env.SIGSTORE_COMMIT }}
+          path: sigstore-rust
+          persist-credentials: false
+      - name: Install its pinned toolchain
+        working-directory: sigstore-rust
+        run: rustup toolchain install
+      - name: The library's own tests
+        working-directory: sigstore-rust
+        run: cargo test --locked -p sigstore-verify
+      - name: Build the conformance client
+        working-directory: sigstore-rust
+        run: cargo build --release --locked -p sigstore-conformance
+      # Verification only: signing would need an identity token and write to the public log.
+      - uses: sigstore/sigstore-conformance@21533cde107c734ebc153c3e3a24d75fc9811a36 # v0.0.29
+        with:
+          entrypoint: ${{ github.workspace }}/sigstore-rust/target/release/conformance
+          skip-signing: "true"
+          skip-result-upload: "true"
+
+  # The same Sigstore vectors on every platform Hyalos supports (ADR-0093): the static musl target the
+  # release builds, and aarch64 Linux, cross-compiled and run under QEMU since there is no arm64 runner.
+  # x86_64 glibc runs them in the build job.
+  sigstore-platforms:
+    name: sigstore vectors (musl, aarch64)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+      CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: qemu-aarch64 -L /usr/aarch64-linux-gnu
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain and the targets
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-unknown-linux-gnu
+      - name: Install musl, the aarch64 cross compiler and QEMU
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends musl-tools gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user
+      - name: musl
+        run: cargo test --locked -p hyalos-plugin --test sigstore --target x86_64-unknown-linux-musl
+      - name: aarch64
+        run: cargo test --locked -p hyalos-plugin --test sigstore --target aarch64-unknown-linux-gnu
