@@ -1,6 +1,6 @@
 # ADR-0094: The marketplace release pipeline
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
