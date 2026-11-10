@@ -177,6 +177,28 @@ fn a_skill_asking_for_capabilities_installs_only_with_the_operators_grant() -> R
         "{out}"
     );
     assert_eq!(installs(&world)?.len(), 2);
+
+    // An update is diffed again: asking for docs.rs now, after the install that dropped it, adds it,
+    // and so does a host it never had. Each needs the operator again.
+    skill(
+        &world.root,
+        Some(r#"{"version":1,"egress_hosts":["docs.rs","crates.io"]}"#),
+    )?;
+    let refused = world.signed(&["plugin", "install", &path])?;
+    assert_eq!(refused.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        said.contains("+ crates.io") && said.contains("+ docs.rs"),
+        "{said}"
+    );
+    assert!(said.contains("local: no signature"), "{said}");
+    assert_eq!(installs(&world)?.len(), 2);
+    ok_cli(world.signed(&["plugin", "install", &path, "--grant"])?)?;
+    let listed = ok_cli(world.cli(&["plugin", "list"])?)?;
+    assert!(
+        listed.contains("local: no signature or transparency-log entry"),
+        "{listed}"
+    );
     Ok(())
 }
 
@@ -352,6 +374,53 @@ fn index(entries: &[(&str, &str, &str)]) -> String {
         r#"{{"version":1,"plugins":{{"pdf-tools":[{}]}}}}"#,
         versions.join(",")
     )
+}
+
+#[test]
+fn a_local_skill_does_not_inherit_what_a_release_of_its_name_was_granted() -> Res {
+    let world = World::new("plugin-local-after-index", None)?;
+    let release = Release::new()?;
+    let asks = r#"{"version":1,"egress_hosts":["docs.rs"]}"#;
+    let src = skill(&world.root, Some(asks))?;
+    let bundle = world.root.join("bundle");
+    std::fs::create_dir(&bundle)?;
+    let digest = pack(&world, &src, &bundle, "pdf-1.0.0.skill")?;
+    release.sign(&bundle, "pdf-1.0.0.skill")?;
+    std::fs::write(
+        bundle.join("index.json"),
+        index(&[("1.0.0", &digest, "pdf-1.0.0.skill")]),
+    )?;
+    let at = bundle.to_string_lossy().into_owned();
+    release
+        .signed(
+            &world,
+            &["plugin", "install", "--index", &at, "pdf-tools", "--grant"],
+        )
+        .map_err(|e| e.1)?;
+
+    // The same name from a directory, asking for no more than the release holds, is still a first
+    // install: it starts from nothing, so the grant is the operator's again.
+    std::fs::write(
+        src.join("SKILL.md"),
+        "---\nname: pdf-tools\ndescription: Edited.\n---\nRun it\n",
+    )?;
+    let path = src.to_string_lossy().into_owned();
+    let said = refused(release.signed(&world, &["plugin", "install", &path]), 1)?;
+    assert!(
+        said.contains("+ docs.rs") && said.contains("--grant"),
+        "{said}"
+    );
+    assert!(said.contains("local: no signature"), "{said}");
+    assert_eq!(installs(&world)?.len(), 1);
+    release
+        .signed(&world, &["plugin", "install", &path, "--grant"])
+        .map_err(|e| e.1)?;
+    let recorded = installs(&world)?;
+    let Some(Event::PluginInstalled { source, by, .. }) = recorded.last() else {
+        return Err("a second install".into());
+    };
+    assert_eq!((source, *by), (&PluginSource::Local, Resolution::Human));
+    Ok(())
 }
 
 #[test]

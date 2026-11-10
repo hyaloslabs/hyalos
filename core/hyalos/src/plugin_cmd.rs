@@ -7,6 +7,10 @@
 //! only with `--grant`, after the operator has read the diff. `diff` reads capabilities documents and
 //! writes nothing.
 //!
+//! A skill from a directory installs in local mode (S6.7, ADR-0006): it has no signature or
+//! transparency-log entry, it is diffed against nothing unless its name was installed locally
+//! before, and it is always the operator's decision, never policy's.
+//!
 //! An install or update from an index verifies the release's Sigstore bundle first (S7.12, ADR-0093),
 //! against the trust this build pins: nothing from an index is read without it.
 
@@ -49,8 +53,10 @@ const USAGE: &str = "usage: hyalos plugin install <dir> [--grant] [--reason <cod
        hyalos plugin diff [<installed>] <new>
   install reads the Agent Skill in <dir> (SKILL.md, its scripts, and capabilities.json if it asks for
   any), prints what it asks for against what its name holds now, and installs it. If it asks for a
-  capability its name does not hold, read the diff and run again with --grant to grant it. It is your
-  decision, signed with your approval key: the passphrase is asked for at the terminal, or read from
+  capability its name does not hold, read the diff and run again with --grant to grant it. A skill
+  from a directory is local: not signed or logged, so it starts from no capability unless the same
+  name was installed locally before, and no install policy covers it. It is your decision, signed
+  with your approval key: the passphrase is asked for at the terminal, or read from
   stdin with --passphrase-stdin. A job is given it with hyalos run --skill <name>
   With --index, it finds <name> in the plugin index at <location> (an https:// URL whose index.json
   and archives are beside each other, as a release's assets, or a directory holding the same files,
@@ -190,9 +196,13 @@ pub fn manage_with(
             } else {
                 None
             };
+            // A local install starts from nothing (ADR-0006): what an index release was granted
+            // was granted to that release, not to whatever is in a directory under the same name.
+            // A local update is diffed against the local install before it.
             let held = state
                 .as_ref()
                 .and_then(|s| s.plugins().get(&skill.name))
+                .filter(|p| source != PluginSource::Local || p.source == PluginSource::Local)
                 .map(|p| p.grant.clone())
                 .unwrap_or_default();
             // Within the install policy the operator signed, it installs without them (ADR-0091).
@@ -598,7 +608,7 @@ fn describe(policy: &InstallPolicy) -> String {
 /// Where a plugin came from, for a line about it: nothing for a local install.
 fn from(source: &PluginSource) -> String {
     match source {
-        PluginSource::Local => String::new(),
+        PluginSource::Local => ", local: no signature or transparency-log entry".into(),
         PluginSource::Index { location, version } => format!(", version {version} from {location}"),
     }
 }
