@@ -82,7 +82,7 @@ These are pinned by tests. A change to one bumps its version (except where noted
 | `crates/mcp-conformance` | The pinned MCP conformance suite | 0067, 0069 |
 | `crates/redteam` | The red-team corpus | 0065 |
 | `crates/sigstore-testkit` | A Sigstore of the tests' own, to sign releases an install verifies | 0093 |
-| `hyaloslabs/marketplace` (its own repository) | The skills, their release pipeline and its workflow rules | 0007, 0090, 0094 |
+| `hyaloslabs/marketplace` (its own repository) | The skills, their release pipeline, its workflow rules and the check on its settings | 0007, 0090, 0094, 0095 |
 | `skills/set-up-hyalos` | The setup skill (`.claude/skills/set-up-hyalos` links to it; edit this one) | 0078, 0080 |
 
 The image builds from the repository root and must name its target: `--target sandbox -t hyalos-sandbox:latest` for jobs, `--target test -t hyalos-sandbox:test` for the image tests (they skip without that tag), as in `docker build -f images/sandbox/Containerfile --target test -t hyalos-sandbox:test .`. Regenerate the harness lockfile with the image's own npm, not the host's.
