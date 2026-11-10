@@ -329,3 +329,34 @@ fn a_bundle_from_a_test_sigstore_verifies_against_its_root_and_no_other() -> Res
     }
     Ok(())
 }
+
+/// The marketplace's first release, `r1` (ADR-0094): its index, its archive and the bundle its
+/// pipeline signed, downloaded as published.
+const R1_INDEX: &[u8] = include_bytes!("sigstore/marketplace-r1/index.json");
+const R1_ARCHIVE: &[u8] = include_bytes!("sigstore/marketplace-r1/hello-0.1.0.skill");
+const R1_BUNDLE: &[u8] = include_bytes!("sigstore/marketplace-r1/hello-0.1.0.skill.sigstore.json");
+
+#[test]
+fn the_marketplaces_first_release_verifies_against_the_pinned_trust() -> Res {
+    use hyalos_plugin::index::Index;
+    use hyalos_plugin::skill::{Skill, digest_of};
+    use hyalos_types::PluginName;
+    // As an install does it: the index's entry, the archive's digest, then the bundle under the
+    // trust this build carries, and only then the archive's contents.
+    let index = Index::parse(R1_INDEX)?;
+    let entry = index.resolve(&PluginName::new("hello").ok_or("name")?, None)?;
+    assert_eq!(digest_of(R1_ARCHIVE), entry.digest);
+    Trust::pinned()?.verify(R1_ARCHIVE, R1_BUNDLE)?;
+    let skill = Skill::from_archive(R1_ARCHIVE)?;
+    assert_eq!(skill.name.as_str(), "hello");
+    // Another identity does not accept it, nor does the pinned one for other bytes.
+    assert_eq!(
+        Trust::new(SNAPSHOT, WORKFLOW)?.verify(R1_ARCHIVE, R1_BUNDLE),
+        Err(Refusal::Identity)
+    );
+    assert_eq!(
+        Trust::pinned()?.verify(FRESH, R1_BUNDLE),
+        Err(Refusal::Digest)
+    );
+    Ok(())
+}

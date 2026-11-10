@@ -37,7 +37,9 @@ So the identity cannot be borrowed from inside the repository, and ADR-0093's re
 
 **What is not copied from hivrr.** No signing key, so no secret scoping, scope guard, push token or rotation. No approval environment per release: merging to `main` already needs a code owner, and ADR-0007 wants releases within policy to publish without a person. A check that the live repository settings (the ruleset, Actions permissions) have not been loosened is worth having, since those settings are now the trust anchor's protection. It needs a token that can read them and a schedule, and is left to its own story.
 
-**Installing from a private marketplace.** GitHub serves a private repository's release assets only to a signed-in client, and Hyalos fetches without one. The operator downloads a release (`gh release download --repo hyaloslabs/marketplace --dir <dir>`) and installs from the directory, which is an offline bundle (ADR-0090) checked the same way. Installing by `https://` URL works once the repository is public; nothing in Hyalos changes then.
+**Installing from a private marketplace.** GitHub serves a private repository's release assets only to a signed-in client, and Hyalos fetches without one. The operator downloads a release (`gh release download --repo hyaloslabs/marketplace --pattern '*' --dir <dir>`) and installs from the directory, which is an offline bundle (ADR-0090) checked the same way. Installing by `https://` URL works once the repository is public; nothing in Hyalos changes then.
+
+**Evidence.** The first release, `r1` (`hello` 0.1.0), is a vector in `core/plugin/tests/sigstore/marketplace-r1/`. Its index, digest and bundle pass the same checks an install makes, under `Trust::pinned()`: the embedded snapshot and `PIPELINE`, nothing from a test. Its certificate names the subject, repository (`.1.12`) and ref (`.1.14`) pinned. Another identity, and other bytes, are refused.
 
 No event, wire message, manifest or state changes in Hyalos.
 
