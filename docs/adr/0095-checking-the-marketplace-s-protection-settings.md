@@ -22,18 +22,20 @@ They live in GitHub, not in either repository, and nothing noticed one being loo
 
 **A stopped check blocks the next release.** A scheduled workflow that stops running reports nothing, so no check inside it can notice that. Instead `release.yml` gains a `settings` job that `sign` needs. It passes only if the last finished settings check on `main` succeeded within the last 8 days and no drift issue is open. A check that stopped, failed or found drift therefore stops signing, which is the moment it matters, and the release run says why.
 
-**Its token.** Some of these settings are visible only to a reader with admin read, which a workflow's own token never has. The check uses `SETTINGS_READ_TOKEN`:
+**Its token comes from an app of its own.** Some of these settings are visible only to a reader with admin read, which a workflow's own token never has. Neither app already installed on the organization fits: Hyalos's app cannot read Administration, and giving its key to a workflow would put a key that can push to `main` in the repository whose `main` this check protects. A fine-grained personal token would work, but it belongs to one person and expires, which would stop releases on a missed renewal. So the check has its own GitHub App:
 
-- It is a fine-grained token for that repository alone, with Administration and Metadata read-only. The operator creates it and renews it; no agent reads it.
-- It sits in the `settings-check` environment, which only `main` may use, so a pull request's workflow cannot reach it.
-- `tools/check_workflows.py` fails if any job but `settings.yml`'s `check` names the token or the environment, or if `settings.yml` gains a trigger other than its schedule and manual runs.
-- The check prints settings and HTTP statuses, never the token or a response body.
+- It is owned by the organization, installed on that repository alone, and has Administration and Metadata read-only and nothing else. The operator creates it and holds its key; no agent reads it.
+- Each run mints a token from it with `actions/create-github-app-token`, pinned by commit, asking for those two permissions only. The token lasts an hour and is revoked when the job ends.
+- The app's client ID (variable `SETTINGS_APP_CLIENT_ID`) and private key (secret `SETTINGS_APP_KEY`) sit in the `settings-check` environment, which only `main` may use, so a pull request's workflow cannot reach them.
+- `tools/check_workflows.py` fails if any job but `settings.yml`'s `check` names the key, the client ID, the minted token or the environment, or if `settings.yml` gains a trigger other than its schedule and manual runs.
+- A token that cannot be minted is a failed check, reported in the drift issue. The check prints settings and HTTP statuses, never the token, the key or a response body.
 
 No event, wire message, manifest or state changes in Hyalos.
 
 ## Consequences
 
 - Loosening a protection the trust rests on is reported within a day and stops releases until it is undone, or recorded in `settings/expected.json` through a reviewed pull request.
-- Releases depend on the operator's token. One that expires stops the check, then signing after 8 days, with a message saying so. That is the fail-closed reading, at the cost of a renewal to remember.
+- Releases depend on the check's app. Nothing expires, so there is no renewal to forget. If the app is uninstalled, its key deleted or its permissions changed, the check fails, and signing stops after 8 days, with a message saying so.
+- The app's key does not expire. If it leaked, it would let someone read these settings and nothing more, until the operator deletes it in the app's settings.
 - The check covers the repository's own settings. Organization rulesets appear among the repository's rulesets and are checked too. Organization membership and organization-wide Actions policy are not: an organization owner could still act beyond what it sees.
 - A change made and reverted between two daily checks is not seen. The window is a day.
