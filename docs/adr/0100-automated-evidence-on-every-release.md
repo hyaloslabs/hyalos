@@ -1,6 +1,6 @@
 # ADR-0100: Automated evidence on every release
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
