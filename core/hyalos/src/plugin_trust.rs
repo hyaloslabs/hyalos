@@ -9,13 +9,14 @@
 //! ([`Snapshot::successor`]). The import is recorded as `plugin.snapshot_imported`, by the engine: it
 //! is not a decision.
 
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use hyalos_engine::{Engine, State};
 use hyalos_plugin::sigstore::MAX_BUNDLE;
 use hyalos_plugin::skill::digest_of;
 use hyalos_plugin::snapshot::{BUNDLE, FILE, MAX_SNAPSHOT, Snapshot, SnapshotError};
-use hyalos_types::{Clock, IndexLocation};
+use hyalos_types::{Clock, Digest, IndexLocation};
 
 use crate::clock::SystemClock;
 use crate::paths::{self, Env};
@@ -43,12 +44,51 @@ pub fn in_force(env: Env<'_>, state: Option<&State>, base: &Snapshot) -> Result<
             last.seq
         )
     };
-    let file = trust_store(env)?.join(format!("{}.json", last.digest));
-    let bytes = std::fs::read(file).map_err(|_| unreadable())?;
+    let bytes = std::fs::read(kept_file(env, last.digest)?).map_err(|_| unreadable())?;
     if digest_of(&bytes) != last.digest {
         return Err(unreadable());
     }
     Snapshot::kept(&bytes, last.signed_at).map_err(|_| unreadable())
+}
+
+fn kept_file(env: Env<'_>, digest: Digest) -> Result<PathBuf, String> {
+    Ok(trust_store(env)?.join(format!("{digest}.json")))
+}
+
+/// Keeps `bytes` under `digest` in the trust store, durably: written beside it, flushed, renamed and
+/// the directory flushed, so the event that names it is never written before it would survive a
+/// crash, and a half-written file is never found under its digest.
+fn keep(env: Env<'_>, digest: Digest, bytes: &[u8]) -> Result<(), String> {
+    let store = trust_store(env)?;
+    paths::make_private_dir(&store)?;
+    let partial = store.join(format!(".partial-{digest}-{}", std::process::id()));
+    let failed = |e: std::io::Error| format!("cannot keep the snapshot: {e}");
+    let mut f = std::fs::File::create(&partial).map_err(failed)?;
+    f.write_all(bytes)
+        .and_then(|()| f.sync_all())
+        .map_err(failed)?;
+    std::fs::rename(&partial, kept_file(env, digest)?).map_err(failed)?;
+    sync_dir(&store).map_err(failed)
+}
+
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+/// Puts back the snapshot the log says was imported last, if its kept file cannot be read and
+/// `location` holds a file with the digest the log recorded. Returns whether it did.
+pub fn restore(env: Env<'_>, state: &State, location: &IndexLocation) -> Result<bool, String> {
+    let Some(last) = state.trusted_root() else {
+        return Ok(false);
+    };
+    let Some(bytes) = plugin_source::fetch_optional(location, FILE, MAX_SNAPSHOT)? else {
+        return Ok(false);
+    };
+    if digest_of(&bytes) != last.digest {
+        return Ok(false);
+    }
+    keep(env, last.digest, &bytes)?;
+    Ok(true)
 }
 
 /// Why nothing was imported from a location.
@@ -86,35 +126,20 @@ pub fn import(
     location: &IndexLocation,
     current: &Snapshot,
 ) -> Result<(Snapshot, u64), NotImported> {
-    let file = match plugin_source::fetch(location, FILE, MAX_SNAPSHOT) {
-        Ok(file) => file,
-        // A directory without one, or a server that has none: nothing to import.
-        Err(_) if !exists(location) => return Err(NotImported::Absent),
-        Err(e) => return Err(NotImported::Failed(e)),
-    };
+    // A directory without one, or a server that answers 404: nothing to import.
+    let file = plugin_source::fetch_optional(location, FILE, MAX_SNAPSHOT)
+        .map_err(NotImported::Failed)?
+        .ok_or(NotImported::Absent)?;
     let bundle = plugin_source::fetch(location, BUNDLE, MAX_BUNDLE)
         .map_err(|_| NotImported::Refused(SnapshotError::Unsigned))?;
     let next = current
         .successor(&file, &bundle)
         .map_err(NotImported::Refused)?;
-    let store = trust_store(env).map_err(NotImported::Failed)?;
-    paths::make_private_dir(&store).map_err(NotImported::Failed)?;
-    let kept = store.join(format!("{}.json", next.digest()));
-    // Written beside it and renamed, so a half-written file is never found under its digest.
-    let partial = store.join(format!(".partial-{}-{}", next.digest(), std::process::id()));
-    std::fs::write(&partial, &file)
-        .and_then(|()| std::fs::rename(&partial, &kept))
-        .map_err(|e| NotImported::Failed(format!("cannot keep the snapshot: {e}")))?;
+    keep(env, next.digest(), &file).map_err(NotImported::Failed)?;
     let head = engine
         .import_snapshot(SystemClock.now(), next.digest(), next.signed_at())
         .map_err(|e| NotImported::Failed(e.to_string()))?;
     Ok((next, head.seq))
-}
-
-/// Whether `location` has a snapshot file at all, as far as can be told without fetching it: for a
-/// directory, whether the file is there; a URL is assumed to have one, so a failed fetch is reported.
-fn exists(location: &IndexLocation) -> bool {
-    !location.is_dir() || std::path::Path::new(location.as_str()).join(FILE).exists()
 }
 
 /// A snapshot as the operator reads it.

@@ -14,23 +14,43 @@ pub const MAX_REDIRECTS: usize = 5;
 
 /// The bytes of `file`, a plain file name, beside the index at `location`, refused past `limit`.
 pub fn fetch(location: &IndexLocation, file: &str, limit: u64) -> Result<Vec<u8>, String> {
+    fetch_optional(location, file, limit)?.ok_or_else(|| {
+        if location.is_dir() {
+            format!("{file}: not in the index's directory")
+        } else {
+            format!("{file}: not found at the index")
+        }
+    })
+}
+
+/// As [`fetch`], with `None` for a file the location does not have: absent from the directory, or
+/// answered 404. Any other failure is an error.
+pub fn fetch_optional(
+    location: &IndexLocation,
+    file: &str,
+    limit: u64,
+) -> Result<Option<Vec<u8>>, String> {
     if location.is_dir() {
         return read_file(&Path::new(location.as_str()).join(file), file, limit);
     }
     let mut url = format!("{}/{file}", location.as_str().trim_end_matches('/'));
     for _ in 0..=MAX_REDIRECTS {
         match get(&url, file, limit)? {
-            Got::Body(bytes) => return Ok(bytes),
+            Got::Body(bytes) => return Ok(Some(bytes)),
+            Got::NotFound => return Ok(None),
             Got::Redirect(next) => url = next,
         }
     }
     Err(format!("{file}: more than {MAX_REDIRECTS} redirects"))
 }
 
-fn read_file(path: &Path, file: &str, limit: u64) -> Result<Vec<u8>, String> {
+fn read_file(path: &Path, file: &str, limit: u64) -> Result<Option<Vec<u8>>, String> {
     // Not following a link: a bundle's files are its own.
-    let meta = std::fs::symlink_metadata(path)
-        .map_err(|_| format!("{file}: not in the index's directory"))?;
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(format!("{file}: cannot be read")),
+    };
     if !meta.is_file() {
         return Err(format!("{file}: not a plain file"));
     }
@@ -41,11 +61,12 @@ fn read_file(path: &Path, file: &str, limit: u64) -> Result<Vec<u8>, String> {
     if bytes.len() as u64 > limit {
         return Err(format!("{file}: larger than {limit} bytes"));
     }
-    Ok(bytes)
+    Ok(Some(bytes))
 }
 
 enum Got {
     Body(Vec<u8>),
+    NotFound,
     Redirect(String),
 }
 
@@ -95,7 +116,7 @@ fn get(url: &str, file: &str, limit: u64) -> Result<Got, String> {
                 .ok_or_else(|| format!("{file}: redirected somewhere an index may not be"))?;
             Ok(Got::Redirect(next))
         }
-        404 => Err(format!("{file}: not found at the index")),
+        404 => Ok(Got::NotFound),
         status => Err(format!("{file}: the index answered {status}")),
     }
 }

@@ -89,7 +89,7 @@ impl Release {
             .skip_while(|a| **a == "plugin")
             .map(|a| a.to_string())
             .collect();
-        hyalos::plugin_cmd::manage_with(&args, &env, &self.base, Some(passphrase))
+        hyalos::plugin_cmd::manage_with(&args, &env, Some(&self.base), Some(passphrase))
     }
 }
 
@@ -645,6 +645,8 @@ fn a_skill_installs_by_name_from_an_index_served_as_release_assets() -> Res {
         said.contains("version 2.0.0 from http://127.0.0.1"),
         "{said}"
     );
+    // An index served without a trusted-root snapshot has nothing to import, and nothing is said.
+    assert!(!said.contains("trusted-root"), "{said}");
     let recorded = installs(&world)?;
     let [
         Event::PluginInstalled {
@@ -1083,6 +1085,23 @@ fn a_newer_snapshot_is_imported_only_if_the_one_in_force_vouches_for_it() -> Res
         1,
     )?;
     assert!(said.contains("snapshot.unreadable"), "{said}");
+    // Gone altogether, as after a crash: it is put back from a copy with the digest the log
+    // recorded, and from nothing else.
+    std::fs::remove_file(world.data.join("trust").join(format!("{digest}.json")))?;
+    let said = refused(
+        release.cli(&world, &["plugin", "snapshot", "import", &index_at]),
+        1,
+    )?;
+    assert!(said.contains("snapshot.unreadable"), "{said}");
+    let said = release
+        .cli(&world, &["plugin", "snapshot", "import", &at])
+        .map_err(|e| e.1)?;
+    assert!(said.contains("put back the kept snapshot"), "{said}");
+    let shown = release
+        .cli(&world, &["plugin", "snapshot", "show"])
+        .map_err(|e| e.1)?;
+    assert!(shown.contains("imported at event"), "{shown}");
+    assert_eq!(imports(&world)?, 1);
     Ok(())
 }
 

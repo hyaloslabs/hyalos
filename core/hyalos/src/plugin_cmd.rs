@@ -128,8 +128,7 @@ pub fn run_with(args: &[String]) -> Result<String, (u8, String)> {
 /// from an index is verified against the snapshot in force, which starts from the one this release
 /// embeds.
 pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
-    let base = Snapshot::embedded().map_err(|e| (1, format!("{e} ({})", e.code())))?;
-    manage_with(args, env, &base, None)
+    manage_with(args, env, None, None)
 }
 
 /// As [`manage`], starting from the snapshot `base` rather than the embedded one, and with the
@@ -138,9 +137,21 @@ pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
 pub fn manage_with(
     args: &[String],
     env: Env<'_>,
-    base: &Snapshot,
+    base: Option<&Snapshot>,
     passphrase: Option<&str>,
 ) -> Result<String, (u8, String)> {
+    // Verified only by the commands that check against it, so the others never depend on it.
+    let base = || -> Result<Snapshot, String> {
+        match base {
+            Some(base) => Ok(base.clone()),
+            None => Snapshot::embedded().map_err(|e| {
+                format!(
+                    "the trusted-root snapshot this release embeds cannot be used: {e} ({})",
+                    e.code()
+                )
+            }),
+        }
+    };
     let (args, source_of_passphrase) = passphrase::source(args);
     let usage = |why: &str| (2, format!("{why}\n{USAGE}"));
     let failed = |e: String| (1, e);
@@ -206,7 +217,8 @@ pub fn manage_with(
                         usage("with --index, install takes a plugin's name: lowercase letters, digits and hyphens")
                     })?;
                     let current =
-                        plugin_trust::in_force(env, state.as_ref(), base).map_err(failed)?;
+                        plugin_trust::in_force(env, state.as_ref(), &base().map_err(failed)?)
+                            .map_err(failed)?;
                     let snapshot = match policy_cmd::open(env) {
                         Ok(mut engine) => {
                             refreshed(env, &mut engine, &location, current, &mut notes)
@@ -435,12 +447,14 @@ pub fn manage_with(
                 _ => return Err(usage("update takes only --every <hours>")),
             };
             let Some(hours) = every else {
-                let (out, clean) = check_updates(env, &log, base);
+                let base = base().map_err(failed)?;
+                let (out, clean) = check_updates(env, &log, &base);
                 return if clean { Ok(out) } else { Err((1, out)) };
             };
             // On a schedule: a failed check is reported and the next one still runs.
+            let base = base().map_err(failed)?;
             loop {
-                let (out, _) = check_updates(env, &log, base);
+                let (out, _) = check_updates(env, &log, &base);
                 print!("{out}");
                 std::thread::sleep(std::time::Duration::from_secs(hours * 3600));
             }
@@ -450,8 +464,25 @@ pub fn manage_with(
                 usage("a location is an https:// URL, an http:// URL on loopback, or a directory")
             })?;
             let mut engine = policy_cmd::open(env).map_err(failed)?;
-            let current =
-                plugin_trust::in_force(env, Some(engine.state()), base).map_err(failed)?;
+            let base = base().map_err(failed)?;
+            let current = match plugin_trust::in_force(env, Some(engine.state()), &base) {
+                Ok(current) => current,
+                // A kept snapshot lost to a crash or a slip can be put back from a copy of it.
+                Err(e) => {
+                    if !plugin_trust::restore(env, engine.state(), &location).map_err(failed)? {
+                        return Err(failed(e));
+                    }
+                    let current =
+                        plugin_trust::in_force(env, Some(engine.state()), &base).map_err(failed)?;
+                    return Ok(format!(
+                        "put back the kept snapshot the log recorded, from {location}\n{}",
+                        plugin_trust::describe(
+                            &current,
+                            engine.state().trusted_root().map(|t| t.seq)
+                        )
+                    ));
+                }
+            };
             match plugin_trust::import(env, &mut engine, &location, &current) {
                 Ok((next, seq)) => Ok(format!(
                     "{}releases are now checked against it\n",
@@ -473,7 +504,8 @@ pub fn manage_with(
             } else {
                 None
             };
-            let current = plugin_trust::in_force(env, state.as_ref(), base).map_err(failed)?;
+            let current = plugin_trust::in_force(env, state.as_ref(), &base().map_err(failed)?)
+                .map_err(failed)?;
             let imported = state
                 .as_ref()
                 .and_then(|s| s.trusted_root())

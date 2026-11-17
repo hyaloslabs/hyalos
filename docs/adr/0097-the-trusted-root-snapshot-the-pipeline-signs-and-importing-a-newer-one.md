@@ -27,7 +27,7 @@ with Sigstore's trusted root inside, and `trusted-root.json.sigstore.json` besid
 
 **What a Hyalos release embeds.** `core/plugin/trust/trusted-root.json` and its bundle, as a release downloaded them. Each time Hyalos loads it, it checks that the embedded bundle verifies under the embedded root for `PIPELINE`, and that signed time is the embedded snapshot's issue time. A test pins that time and the root. The first one is release `r8`'s, which holds the same root as the hand-copied `trusted_root.json` it replaces.
 
-**The snapshot in force** is the newest of the embedded one and the last one imported, by issue time. An imported snapshot is kept in the data directory's `trust/` directory under its digest, and read back only if its bytes still have the digest the log recorded. If it cannot be read, installs from an index are refused (`snapshot.unreadable`). They never fall back to the older embedded snapshot.
+**The snapshot in force** is the newest of the embedded one and the last one imported, by issue time. An imported snapshot is kept in the data directory's `trust/` directory under its digest, and read back only if its bytes still have the digest the log recorded. It is flushed to disk, with its directory, before the event that names it is written. If it cannot be read, installs from an index are refused (`snapshot.unreadable`). They never fall back to the older embedded snapshot. `snapshot import` from a location that holds a file with the digest the log recorded, such as the release it came from, puts it back. Only the subcommands that check a release (`install --index`, `update`, `snapshot`) load the embedded snapshot, so `list`, `pack`, `policy` and local installs never depend on it.
 
 **Importing a newer one.** `hyalos plugin snapshot import <location>` takes an index location (an `https://` URL or a directory, as `install --index` does) and reads `trusted-root.json` and its bundle from it. It is accepted only if:
 
@@ -37,7 +37,7 @@ with Sigstore's trusted root inside, and `trusted-root.json.sigstore.json` besid
 
 If the bundle does not verify, the import is refused with `snapshot.unverifiable`, and the message says that a new Hyalos release is needed if the pipeline signed it. That is ADR-0007's rotation case: Sigstore changed so that the installed snapshot cannot verify its successor. A snapshot that is no newer is refused as `snapshot.not_newer`. A bundle that is missing is refused as `snapshot.unsigned`. An accepted import is recorded as `plugin.snapshot_imported`.
 
-`install --index` and `update` try the same import from their location first. If the location carries a newer snapshot that verifies, it is imported and the install proceeds under it. If it carries none, or one that is no newer, nothing is said. If one fails to verify, the output says so and the install proceeds under the snapshot in force. A location cannot make the check weaker, only newer.
+`install --index` and `update` try the same import from their location first. If the location carries a newer snapshot that verifies, it is imported and the install proceeds under it. If it carries none (absent from the directory, or a 404), or one that is no newer, nothing is said. If one fails to verify, the output says so and the install proceeds under the snapshot in force. A location cannot make the check weaker, only newer.
 
 `hyalos plugin snapshot show` prints the snapshot in force: embedded or imported at an event, its digest and its issue time.
 
