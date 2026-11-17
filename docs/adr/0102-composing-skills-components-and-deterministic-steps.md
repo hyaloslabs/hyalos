@@ -1,6 +1,6 @@
 # ADR-0102: Composing skills, components and deterministic steps in a workflow
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
