@@ -307,6 +307,27 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
             digest: d(4),
             signed_at: at(1),
         },
+        "plugin.revocations_imported" => Event::PluginRevocationsImported {
+            digest: d(5),
+            signed_at: at(1),
+        },
+        "plugin.revoked" => {
+            e.install_plugin(
+                at(1),
+                hyalos_types::PluginName::new("pdf").ok_or("name")?,
+                d(2),
+                hyalos_types::Grant::none(),
+                hyalos_types::PluginSource::Local,
+                Decider::Human,
+                why(),
+            )?;
+            e.import_revocations(at(1), d(5), at(1))?;
+            Event::PluginRevoked {
+                name: hyalos_types::PluginName::new("pdf").ok_or("name")?,
+                digest: d(2),
+                reason: hyalos_types::ReasonCode::new("malware.exfiltration").ok_or("reason")?,
+            }
+        }
         "plugin.policy_set" => Event::PluginPolicySet {
             policy: hyalos_types::InstallPolicy {
                 ceiling: hyalos_types::Grant::none(),

@@ -1,7 +1,7 @@
 //! The plugin runtime (ADR-0006, ADR-0007, ADR-0086, ADR-0087): hosting a plugin's WASM component
 //! in Wasmtime with its capabilities as host imports (S6.1), installing skills and plugins (S6.2,
-//! S6.7), verifying a release's Sigstore bundle (S7.12) against the trusted-root snapshot (S7.11) and checking
-//! for updates (S7.10).
+//! S6.7), verifying a release's Sigstore bundle (S7.12) against the trusted-root snapshot (S7.11), honouring the
+//! revocation list (S7.7) and checking for updates (S7.10).
 //!
 //! A plugin runs in the broker process (ADR-0087), which already parses untrusted input and enforces
 //! every capability (ADR-0002). It gets no WASI: the world is reachable only through the
@@ -15,6 +15,7 @@
 //! only the `hyalos` crate depends on it.
 
 pub mod index;
+pub mod revocation;
 pub mod sigstore;
 pub mod skill;
 pub mod snapshot;

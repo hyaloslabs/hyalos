@@ -1034,6 +1034,43 @@ impl Engine {
         )
     }
 
+    /// Records that the revocation list with digest `digest`, issued at `signed_at`, was imported
+    /// (ADR-0098). The caller has verified it under the trusted-root snapshot in force; the engine
+    /// refuses one no later than the last imported.
+    pub fn import_revocations(
+        &mut self,
+        at: Timestamp,
+        digest: Digest,
+        signed_at: Timestamp,
+    ) -> Result<Head, EngineError> {
+        self.submit_checked(
+            at,
+            Origin::Engine,
+            Event::PluginRevocationsImported { digest, signed_at },
+        )
+    }
+
+    /// Records that the release installed as `name`, with digest `digest`, is revoked for `reason`, as
+    /// the revocation list imported says (ADR-0098). From then on no job is given it. The engine
+    /// refuses it for any other release than the one installed, twice, or before a list was imported.
+    pub fn revoke_plugin(
+        &mut self,
+        at: Timestamp,
+        name: PluginName,
+        digest: Digest,
+        reason: ReasonCode,
+    ) -> Result<Head, EngineError> {
+        self.submit_checked(
+            at,
+            Origin::Engine,
+            Event::PluginRevoked {
+                name,
+                digest,
+                reason,
+            },
+        )
+    }
+
     /// Sets the install policy (ADR-0091): from then on, a plugin from one of its indexes asking for
     /// nothing beyond its ceiling may be installed by [`Decider::Policy`]. Only a human sets it,
     /// signed with the operator's key.

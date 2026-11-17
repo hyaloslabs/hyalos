@@ -111,3 +111,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0095](0095-checking-the-marketplace-s-protection-settings.md) | Checking the marketplace's protection settings | Accepted; its account of the App's grant superseded by [ADR-0096](0096-the-settings-check-s-app-from-a-manifest-and-its-own-grant-checked.md) |
 | [0096](0096-the-settings-check-s-app-from-a-manifest-and-its-own-grant-checked.md) | The settings check's App, from a manifest, with its own grant checked | Accepted |
 | [0097](0097-the-trusted-root-snapshot-the-pipeline-signs-and-importing-a-newer-one.md) | The trusted-root snapshot the pipeline signs, and importing a newer one | Accepted |
+| [0098](0098-revoking-a-proven-malicious-release.md) | Revoking a proven-malicious release | Proposed |

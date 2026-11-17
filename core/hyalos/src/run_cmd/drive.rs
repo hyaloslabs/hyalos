@@ -540,8 +540,8 @@ fn choose(
 }
 
 /// Each skill `request` names, as installed: its files from `store`, checked against the digest the
-/// install recorded, and the grant a human gave it. A skill not installed, or whose files changed
-/// since, refuses the run.
+/// install recorded, and the grant a human gave it. A skill not installed, revoked (ADR-0098), or
+/// whose files changed since, refuses the run.
 fn installed_skills(
     request: &Request,
     engine: &Engine,
@@ -554,6 +554,12 @@ fn installed_skills(
             let installed = engine.state().plugins().get(name).ok_or_else(|| {
                 format!("there is no skill {name} installed; install it with hyalos plugin install")
             })?;
+            if let Some(r) = engine.state().revoked_plugins().get(name) {
+                return Err(format!(
+                    "skill {name} is revoked ({}) and disabled, so no job is given it; install a release that is not revoked (plugin.revoked)",
+                    r.reason
+                ));
+            }
             let skill = store
                 .load(&installed.digest, name)
                 .map_err(|e| format!("skill {name}: {e} ({})", e.code()))?;

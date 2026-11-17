@@ -388,3 +388,63 @@ fn a_trusted_root_snapshot_is_imported_only_newer_and_survives_compaction() -> R
     ));
     Ok(())
 }
+
+#[test]
+fn a_revoked_release_is_recorded_for_the_one_installed_and_never_installed_again() -> Res {
+    let p = path("revoked")?;
+    let mut e = Engine::open(&p, key())?.with_operator(operator());
+    let digest = |b: u8| Digest::from_bytes([b; 32]);
+    let malware = || ReasonCode::new("malware.exfiltration").unwrap_or_else(|| unreachable!());
+    install(&mut e, 1, "pdf", 1, Grant::none(), Decider::Human)?;
+    // Nothing is revoked before a list is imported.
+    assert!(matches!(
+        e.revoke_plugin(at(2), name("pdf")?, digest(1), malware()),
+        Err(EngineError::Rule(RuleViolation::RevocationNotApplicable))
+    ));
+    e.import_revocations(at(3), digest(9), Timestamp::from_millis(5_000))?;
+    for older in [5_000, 4_999] {
+        assert!(matches!(
+            e.import_revocations(at(4), digest(8), Timestamp::from_millis(older)),
+            Err(EngineError::Rule(RuleViolation::RevocationsNotNewer))
+        ));
+    }
+    // Only the release installed under the name, and a name that is installed.
+    for (plugin, d) in [("pdf", 2), ("lint", 1)] {
+        assert!(matches!(
+            e.revoke_plugin(at(5), name(plugin)?, digest(d), malware()),
+            Err(EngineError::Rule(RuleViolation::RevocationNotApplicable))
+        ));
+    }
+    e.revoke_plugin(at(6), name("pdf")?, digest(1), malware())?;
+    assert!(matches!(
+        e.revoke_plugin(at(7), name("pdf")?, digest(1), malware()),
+        Err(EngineError::Rule(RuleViolation::RevocationNotApplicable))
+    ));
+    let revoked = e.state().revoked_plugins().get(&name("pdf")?).cloned();
+    assert_eq!(revoked.as_ref().map(|r| r.digest), Some(digest(1)));
+    // The revoked release is never installed again; another one replaces it, and is not revoked.
+    assert!(matches!(
+        install(&mut e, 8, "pdf", 1, Grant::none(), Decider::Human)
+            .map_err(|e| e.downcast::<EngineError>().map(|e| *e)),
+        Err(Ok(EngineError::Rule(RuleViolation::PluginRevoked)))
+    ));
+    e.compact(at(9), &p.with_file_name("archive.db"))?;
+    drop(e);
+    let mut e = Engine::open(&p, key())?.with_operator(operator());
+    assert_eq!(
+        e.state().revoked_plugins().get(&name("pdf")?).cloned(),
+        revoked
+    );
+    assert_eq!(
+        e.state().revocations().map(|r| r.signed_at),
+        Some(Timestamp::from_millis(5_000))
+    );
+    install(&mut e, 10, "pdf", 2, Grant::none(), Decider::Human)?;
+    assert!(e.state().revoked_plugins().is_empty());
+    assert!(
+        e.state().invariant_violations().is_empty(),
+        "{:?}",
+        e.state().invariant_violations()
+    );
+    Ok(())
+}

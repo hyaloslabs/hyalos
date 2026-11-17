@@ -10,7 +10,7 @@ use std::fmt;
 use hyalos_types::snapshot::{
     AgentImage, CancelledImage, HandleImage, HoldImage, InstallPolicyImage, JobEndImage, JobImage,
     MergeImage, PendingUpdateImage, PluginImage, PolicyImage, PrunedImage, ResolvedImage,
-    RevokedImage, StateImage, TaskImage, TrustedRootImage,
+    RevocationListImage, RevokedImage, RevokedPluginImage, StateImage, TaskImage, TrustedRootImage,
 };
 use hyalos_types::workflow::MAX_FIELDS;
 use hyalos_types::{
@@ -226,6 +226,13 @@ pub enum RuleViolation {
     UpdateNotForAnIndexInstall,
     /// A trusted-root snapshot no later than the one imported before it (ADR-0097).
     SnapshotNotNewer,
+    /// A revocation list no later than the one imported before it (ADR-0098).
+    RevocationsNotNewer,
+    /// A revocation recorded for a release that is not the one installed under its name, already
+    /// recorded, or before any revocation list was imported (ADR-0098).
+    RevocationNotApplicable,
+    /// An install of a release recorded as revoked under that name (ADR-0098).
+    PluginRevoked,
     /// A plugin's grant holds a name the capability vocabulary does not accept (ADR-0085).
     PluginGrantInvalid,
     /// A task holds one merge approval, made before any job runs on it.
@@ -347,6 +354,18 @@ impl fmt::Display for RuleViolation {
             RuleViolation::SnapshotNotNewer => write!(
                 f,
                 "a trusted-root snapshot is imported only if it is later than the one before it (ADR-0097)"
+            ),
+            RuleViolation::RevocationsNotNewer => write!(
+                f,
+                "a revocation list is imported only if it is later than the one before it (ADR-0098)"
+            ),
+            RuleViolation::RevocationNotApplicable => write!(
+                f,
+                "a revocation is recorded once, after a revocation list is imported, for the release installed under its name (ADR-0098)"
+            ),
+            RuleViolation::PluginRevoked => write!(
+                f,
+                "a release recorded as revoked is not installed again (ADR-0098)"
             ),
             RuleViolation::PluginGrantInvalid => write!(
                 f,
@@ -471,6 +490,10 @@ pub struct State {
     pending_updates: BTreeMap<PluginName, PendingUpdate>,
     /// The trusted-root snapshot imported last, if one was (ADR-0097).
     trusted_root: Option<ImportedSnapshot>,
+    /// The revocation list imported last, if one was (ADR-0098).
+    revocations: Option<ImportedRevocations>,
+    /// The installed plugins whose release is revoked, by name (ADR-0098).
+    revoked_plugins: BTreeMap<PluginName, RevokedPlugin>,
     pending: Option<Pending>,
     /// The event of the last decision the operator signed (ADR-0070).
     last_approval: Option<u64>,
@@ -558,6 +581,29 @@ pub struct ImportedSnapshot {
     pub signed_at: Timestamp,
 }
 
+/// The revocation list imported last (ADR-0098).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportedRevocations {
+    /// The event that imported it.
+    pub seq: u64,
+    pub at: Timestamp,
+    /// The digest of the list file.
+    pub digest: Digest,
+    /// Its issue time: the earliest signed time its bundle proves.
+    pub signed_at: Timestamp,
+}
+
+/// The release installed under a name, revoked (ADR-0098). It is disabled: no job is given it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokedPlugin {
+    /// The event that recorded it.
+    pub seq: u64,
+    pub at: Timestamp,
+    /// The installed release's digest.
+    pub digest: Digest,
+    pub reason: ReasonCode,
+}
+
 /// The install policy the operator set last (ADR-0091).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetInstallPolicy {
@@ -635,6 +681,16 @@ impl State {
     /// The trusted-root snapshot imported last, if one was (ADR-0097).
     pub fn trusted_root(&self) -> Option<&ImportedSnapshot> {
         self.trusted_root.as_ref()
+    }
+
+    /// The revocation list imported last, if one was (ADR-0098).
+    pub fn revocations(&self) -> Option<&ImportedRevocations> {
+        self.revocations.as_ref()
+    }
+
+    /// The installed plugins whose release is revoked, by name (ADR-0098).
+    pub fn revoked_plugins(&self) -> &BTreeMap<PluginName, RevokedPlugin> {
+        &self.revoked_plugins
     }
 
     /// The updates waiting for the operator, by name (ADR-0092).
@@ -960,8 +1016,20 @@ impl State {
                 Ok(())
             }
             Event::PluginInstalled {
-                grant, source, by, ..
+                name,
+                digest,
+                grant,
+                source,
+                by,
+                ..
             } => {
+                if self
+                    .revoked_plugins
+                    .get(name)
+                    .is_some_and(|r| r.digest == *digest)
+                {
+                    return Err(RuleViolation::PluginRevoked);
+                }
                 // The authority table (ADR-0025) for an irreversible capability grant: a human only,
                 // or policy where the human's install policy already covers it (ADR-0091). Never a
                 // verifier (ADR-0012).
@@ -997,6 +1065,25 @@ impl State {
                     .is_some_and(|last| *signed_at <= last.signed_at)
                 {
                     return Err(RuleViolation::SnapshotNotNewer);
+                }
+                Ok(())
+            }
+            Event::PluginRevocationsImported { signed_at, .. } => {
+                if self
+                    .revocations
+                    .is_some_and(|last| *signed_at <= last.signed_at)
+                {
+                    return Err(RuleViolation::RevocationsNotNewer);
+                }
+                Ok(())
+            }
+            Event::PluginRevoked { name, digest, .. } => {
+                let installed = self.plugins.get(name).is_some_and(|p| p.digest == *digest);
+                if self.revocations.is_none()
+                    || !installed
+                    || self.revoked_plugins.contains_key(name)
+                {
+                    return Err(RuleViolation::RevocationNotApplicable);
                 }
                 Ok(())
             }
@@ -1294,8 +1381,10 @@ impl State {
                 reason,
                 ..
             } => {
-                // Whatever was waiting for this name, this install answers it.
+                // Whatever was waiting for this name, this install answers it, and the release it
+                // replaces, revoked or not, is no longer the one installed.
                 self.pending_updates.remove(name);
+                self.revoked_plugins.remove(name);
                 self.plugins.insert(
                     name.clone(),
                     InstalledPlugin {
@@ -1335,6 +1424,29 @@ impl State {
                     digest: *digest,
                     signed_at: *signed_at,
                 });
+            }
+            Event::PluginRevocationsImported { digest, signed_at } => {
+                self.revocations = Some(ImportedRevocations {
+                    seq,
+                    at,
+                    digest: *digest,
+                    signed_at: *signed_at,
+                });
+            }
+            Event::PluginRevoked {
+                name,
+                digest,
+                reason,
+            } => {
+                self.revoked_plugins.insert(
+                    name.clone(),
+                    RevokedPlugin {
+                        seq,
+                        at,
+                        digest: *digest,
+                        reason: reason.clone(),
+                    },
+                );
             }
             Event::PluginPolicySet {
                 policy, by, reason, ..
@@ -1419,6 +1531,8 @@ impl State {
             install_policy,
             pending_updates,
             trusted_root,
+            revocations,
+            revoked_plugins,
             pending,
             last_approval,
             signed_since,
@@ -1439,6 +1553,30 @@ impl State {
                 digest: t.digest,
                 signed_at: t.signed_at.as_millis(),
             }),
+            revocations: revocations.map(|r| RevocationListImage {
+                seq: r.seq,
+                at: r.at.as_millis(),
+                digest: r.digest,
+                signed_at: r.signed_at.as_millis(),
+            }),
+            revoked_plugins: revoked_plugins
+                .iter()
+                .map(|(name, r)| {
+                    let RevokedPlugin {
+                        seq,
+                        at,
+                        digest,
+                        reason,
+                    } = r;
+                    RevokedPluginImage {
+                        seq: *seq,
+                        at: at.as_millis(),
+                        name: name.clone(),
+                        digest: *digest,
+                        reason: reason.clone(),
+                    }
+                })
+                .collect(),
             pending_updates: pending_updates
                 .iter()
                 .map(|(name, u)| {
@@ -1713,7 +1851,24 @@ impl State {
             install_policy,
             pending_updates,
             trusted_root,
+            revocations,
+            revoked_plugins,
         } = image;
+        let mut revoked_by_name = BTreeMap::new();
+        for r in revoked_plugins {
+            let revoked = RevokedPlugin {
+                seq: r.seq,
+                at: Timestamp::from_millis(r.at),
+                digest: r.digest,
+                reason: r.reason,
+            };
+            if revoked_by_name.insert(r.name.clone(), revoked).is_some() {
+                return Err(format!(
+                    "revoked plugin {} is in the snapshot twice",
+                    r.name
+                ));
+            }
+        }
         let mut waiting = BTreeMap::new();
         for u in pending_updates {
             let update = PendingUpdate {
@@ -1752,6 +1907,13 @@ impl State {
                 digest: t.digest,
                 signed_at: Timestamp::from_millis(t.signed_at),
             }),
+            revocations: revocations.map(|r| ImportedRevocations {
+                seq: r.seq,
+                at: Timestamp::from_millis(r.at),
+                digest: r.digest,
+                signed_at: Timestamp::from_millis(r.signed_at),
+            }),
+            revoked_plugins: revoked_by_name,
             install_policy: install_policy.map(|p| SetInstallPolicy {
                 seq: p.seq,
                 at: Timestamp::from_millis(p.at),
@@ -1992,6 +2154,18 @@ impl State {
             if p.grant.check().is_err() {
                 out.push(format!(
                     "plugin {name} holds a grant the vocabulary refuses"
+                ));
+            }
+        }
+        for (name, r) in &self.revoked_plugins {
+            if self.plugins.get(name).is_none_or(|p| p.digest != r.digest) {
+                out.push(format!(
+                    "plugin {name} is recorded revoked for a release not installed"
+                ));
+            }
+            if self.revocations.is_none() {
+                out.push(format!(
+                    "plugin {name} is recorded revoked with no revocation list imported"
                 ));
             }
         }

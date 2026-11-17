@@ -23,9 +23,10 @@ use std::process::ExitCode;
 
 use hyalos_engine::Decider;
 use hyalos_plugin::index::{INDEX_FILE, Index, MAX_INDEX};
+use hyalos_plugin::revocation::RevocationError;
 use hyalos_plugin::sigstore::{MAX_BUNDLE, Trust};
 use hyalos_plugin::skill::{MAX_ARCHIVE, Skill, Store, digest_of};
-use hyalos_plugin::snapshot::Snapshot;
+use hyalos_plugin::snapshot::{Snapshot, SnapshotError};
 use hyalos_types::capability::Field;
 use hyalos_types::{
     Capabilities, Clock, Diff, Digest, Event, Grant, IndexLocation, InstallPolicy,
@@ -80,10 +81,12 @@ const USAGE: &str = "usage: hyalos plugin install <dir> [--grant] [--reason <cod
   schedule until stopped (ADR-0092). Exit 1 if a check failed
   snapshot import reads trusted-root.json and its Sigstore bundle at <location> (an index location, as
   for install --index) and makes it the trusted root releases are checked against, only if the one in
-  force verifies it as the Hyalos marketplace pipeline's and it is newer (ADR-0097). install --index
-  and update import one from their location the same way first. snapshot show prints the one in force
-  list shows every skill installed, its digest, where it came from, what it was granted, and any
-  update waiting for you
+  force verifies it as the Hyalos marketplace pipeline's and it is newer (ADR-0097). It then reads
+  revocations.json the same way, under the snapshot now in force, and disables every installed
+  release it revokes (ADR-0098). install --index and update import both from their location the same
+  way first, and nothing the list in force revokes is installed. snapshot show prints both in force
+  list shows every skill installed, its digest, where it came from, what it was granted, whether it
+  is revoked, and any update waiting for you
   pack writes the skill in <dir> as one archive to <file>, a new file, and prints its digest, as an
   index lists it
   diff prints what <new> adds to the capabilities in <installed>, what it takes away and what it
@@ -234,6 +237,17 @@ pub fn manage_with(
                     from_index(location, &name, version.as_ref(), &trust).map_err(failed)?
                 }
             };
+            // What the list in force revokes is never installed (ADR-0098), from an index or a
+            // directory. The state is read again: the location may just have brought a newer list.
+            let state = if log.log.exists() {
+                Some(log.read().map_err(failed)?)
+            } else {
+                None
+            };
+            let list = plugin_trust::revocations_in_force(env, state.as_ref())
+                .map_err(|e| failed(format!("{notes}{e}")))?;
+            plugin_trust::refuse_revoked(list.as_ref(), &skill.digest())
+                .map_err(|e| failed(format!("{notes}{}: {e}", skill.name)))?;
             // A local install starts from nothing (ADR-0006): what an index release was granted
             // was granted to that release, not to whatever is in a directory under the same name.
             // A local update is diffed against the local install before it.
@@ -420,6 +434,12 @@ pub fn manage_with(
                     from(&p.source),
                     summary(&p.grant)
                 ));
+                if let Some(r) = state.revoked_plugins().get(name) {
+                    out.push_str(&format!(
+                        "  revoked ({}) since event {}: disabled, no job is given it; install a release that is not revoked\n",
+                        r.reason, r.seq
+                    ));
+                }
                 if let Some(u) = state.pending_updates().get(name) {
                     out.push_str(&format!(
                         "  version {} waits for you since event {}: it asks for {}; install it with hyalos plugin install --index {} {name}\n",
@@ -483,20 +503,66 @@ pub fn manage_with(
                     ));
                 }
             };
-            match plugin_trust::import(env, &mut engine, &location, &current) {
-                Ok((next, seq)) => Ok(format!(
-                    "{}releases are now checked against it\n",
-                    plugin_trust::describe(&next, Some(seq))
-                )),
-                Err(NotImported::Absent) => Err(failed(format!(
-                    "{location}: there is no {} there (snapshot.absent)",
-                    hyalos_plugin::snapshot::FILE
-                ))),
-                Err(NotImported::Refused(e)) => {
-                    Err(failed(format!("it was not imported: {e} ({})", e.code())))
-                }
-                Err(NotImported::Failed(e)) => Err(failed(format!("it was not imported: {e}"))),
+            let mut out = String::new();
+            // A kept list lost the same way is put back the same way.
+            if plugin_trust::revocations_in_force(env, Some(engine.state())).is_err()
+                && plugin_trust::restore_revocations(env, engine.state(), &location)
+                    .map_err(failed)?
+            {
+                out.push_str(&format!(
+                    "put back the kept revocation list the log recorded, from {location}\n"
+                ));
             }
+            let (snapshot, mut imported) =
+                match plugin_trust::import(env, &mut engine, &location, &current) {
+                    Ok((next, seq)) => {
+                        out.push_str(&format!(
+                            "{}releases are now checked against it\n",
+                            plugin_trust::describe(&next, Some(seq))
+                        ));
+                        (next, true)
+                    }
+                    Err(NotImported::Absent) => (current, false),
+                    Err(NotImported::Refused(e)) if e == SnapshotError::NotNewer => {
+                        out.push_str(&format!("the trusted-root snapshot there: {e}\n"));
+                        (current, false)
+                    }
+                    Err(NotImported::Refused(e)) => {
+                        return Err(failed(format!(
+                            "{out}it was not imported: {e} ({})",
+                            e.code()
+                        )));
+                    }
+                    Err(e) => return Err(failed(format!("{out}it was not imported: {}", e.why()))),
+                };
+            match plugin_trust::import_revocations(env, &mut engine, &location, &snapshot) {
+                Ok((list, seq, disabled)) => {
+                    imported = true;
+                    out.push_str(&plugin_trust::describe_revocations(Some(&list), Some(seq)));
+                    out.push_str(&disabled);
+                }
+                Err(NotImported::Absent) => {
+                    out.push_str(&plugin_trust::apply_in_force(env, &mut engine).map_err(failed)?);
+                }
+                Err(NotImported::RefusedList(e)) if e == RevocationError::NotNewer => {
+                    out.push_str(&format!("the revocation list there: {e}\n"));
+                    out.push_str(&plugin_trust::apply_in_force(env, &mut engine).map_err(failed)?);
+                }
+                Err(e) => {
+                    return Err(failed(format!(
+                        "{out}the revocation list was not imported: {}",
+                        e.why()
+                    )));
+                }
+            }
+            if !imported && out.is_empty() {
+                return Err(failed(format!(
+                    "{location}: there is no {} or {} there (snapshot.absent)",
+                    hyalos_plugin::snapshot::FILE,
+                    hyalos_plugin::revocation::FILE
+                )));
+            }
+            Ok(out)
         }
         [snapshot, show] if snapshot == "snapshot" && show == "show" => {
             let state = if log.log.exists() {
@@ -511,15 +577,52 @@ pub fn manage_with(
                 .and_then(|s| s.trusted_root())
                 .filter(|t| t.digest == current.digest())
                 .map(|t| t.seq);
-            Ok(plugin_trust::describe(&current, imported))
+            let list = plugin_trust::revocations_in_force(env, state.as_ref()).map_err(failed)?;
+            Ok(format!(
+                "{}{}",
+                plugin_trust::describe(&current, imported),
+                plugin_trust::describe_revocations(
+                    list.as_ref(),
+                    state.as_ref().and_then(|s| s.revocations()).map(|r| r.seq)
+                )
+            ))
         }
         _ => Err(usage("unknown plugin command")),
     }
 }
 
-/// `current`, or the later snapshot at `location` it vouches for, imported; a line in `notes` says
-/// why one there was not.
+/// `current`, or the later snapshot at `location` it vouches for, imported, with the later revocation
+/// list there imported under it; a line in `notes` says why either was not, and which installed
+/// releases the list disabled.
 fn refreshed(
+    env: Env<'_>,
+    engine: &mut hyalos_engine::Engine,
+    location: &IndexLocation,
+    current: Snapshot,
+    notes: &mut String,
+) -> Snapshot {
+    let snapshot = refreshed_snapshot(env, engine, location, current, notes);
+    match plugin_trust::import_revocations(env, engine, location, &snapshot) {
+        Ok((list, seq, disabled)) => {
+            notes.push_str(&format!(
+                "imported a newer revocation list from there at event {seq}, issued {}\n{disabled}",
+                crate::mcp::rfc3339(list.signed_at().as_millis())
+            ));
+        }
+        Err(why) => {
+            if let Some(note) = why.note() {
+                notes.push_str(&note);
+            }
+            match plugin_trust::apply_in_force(env, engine) {
+                Ok(disabled) => notes.push_str(&disabled),
+                Err(e) => notes.push_str(&format!("{e}\n")),
+            }
+        }
+    }
+    snapshot
+}
+
+fn refreshed_snapshot(
     env: Env<'_>,
     engine: &mut hyalos_engine::Engine,
     location: &IndexLocation,
@@ -620,6 +723,12 @@ fn update_one(
     let digest = skill.digest();
     if digest == installed {
         return Ok(format!("up to date at version {version}"));
+    }
+    let list = plugin_trust::revocations_in_force(env, Some(engine.state()))?;
+    if let Some(reason) = list.as_ref().and_then(|l| l.reason(&digest)) {
+        return Ok(format!(
+            "version {version} is revoked ({reason}), so it is not offered (plugin.revoked)"
+        ));
     }
     let state = engine.state();
     let covered = state

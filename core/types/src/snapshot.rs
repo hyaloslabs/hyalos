@@ -33,8 +33,9 @@ use crate::{
 /// they were. Version 12 added the install policy (ADR-0091); earlier images have none. Version 13
 /// added the updates waiting for the operator (ADR-0092); earlier images have none. Version 14 added
 /// the trusted-root snapshot imported last (ADR-0097); earlier images have none, so the embedded one
-/// is in force.
-pub const STATE_VERSION: u32 = 14;
+/// is in force. Version 15 added the revocation list imported last and the installed plugins it
+/// revoked (ADR-0098); earlier images have neither.
+pub const STATE_VERSION: u32 = 15;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +74,34 @@ pub struct StateImage {
     pub pending_updates: Vec<PendingUpdateImage>,
     /// The trusted-root snapshot imported last, if one was (ADR-0097).
     pub trusted_root: Option<TrustedRootImage>,
+    /// The revocation list imported last, if one was (ADR-0098).
+    pub revocations: Option<RevocationListImage>,
+    /// Each installed plugin whose release is revoked, by name (ADR-0098).
+    pub revoked_plugins: Vec<RevokedPluginImage>,
+}
+
+/// The latest `plugin.revocations_imported` event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevocationListImage {
+    /// The sequence number of the event that imported it.
+    pub seq: u64,
+    pub at: u64,
+    pub digest: Digest,
+    /// Its issue time, in milliseconds.
+    pub signed_at: u64,
+}
+
+/// A `plugin.revoked` event for the release installed under its name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokedPluginImage {
+    /// The sequence number of the event that recorded it.
+    pub seq: u64,
+    pub at: u64,
+    pub name: PluginName,
+    pub digest: Digest,
+    pub reason: ReasonCode,
 }
 
 /// The latest `plugin.snapshot_imported` event.
@@ -400,7 +429,12 @@ impl StateImage {
             object.insert("pending_updates".into(), Value::Array(Vec::new()));
         }
         // 13 -> 14: no trusted-root snapshot had been imported.
-        object.insert("trusted_root".into(), Value::Null);
+        if version < 14 {
+            object.insert("trusted_root".into(), Value::Null);
+        }
+        // 14 -> 15: no revocation list had been imported, so nothing installed was revoked.
+        object.insert("revocations".into(), Value::Null);
+        object.insert("revoked_plugins".into(), Value::Array(Vec::new()));
         // 6 -> 7: no job's reason was kept, and no job had returned values.
         if version >= 7 {
             return serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()));
@@ -574,6 +608,8 @@ mod tests {
             install_policy: None,
             pending_updates: vec![],
             trusted_root: None,
+            revocations: None,
+            revoked_plugins: Vec::new(),
         }
     }
 

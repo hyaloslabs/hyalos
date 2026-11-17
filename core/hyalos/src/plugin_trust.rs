@@ -8,11 +8,17 @@
 //! A newer snapshot is imported from an index location only if the snapshot in force vouches for it
 //! ([`Snapshot::successor`]). The import is recorded as `plugin.snapshot_imported`, by the engine: it
 //! is not a decision.
+//!
+//! The revocation list (S7.7, ADR-0098) travels the same way: kept in `trust/` under its digest,
+//! imported from a location only if the snapshot in force verifies it as the pipeline's and it is
+//! later than the one before (`plugin.revocations_imported`). Each installed release it revokes is
+//! then recorded as `plugin.revoked`, and no job is given it.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use hyalos_engine::{Engine, State};
+use hyalos_plugin::revocation::{self, RevocationError, Revocations};
 use hyalos_plugin::sigstore::MAX_BUNDLE;
 use hyalos_plugin::skill::digest_of;
 use hyalos_plugin::snapshot::{BUNDLE, FILE, MAX_SNAPSHOT, Snapshot, SnapshotError};
@@ -81,32 +87,185 @@ pub fn restore(env: Env<'_>, state: &State, location: &IndexLocation) -> Result<
     let Some(last) = state.trusted_root() else {
         return Ok(false);
     };
-    let Some(bytes) = plugin_source::fetch_optional(location, FILE, MAX_SNAPSHOT)? else {
+    restore_kept(env, location, FILE, MAX_SNAPSHOT, last.digest)
+}
+
+/// Puts back the file `name` at `location` as the kept file for `digest`, if it has that digest.
+fn restore_kept(
+    env: Env<'_>,
+    location: &IndexLocation,
+    name: &str,
+    limit: u64,
+    digest: Digest,
+) -> Result<bool, String> {
+    let Some(bytes) = plugin_source::fetch_optional(location, name, limit)? else {
         return Ok(false);
     };
-    if digest_of(&bytes) != last.digest {
+    if digest_of(&bytes) != digest {
         return Ok(false);
     }
-    keep(env, last.digest, &bytes)?;
+    keep(env, digest, &bytes)?;
     Ok(true)
+}
+
+/// The revocation list in force: the one the log says was imported last, read back from the trust
+/// store with the digest the log recorded, or `None` if none was imported. If it cannot be read,
+/// nothing is installed (`revocations.unreadable`), since what it revokes cannot be told.
+pub fn revocations_in_force(
+    env: Env<'_>,
+    state: Option<&State>,
+) -> Result<Option<Revocations>, String> {
+    let Some(last) = state.and_then(State::revocations) else {
+        return Ok(None);
+    };
+    let unreadable = || {
+        format!(
+            "the revocation list imported at event {} cannot be read back with the digest the log recorded, so nothing can be installed; import it again with hyalos plugin snapshot import <location> (revocations.unreadable)",
+            last.seq
+        )
+    };
+    let bytes = std::fs::read(kept_file(env, last.digest)?).map_err(|_| unreadable())?;
+    if digest_of(&bytes) != last.digest {
+        return Err(unreadable());
+    }
+    Revocations::kept(&bytes, last.signed_at)
+        .map(Some)
+        .map_err(|_| unreadable())
+}
+
+/// Puts back the revocation list the log says was imported last from `location`, as [`restore`]
+/// does the snapshot.
+pub fn restore_revocations(
+    env: Env<'_>,
+    state: &State,
+    location: &IndexLocation,
+) -> Result<bool, String> {
+    let Some(last) = state.revocations() else {
+        return Ok(false);
+    };
+    restore_kept(
+        env,
+        location,
+        revocation::FILE,
+        revocation::MAX_LIST,
+        last.digest,
+    )
+}
+
+/// Imports the revocation list at `location` if `snapshot` verifies it as the pipeline's and it is
+/// later than the one in force, then records each installed release it revokes. Returns the list,
+/// the event that imported it and a line for each release disabled.
+pub fn import_revocations(
+    env: Env<'_>,
+    engine: &mut Engine,
+    location: &IndexLocation,
+    snapshot: &Snapshot,
+) -> Result<(Revocations, u64, String), NotImported> {
+    let file = plugin_source::fetch_optional(location, revocation::FILE, revocation::MAX_LIST)
+        .map_err(NotImported::Failed)?
+        .ok_or(NotImported::Absent)?;
+    let bundle = plugin_source::fetch(location, revocation::BUNDLE, MAX_BUNDLE)
+        .map_err(|_| NotImported::RefusedList(RevocationError::Unsigned))?;
+    let after = engine.state().revocations().map(|r| r.signed_at);
+    let list =
+        Revocations::verify(snapshot, &file, &bundle, after).map_err(NotImported::RefusedList)?;
+    keep(env, list.digest(), &file).map_err(NotImported::Failed)?;
+    let head = engine
+        .import_revocations(SystemClock.now(), list.digest(), list.signed_at())
+        .map_err(|e| NotImported::Failed(e.to_string()))?;
+    let disabled = apply(engine, &list).map_err(NotImported::Failed)?;
+    Ok((list, head.seq, disabled))
+}
+
+/// Records `plugin.revoked` for each installed release `list` revokes that is not recorded yet, and
+/// returns a line for each.
+pub fn apply(engine: &mut Engine, list: &Revocations) -> Result<String, String> {
+    let hit: Vec<_> = engine
+        .state()
+        .plugins()
+        .iter()
+        .filter(|(name, _)| !engine.state().revoked_plugins().contains_key(*name))
+        .filter_map(|(name, p)| Some((name.clone(), p.digest, list.reason(&p.digest)?.clone())))
+        .collect();
+    let mut out = String::new();
+    for (name, digest, reason) in hit {
+        let head = engine
+            .revoke_plugin(SystemClock.now(), name.clone(), digest, reason.clone())
+            .map_err(|e| e.to_string())?;
+        out.push_str(&format!(
+            "{name}: the installed release {digest} is revoked ({reason}), recorded at event {}: no job is given it until you install a release that is not revoked\n",
+            head.seq
+        ));
+    }
+    Ok(out)
+}
+
+/// [`apply`]s the list in force, if there is one: a release it revokes that an interrupted import
+/// left unmarked is marked now.
+pub fn apply_in_force(env: Env<'_>, engine: &mut Engine) -> Result<String, String> {
+    match revocations_in_force(env, Some(engine.state()))? {
+        Some(list) => apply(engine, &list),
+        None => Ok(String::new()),
+    }
+}
+
+/// A refusal of `digest` if the list in force revokes it (`plugin.revoked`).
+pub fn refuse_revoked(list: Option<&Revocations>, digest: &Digest) -> Result<(), String> {
+    match list.and_then(|l| l.reason(digest)) {
+        Some(reason) => Err(format!(
+            "release {digest} is revoked ({reason}) by the revocation list in force, so it was not installed (plugin.revoked)"
+        )),
+        None => Ok(()),
+    }
+}
+
+/// A revocation list as the operator reads it.
+pub fn describe_revocations(list: Option<&Revocations>, imported_at: Option<u64>) -> String {
+    match (list, imported_at) {
+        (Some(list), Some(seq)) => format!(
+            "revocation list imported at event {seq}\ndigest {}\nissued {}\nrevokes {} release(s)\n",
+            list.digest(),
+            crate::mcp::rfc3339(list.signed_at().as_millis()),
+            list.len()
+        ),
+        _ => "no revocation list has been imported\n".into(),
+    }
 }
 
 /// Why nothing was imported from a location.
 pub enum NotImported {
     /// The location carries no snapshot.
     Absent,
-    /// It carries one that was refused.
+    /// It carries a snapshot that was refused.
     Refused(SnapshotError),
+    /// It carries a revocation list that was refused.
+    RefusedList(RevocationError),
     /// It could not be fetched or kept, or the import not recorded.
     Failed(String),
 }
 
 impl NotImported {
+    /// Why, as one line.
+    pub fn why(&self) -> String {
+        match self {
+            Self::Absent => "there is none there".into(),
+            Self::Refused(e) => format!("{e} ({})", e.code()),
+            Self::RefusedList(e) => format!("{e} ({})", e.code()),
+            Self::Failed(e) => e.clone(),
+        }
+    }
+
     /// The line an install prints about it, or nothing when there is nothing worth saying: no
     /// snapshot, or one no newer than the one in force.
     pub fn note(&self) -> Option<String> {
         match self {
-            Self::Absent | Self::Refused(SnapshotError::NotNewer) => None,
+            Self::Absent
+            | Self::Refused(SnapshotError::NotNewer)
+            | Self::RefusedList(RevocationError::NotNewer) => None,
+            Self::RefusedList(e) => Some(format!(
+                "the revocation list there was not imported: {e} ({}); the one in force still applies\n",
+                e.code()
+            )),
             Self::Refused(e) => Some(format!(
                 "the trusted-root snapshot there was not imported: {e} ({}); checking against the one in force\n",
                 e.code()
