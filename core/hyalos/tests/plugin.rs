@@ -345,6 +345,39 @@ fn a_run_gets_a_skill_only_as_installed_and_never_without_its_mount() -> Res {
         &[(&digest.to_string(), "malware.exfiltration")],
         &release,
     )?;
+    // An import cut short after the list was recorded and before the release was marked: the list
+    // in force still keeps the skill from the job.
+    let file = std::fs::read(lists.join(hyalos_plugin::revocation::FILE))?;
+    let kept = hyalos_plugin::skill::digest_of(&file);
+    std::fs::create_dir_all(world.data.join("trust"))?;
+    std::fs::write(world.data.join("trust").join(format!("{kept}.json")), &file)?;
+    {
+        let key = hyalos::keys::load(&world.config.join("engine.key"))?;
+        let mut engine = hyalos_engine::Engine::open(&world.data.join("events.db"), key)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as u64;
+        engine.import_revocations(
+            hyalos_types::Timestamp::from_millis(now),
+            kept,
+            hyalos_types::Timestamp::from_millis(1),
+        )?;
+    }
+    let refused = run_job(&request("pdf-tools")?, setup(), &mut Vec::new())
+        .err()
+        .ok_or("a run with a revoked, unmarked skill started")?;
+    assert!(
+        refused.contains("revoked (malware.exfiltration)"),
+        "{refused}"
+    );
+    // A list that cannot be read keeps every skill out.
+    std::fs::remove_file(world.data.join("trust").join(format!("{kept}.json")))?;
+    let refused = run_job(&request("pdf-tools")?, setup(), &mut Vec::new())
+        .err()
+        .ok_or("a run with an unreadable list started")?;
+    assert!(refused.contains("revocations.unreadable"), "{refused}");
+    std::fs::write(world.data.join("trust").join(format!("{kept}.json")), &file)?;
+    // The next import, of the same list signed later, marks it.
     release
         .cli(
             &world,

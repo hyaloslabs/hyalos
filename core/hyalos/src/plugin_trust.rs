@@ -115,6 +115,14 @@ pub fn revocations_in_force(
     env: Env<'_>,
     state: Option<&State>,
 ) -> Result<Option<Revocations>, String> {
+    revocations_kept_in(&trust_store(env)?, state)
+}
+
+/// As [`revocations_in_force`], with the trust store at `store`.
+pub fn revocations_kept_in(
+    store: &Path,
+    state: Option<&State>,
+) -> Result<Option<Revocations>, String> {
     let Some(last) = state.and_then(State::revocations) else {
         return Ok(None);
     };
@@ -124,7 +132,8 @@ pub fn revocations_in_force(
             last.seq
         )
     };
-    let bytes = std::fs::read(kept_file(env, last.digest)?).map_err(|_| unreadable())?;
+    let bytes =
+        std::fs::read(store.join(format!("{}.json", last.digest))).map_err(|_| unreadable())?;
     if digest_of(&bytes) != last.digest {
         return Err(unreadable());
     }
@@ -271,7 +280,9 @@ impl NotImported {
                 e.code()
             )),
             Self::Failed(e) => Some(format!(
-                "the trusted-root snapshot there was not imported: {e}; checking against the one in force\n"
+                "a trust file there ({} or {}) was not imported: {e}; the ones in force still apply\n",
+                FILE,
+                revocation::FILE
             )),
         }
     }

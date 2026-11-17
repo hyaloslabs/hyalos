@@ -282,6 +282,11 @@ pub fn manage_with(
             } else {
                 (unlock().map_err(failed)?, Decider::Human)
             };
+            // Again against the engine about to write it: a list may have been imported since.
+            let list =
+                plugin_trust::revocations_in_force(env, Some(engine.state())).map_err(failed)?;
+            plugin_trust::refuse_revoked(list.as_ref(), &skill.digest())
+                .map_err(|e| failed(format!("{}: {e}", skill.name)))?;
             let store = paths::plugin_store(env).map_err(failed)?;
             paths::make_private_dir(&store).map_err(failed)?;
             let digest = Store::new(store)
@@ -425,6 +430,7 @@ pub fn manage_with(
             if state.plugins().is_empty() {
                 return Ok("no skill is installed\n".into());
             }
+            let list = plugin_trust::revocations_in_force(env, Some(&state)).map_err(failed)?;
             let mut out = String::new();
             for (name, p) in state.plugins() {
                 out.push_str(&format!(
@@ -441,6 +447,13 @@ pub fn manage_with(
                     ));
                 }
                 if let Some(u) = state.pending_updates().get(name) {
+                    if let Some(reason) = list.as_ref().and_then(|l| l.reason(&u.digest)) {
+                        out.push_str(&format!(
+                            "  version {} found at event {} is revoked ({reason}) and will not install\n",
+                            u.version, u.seq
+                        ));
+                        continue;
+                    }
                     out.push_str(&format!(
                         "  version {} waits for you since event {}: it asks for {}; install it with hyalos plugin install --index {} {name}\n",
                         u.version,
@@ -513,6 +526,7 @@ pub fn manage_with(
                     "put back the kept revocation list the log recorded, from {location}\n"
                 ));
             }
+            let mut snapshot_refused = None;
             let (snapshot, mut imported) =
                 match plugin_trust::import(env, &mut engine, &location, &current) {
                     Ok((next, seq)) => {
@@ -527,13 +541,12 @@ pub fn manage_with(
                         out.push_str(&format!("the trusted-root snapshot there: {e}\n"));
                         (current, false)
                     }
-                    Err(NotImported::Refused(e)) => {
-                        return Err(failed(format!(
-                            "{out}it was not imported: {e} ({})",
-                            e.code()
-                        )));
+                    Err(e) => {
+                        // The list there is still read, under the snapshot in force, as an install
+                        // does.
+                        snapshot_refused = Some(format!("it was not imported: {}", e.why()));
+                        (current, false)
                     }
-                    Err(e) => return Err(failed(format!("{out}it was not imported: {}", e.why()))),
                 };
             match plugin_trust::import_revocations(env, &mut engine, &location, &snapshot) {
                 Ok((list, seq, disabled)) => {
@@ -554,6 +567,9 @@ pub fn manage_with(
                         e.why()
                     )));
                 }
+            }
+            if let Some(why) = snapshot_refused {
+                return Err(failed(format!("{out}{why}")));
             }
             if !imported && out.is_empty() {
                 return Err(failed(format!(
