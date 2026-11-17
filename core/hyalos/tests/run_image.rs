@@ -9,6 +9,9 @@
 //! bytes are scanned on the host for the provider key and the forge token, which never enter the
 //! sandbox, so the scan cannot put them there. Then the model lets Codex finish.
 //!
+//! S6.3 with the same harness: a skill that is an MCP server runs in the job's sandbox, and its only
+//! way out is the egress gate, for the hosts the job and the skill's grant both allow (ADR-0101).
+//!
 //! It skips without the `hyalos-sandbox:test` image unless `HYALOS_REQUIRE_SANDBOX_IMAGE` is set,
 //! which the `sandbox image` workflow does.
 
@@ -458,6 +461,146 @@ fn codex_in_the_sandbox_pushes_a_branch_and_opens_a_pull_request() -> Res {
             ..
         }
     )));
+    ok_cli(world.cli(&["log", "verify"])?)?;
+    let _ = std::fs::remove_dir_all(&repos);
+    let _ = std::fs::remove_dir_all(&home);
+    Ok(())
+}
+
+/// A model that answers every call with "Done.", so nothing in the sandbox asks for a host but the
+/// MCP server.
+fn quiet_model() -> Res<u16> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(&stream);
+                let (mut line, mut length) = (String::new(), 0usize);
+                let _ = reader.read_line(&mut line);
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0; length];
+                let _ = reader.read_exact(&mut body);
+                let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+                let stream_wanted = body["stream"].as_bool().unwrap_or(false);
+                let reply = done(stream_wanted);
+                let kind = if stream_wanted {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                };
+                let _ = write!(
+                    &stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                    reply.len()
+                );
+            });
+        }
+    });
+    Ok(port)
+}
+
+/// The MCP server's start: it asks twice for the host its grant holds and once for one the job lists
+/// but the grant cut, then ends. Codex starts it before its first turn.
+const SERVE: &str = "#!/bin/sh\n\
+curl -sS --max-time 10 -o /dev/null https://granted.example/ 2>/dev/null\n\
+curl -sS --max-time 10 -o /dev/null https://granted.example/ 2>/dev/null\n\
+curl -sS --max-time 10 -o /dev/null https://cut.example/ 2>/dev/null\n\
+exit 0\n";
+
+#[test]
+fn an_mcp_server_in_the_sandbox_reaches_only_what_its_grant_allows() -> Res {
+    let Some(_runtime) = runtime()? else {
+        eprintln!("skipped: no {IMAGE} image");
+        return Ok(());
+    };
+    if !have_git()? {
+        eprintln!("skipped: no git");
+        return Ok(());
+    }
+    let repos = dir("mrepos")?;
+    let home = dir("mhome")?;
+    repository(&repos, &home)?;
+    let gh = GitHub::start(&repos, false)?;
+    let world = World::new("image-mcp", Some(&gh))?;
+    let port = quiet_model()?;
+    std::fs::write(
+        world.config.join("provider.keys"),
+        format!(
+            "openai.key = {}\nopenai.base = http://127.0.0.1:{port}\n",
+            world.provider_key
+        ),
+    )?;
+
+    // The skill: an MCP server granted one host, and what the job needs to run.
+    let skill = world.root.join("notes");
+    std::fs::create_dir_all(&skill)?;
+    std::fs::write(skill.join("SKILL.md"), "---\nname: notes\n---\nNotes.\n")?;
+    std::fs::write(skill.join("serve"), SERVE)?;
+    std::fs::set_permissions(
+        skill.join("serve"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )?;
+    std::fs::write(skill.join("mcp.json"), r#"{"command":"./serve"}"#)?;
+    std::fs::write(
+        skill.join("capabilities.json"),
+        r#"{"version":1,"actions":["read","push","open_pr"],"egress_hosts":["granted.example"],
+            "data_flows":["job->model","job->forge","job->web"]}"#,
+    )?;
+    let path = skill.to_string_lossy().into_owned();
+    let out = ok_cli(world.signed(&["plugin", "install", &path, "--grant"])?)?;
+    assert!(out.contains("runs an MCP server: ./serve"), "{out}");
+
+    // The job lists both hosts; the skill's grant cuts it to one.
+    let run = Command::new(common::EXE)
+        .args(["run", "--repo", "octo/repo", "--issue", "Take notes."])
+        .args(["--image", IMAGE, "--harness", "codex", "--minutes", "5"])
+        .args([
+            "--allow-host",
+            "granted.example",
+            "--allow-host",
+            "cut.example",
+        ])
+        .args(["--skill", "notes"])
+        .env("HYALOS_CONFIG_DIR", &world.config)
+        .env("HYALOS_DATA_DIR", &world.data)
+        .env("HYALOS_RUNTIME_DIR", &world.runtime)
+        .output()?;
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let egress: Vec<(Answer, String)> = world
+        .events()?
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::GateAnswered {
+                gate: Gate::Egress,
+                answer,
+                reason,
+                ..
+            } => Some((answer, reason.as_str().to_string())),
+            _ => None,
+        })
+        .collect();
+    eprintln!("egress answers: {egress:?}");
+    // The server ran in the sandbox and its requests reached the gate. A refusal is logged and an
+    // allow is not (ADR-0042), so exactly one refusal means the host the grant cut was refused and
+    // the granted host, asked for twice, was not.
+    assert_eq!(
+        egress,
+        [(Answer::Deny, "egress.host_not_allowed".to_string())],
+        "{said}"
+    );
     ok_cli(world.cli(&["log", "verify"])?)?;
     let _ = std::fs::remove_dir_all(&repos);
     let _ = std::fs::remove_dir_all(&home);

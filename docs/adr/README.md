@@ -114,3 +114,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0098](0098-revoking-a-proven-malicious-release.md) | Revoking a proven-malicious release | Accepted |
 | [0099](0099-installing-from-an-offline-bundle-within-a-maximum-age.md) | Installing from an offline bundle within a maximum age | Accepted |
 | [0100](0100-automated-evidence-on-every-release.md) | Automated evidence on every release | Accepted |
+| [0101](0101-a-third-party-mcp-server-runs-in-the-job-s-sandbox.md) | A third-party MCP server runs in the job's sandbox | Accepted |

@@ -32,7 +32,8 @@ use std::time::Duration;
 use hyalos_engine::{Decider, Engine, Ruling, TaskStatus};
 use hyalos_policy::{GateRequest, Outcome as GateOutcome};
 use hyalos_substrate::{
-    Choice, Ending, HOST_OS, Outcome, SandboxSpec, Substrate, Unsupported, detect_with,
+    Choice, Ending, HOST_OS, Outcome, SKILLS_IN_SANDBOX, SandboxSpec, Substrate, Unsupported,
+    detect_with,
 };
 use hyalos_types::wire::{Protocol, ToBroker, ToEngine};
 use hyalos_types::workflow::{Output, Step, TypedValue, values_fit};
@@ -158,24 +159,82 @@ pub enum Harness {
 }
 
 impl Harness {
-    fn command(&self, prompt: String) -> Vec<String> {
+    /// The sandbox's command: the harness, given the prompt, with the MCP servers of `skills`
+    /// registered so it can call them (ADR-0101). Each runs in the sandbox, from the skill's
+    /// read-only directory, with the sandbox's proxy, so its only way out is the broker's egress gate.
+    fn command(&self, prompt: String, skills: &[(Skill, Grant)]) -> Vec<String> {
+        let servers: Vec<(&str, String, Vec<String>)> = skills
+            .iter()
+            .filter_map(|(skill, _)| {
+                let name = skill.name.as_str();
+                let root = format!("{SKILLS_IN_SANDBOX}/{name}");
+                let (command, args) = skill.mcp.as_ref()?.launch(&root);
+                Some((name, command, args))
+            })
+            .collect();
+        let proxy = ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"];
         let mut command: Vec<String> = match self {
-            Harness::Codex => ["hyalos-forward", "codex", "exec", "--skip-git-repo-check"]
-                .map(String::from)
-                .to_vec(),
+            Harness::Codex => {
+                let mut command: Vec<String> =
+                    ["hyalos-forward", "codex", "exec", "--skip-git-repo-check"]
+                        .map(String::from)
+                        .to_vec();
+                // Codex's `-c` takes TOML, and a JSON string or list of strings is TOML too.
+                let env: Vec<String> = proxy
+                    .iter()
+                    .map(|k| format!("{k} = \"{FORWARDER}\""))
+                    .chain(["NO_PROXY = \"127.0.0.1,localhost\"".into()])
+                    .collect();
+                for (name, program, args) in &servers {
+                    for (key, value) in [
+                        (
+                            "command",
+                            serde_json::Value::from(program.as_str()).to_string(),
+                        ),
+                        ("args", serde_json::Value::from(args.clone()).to_string()),
+                        ("env", format!("{{ {} }}", env.join(", "))),
+                    ] {
+                        command.push("-c".into());
+                        command.push(format!("mcp_servers.{name}.{key}={value}"));
+                    }
+                }
+                command
+            }
             Harness::ClaudeCode => {
-                return [
+                // Only the job's servers, never one from a project file the actor finds.
+                let mut command: Vec<String> = [
                     "hyalos-forward",
                     "claude",
                     "-p",
                     &prompt,
                     "--tools",
                     "Bash",
-                    "--allowedTools",
-                    "Bash",
+                    "--strict-mcp-config",
                 ]
                 .map(String::from)
                 .to_vec();
+                if !servers.is_empty() {
+                    let mut env: serde_json::Map<String, serde_json::Value> = proxy
+                        .iter()
+                        .map(|k| (k.to_string(), FORWARDER.into()))
+                        .collect();
+                    env.insert("NO_PROXY".into(), "127.0.0.1,localhost".into());
+                    let config: serde_json::Map<String, serde_json::Value> = servers
+                        .iter()
+                        .map(|(name, program, args)| {
+                            let server = serde_json::json!({
+                                "type": "stdio", "command": program, "args": args, "env": env,
+                            });
+                            (name.to_string(), server)
+                        })
+                        .collect();
+                    let config = serde_json::json!({ "mcpServers": config });
+                    command.extend(["--mcp-config".into(), config.to_string()]);
+                }
+                // Each server's tools, by Claude Code's name for them, beside the shell.
+                command.extend(["--allowedTools".into(), "Bash".into()]);
+                command.extend(servers.iter().map(|(name, ..)| format!("mcp__{name}")));
+                return command;
             }
             Harness::Command(command) => command.clone(),
         };
@@ -405,6 +464,7 @@ struct Run<'a> {
 mod tests {
     use super::step::broker_substrate;
     use super::*;
+    use hyalos_plugin::skill::McpServer;
     use hyalos_types::Provenance;
     use hyalos_types::workflow::TypedValue;
 
@@ -543,13 +603,69 @@ mod tests {
         assert!(prompt.contains("The task:\n\nfix it\n"));
         assert!(prompt.contains("git clone http://127.0.0.1:8089/git/octo/repo.git"));
         assert!(prompt.contains("hyalos-pr octo/repo hyalos/job-4 main"));
-        let codex = Harness::Codex.command(prompt.clone());
+        let codex = Harness::Codex.command(prompt.clone(), &[]);
         assert_eq!(codex[0], "hyalos-forward");
         assert_eq!(codex.last(), Some(&prompt));
-        let claude = Harness::ClaudeCode.command(prompt.clone());
+        let claude = Harness::ClaudeCode.command(prompt.clone(), &[]);
         assert_eq!(
             &claude[..4],
             &["hyalos-forward", "claude", "-p", prompt.as_str()]
+        );
+    }
+
+    /// A skill that is an MCP server is registered with either harness, from its read-only place in
+    /// the sandbox and through the sandbox's proxy (ADR-0101); a skill that is not one adds nothing.
+    #[test]
+    fn a_skills_mcp_server_is_registered_with_the_harness() {
+        let skill = |name: &str, mcp: Option<McpServer>| {
+            let skill = Skill {
+                name: PluginName::new(name).unwrap(),
+                asks: hyalos_types::Capabilities::none(),
+                mcp,
+                files: BTreeMap::new(),
+            };
+            (skill, Grant::none())
+        };
+        let server = McpServer {
+            command: "./bin/serve".into(),
+            args: vec!["--quiet".into()],
+        };
+        let skills = [skill("notes", Some(server)), skill("pdf", None)];
+        let codex = Harness::Codex.command("p".into(), &skills);
+        let at = "/opt/hyalos/skills/notes/bin/serve";
+        assert!(codex.contains(&format!("mcp_servers.notes.command=\"{at}\"")));
+        assert!(codex.contains(&"mcp_servers.notes.args=[\"--quiet\"]".to_string()));
+        let env = codex
+            .iter()
+            .find(|a| a.starts_with("mcp_servers.notes.env="))
+            .unwrap();
+        assert!(env.contains("HTTPS_PROXY = \"http://127.0.0.1:8089\""));
+        assert!(!codex.iter().any(|a| a.contains("pdf")));
+        assert_eq!(codex.last().map(String::as_str), Some("p"));
+        let claude = Harness::ClaudeCode.command("p".into(), &skills);
+        let config = claude.iter().position(|a| a == "--mcp-config").unwrap();
+        let config: serde_json::Value = serde_json::from_str(&claude[config + 1]).unwrap();
+        assert_eq!(config["mcpServers"]["notes"]["command"], at);
+        assert_eq!(config["mcpServers"]["notes"]["args"][0], "--quiet");
+        assert_eq!(
+            config["mcpServers"]["notes"]["env"]["HTTPS_PROXY"],
+            "http://127.0.0.1:8089"
+        );
+        assert!(config["mcpServers"].get("pdf").is_none());
+        assert!(claude.contains(&"--strict-mcp-config".to_string()));
+        assert!(claude.ends_with(&["--allowedTools".into(), "Bash".into(), "mcp__notes".into()]));
+        // With no server, neither harness is given one.
+        let plain = Harness::ClaudeCode.command("p".into(), &skills[1..]);
+        assert!(plain.contains(&"--strict-mcp-config".to_string()));
+        assert!(
+            !plain
+                .iter()
+                .any(|a| a.starts_with("--mcp") || a.starts_with("mcp__"))
+        );
+        assert!(
+            !Harness::Codex
+                .command("p".into(), &skills[1..])
+                .contains(&"-c".to_string())
         );
     }
 

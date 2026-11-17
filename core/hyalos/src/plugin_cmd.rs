@@ -274,8 +274,16 @@ pub fn manage_with(
                 .and_then(|s| s.install_policy())
                 .is_some_and(|p| p.policy.covers(&source, &skill.asks));
             let diff = held.diff(&skill.asks);
+            // The command an MCP server runs in each job given it, printable ASCII (ADR-0101).
+            let mcp = skill.mcp.as_ref().map_or(String::new(), |m| {
+                let words: Vec<&str> = std::iter::once(&m.command)
+                    .chain(&m.args)
+                    .map(String::as_str)
+                    .collect();
+                format!("runs an MCP server: {}\n", words.join(" "))
+            });
             let mut out = format!(
-                "{notes}skill {} ({} files), digest {}{}\n{}",
+                "{notes}skill {} ({} files), digest {}{}\n{mcp}{}",
                 skill.name,
                 skill.files.len(),
                 skill.digest(),
