@@ -540,6 +540,49 @@ fn a_skill_installs_by_name_from_a_directory_index_only_with_its_digest() -> Res
         "{said}"
     );
     assert!(installs(&world)?.is_empty());
+    // With a list it does accept, the pipeline's own from release r10, it reads the index and
+    // refuses the archive's bundle, which this test's Sigstore signed.
+    let real = World::new("plugin-index-real-trust", None)?;
+    let ceiling = real.root.join("ceiling.json");
+    std::fs::write(&ceiling, r#"{"version":1}"#)?;
+    ok_cli(real.signed(&[
+        "plugin",
+        "policy",
+        "set",
+        "--ceiling",
+        &ceiling.to_string_lossy(),
+        "--max-revocation-age-days",
+        "3650",
+        "--max-snapshot-age-days",
+        "3650",
+    ])?)?;
+    let r10 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/marketplace-r10");
+    let copy = real.root.join("bundle");
+    std::fs::create_dir(&copy)?;
+    for entry in std::fs::read_dir(&bundle)? {
+        let entry = entry?;
+        std::fs::copy(entry.path(), copy.join(entry.file_name()))?;
+    }
+    for file in [
+        hyalos_plugin::revocation::FILE,
+        hyalos_plugin::revocation::BUNDLE,
+    ] {
+        std::fs::copy(r10.join(file), copy.join(file))?;
+    }
+    let out = real.signed(&[
+        "plugin",
+        "install",
+        "--index",
+        &copy.to_string_lossy(),
+        "pdf-tools",
+    ])?;
+    assert_eq!(out.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("pdf-1.1.0.skill.sigstore.json:") && said.contains("(sigstore."),
+        "{said}"
+    );
+    assert!(installs(&real)?.is_empty());
 
     // The latest, which asks for nothing, needs no --grant.
     let out = release

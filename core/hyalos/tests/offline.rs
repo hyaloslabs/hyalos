@@ -86,17 +86,15 @@ fn a_release_directory_installs_with_the_pipelines_own_signatures() -> Res {
     let at = carried(&world)?;
     let said = ok_cli(world.signed(&install_args(&at))?)?;
     assert!(said.contains("version 0.1.0 from"), "{said}");
-    assert_eq!(
-        evidence(&world)?
-            .iter()
-            .map(|(k, _)| k.as_str())
-            .collect::<Vec<_>>(),
-        [
-            "plugin.snapshot_imported",
-            "plugin.revocations_imported",
-            "plugin.installed"
-        ]
-    );
+    // The list is imported and the skill installed. The snapshot is imported too while the one
+    // this build embeds is older than r10's; a later build embeds a newer one and imports nothing.
+    let kinds: Vec<String> = evidence(&world)?.into_iter().map(|(k, _)| k).collect();
+    let kinds: Vec<&str> = kinds
+        .iter()
+        .map(String::as_str)
+        .filter(|k| *k != "plugin.snapshot_imported")
+        .collect();
+    assert_eq!(kinds, ["plugin.revocations_imported", "plugin.installed"]);
     // An archive changed in the bundle is refused, as online.
     let archive = Path::new(&at).join("hello-0.1.0.skill");
     let mut bytes = std::fs::read(&archive)?;
@@ -110,7 +108,7 @@ fn a_release_directory_installs_with_the_pipelines_own_signatures() -> Res {
 
 /// A container runtime with [`IMAGE`], or `None`.
 fn runtime() -> Option<&'static str> {
-    ["podman", "docker"].into_iter().find(|rt| {
+    ["docker", "podman"].into_iter().find(|rt| {
         Command::new(rt)
             .args(["image", "inspect", IMAGE])
             .stdout(Stdio::null())
@@ -132,6 +130,12 @@ fn in_container(rt: &str, world: &World, args: &[&str]) -> Res<Output> {
     let user = format!("{}:{}", id("-u")?, id("-g")?);
     let mut child = Command::new(rt)
         .args(["run", "--rm", "-i", "--network", "none", "--user", &user])
+        // Rootless podman maps the host's uid to root unless told to keep it.
+        .args(if rt == "podman" {
+            &["--userns=keep-id"][..]
+        } else {
+            &[]
+        })
         .args(["-v", &format!("{root}:{root}")])
         .args(["-v", &format!("{EXE}:/usr/local/bin/hyalos:ro")])
         .args([

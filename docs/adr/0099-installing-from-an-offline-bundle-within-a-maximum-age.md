@@ -44,4 +44,4 @@ No event, wire message, manifest or state image changes.
 - An air-gapped host must bring in a release at least every 30 days by default, or every period its policy sets. Until it does, it can install nothing new. Weekly releases (ADR-0097) leave room to spare.
 - A host with a wrong clock may refuse installs it should allow, or allow installs a little past their age. ADR-0007 accepts this: anyone who controls the clock already controls the install.
 - An index without a revocation list, such as one a third party serves or a release before r10, can no longer be installed from on a host that never imported a list. This fails closed, and the error says so.
-- The fixture pins a real pipeline release. If the embedded snapshot can no longer verify it after a Sigstore rotation, the test fails, and that is the signal to embed a newer snapshot.
+- The fixture pins a real pipeline release. The test does not depend on whether it brings a newer snapshot than the one embedded. If the embedded snapshot can no longer verify it after a Sigstore rotation, the test fails, and that is the signal to refresh the fixture.
