@@ -55,6 +55,7 @@ fn waiting(started: &Path) -> Request {
         await_release: false,
         nonce: None,
         skills: Default::default(),
+        workflow: None,
     }
 }
 

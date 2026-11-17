@@ -359,3 +359,79 @@ fn a_plugin_s_memory_is_bounded_across_all_its_memories() {
         Err(codes::trapped())
     );
 }
+
+/// A plugin whose `run` answers `answer` (at most 255 bytes, no `\`), or fails with it.
+fn answering(answer: &str, ok: bool) -> Vec<u8> {
+    let (len, answer) = (answer.len(), answer.replace('"', "\\22"));
+    let discriminant = if ok { r"\00" } else { r"\01" };
+    component(&format!(
+        r#"(component
+  {MEM}
+  (core module $M
+    (import "mem" "memory" (memory 1))
+    (data (i32.const 64) "{discriminant}\00\00\00\80\00\00\00\{len:02x}\00\00\00")
+    (data (i32.const 128) "{answer}")
+    (func (export "run") (param i32 i32) (result i32) (i32.const 64)))
+  (core instance $m (instantiate $M (with "mem" (instance $mem))))
+  {ENTRY}
+)"#
+    ))
+}
+
+// A helper, not a test: a name that does not parse is a bug in the test.
+#[allow(clippy::unwrap_used)]
+fn with_component(bytes: Vec<u8>) -> hyalos_plugin::skill::Skill {
+    hyalos_plugin::skill::Skill {
+        name: hyalos_types::PluginName::new("risk-score").unwrap(),
+        asks: hyalos_types::Capabilities::none(),
+        mcp: None,
+        files: [(
+            hyalos_plugin::skill::COMPONENT_FILE.to_string(),
+            hyalos_plugin::skill::SkillFile {
+                bytes,
+                executable: false,
+            },
+        )]
+        .into(),
+    }
+}
+
+/// S6.5 (ADR-0102): a deterministic step runs the plugin's component with no capability, and only
+/// typed values that fit the step's output come out of it.
+#[test]
+fn a_deterministic_step_runs_the_component_with_no_capability() {
+    use hyalos_plugin::run_step;
+    use hyalos_types::workflow::{Field, Output, TypedValue};
+    let runtime = Runtime::new().unwrap();
+    let output: Output = [("low".to_string(), Field::Bool)].into();
+    let code = |c: &str| ReasonCode::new(c).unwrap();
+    // Its answer, read as the step's fields.
+    let skill = with_component(answering(r#"{"low": true}"#, true));
+    assert_eq!(
+        run_step(&runtime, &skill, "{}", &output),
+        Ok(vec![TypedValue::Bool(true)])
+    );
+    // An answer that does not fit, or the plugin's own error, is a code and nothing else.
+    let skill = with_component(answering(r#"{"low": 3}"#, true));
+    assert_eq!(
+        run_step(&runtime, &skill, "{}", &output),
+        Err(code("plugin.answer_does_not_fit"))
+    );
+    let skill = with_component(answering("no", false));
+    assert_eq!(
+        run_step(&runtime, &skill, "{}", &output),
+        Err(codes::failed())
+    );
+    // A component that imports a capability never instantiates here, whatever it was granted.
+    assert_eq!(
+        run_step(&runtime, &with_component(fetcher()), "{}", &output),
+        Err(codes::undeclared_import())
+    );
+    // A plugin with no component cannot be a step.
+    let mut none = with_component(Vec::new());
+    none.files.clear();
+    assert_eq!(
+        run_step(&runtime, &none, "{}", &output),
+        Err(codes::no_component())
+    );
+}

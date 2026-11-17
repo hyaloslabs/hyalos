@@ -51,7 +51,7 @@ fn drive(
             format!("interrupted ({signal}) before the job was recorded, so nothing was written")
         })
     };
-    if resume.is_some() && request.issue_number.is_none() {
+    if resume.is_some() && (request.issue_number.is_none() || request.workflow.is_some()) {
         return Err("only a fix-issue run can be resumed".into());
     }
     // A held issue lives in the broker's memory, which a stopped runner took with it: the run is
@@ -93,12 +93,24 @@ fn drive(
     engine.stamp_forward();
     // The skills, read back from the store and checked against what the operator installed, still
     // before anything is written (ADR-0089).
-    let skills = installed_skills(
-        request,
+    // A workflow's plugins too: every one is loaded now, and the actor is given its own (ADR-0102).
+    let (named, actor_plugin) = planned.plugins();
+    let names: BTreeSet<PluginName> = request.skills.iter().cloned().chain(named).collect();
+    let plugin_store = log.with_file_name(paths::PLUGIN_STORE_DIR);
+    let plugins: BTreeMap<PluginName, (Skill, Grant)> = installed_skills(
+        &names,
         &engine,
-        &Store::new(log.with_file_name(paths::PLUGIN_STORE_DIR)),
+        &Store::new(&plugin_store),
         &log.with_file_name(crate::plugin_trust::TRUST_DIR),
-    )?;
+    )?
+    .into_iter()
+    .map(|(skill, grant)| (skill.name.clone(), (skill, grant)))
+    .collect();
+    let skills = plugins
+        .iter()
+        .filter(|(name, _)| request.skills.contains(*name) || actor_plugin.as_ref() == Some(*name))
+        .map(|(_, loaded)| loaded.clone())
+        .collect();
     // Never before the log's last event, which another process may have written.
     let mut clock = Stamps(
         SystemClock.now().max(
@@ -168,6 +180,8 @@ fn drive(
         held_file: runs_dir.join(format!("task-{}.held", task.seq())),
         held_lock: None,
         skills,
+        plugins,
+        plugin_store,
     };
     let summary = match &planned {
         Planned::Workflow(flow, _) => {
@@ -544,20 +558,19 @@ fn choose(
 /// install recorded, and the grant a human gave it. A skill not installed, revoked (ADR-0098), or
 /// whose files changed since, refuses the run.
 fn installed_skills(
-    request: &Request,
+    names: &BTreeSet<PluginName>,
     engine: &Engine,
     store: &Store,
     trust: &std::path::Path,
 ) -> Result<Vec<(Skill, Grant)>, String> {
     // The list in force, not only the marks it left: an import cut short before it marked every
     // release still keeps them from jobs, and a list that cannot be read keeps every skill out.
-    let list = if request.skills.is_empty() {
+    let list = if names.is_empty() {
         None
     } else {
         crate::plugin_trust::revocations_kept_in(trust, Some(engine.state()))?
     };
-    request
-        .skills
+    names
         .iter()
         .map(|name| {
             let installed = engine.state().plugins().get(name).ok_or_else(|| {

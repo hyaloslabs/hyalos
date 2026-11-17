@@ -60,6 +60,7 @@ fn request(harness: Harness) -> Request {
         await_release: false,
         nonce: None,
         skills: Default::default(),
+        workflow: None,
     }
 }
 

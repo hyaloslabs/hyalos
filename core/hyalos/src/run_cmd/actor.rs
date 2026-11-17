@@ -67,6 +67,13 @@ impl Run<'_> {
         // The skills given to the job steer it, so their grants bound it as plugin text does
         // (ADR-0066, ADR-0089).
         let inputs = inputs.with_grants(self.skills.iter().map(|(_, grant)| grant.clone()));
+        // And every plugin whose output reached the actor through earlier steps (ADR-0102).
+        let inputs = match planned {
+            Planned::Workflow(flow, _) => {
+                inputs.with_grants(self.grants(&flow.plugins(flow.actor())))
+            }
+            Planned::Actor => inputs,
+        };
         // A skill in the prompt never widens the job: its grant cuts the manifest (ADR-0066).
         let manifest = inputs.bound(&manifest);
         let signed = match self

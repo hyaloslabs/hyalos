@@ -26,7 +26,10 @@ use hyalos_types::{
 
 mod common;
 
-use common::{GitHub, PASSPHRASE, Res, World, dir, have_git, ok_cli, repository};
+use common::{
+    GitHub, ISSUE_BODY, ISSUE_TITLE, Model, PASSPHRASE, Res, World, dir, have_git, ok_cli,
+    repository,
+};
 
 /// Releases signed as the pipeline by a Sigstore of the test's own, and install commands run
 /// in-process against its trust.
@@ -273,6 +276,7 @@ fn request(skill: &str) -> Res<Request> {
         await_release: false,
         nonce: None,
         skills: Default::default(),
+        workflow: None,
     };
     request.skills.insert(PluginName::new(skill).ok_or("name")?);
     Ok(request)
@@ -1578,5 +1582,237 @@ fn past_its_maximum_age_nothing_new_installs_or_updates_and_what_is_installed_ke
         .signed(&world, &["plugin", "install", "--index", &at, "pdf-tools"])
         .map_err(|e| e.1)?;
     assert_eq!(installs(&world)?.len(), 2);
+    Ok(())
+}
+
+/// A component whose `run` answers `answer` (at most 255 bytes, no `\`): linear memory with a bump
+/// allocator, and the entry lifting a function that returns the answer's place.
+fn component(answer: &str) -> Res<Vec<u8>> {
+    let (len, answer) = (answer.len(), answer.replace('"', "\\22"));
+    Ok(wat::parse_str(format!(
+        r#"(component
+  (core module $Mem
+    (memory (export "memory") 1)
+    (global $bump (mut i32) (i32.const 1024))
+    (func (export "realloc") (param i32 i32 i32 i32) (result i32)
+      (local $p i32)
+      (local.set $p (i32.and
+        (i32.add (global.get $bump) (i32.sub (local.get 2) (i32.const 1)))
+        (i32.xor (i32.sub (local.get 2) (i32.const 1)) (i32.const -1))))
+      (global.set $bump (i32.add (local.get $p) (local.get 3)))
+      (local.get $p)))
+  (core instance $mem (instantiate $Mem))
+  (core module $M
+    (import "mem" "memory" (memory 1))
+    (data (i32.const 64) "\00\00\00\00\80\00\00\00\{len:02x}\00\00\00")
+    (data (i32.const 128) "{answer}")
+    (func (export "run") (param i32 i32) (result i32) (i32.const 64)))
+  (core instance $m (instantiate $M (with "mem" (instance $mem))))
+  (func $run (param "input" string) (result (result string (error string)))
+    (canon lift (core func $m "run") (memory (core memory $mem "memory")) (realloc (core func $mem "realloc"))))
+  (instance $entry (export "run" (func $run)))
+  (export "hyalos:plugin/run@1.0.0" (instance $entry))
+)"#
+    ))?)
+}
+
+/// A plugin with a component that answers `answer`, granted what the actor needs.
+fn component_plugin(root: &Path, answer: &str) -> Res<PathBuf> {
+    let dir = root.join("risk-score");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: risk-score\n---\nScores risk.\n",
+    )?;
+    std::fs::write(dir.join("component.wasm"), component(answer)?)?;
+    std::fs::write(
+        dir.join("capabilities.json"),
+        r#"{"version":1,"actions":["read","push","open_pr"],"data_flows":["job->model","job->forge"]}"#,
+    )?;
+    Ok(dir)
+}
+
+/// The operator's workflow: a deterministic step runs the component on the task, and the actor reads
+/// its answer.
+const COMPOSED: &str = r#"{"version":2,"name":"scored","inputs":{"task":"operator_text"},"steps":[
+  {"id":"score","role":"deterministic","plugin":"risk-score","reads":["task"],"instructions":"Score it.",
+   "output":{"low":"bool"}},
+  {"id":"fix","role":"actor","reads":["task","score.low"],"instructions":"Fix it."}]}"#;
+
+/// S6.5 (ADR-0102): `hyalos run --workflow` runs a deterministic step's component in the broker, and
+/// its typed answer reaches the actor, which is bounded by the component's grant. An answer that does
+/// not fit the step's output fails the run before the actor.
+#[test]
+fn a_workflows_deterministic_step_runs_its_component_in_the_broker() -> Res {
+    if !have_git()? {
+        eprintln!("skipped: no git");
+        return Ok(());
+    }
+    let repos = dir("plugin-step-repos")?;
+    let home = dir("plugin-step-home")?;
+    repository(&repos, &home)?;
+    let gh = GitHub::start(&repos, false)?;
+    let world = World::new("plugin-step", Some(&gh))?;
+    let setup = || world.setup(local_detect(), Duration::from_secs(10));
+    let mut request = request("risk-score")?;
+    request.skills.clear();
+    request.workflow = Some(COMPOSED.to_string());
+
+    // Not installed: refused before anything is written.
+    let before = world.events()?.len();
+    let refused = run_job(&request, setup(), &mut Vec::new())
+        .err()
+        .ok_or("a run with no such plugin started")?;
+    assert!(
+        refused.contains("no skill risk-score installed"),
+        "{refused}"
+    );
+    assert_eq!(world.events()?.len(), before);
+
+    // Installed: the step runs in the broker, its value is recorded, and the actor runs.
+    let path = component_plugin(&world.root, r#"{"low": true}"#)?;
+    ok_cli(world.signed(&["plugin", "install", &path.to_string_lossy(), "--grant"])?)?;
+    let mut said = Vec::new();
+    let summary = run_job(&request, setup(), &mut said)?;
+    let said = String::from_utf8_lossy(&said).into_owned();
+    assert_eq!(summary.outcome, JobOutcome::Succeeded, "{said}");
+    assert!(said.contains("step score answered: low=true"), "{said}");
+    let values: Vec<_> = world
+        .events()?
+        .into_iter()
+        .filter_map(|e| match e {
+            Event::JobValues { values, .. } => Some(values),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        values,
+        [vec![hyalos_types::workflow::TypedValue::Bool(true)]]
+    );
+
+    // An actor that names the plugin is given it as a skill, mounted in its sandbox: a substrate that
+    // cannot mount one refuses to start rather than run without it.
+    let mut given = request.clone();
+    given.workflow = Some(COMPOSED.replace(
+        r#""role":"actor","#,
+        r#""role":"actor","plugin":"risk-score","#,
+    ));
+    let mut said = Vec::new();
+    run_job(&given, setup(), &mut said)?;
+    let said = String::from_utf8_lossy(&said).into_owned();
+    assert!(said.contains("cannot carry skills"), "{said}");
+
+    // An answer that does not fit the output: the step fails and the actor never runs.
+    std::fs::remove_dir_all(&path)?;
+    let path = component_plugin(&world.root, r#"{"low": "maybe"}"#)?;
+    ok_cli(world.signed(&["plugin", "install", &path.to_string_lossy()])?)?;
+    let mut said = Vec::new();
+    let summary = run_job(&request, setup(), &mut said)?;
+    let said = String::from_utf8_lossy(&said).into_owned();
+    assert_eq!(summary.outcome, JobOutcome::Failed, "{said}");
+    assert_eq!(last_ended(&world)?, "plugin.answer_does_not_fit", "{said}");
+    assert!(!said.contains("token minted"), "{said}");
+
+    // Granted nothing, the component still runs, and its answer reaching the actor cuts the actor's
+    // job to nothing: no forge token (ADR-0066).
+    std::fs::remove_dir_all(&path)?;
+    let path = component_plugin(&world.root, r#"{"low": true}"#)?;
+    std::fs::remove_file(path.join("capabilities.json"))?;
+    ok_cli(world.signed(&["plugin", "install", &path.to_string_lossy()])?)?;
+    let mut said = Vec::new();
+    let summary = run_job(&request, setup(), &mut said)?;
+    let said = String::from_utf8_lossy(&said).into_owned();
+    assert!(said.contains("step score answered: low=true"), "{said}");
+    assert_eq!(summary.outcome, JobOutcome::Failed, "{said}");
+    assert_eq!(last_ended(&world)?, "forge.no_token", "{said}");
+    let _ = std::fs::remove_dir_all(&repos);
+    let _ = std::fs::remove_dir_all(&home);
+    Ok(())
+}
+
+/// The shape S6.5 names: a reader of the issue, a deterministic step running a component on the
+/// reader's value, a planner reading the component's answer, and an actor.
+const FOUR_STEPS: &str = r#"{"version":2,"name":"composed","inputs":{"issue":"forge_issue","task":"operator_text"},"steps":[
+  {"id":"triage","role":"reader","reads":["issue"],"instructions":"Classify the issue.",
+   "output":{"kind":{"choice":["bug","docs"]}}},
+  {"id":"score","role":"deterministic","plugin":"risk-score","reads":["triage.kind"],"instructions":"Score it.",
+   "output":{"low":"bool"}},
+  {"id":"plan","role":"planner","reads":["task","score.low"],"instructions":"Choose an approach.",
+   "output":{"approach":{"choice":["docs_only","code"]}}},
+  {"id":"fix","role":"actor","reads":["task","triage.kind","score.low","plan.approach"],"instructions":"Fix it."}]}"#;
+
+/// S6.5 (ADR-0102): the four-step workflow runs end to end. The component runs on the reader's
+/// value in a tainted job of its own, which calls no model. The planner gets its answer and never
+/// the issue's text, and the actor gets every typed value.
+#[test]
+fn a_reader_a_component_a_planner_and_an_actor_run_as_one_workflow() -> Res {
+    if !have_git()? {
+        eprintln!("skipped: no git");
+        return Ok(());
+    }
+    let repos = dir("plugin-four-repos")?;
+    let home = dir("plugin-four-home")?;
+    repository(&repos, &home)?;
+    let gh = GitHub::start(&repos, false)?;
+    let world = World::new("plugin-four", Some(&gh))?;
+    let model = Model::start(&[r#"{"kind": "docs"}"#, r#"{"approach": "docs_only"}"#])?;
+    world.use_model(&model)?;
+    let path = component_plugin(&world.root, r#"{"low": true}"#)?;
+    ok_cli(world.signed(&["plugin", "install", &path.to_string_lossy(), "--grant"])?)?;
+
+    let prompt_file = world.root.join("prompt");
+    let mut request = request("risk-score")?;
+    request.skills.clear();
+    // No operator text, so nothing in the planner's or actor's input can coincide with the issue's.
+    request.issue = String::new();
+    request.issue_number = Some(7);
+    request.workflow = Some(FOUR_STEPS.to_string());
+    request.harness = Harness::Command(vec![
+        "sh".into(),
+        "-c".into(),
+        format!("printf '%s' \"$1\" > '{}'", prompt_file.display()),
+        "sh".into(),
+    ]);
+    let mut said = Vec::new();
+    let summary = run_job(
+        &request,
+        world.setup(local_detect(), Duration::from_secs(10)),
+        &mut said,
+    )?;
+    let said = String::from_utf8_lossy(&said).into_owned();
+    assert_eq!(summary.outcome, JobOutcome::Succeeded, "{said}");
+    assert!(said.contains("workflow composed: 4 step(s)"), "{said}");
+    assert!(said.contains("step triage answered: kind=docs"), "{said}");
+    assert!(said.contains("step score answered: low=true"), "{said}");
+    assert!(
+        said.contains("step plan answered: approach=docs_only"),
+        "{said}"
+    );
+
+    // Two model calls: the reader with the issue, the planner with the component's answer and
+    // without the issue. The component called none.
+    let sent = model.sent();
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    let (reader, planner) = (sent[0].to_string(), sent[1].to_string());
+    assert!(reader.contains("issue-body-marker-5b1e"), "{reader}");
+    assert!(planner.contains("score.low: true"), "{planner}");
+    for text in [ISSUE_BODY, ISSUE_TITLE] {
+        assert!(!planner.contains(text), "{planner}");
+    }
+
+    // The actor's prompt has every typed value and none of the issue's text.
+    let prompt = std::fs::read_to_string(&prompt_file)?;
+    for line in [
+        "- triage.kind: docs\n",
+        "- score.low: true\n",
+        "- plan.approach: docs_only\n",
+    ] {
+        assert!(prompt.contains(line), "{prompt}");
+    }
+    for text in [ISSUE_BODY, ISSUE_TITLE] {
+        assert!(!prompt.contains(text), "{prompt}");
+    }
+    let _ = std::fs::remove_dir_all(&repos);
+    let _ = std::fs::remove_dir_all(&home);
     Ok(())
 }

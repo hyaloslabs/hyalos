@@ -39,6 +39,8 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 # A Sigstore of the tests' own, to sign the releases an index install verifies (S7.12, ADR-0093). The
 # binary's trust is pinned; a test passes this one to the install code in-process.
 hyalos-sigstore-testkit = { path = "../../crates/sigstore-testkit" }
+# A deterministic step's component, written as text in the test (S6.5, ADR-0102).
+wat = "=1.261.0"
 
 # Runs on its own main thread, as the binary does, not on a test harness thread (#280). The release
 # check runs it built for musl.

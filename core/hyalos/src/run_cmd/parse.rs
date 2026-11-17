@@ -18,6 +18,7 @@ pub fn parse(args: &[String]) -> Result<Request, String> {
         await_release: false,
         nonce: None,
         skills: BTreeSet::new(),
+        workflow: None,
     };
     let mut args = args.iter();
     while let Some(flag) = args.next() {
@@ -63,6 +64,12 @@ pub fn parse(args: &[String]) -> Result<Request, String> {
                     "--skill is an installed skill's name: lowercase letters, digits and hyphens",
                 )?;
                 request.skills.insert(name);
+            }
+            "--workflow" => {
+                let file = value()?;
+                let document = std::fs::read_to_string(&file)
+                    .map_err(|e| format!("cannot read {file}: {e}"))?;
+                request.workflow = Some(document);
             }
             other => return Err(format!("unknown option {other}")),
         }
@@ -164,6 +171,9 @@ pub struct Stored {
     /// Left out when empty, so a document written before it has the same digest.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub skills: BTreeSet<PluginName>,
+    /// Left out when absent, so a document written before it has the same digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
 }
 
 /// The version of [`Stored`] written today.
@@ -192,6 +202,7 @@ impl Request {
             await_release: self.await_release,
             nonce: self.nonce.clone(),
             skills: self.skills.clone(),
+            workflow: self.workflow.clone(),
         }
     }
 
@@ -223,6 +234,7 @@ impl Request {
             await_release: stored.await_release,
             nonce: stored.nonce,
             skills: stored.skills,
+            workflow: stored.workflow,
         };
         check(&request)?;
         Ok(request)

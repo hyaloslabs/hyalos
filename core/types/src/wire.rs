@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The version of this protocol. Both sides say theirs first and stop on a mismatch.
-pub const WIRE_VERSION: u32 = 9;
+pub const WIRE_VERSION: u32 = 10;
 
 /// The longest job socket path the engine makes and the broker binds (ADR-0038). A Unix socket
 /// path is limited to about 107 bytes; this leaves room.
@@ -74,6 +74,24 @@ pub struct ReaderCall {
     pub context: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issue: Option<u64>,
+    pub output: Output,
+}
+
+/// The longest input the engine gives a deterministic step's plugin, in bytes: its instructions
+/// and the values it reads, as JSON.
+pub const MAX_PLUGIN_INPUT: usize = 32 * 1024;
+
+/// A deterministic step for the broker to run (wire version 10, ADR-0102): the installed plugin's
+/// name and digest, the plugin store it was installed into, the step's input and the typed fields it
+/// returns. The broker reads the component from the store, checks it against the digest, and runs it
+/// with no capabilities; the engine never sends a component's bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginCall {
+    pub store: String,
+    pub name: crate::PluginName,
+    pub digest: Digest,
+    pub input: String,
     pub output: Output,
 }
 
@@ -124,6 +142,9 @@ pub enum ToBroker {
     /// answer is `Values`, checked against the manifest's result, or `Refused` when there was no
     /// submission or it was invalid, which fails the job.
     TakeResult { job: JobId },
+    /// Run a deterministic step's plugin for the job (wire version 10, ADR-0102). The answer is
+    /// `Values`, or `Refused` when anything about it failed, which fails the job.
+    RunPlugin { job: JobId, call: PluginCall },
     /// Merge the pull request the job's manifest approval names (wire version 9, ADR-0071), by its
     /// method and only at its head commit. Nothing about what to merge is in the message: all of it
     /// is in the signed manifest. The answer is `Merged`, or `Refused`, which fails the job.
@@ -315,7 +336,7 @@ mod tests {
                     forge: None,
                 },
                 format!(
-                    r#"{{"kind":"hello","version":9,"manifest_key":"{}"}}"#,
+                    r#"{{"kind":"hello","version":10,"manifest_key":"{}"}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -329,7 +350,7 @@ mod tests {
                     }),
                 },
                 format!(
-                    r#"{{"kind":"hello","version":9,"manifest_key":"{}","forge":{{"api":"https://api.github.com","git":"https://github.com"}}}}"#,
+                    r#"{{"kind":"hello","version":10,"manifest_key":"{}","forge":{{"api":"https://api.github.com","git":"https://github.com"}}}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -386,6 +407,25 @@ mod tests {
                     },
                 },
                 r#"{"kind":"read","job":3,"call":{"protocol":"openai","model":"gpt-x","instructions":"Classify.","context":[],"issue":12,"output":{"bug":"bool","kind":{"choice":["a","b"]}}}}"#.to_string(),
+            ),
+            (
+                ToBroker::RunPlugin {
+                    job: JobId::from_seq(3),
+                    call: PluginCall {
+                        store: "/data/plugins".into(),
+                        name: crate::PluginName::new("risk-score").ok_or("name")?,
+                        digest: Digest::from_bytes([5; 32]),
+                        input: "{}".into(),
+                        output: std::collections::BTreeMap::from([(
+                            "low".into(),
+                            crate::workflow::Field::Bool,
+                        )]),
+                    },
+                },
+                format!(
+                    r#"{{"kind":"run_plugin","job":3,"call":{{"store":"/data/plugins","name":"risk-score","digest":"{}","input":"{{}}","output":{{"low":"bool"}}}}}}"#,
+                    "05".repeat(32)
+                ),
             ),
             (
                 ToBroker::TakeResult {

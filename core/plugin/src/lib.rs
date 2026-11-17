@@ -22,6 +22,7 @@ pub mod snapshot;
 
 use std::collections::BTreeSet;
 
+use hyalos_types::workflow::{Output, TypedValue};
 use hyalos_types::{Grant, PluginText, ReasonCode};
 use wasmtime::component::{Component, Linker, TypedFunc};
 use wasmtime::{Config, Engine, ResourceLimiter, Store, StoreContextMut, Trap};
@@ -106,6 +107,16 @@ pub mod codes {
     /// code back as the call's error; the host is not called.
     pub fn not_granted() -> ReasonCode {
         code("capability.not_granted")
+    }
+
+    /// The plugin has no `component.wasm` for a deterministic step to run (ADR-0102).
+    pub fn no_component() -> ReasonCode {
+        code("plugin.no_component")
+    }
+
+    /// The plugin's run answered with its error, which is plugin-authored and never shown.
+    pub fn failed() -> ReasonCode {
+        code("plugin.failed")
     }
 
     /// The plugin made more than [`CALLS`](crate::CALLS) host calls in one run. The host is not
@@ -351,4 +362,42 @@ fn link<H: Host>(
         linked.insert(interface::FORGE);
     }
     Ok(linked)
+}
+
+/// The host of a plugin that is granted nothing. Nothing is linked, so it is never asked.
+struct Nothing;
+
+impl Host for Nothing {
+    fn egress_get(&mut self, _: &str, _: &str) -> Result<Vec<u8>, ReasonCode> {
+        Err(codes::not_granted())
+    }
+    fn tool_call(&mut self, _: &str, _: &str) -> Result<String, ReasonCode> {
+        Err(codes::not_granted())
+    }
+    fn forge_act(&mut self, _: &str, _: &str) -> Result<String, ReasonCode> {
+        Err(codes::not_granted())
+    }
+}
+
+/// Runs a deterministic step (ADR-0102): `skill`'s component, linked with no capability so it is a
+/// function of `input` alone, and its answer read as `output`'s typed values. Nothing it wrote comes
+/// out but those values.
+pub fn run_step(
+    runtime: &Runtime,
+    skill: &skill::Skill,
+    input: &str,
+    output: &Output,
+) -> Result<Vec<TypedValue>, ReasonCode> {
+    let file = skill
+        .files
+        .get(skill::COMPONENT_FILE)
+        .ok_or_else(codes::no_component)?;
+    let plugin = runtime.load(&file.bytes)?;
+    let mut running = runtime.instantiate(&plugin, &Grant::none(), Nothing)?;
+    match running.run(input)? {
+        Ok(answer) => answer
+            .answer(output)
+            .map_err(|c| ReasonCode::new(c).unwrap_or_else(ReasonCode::unavailable)),
+        Err(_) => Err(codes::failed()),
+    }
 }
