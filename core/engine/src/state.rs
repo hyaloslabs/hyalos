@@ -17,7 +17,7 @@ use hyalos_types::{
     AgentId, AgentName, Answer, CommitSha, Digest, Event, Gate, Grant, HoldId, HoldReason,
     IndexLocation, InstallPolicy, JobId, JobOutcome, MAX_POLICY_DOCUMENT, MergeMethod, Origin,
     PluginName, PluginSource, PluginVersion, ReasonCode, Resolution, SIGNED_SINCE, Sensitive,
-    Signed, Stakes, TaskId, Timestamp, TypedValue,
+    Signed, Stakes, TaskId, Timestamp, TypedValue, Writers,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,7 +195,8 @@ pub enum RuleViolation {
     PolicyTooLarge {
         len: usize,
     },
-    /// Raw forge text reaches an actor only by a human's decision (ADR-0012, ADR-0063).
+    /// Raw forge text reaches an actor only by a human's decision, or by policy's when everyone who
+    /// wrote it can write to the repository (ADR-0012, ADR-0063, ADR-0103).
     HandleNeedsAHuman {
         by: Resolution,
     },
@@ -326,7 +327,7 @@ impl fmt::Display for RuleViolation {
             ),
             RuleViolation::HandleNeedsAHuman { by } => write!(
                 f,
-                "releasing a handle's text to an actor needs a human's decision; {by:?} may not make one (ADR-0012, ADR-0063)"
+                "releasing a handle's text to an actor needs a human's decision, or policy's for text only the repository's writers wrote; {by:?} may not make this one (ADR-0012, ADR-0063, ADR-0103)"
             ),
             RuleViolation::HandleAlreadyReleased { task, handle } => {
                 write!(f, "handle {handle} is already released to task {task}")
@@ -972,15 +973,27 @@ impl State {
                 Ok(())
             }
             Event::HandleReleased {
-                task, handle, by, ..
+                task,
+                handle,
+                by,
+                writers,
+                ..
             } => {
                 match self.task(*task)?.status() {
                     TaskStatus::Completed => return Err(RuleViolation::TaskCompleted(*task)),
                     TaskStatus::Cancelled => return Err(RuleViolation::TaskCancelled(*task)),
                     TaskStatus::Open | TaskStatus::Held => {}
                 }
-                // The authority table of a hold (ADR-0025) at the irreversible tier: a human only.
-                if !Stakes::irreversible().may_be_resolved_by(*by) {
+                // The authority table of a hold (ADR-0025): text only the repository's writers wrote
+                // is routine, which policy may release; any other is irreversible, a human's alone
+                // (ADR-0103). No other decider releases either.
+                let writers_only = writers.as_ref().is_some_and(Writers::all_can_write);
+                let allowed = match by {
+                    Resolution::Human => true,
+                    Resolution::Policy => writers_only,
+                    _ => false,
+                };
+                if !allowed {
                     return Err(RuleViolation::HandleNeedsAHuman { by: *by });
                 }
                 if self.handle_is_released(*task, handle) {

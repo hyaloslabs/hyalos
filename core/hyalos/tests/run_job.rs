@@ -624,6 +624,123 @@ fn an_awaited_issue_reaches_the_actor_once_the_operator_releases_it() -> Res {
     Ok(())
 }
 
+/// S4.9 (ADR-0103): with the operator's policy permitting `release_issue`, an issue only the
+/// repository's writers wrote is released by policy and the actor reads it at once, with no
+/// `hyalos release`. An issue someone without write access wrote still waits for the operator.
+#[test]
+fn policy_releases_an_issue_only_writers_wrote_and_an_outsiders_still_waits() -> Res {
+    let repos = dir("prepos")?;
+    let gh = GitHub::start(&repos, false)?;
+    let world = World::new("policy-release", Some(&gh))?;
+    let policy = world.root.join("release.cedar");
+    std::fs::write(
+        &policy,
+        r#"permit (principal, action in [Action::"read", Action::"push", Action::"open_pr", Action::"data_flow", Action::"release_issue"], resource);"#,
+    )?;
+    ok_cli(world.signed(&["policy", "approve", &policy.to_string_lossy()])?)?;
+    let permissions = repos.join("permissions");
+    std::fs::create_dir_all(&permissions)?;
+    let out = world.root.join("out");
+    std::fs::create_dir(&out)?;
+    let Harness::Command(mut command) = this_harness(&world, &out)? else {
+        return Err("harness".into());
+    };
+    command.push("mode:handle".into());
+    let mut asked = request(Harness::Command(command));
+    asked.issue = String::new();
+    asked.issue_number = Some(7);
+    asked.await_release = true;
+    let answers = [
+        r#"{"kind": "docs", "size": "small", "clear": true, "has_repro": false}"#,
+        r#"{"approach": "docs_only", "add_test": false}"#,
+    ];
+
+    // The issue's author can write: released by policy, and the actor reads it through its handle.
+    std::fs::write(permissions.join("someone"), "write")?;
+    let model = Model::start(&answers)?;
+    world.use_model(&model)?;
+    let mut setup = world.setup(local_detect(), Duration::from_secs(10));
+    setup.operator = None;
+    let mut said = Vec::new();
+    let summary = run_job(&asked, setup, &mut said)?;
+    let said = String::from_utf8_lossy(&said).into_owned();
+    assert!(summary.ok(), "{said}");
+    assert!(
+        said.contains("released to the task by your policy (handle.policy_released)"),
+        "{said}"
+    );
+    assert!(!said.contains("run hyalos release"), "{said}");
+    let events = world.events()?;
+    let released: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::HandleReleased {
+                by,
+                reason,
+                signed,
+                writers,
+                handle,
+                ..
+            } => Some((
+                *by,
+                reason.clone(),
+                signed.clone(),
+                writers.clone(),
+                *handle,
+            )),
+            _ => None,
+        })
+        .collect();
+    let [(by, reason, signed, writers, handle)] = released.as_slice() else {
+        return Err(format!("{events:?}").into());
+    };
+    assert_eq!(*by, hyalos_types::Resolution::Policy);
+    assert_eq!(reason.as_str(), "handle.policy_released");
+    assert_eq!(*signed, hyalos_types::Signed::None);
+    assert_eq!(
+        *writers,
+        Some(hyalos_types::Writers {
+            author: hyalos_types::Permission::Write,
+            editors: vec![],
+        })
+    );
+    let body = std::fs::read_to_string(out.join("handle"))?;
+    assert_eq!(hyalos_broker::egress::inputs_digest(&body), *handle);
+
+    // An author who can only read: the same policy does not release it, and the run waits.
+    std::fs::write(permissions.join("someone"), "read")?;
+    let model = Model::start(&answers)?;
+    world.use_model(&model)?;
+    let cancel = world.root.join("cancel");
+    let mut setup = world.setup(local_detect(), Duration::from_secs(10));
+    setup.operator = None;
+    let file = cancel.clone();
+    setup.on_task = Some(Box::new(move |_| Ok(Some(file))));
+    let runner = std::thread::spawn(move || {
+        let mut said = Vec::new();
+        let summary = run_job(&asked, setup, &mut said);
+        (summary, String::from_utf8_lossy(&said).into_owned())
+    });
+    let held = wait_for_held(&world.data.join("runs"), || runner.is_finished())?;
+    assert!(held.exists());
+    std::fs::write(&cancel, b"")?;
+    let (summary, said) = runner.join().map_err(|_| "the runner panicked")?;
+    assert_eq!(summary?.outcome, JobOutcome::Failed, "{said}");
+    assert!(
+        said.contains("your policy did not release issue #7 (policy.denied)"),
+        "{said}"
+    );
+    let releases = world
+        .events()?
+        .iter()
+        .filter(|e| matches!(e, Event::HandleReleased { .. }))
+        .count();
+    assert_eq!(releases, 1, "an outsider's issue was released");
+    assert!(gh.issued().is_empty(), "no token is left live");
+    let _ = std::fs::remove_dir_all(&repos);
+    Ok(())
+}
+
 /// The `.held` file a waiting run writes, once it appears; an error if `finished` first.
 fn wait_for_held(runs: &Path, finished: impl Fn() -> bool) -> Res<PathBuf> {
     let started = Instant::now();

@@ -310,7 +310,9 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             handle: d(9),
             by: Resolution::Human,
             reason: ReasonCode::new("handle.operator").ok_or("reason")?,
-            signed: Signed::Unrecorded,        },
+            signed: Signed::Unrecorded,
+            writers: None,
+        },
     ));
 
     // Version 11 added `agent.issued` and `agent.revoked` and changed no payload, so the twelve older
@@ -615,6 +617,36 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             name: hyalos_types::PluginName::new("lint").ok_or("name")?,
             digest: d(11),
             reason: ReasonCode::new("malware.exfiltration").ok_or("reason")?,
+        },
+    ));
+
+    // Version 21 added `writers` to `handle.released` (ADR-0103), so every other kind reads as it did
+    // at version 20, and a release written before has none. Its sample is a release by policy.
+    let at_20: Vec<_> = all
+        .iter()
+        .filter(|g| g.0 == 20 && g.1 != "handle.released")
+        .cloned()
+        .collect();
+    for (_, kind, json, event) in at_20 {
+        all.push((21, kind, json, event));
+    }
+    all.push((
+        21,
+        "handle.released",
+        format!(
+            r#"{{"kind":"handle.released","task":3,"handle":"{}","by":"policy","reason":"handle.policy_released","signed":"none","writers":{{"author":"admin","editors":["write"]}}}}"#,
+            hex(12)
+        ),
+        Event::HandleReleased {
+            task: TaskId::from_seq(3),
+            handle: d(12),
+            by: Resolution::Policy,
+            reason: ReasonCode::new("handle.policy_released").ok_or("reason")?,
+            signed: Signed::None,
+            writers: Some(hyalos_types::Writers {
+                author: hyalos_types::Permission::Admin,
+                editors: vec![hyalos_types::Permission::Write],
+            }),
         },
     ));
     Ok(all)

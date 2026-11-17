@@ -11,7 +11,10 @@
 use std::io::Read;
 
 use hyalos_types::provenance::IssueFields;
-use hyalos_types::{CommitSha, ForgeIssue, ForgeText, ForgeToken, IssueState, Manifest};
+use hyalos_types::writers::MAX_EDITORS;
+use hyalos_types::{
+    CommitSha, ForgeIssue, ForgeText, ForgeToken, IssueState, Manifest, Permission, Writers,
+};
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 
@@ -22,12 +25,17 @@ use crate::pulls::PullRequest;
 pub const GITHUB_API: &str = "https://api.github.com";
 /// The most bytes of an answer the broker reads. An issue within its caps is far smaller.
 pub const MAX_RESPONSE: usize = 256 * 1024;
-/// The deepest nesting of objects and arrays an answer may have. The issue query needs seven.
+/// The deepest nesting of objects and arrays an answer may have. The issue query needs eight.
 pub const MAX_DEPTH: usize = 16;
+/// The most body edits and title renames the issue query asks for, each. An issue with more has
+/// writers the broker cannot name, so it is not released by policy (ADR-0103).
+const MAX_EDITS: usize = 16;
+/// The most bytes of a permission answer the broker reads: a role, and a user it ignores.
+const MAX_PERMISSION_ANSWER: usize = 16 * 1024;
 /// The largest issue number GraphQL's 32-bit `Int` can ask for.
 const MAX_NUMBER: u64 = i32::MAX as u64;
 
-const QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number state title body author{login} labels(first:32){totalCount nodes{name}}}}}";
+const QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){number state title body author{__typename login} labels(first:32){totalCount nodes{name}} userContentEdits(first:16){totalCount nodes{editor{__typename login}}} timelineItems(itemTypes:[RENAMED_TITLE_EVENT],first:16){totalCount nodes{... on RenamedTitleEvent{actor{__typename login}}}}}}}";
 
 /// The forge's API.
 #[derive(Debug, Clone)]
@@ -62,6 +70,35 @@ impl Forge {
         token: Option<&ForgeToken>,
         number: u64,
     ) -> Result<ForgeIssue, &'static str> {
+        parse_issue(&self.query_issue(manifest, token, number)?)
+    }
+
+    /// Reads issue `number` as [`read_issue`](Self::read_issue) does, and who wrote it: its author,
+    /// the editors of its body and whoever renamed it, read in the same query so they wrote this text,
+    /// then each one's permission on the repository (ADR-0103). Only the permissions come out; a
+    /// writer the broker cannot establish is [`Permission::Unknown`].
+    pub fn read_issue_and_writers(
+        &self,
+        manifest: &Manifest,
+        token: Option<&ForgeToken>,
+        number: u64,
+    ) -> Result<(ForgeIssue, Writers), &'static str> {
+        let answer = self.query_issue(manifest, token, number)?;
+        let (issue, logins) = parse(&answer)?;
+        // A token is there, or the query above had failed.
+        let writers = match token {
+            Some(token) => self.writers(&manifest.repo, token, &logins),
+            None => Writers::unknown(),
+        };
+        Ok((issue, writers))
+    }
+
+    fn query_issue(
+        &self,
+        manifest: &Manifest,
+        token: Option<&ForgeToken>,
+        number: u64,
+    ) -> Result<Vec<u8>, &'static str> {
         if !manifest.actions.contains("read") {
             return Err("forge.action_not_allowed");
         }
@@ -97,8 +134,100 @@ impl Forge {
             .take(MAX_RESPONSE as u64 + 1)
             .read_to_end(&mut answer)
             .map_err(|_| "forge.unreadable")?;
-        parse_issue(&answer)
+        Ok(answer)
     }
+
+    /// Each writer's permission on `repo`: the author's, and every other writer's once each.
+    fn writers(&self, repo: &str, token: &ForgeToken, logins: &Logins) -> Writers {
+        let author = match &logins.author {
+            Some(login) => self.permission(repo, token, login),
+            None => Permission::Unknown,
+        };
+        let mut others: Vec<&Option<String>> = Vec::new();
+        for login in &logins.others {
+            let same = |a: &Option<String>, b: &Option<String>| match (a, b) {
+                (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                _ => false,
+            };
+            if !same(login, &logins.author) && !others.iter().any(|o| same(o, login)) {
+                others.push(login);
+            }
+        }
+        // More writers than it may report, or edits it was not shown: not one it can release.
+        let editors = if !logins.complete || others.len() > MAX_EDITORS {
+            vec![Permission::Unknown]
+        } else {
+            others
+                .into_iter()
+                .map(|login| match login {
+                    Some(login) => self.permission(repo, token, login),
+                    None => Permission::Unknown,
+                })
+                .collect()
+        };
+        Writers { author, editors }
+    }
+
+    /// `login`'s permission on `repo`, as GitHub's base role; unknown for anything else.
+    fn permission(&self, repo: &str, token: &ForgeToken, login: &str) -> Permission {
+        let valid = (1..=39).contains(&login.len())
+            && !login.starts_with('-')
+            && login
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+        let Ok(transport) = self.transport.as_ref() else {
+            return Permission::Unknown;
+        };
+        if !valid {
+            return Permission::Unknown;
+        }
+        let request = Upstream {
+            target: format!("/repos/{repo}/collaborators/{login}/permission"),
+            headers: vec![
+                ("authorization".into(), format!("Bearer {}", token.expose())),
+                ("accept".into(), "application/vnd.github+json".into()),
+                ("x-github-api-version".into(), "2022-11-28".into()),
+                ("user-agent".into(), "hyalos".into()),
+            ],
+            body: Vec::new(),
+        };
+        let Ok(response) = transport.request("GET", &request) else {
+            return Permission::Unknown;
+        };
+        if response.status != 200 {
+            return Permission::Unknown;
+        }
+        let mut answer = Vec::new();
+        if response
+            .body
+            .take(MAX_PERMISSION_ANSWER as u64 + 1)
+            .read_to_end(&mut answer)
+            .is_err()
+        {
+            return Permission::Unknown;
+        }
+        parse_permission(&answer)
+    }
+}
+
+/// Reads the role from GitHub's answer to a permission question; unknown if it cannot.
+pub fn parse_permission(answer: &[u8]) -> Permission {
+    if answer.len() > MAX_PERMISSION_ANSWER || depth(answer) > MAX_DEPTH {
+        return Permission::Unknown;
+    }
+    serde_json::from_slice::<serde_json::Value>(answer)
+        .ok()
+        .and_then(|v| v.get("permission")?.as_str().map(Permission::from_role))
+        .unwrap_or(Permission::Unknown)
+}
+
+/// Who wrote an issue, as the query named them: `None` for a deleted account or an actor that is
+/// not a user, so a bot cannot pass as a user of the same login. `complete` is false when there were
+/// more edits or renames than the query asked for.
+struct Logins {
+    author: Option<String>,
+    others: Vec<Option<String>>,
+    complete: bool,
 }
 
 impl Forge {
@@ -256,6 +385,10 @@ pub fn parse_merged(answer: &[u8]) -> Result<CommitSha, &'static str> {
 
 /// Parses the forge's answer to the issue query. Public so it can be tried on any bytes.
 pub fn parse_issue(answer: &[u8]) -> Result<ForgeIssue, &'static str> {
+    parse(answer).map(|(issue, _)| issue)
+}
+
+fn parse(answer: &[u8]) -> Result<(ForgeIssue, Logins), &'static str> {
     if answer.len() > MAX_RESPONSE {
         return Err("forge.too_large");
     }
@@ -288,7 +421,26 @@ pub fn parse_issue(answer: &[u8]) -> Result<ForgeIssue, &'static str> {
     if issue.labels.total_count as usize != issue.labels.nodes.len() {
         return Err("forge.too_large");
     }
-    ForgeIssue::new(IssueFields {
+    let user = |actor: Option<Actor>| actor.filter(|a| a.typename.as_deref() == Some("User"));
+    let edits = issue.user_content_edits;
+    let renames = issue.timeline_items;
+    let logins = Logins {
+        author: user(issue.author.clone()).map(|a| a.login),
+        complete: edits
+            .as_ref()
+            .is_some_and(|e| e.total_count as usize == e.nodes.len() && e.nodes.len() <= MAX_EDITS)
+            && renames.as_ref().is_some_and(|r| {
+                r.total_count as usize == r.nodes.len() && r.nodes.len() <= MAX_EDITS
+            }),
+        others: edits
+            .into_iter()
+            .flat_map(|e| e.nodes)
+            .map(|n| n.editor)
+            .chain(renames.into_iter().flat_map(|r| r.nodes).map(|n| n.actor))
+            .map(|actor| user(actor).map(|a| a.login))
+            .collect(),
+    };
+    let issue = ForgeIssue::new(IssueFields {
         number: issue.number,
         state,
         title: ForgeText::new(issue.title),
@@ -301,7 +453,8 @@ pub fn parse_issue(answer: &[u8]) -> Result<ForgeIssue, &'static str> {
             .map(|l| ForgeText::new(l.name))
             .collect(),
     })
-    .map_err(|_| "forge.too_large")
+    .map_err(|_| "forge.too_large")?;
+    Ok((issue, logins))
 }
 
 /// The deepest nesting of objects and arrays in `json`, read without parsing it, so an answer nested
@@ -361,14 +514,49 @@ struct Issue {
     state: String,
     title: String,
     body: String,
-    author: Option<Author>,
+    author: Option<Actor>,
     labels: Labels,
+    // Asked for with the issue (ADR-0103). Left out by an older answer, they leave its writers
+    // unknown, so the issue is not released by policy.
+    #[serde(default, rename = "userContentEdits")]
+    user_content_edits: Option<Edits>,
+    #[serde(default, rename = "timelineItems")]
+    timeline_items: Option<Renames>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Actor {
+    #[serde(default, rename = "__typename")]
+    typename: Option<String>,
+    login: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct Edits {
+    total_count: u64,
+    nodes: Vec<Edit>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Author {
-    login: String,
+struct Edit {
+    editor: Option<Actor>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct Renames {
+    total_count: u64,
+    nodes: Vec<Rename>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Rename {
+    #[serde(default)]
+    actor: Option<Actor>,
 }
 
 #[derive(Deserialize)]

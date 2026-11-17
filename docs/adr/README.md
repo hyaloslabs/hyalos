@@ -116,3 +116,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0100](0100-automated-evidence-on-every-release.md) | Automated evidence on every release | Accepted |
 | [0101](0101-a-third-party-mcp-server-runs-in-the-job-s-sandbox.md) | A third-party MCP server runs in the job's sandbox | Accepted |
 | [0102](0102-composing-skills-components-and-deterministic-steps.md) | Composing skills, components and deterministic steps in a workflow | Accepted |
+| [0103](0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md) | Policy releases an issue written only by the repository's writers | Proposed |

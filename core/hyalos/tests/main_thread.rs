@@ -32,6 +32,7 @@ fn read_answer() -> Result<Answer, String> {
         },
         approved: false,
         subscription_token: false,
+        writers_only: false,
     };
     Ok(policies.judge_request(&request).answer)
 }

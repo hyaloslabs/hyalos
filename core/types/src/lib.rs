@@ -25,6 +25,7 @@ pub mod substrate;
 pub mod time;
 pub mod wire;
 pub mod workflow;
+pub mod writers;
 
 pub use agent::AgentName;
 pub use approval::{OperatorApproval, OperatorKey, OperatorPublic, SIGNED_SINCE, Signed};
@@ -59,3 +60,4 @@ pub use stakes::{Sensitive, Stakes, Tier, Touches};
 pub use substrate::{Attestation, SubstrateName};
 pub use time::{Clock, Timestamp};
 pub use workflow::{Checked, TypedValue, Workflow, WorkflowError};
+pub use writers::{Permission, Writers};

@@ -12,13 +12,13 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AgentId, AgentName, Answer, Attestation, CommitSha, Digest, Grant, HoldId, IndexLocation,
     InstallPolicy, JobId, MergeMethod, Origin, PluginName, PluginSource, ReasonCode, Schema,
-    Signed, Stakes, SubstrateName, TaskId, Timestamp, TypedValue, Upcast, Value,
+    Signed, Stakes, SubstrateName, TaskId, Timestamp, TypedValue, Upcast, Value, Writers,
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 20;
+pub const SCHEMA_VERSION: u32 = 21;
 
-/// What this build reads: version 15, and versions 1 to 14 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// What this build reads: version 21, and versions 1 to 20 upcast to it (ADR-0023, ADR-0025, ADR-0027,
 /// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069,
 /// ADR-0070, ADR-0071, ADR-0089).
 ///
@@ -40,7 +40,8 @@ pub const SCHEMA_VERSION: u32 = 20;
 /// 17 added `plugin.policy_set` and changed no payload. Version 18 added `plugin.update_pending` and
 /// changed no payload. Version 19 added `plugin.snapshot_imported` (ADR-0097) and changed no payload.
 /// Version 20 added `plugin.revocations_imported` and `plugin.revoked` (ADR-0098) and changed no
-/// payload.
+/// payload. Version 21 added `writers` to `handle.released` (ADR-0103); a payload written before has
+/// none and reads as it was.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -294,11 +295,11 @@ pub enum Event {
         reason: ReasonCode,
         signed: Signed,
     },
-    /// A human released the raw text the broker holds as `handle` to the task's actor (ADR-0005,
+    /// The raw text the broker holds as `handle` was released to the task's actor (ADR-0005,
     /// ADR-0063). The handle is the SHA-256 of the bytes the broker holds, so the decision is bound to
     /// exactly that text: the engine never sees it, and the broker serves only bytes with this digest.
-    /// Raw forge text reaching an actor is a decision only a human makes (ADR-0012), and the state
-    /// refuses anyone else.
+    /// A human may release any; policy only text whose `writers` all can write to the repository
+    /// (ADR-0025's routine stakes, ADR-0103), and the state refuses anyone else.
     #[serde(rename = "handle.released")]
     HandleReleased {
         task: TaskId,
@@ -306,6 +307,9 @@ pub enum Event {
         by: Resolution,
         reason: ReasonCode,
         signed: Signed,
+        /// Who wrote the text, as the broker read it with the hold. A human's release has none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        writers: Option<Writers>,
     },
     /// A human issued a credential to a driving agent, which the engine's MCP server admits from this
     /// event on (ADR-0010, ADR-0068). `credential` is the SHA-256 of the secret the agent presents;
@@ -788,6 +792,7 @@ mod tests {
                     by: Resolution::Human,
                     reason: ReasonCode::new("handle.operator").unwrap(),
                     signed: Signed::Unrecorded,
+                    writers: None,
                 },
                 format!(
                     r#"{{"kind":"handle.released","task":3,"handle":"{}","by":"human","reason":"handle.operator","signed":"unrecorded"}}"#,

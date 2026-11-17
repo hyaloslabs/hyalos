@@ -33,7 +33,7 @@ use crate::mcp::{
 };
 use crate::paths;
 use crate::run_cmd::{self, Request};
-use crate::runs::{self, Launcher, Phase, RunView, Runs};
+use crate::runs::{self, Launcher, Phase, Released, RunView, Runs};
 use hyalos_types::{Clock, TaskId};
 
 const USAGE: &str = "usage: hyalos mcp [--listen <loopback address:port>] [--base <branch>] [--harness codex|claude-code]
@@ -310,7 +310,7 @@ impl EngineTools {
         let list_approvals = Tool {
             name: "list_approvals",
             title: "List approvals waiting for the operator",
-            description: "What waits for the operator's decision. approvals: the holds, newest first: which gate could not decide, how much the held action matters, who may release it, and the command the operator runs at their own terminal to release it or cancel the task. releases: the runs whose harness waits for the operator to release the issue's text to it, with the command to release it or stop the run. Read only: nothing in this server can release a hold or an issue or cancel a task, since every human decision is signed with the operator's key behind their passphrase. Show the details to the operator and ask them to run the command.",
+            description: "What waits for the operator's decision. approvals: the holds, newest first: which gate could not decide, how much the held action matters, who may release it, and the command the operator runs at their own terminal to release it or cancel the task. releases: the runs whose harness waits for the operator to release the issue's text to it, with the command to release it or stop the run. released: the working runs whose issue was released, and whether the operator's policy released it (the issue was written only by people who can write to the repository) or the operator did. Read only: nothing in this server can release a hold or an issue or cancel a task, since every human decision is signed with the operator's key behind their passphrase. Show the details to the operator and ask them to run the command.",
             input_schema: json!({
                 "type": "object",
                 "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": MAX_TASKS, "description": "How many approvals to return (default 20)."}},
@@ -332,8 +332,19 @@ impl EngineTools {
                         },
                         "required": ["task", "issue", "repo", "release", "stop"],
                     }},
+                    "released": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "task": {"type": "integer"},
+                            "issue": {"type": "integer"},
+                            "repo": {"type": "string"},
+                            "by": {"type": "string", "enum": ["policy", "operator"]},
+                            "reason": {"type": "string"},
+                        },
+                        "required": ["task", "issue", "repo", "by", "reason"],
+                    }},
                 },
-                "required": ["total", "approvals", "releases"],
+                "required": ["total", "approvals", "releases", "released"],
             })),
             requires: &[],
             task: TaskSupport::Never,
@@ -483,6 +494,17 @@ impl EngineTools {
                 "\n\nTask {task} waits for issue #{issue} of {repo} to be released to its actor.\n  To release it: hyalos release {task}\n  To stop the run instead: hyalos stop {task}"
             ));
         }
+        let released = self.released(&state);
+        for (task, issue, repo, how) in &released {
+            text.push_str(&format!(
+                "\n\nTask {task}'s issue #{issue} of {repo} was released to its actor by {} ({}).",
+                match how.by() {
+                    "policy" => "the operator's policy",
+                    _ => "the operator",
+                },
+                how.reason
+            ));
+        }
         for (id, hold) in &shown {
             text.push_str("\n\n");
             text.push_str(&approval_text(*id, hold));
@@ -503,10 +525,33 @@ impl EngineTools {
                 })
             })
             .collect();
+        let released: Vec<Value> = released
+            .iter()
+            .map(|(task, issue, repo, how)| {
+                json!({"task": task, "issue": issue, "repo": repo, "by": how.by(), "reason": how.reason})
+            })
+            .collect();
         Called::described(
-            json!({"total": open.len(), "approvals": approvals, "releases": releases}),
+            json!({"total": open.len(), "approvals": approvals, "releases": releases, "released": released}),
             &text,
         )
+    }
+
+    /// The working runs whose issue was released to the actor, oldest first, and how (ADR-0103).
+    fn released(&self, state: &State) -> Vec<(u64, u64, String, Released)> {
+        state
+            .tasks()
+            .keys()
+            .filter_map(|task| {
+                let view = runs::view(state, &self.launcher.runs, *task)?;
+                let Phase::Working { .. } = view.phase else {
+                    return None;
+                };
+                let released = view.released?;
+                let request = self.launcher.runs.request(state, *task)?;
+                Some((task.seq(), released.issue?, request.repo, released))
+            })
+            .collect()
     }
 
     /// The runs whose actor waits for the operator to release the issue, oldest first: the task, the
@@ -531,6 +576,22 @@ impl EngineTools {
                 Some((task.seq(), issue, request.repo))
             })
             .collect()
+    }
+}
+
+/// How a run's issue reached its actor, for its status: by the operator's policy, since only the
+/// repository's writers wrote it, or by the operator (ADR-0103). Empty if it was not released.
+fn release_note(released: Option<&Released>) -> String {
+    match released {
+        Some(r) if r.by_policy => format!(
+            "; its issue was released to the actor by the operator's policy, since only people who can write to the repository wrote it ({})",
+            r.reason
+        ),
+        Some(r) => format!(
+            "; its issue was released to the actor by the operator ({})",
+            r.reason
+        ),
+        None => String::new(),
     }
 }
 
@@ -745,6 +806,9 @@ fn task_view(view: &RunView, open: &[(HoldId, Hold)]) -> TaskView {
                 (false, false, Some(issue)) => format!(
                     "; the actor waits for the operator to release issue #{issue} to it (hyalos release {task}, in their own terminal)"
                 ),
+                (false, false, None) if view.released.is_some() => {
+                    release_note(view.released.as_ref())
+                }
                 (true, _, _) => format!(
                     "; its runner stopped with an error, so it waits for the operator (hyalos run --resume {task})"
                 ),
@@ -758,7 +822,7 @@ fn task_view(view: &RunView, open: &[(HoldId, Hold)]) -> TaskView {
         }
         Phase::Succeeded { result, provenance } => (
             TaskState::Completed(succeeded(task, result, *provenance)),
-            "finished".into(),
+            format!("finished{}", release_note(view.released.as_ref())),
         ),
         Phase::Ended {
             outcome: JobOutcome::Held,
@@ -886,6 +950,7 @@ mod tests {
                 failed: false,
                 awaiting_release,
             },
+            released: None,
         };
         let message = |v: &RunView| task_view(v, &[]).message.unwrap_or_default();
         assert_eq!(
@@ -895,5 +960,24 @@ mod tests {
         assert_eq!(message(&view(None, false)), "2 of 3 steps done");
         // A runner that stopped is said first: no one waits until it resumes.
         assert!(message(&view(Some(7), true)).ends_with("so it is resuming"));
+        // Once released, it says by whom (ADR-0103).
+        let mut released = view(None, false);
+        released.released = Some(Released {
+            issue: Some(7),
+            by_policy: true,
+            reason: "handle.policy_released".into(),
+        });
+        assert_eq!(
+            message(&released),
+            "2 of 3 steps done; its issue was released to the actor by the operator's policy, since only people who can write to the repository wrote it (handle.policy_released)"
+        );
+        if let Some(r) = released.released.as_mut() {
+            r.by_policy = false;
+            r.reason = "handle.operator_released".into();
+        }
+        assert_eq!(
+            message(&released),
+            "2 of 3 steps done; its issue was released to the actor by the operator (handle.operator_released)"
+        );
     }
 }

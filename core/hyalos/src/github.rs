@@ -95,7 +95,11 @@ pub fn permissions_for(actions: &BTreeSet<String>) -> Result<Permissions, MintEr
                 ("pull_requests", Access::Write),
             ],
             Action::UseTool | Action::DataFlow | Action::RequestHost | Action::SpendOverCap => &[],
-            Action::ChangePolicy | Action::Publish | Action::ExportCredentials => {
+            // A release is a decision about a task, never a job's (ADR-0103).
+            Action::ChangePolicy
+            | Action::Publish
+            | Action::ExportCredentials
+            | Action::ReleaseIssue => {
                 return Err(MintError::Action(name.clone()));
             }
         };
