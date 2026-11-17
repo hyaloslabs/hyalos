@@ -26,8 +26,8 @@ They live in GitHub, not in either repository, and nothing noticed one being loo
 
 **Its token comes from an app of its own.** Some of these settings are visible only to a reader with admin read, which a workflow's own token never has. Neither app already installed on the organization fits: Hyalos's app cannot read Administration, and giving its key to a workflow would put a key that can push to `main` in the repository whose `main` this check protects. A fine-grained personal token could read as much, but it belongs to one person and expires, which would stop releases on a missed renewal. So the check has its own GitHub App:
 
-- It is owned by the organization, installed on that repository alone, and has Administration and Metadata read-only and nothing else. The operator creates it and holds its key; no agent reads it.
-- Each run mints a token from it with `actions/create-github-app-token`, pinned by commit, asking for those two permissions only. The token lasts an hour and is revoked when the job ends.
+- It is owned by the organization, installed on that repository alone, and has Actions, Administration and Metadata read-only and nothing else. Actions is there because GitHub lists environments and their branch rules under it. The operator creates it and holds its key; no agent reads it.
+- Each run mints a token from it with `actions/create-github-app-token`, pinned by commit, asking for those three permissions only. The token lasts an hour and is revoked when the job ends.
 - The app's client ID (variable `SETTINGS_APP_CLIENT_ID`) and private key (secret `SETTINGS_APP_KEY`) sit in the `settings-check` environment, which only `main` may use, so a pull request's workflow cannot reach them.
 - `tools/check_workflows.py` fails if any job but `settings.yml`'s `check` names the key, the client ID, the minted token or the environment, or if `settings.yml` gains a trigger other than its schedule and manual runs.
 - A token that cannot be minted is a failed check, reported in the drift issue. The check prints settings and HTTP statuses, never the token, the key or a response body.
