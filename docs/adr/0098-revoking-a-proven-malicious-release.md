@@ -1,6 +1,6 @@
 # ADR-0098: Revoking a proven-malicious release
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
