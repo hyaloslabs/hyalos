@@ -1,6 +1,6 @@
 # ADR-0095: Checking the marketplace's protection settings
 
-**Status:** Accepted
+**Status:** Proposed
 
 ## Context
 
@@ -37,7 +37,7 @@ No event, wire message, manifest or state changes in Hyalos.
 ## Consequences
 
 - Loosening a protection the trust rests on is reported within a day and stops releases until it is undone, or recorded in `settings/expected.json` through a reviewed pull request.
-- Releases depend on the check's app. Nothing expires, so there is no renewal to forget. If the app is uninstalled, its key deleted or its permissions changed, the check fails, and signing stops after 8 days, with a message saying so.
+- Releases depend on the check's app. Nothing expires, so there is no renewal to forget. If the app is uninstalled, its key deleted or a permission taken away, the check fails, and signing stops after 8 days, with a message saying so. A permission added to the app is not noticed. The token still asks for only the four, but nothing compares the app's own grant (#307).
 - The app's key does not expire. If it leaked, it would let someone read these settings and nothing more, until the operator deletes it in the app's settings.
 - The check covers the repository's own settings. Organization rulesets appear among the repository's rulesets and are checked too. Organization membership and organization-wide Actions policy are not: an organization owner could still act beyond what it sees.
 - A change made and reverted between two daily checks is not seen. The window is a day.
