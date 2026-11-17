@@ -233,6 +233,17 @@ pub fn manage_with(
                             current
                         }
                     };
+                    // Too old a snapshot or list refuses a new install (ADR-0099).
+                    let state = log.read().map_err(failed)?;
+                    let list = plugin_trust::revocations_in_force(env, Some(&state))
+                        .map_err(|e| failed(format!("{notes}{e}")))?;
+                    plugin_trust::fresh(
+                        &snapshot,
+                        list.as_ref(),
+                        state.install_policy().map(|p| &p.policy),
+                        SystemClock.now(),
+                    )
+                    .map_err(|e| failed(format!("{notes}{e}")))?;
                     let trust = trust_of(&snapshot).map_err(failed)?;
                     from_index(location, &name, version.as_ref(), &trust).map_err(failed)?
                 }
@@ -563,7 +574,11 @@ pub fn manage_with(
                 }
                 Err(e) => {
                     return Err(failed(format!(
-                        "{out}the revocation list was not imported: {}",
+                        "{out}{}the revocation list was not imported: {}",
+                        snapshot_refused
+                            .as_ref()
+                            .map(|why| format!("the trusted-root snapshot {why}\n"))
+                            .unwrap_or_default(),
                         e.why()
                     )));
                 }
@@ -708,6 +723,23 @@ fn check_updates(env: Env<'_>, log: &EngineLog, base: &Snapshot) -> (String, boo
     };
     for (name, digest, location) in installed {
         snapshot = refreshed(env, &mut engine, &location, snapshot, &mut out);
+        // Too old a snapshot or list refuses the update; the installed version keeps running.
+        let stale =
+            plugin_trust::revocations_in_force(env, Some(engine.state())).and_then(|list| {
+                plugin_trust::fresh(
+                    &snapshot,
+                    list.as_ref(),
+                    engine.state().install_policy().map(|p| &p.policy),
+                    SystemClock.now(),
+                )
+            });
+        if let Err(e) = stale {
+            clean = false;
+            out.push_str(&format!(
+                "{name}: not updated, and the installed version keeps running: {e}\n"
+            ));
+            continue;
+        }
         let trust = match trust_of(&snapshot) {
             Ok(trust) => trust,
             Err(e) => return (format!("{out}{e}\n"), false),

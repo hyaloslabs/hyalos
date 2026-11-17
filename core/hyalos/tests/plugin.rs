@@ -38,16 +38,32 @@ struct Release {
 impl Release {
     fn new() -> Res<Self> {
         let sigstore = TestSigstore::new().map_err(|e| e.to_string())?;
+        // Issued a day ago: recent enough to install from (ADR-0099), and older than anything this
+        // Sigstore signs now.
+        let day_ago = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as u64
+            - 86_400_000;
         let base = Snapshot::trusted(
             &sigstore.root().map_err(|e| e.to_string())?,
             PIPELINE,
-            hyalos_types::Timestamp::from_millis(0),
+            hyalos_types::Timestamp::from_millis(day_ago),
         )?;
         Ok(Self { sigstore, base })
     }
 
-    /// Writes `<file>.sigstore.json` beside the archive `dir/<file>`, as the pipeline would.
+    /// Writes `<file>.sigstore.json` beside the archive `dir/<file>`, as the pipeline would, and an
+    /// empty revocation list signed beside an archive if `dir` has none, as every release carries
+    /// one.
     fn sign(&self, dir: &Path, file: &str) -> Res {
+        let list = hyalos_plugin::revocation::FILE;
+        if file != list && file != hyalos_plugin::snapshot::FILE && !dir.join(list).exists() {
+            std::fs::write(
+                dir.join(list),
+                r#"{"kind":"hyalos.revocation_list","revoked":[],"version":1}"#,
+            )?;
+            self.sign(dir, list)?;
+        }
         let signer = Signer {
             subject: PIPELINE.subject,
             issuer: PIPELINE.issuer,
@@ -514,15 +530,59 @@ fn a_skill_installs_by_name_from_a_directory_index_only_with_its_digest() -> Res
     let at = bundle.to_string_lossy().into_owned();
 
     // The binary trusts only the pipeline under Sigstore's own root, so it refuses what this test's
-    // Sigstore signed, and reads nothing of the archive.
+    // Sigstore signed: the revocation list there first, which leaves none in force, so nothing of
+    // the archive is read.
     let out = world.signed(&["plugin", "install", "--index", &at, "pdf-tools"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("(revocations.unverifiable)") && said.contains("(revocations.absent)"),
+        "{said}"
+    );
+    assert!(installs(&world)?.is_empty());
+    // With a list it does accept, the pipeline's own from release r10, it reads the index and
+    // refuses the archive's bundle, which this test's Sigstore signed.
+    let real = World::new("plugin-index-real-trust", None)?;
+    let ceiling = real.root.join("ceiling.json");
+    std::fs::write(&ceiling, r#"{"version":1}"#)?;
+    ok_cli(real.signed(&[
+        "plugin",
+        "policy",
+        "set",
+        "--ceiling",
+        &ceiling.to_string_lossy(),
+        "--max-revocation-age-days",
+        "3650",
+        "--max-snapshot-age-days",
+        "3650",
+    ])?)?;
+    let r10 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/marketplace-r10");
+    let copy = real.root.join("bundle");
+    std::fs::create_dir(&copy)?;
+    for entry in std::fs::read_dir(&bundle)? {
+        let entry = entry?;
+        std::fs::copy(entry.path(), copy.join(entry.file_name()))?;
+    }
+    for file in [
+        hyalos_plugin::revocation::FILE,
+        hyalos_plugin::revocation::BUNDLE,
+    ] {
+        std::fs::copy(r10.join(file), copy.join(file))?;
+    }
+    let out = real.signed(&[
+        "plugin",
+        "install",
+        "--index",
+        &copy.to_string_lossy(),
+        "pdf-tools",
+    ])?;
     assert_eq!(out.status.code(), Some(1));
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(
         said.contains("pdf-1.1.0.skill.sigstore.json:") && said.contains("(sigstore."),
         "{said}"
     );
-    assert!(installs(&world)?.is_empty());
+    assert!(installs(&real)?.is_empty());
 
     // The latest, which asks for nothing, needs no --grant.
     let out = release
@@ -695,6 +755,14 @@ fn a_skill_installs_by_name_from_an_index_served_as_release_assets() -> Res {
         (
             "pdf.skill.sigstore.json".into(),
             std::fs::read(out.join("pdf.skill.sigstore.json"))?,
+        ),
+        (
+            "revocations.json".into(),
+            std::fs::read(out.join("revocations.json"))?,
+        ),
+        (
+            "revocations.json.sigstore.json".into(),
+            std::fs::read(out.join("revocations.json.sigstore.json"))?,
         ),
     ])?;
     let at = format!("{base}/dl");
@@ -1115,6 +1183,8 @@ fn a_newer_snapshot_is_imported_only_if_the_one_in_force_vouches_for_it() -> Res
         1,
     )?;
     assert!(said.contains("(sigstore."), "{said}");
+    // Re-released under the new root, its revocation list with it.
+    std::fs::remove_file(bundle.join(hyalos_plugin::revocation::FILE))?;
     next.sign(&bundle, "pdf-1.0.0.skill")?;
     release
         .signed(
@@ -1195,7 +1265,14 @@ fn an_install_imports_a_newer_snapshot_its_index_location_carries() -> Res {
         .map(Event::kind)
         .filter(|k| k.starts_with("plugin."))
         .collect();
-    assert_eq!(kinds, ["plugin.snapshot_imported", "plugin.installed"]);
+    assert_eq!(
+        kinds,
+        [
+            "plugin.snapshot_imported",
+            "plugin.revocations_imported",
+            "plugin.installed"
+        ]
+    );
 
     // A location whose snapshot the one in force cannot vouch for changes nothing: the install is
     // checked against the one in force, and says so.
@@ -1283,10 +1360,8 @@ fn a_revoked_release_is_disabled_and_never_installed_while_an_older_list_cannot_
     let shown = release
         .cli(&world, &["plugin", "snapshot", "show"])
         .map_err(|e| e.1)?;
-    assert!(
-        shown.contains("no revocation list has been imported"),
-        "{shown}"
-    );
+    // The bundle's own list, which revokes nothing, came with the install.
+    assert!(shown.contains("revokes 0 release(s)"), "{shown}");
 
     // The installed release is revoked: a list the pipeline signed disables it.
     let lists = world.root.join("lists");
@@ -1425,5 +1500,83 @@ fn a_revoked_release_is_disabled_and_never_installed_while_an_older_list_cannot_
     let listed = release.cli(&world, &["plugin", "list"]).map_err(|e| e.1)?;
     assert!(!listed.contains("revoked ("), "{listed}");
     assert_eq!(revoked(&world)?, 1);
+    Ok(())
+}
+
+#[test]
+fn past_its_maximum_age_nothing_new_installs_or_updates_and_what_is_installed_keeps_running() -> Res
+{
+    let world = World::new("plugin-stale", None)?;
+    let mut release = Release::new()?;
+    let src = skill(&world.root, None)?;
+    let bundle = world.root.join("bundle");
+    std::fs::create_dir(&bundle)?;
+    let one = pack(&world, &src, &bundle, "pdf-1.0.0.skill")?;
+    std::fs::write(src.join("NOTES.md"), "two\n")?;
+    let two = pack(&world, &src, &bundle, "pdf-1.1.0.skill")?;
+    release.sign(&bundle, "pdf-1.0.0.skill")?;
+    release.sign(&bundle, "pdf-1.1.0.skill")?;
+    let at = bundle.to_string_lossy().into_owned();
+    std::fs::write(
+        bundle.join("index.json"),
+        index(&[("1.0.0", &one, "pdf-1.0.0.skill")]),
+    )?;
+    release
+        .signed(&world, &["plugin", "install", "--index", &at, "pdf-tools"])
+        .map_err(|e| e.1)?;
+
+    // The snapshot in force is now 91 days old: no install, no update, and the installed version
+    // stays installed.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis() as u64;
+    release.base = Snapshot::trusted(
+        &release.sigstore.root().map_err(|e| e.to_string())?,
+        PIPELINE,
+        hyalos_types::Timestamp::from_millis(now - 91 * 86_400_000),
+    )?;
+    std::fs::write(
+        bundle.join("index.json"),
+        index(&[
+            ("1.0.0", &one, "pdf-1.0.0.skill"),
+            ("1.1.0", &two, "pdf-1.1.0.skill"),
+        ]),
+    )?;
+    let said = refused(
+        release.signed(&world, &["plugin", "install", "--index", &at, "pdf-tools"]),
+        1,
+    )?;
+    assert!(said.contains("(snapshot.too_old)"), "{said}");
+    let said = refused(release.cli(&world, &["plugin", "update"]), 1)?;
+    assert!(
+        said.contains("not updated, and the installed version keeps running")
+            && said.contains("(snapshot.too_old)"),
+        "{said}"
+    );
+    assert_eq!(installs(&world)?.len(), 1);
+    let listed = release.cli(&world, &["plugin", "list"]).map_err(|e| e.1)?;
+    assert!(listed.contains(&one), "{listed}");
+
+    // Changing the limit is the operator's signed policy change: without the passphrase it is
+    // refused, and with it the install goes through.
+    let ceiling = world.root.join("ceiling.json");
+    std::fs::write(&ceiling, r#"{"version":1}"#)?;
+    let policy = [
+        "plugin",
+        "policy",
+        "set",
+        "--ceiling",
+        &*ceiling.to_string_lossy(),
+        "--max-snapshot-age-days",
+        "365",
+    ]
+    .map(String::from);
+    let policy: Vec<&str> = policy.iter().map(String::as_str).collect();
+    refused(release.cli(&world, &policy), 1)?;
+    release.signed(&world, &policy).map_err(|e| e.1)?;
+    release
+        .signed(&world, &["plugin", "install", "--index", &at, "pdf-tools"])
+        .map_err(|e| e.1)?;
+    assert_eq!(installs(&world)?.len(), 2);
     Ok(())
 }

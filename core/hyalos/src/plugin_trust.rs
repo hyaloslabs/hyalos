@@ -22,7 +22,8 @@ use hyalos_plugin::revocation::{self, RevocationError, Revocations};
 use hyalos_plugin::sigstore::MAX_BUNDLE;
 use hyalos_plugin::skill::digest_of;
 use hyalos_plugin::snapshot::{BUNDLE, FILE, MAX_SNAPSHOT, Snapshot, SnapshotError};
-use hyalos_types::{Clock, Digest, IndexLocation};
+use hyalos_types::plugin::{DEFAULT_MAX_REVOCATION_AGE_DAYS, DEFAULT_MAX_SNAPSHOT_AGE_DAYS};
+use hyalos_types::{Clock, Digest, IndexLocation, InstallPolicy, Timestamp};
 
 use crate::clock::SystemClock;
 use crate::paths::{self, Env};
@@ -218,6 +219,50 @@ pub fn apply_in_force(env: Env<'_>, engine: &mut Engine) -> Result<String, Strin
     }
 }
 
+const DAY_MS: u64 = 86_400_000;
+
+/// Whether what a release is checked against is recent enough to install or update from (S7.6,
+/// ADR-0007, ADR-0099): the snapshot in force issued at most `max_snapshot_age_days` before `now`,
+/// and a revocation list in force issued at most `max_revocation_age_days` before it, by the install
+/// policy or the defaults (90 and 30). Age is the host clock minus the signed time inside each. With
+/// no list imported, what is revoked cannot be told, so nothing installs either. Installed plugins
+/// are not touched: they keep running.
+pub fn fresh(
+    snapshot: &Snapshot,
+    list: Option<&Revocations>,
+    policy: Option<&InstallPolicy>,
+    now: Timestamp,
+) -> Result<(), String> {
+    let (max_snapshot, max_list) = policy.map_or(
+        (
+            DEFAULT_MAX_SNAPSHOT_AGE_DAYS,
+            DEFAULT_MAX_REVOCATION_AGE_DAYS,
+        ),
+        |p| (p.max_snapshot_age_days, p.max_revocation_age_days),
+    );
+    let old = |signed_at: Timestamp, days: u32| {
+        now.as_millis().saturating_sub(signed_at.as_millis()) > u64::from(days) * DAY_MS
+    };
+    let refresh =
+        "import a newer release with hyalos plugin snapshot import <location>, or install from one";
+    if old(snapshot.signed_at(), max_snapshot) {
+        return Err(format!(
+            "the trusted-root snapshot in force was issued {}, more than {max_snapshot} days ago, so nothing new is installed or updated: {refresh} (snapshot.too_old)",
+            crate::mcp::rfc3339(snapshot.signed_at().as_millis())
+        ));
+    }
+    match list {
+        None => Err(format!(
+            "no revocation list has been imported, so what is revoked cannot be told and nothing new is installed or updated: {refresh} (revocations.absent)"
+        )),
+        Some(list) if old(list.signed_at(), max_list) => Err(format!(
+            "the revocation list in force was issued {}, more than {max_list} days ago, so nothing new is installed or updated: {refresh} (revocations.too_old)",
+            crate::mcp::rfc3339(list.signed_at().as_millis())
+        )),
+        Some(_) => Ok(()),
+    }
+}
+
 /// A refusal of `digest` if the list in force revokes it (`plugin.revoked`).
 pub fn refuse_revoked(list: Option<&Revocations>, digest: &Digest) -> Result<(), String> {
     match list.and_then(|l| l.reason(digest)) {
@@ -323,4 +368,52 @@ pub fn describe(snapshot: &Snapshot, imported_at: Option<u64>) -> String {
         snapshot.digest(),
         crate::mcp::rfc3339(snapshot.signed_at().as_millis())
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EMBEDDED_LIST: &[u8] = br#"{"kind":"hyalos.revocation_list","revoked":[],"version":1}"#;
+
+    fn at_days(days: u64) -> Timestamp {
+        Timestamp::from_millis(days * DAY_MS)
+    }
+
+    #[test]
+    fn what_a_release_is_checked_against_has_a_maximum_age() {
+        let snapshot = |days| {
+            Snapshot::kept(
+                include_bytes!("../../plugin/trust/trusted-root.json"),
+                at_days(days),
+            )
+            .unwrap()
+        };
+        let list = |days| Revocations::kept(EMBEDDED_LIST, at_days(days)).unwrap();
+        let now = at_days(1000);
+        assert!(fresh(&snapshot(910), Some(&list(970)), None, now).is_ok());
+        let code = |r: Result<(), String>| r.unwrap_err();
+        assert!(
+            code(fresh(&snapshot(909), Some(&list(970)), None, now)).contains("(snapshot.too_old)")
+        );
+        assert!(
+            code(fresh(&snapshot(910), Some(&list(969)), None, now))
+                .contains("(revocations.too_old)")
+        );
+        assert!(code(fresh(&snapshot(910), None, None, now)).contains("(revocations.absent)"));
+        // The operator's policy sets the limits.
+        let policy = InstallPolicy {
+            ceiling: Default::default(),
+            indexes: Default::default(),
+            max_snapshot_age_days: 10,
+            max_revocation_age_days: 365,
+        };
+        assert!(
+            code(fresh(&snapshot(980), Some(&list(700)), Some(&policy), now))
+                .contains("snapshot.too_old")
+        );
+        assert!(fresh(&snapshot(995), Some(&list(700)), Some(&policy), now).is_ok());
+        // A signed time after the host clock is not old.
+        assert!(fresh(&snapshot(2000), Some(&list(2000)), None, now).is_ok());
+    }
 }
