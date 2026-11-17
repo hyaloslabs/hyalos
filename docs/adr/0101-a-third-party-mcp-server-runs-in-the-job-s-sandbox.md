@@ -1,6 +1,6 @@
 # ADR-0101: A third-party MCP server runs in the job's sandbox
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
