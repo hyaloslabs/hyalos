@@ -7,7 +7,12 @@ all-features = true
 
 [advisories]
 # Fail on any RustSec advisory, including unmaintained crates. An exception needs an entry here with a reason.
-ignore = []
+ignore = [
+    # chrono is unmaintained (no vulnerability, no upgrade). It reaches the build only through
+    # cedar-policy-core, pinned =4.14.1 to match cedar-policy-symcc; drop this once cedar no longer
+    # depends on it.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained only; transitive through pinned cedar-policy-core" },
+]
 
 [licenses]
 # Only the licenses in use today. A dependency under another license fails CI, and allowing it is a reviewed change here.
