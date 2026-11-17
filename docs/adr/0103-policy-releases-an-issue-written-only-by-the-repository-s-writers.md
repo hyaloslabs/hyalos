@@ -1,6 +1,6 @@
 # ADR-0103: Policy releases an issue written only by the repository's writers
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

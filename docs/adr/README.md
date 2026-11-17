@@ -76,7 +76,7 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0060](0060-the-workflow-document-and-the-check-at-install.md) | The workflow document, and the check at install | Accepted |
 | [0061](0061-reader-steps-run-in-the-broker.md) | Reader steps run in the broker, and the engine gets typed values | Accepted |
 | [0062](0062-the-fix-issue-workflow-and-its-runner.md) | The fix-issue workflow, and the runner that mints only from the check | Accepted |
-| [0063](0063-gated-handles-for-raw-text.md) | Gated handles: the broker holds raw text, a human releases it by digest | Accepted |
+| [0063](0063-gated-handles-for-raw-text.md) | Gated handles: the broker holds raw text, a human releases it by digest | Accepted; its rule that only a human releases a handle superseded by [ADR-0103](0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md) |
 | [0064](0064-results-a-harness-submits-and-the-broker-reads.md) | Results a harness submits through `hyalos-submit`, and the broker reads as typed values | Accepted |
 | [0065](0065-the-content-gate-on-what-a-tainted-job-publishes.md) | The content gate on what a tainted job publishes, and the ported red-team corpus | Accepted |
 | [0066](0066-plugin-authored-text-and-the-grant-that-bounds-it.md) | Plugin-authored text, and the grant that bounds the job it steers | Accepted |
@@ -98,7 +98,7 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0082](0082-the-starter-policy-permits-merge.md) | The starter policy permits merge | Accepted |
 | [0083](0083-a-fix-issue-pull-request-closes-its-issue.md) | A fix-issue pull request closes its issue | Accepted |
 | [0084](0084-setup-creates-the-github-app-from-a-manifest.md) | Setup creates the GitHub App from a manifest | Accepted |
-| [0085](0085-the-capability-vocabulary.md) | The capability vocabulary | Accepted |
+| [0085](0085-the-capability-vocabulary.md) | The capability vocabulary | Accepted; its rule that the policy's actions are exactly the vocabulary's superseded by [ADR-0103](0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md) |
 | [0086](0086-the-plugin-runtime-s-crate-and-line-budget.md) | The plugin runtime's crate and line budget | Accepted |
 | [0087](0087-plugins-run-in-the-broker-with-capabilities-as-host-imports.md) | Plugins run in the broker, with capabilities as host imports | Accepted |
 | [0088](0088-the-capability-diff-an-operator-reads.md) | The capability diff an operator reads | Accepted |
@@ -116,4 +116,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0100](0100-automated-evidence-on-every-release.md) | Automated evidence on every release | Accepted |
 | [0101](0101-a-third-party-mcp-server-runs-in-the-job-s-sandbox.md) | A third-party MCP server runs in the job's sandbox | Accepted |
 | [0102](0102-composing-skills-components-and-deterministic-steps.md) | Composing skills, components and deterministic steps in a workflow | Accepted |
-| [0103](0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md) | Policy releases an issue written only by the repository's writers | Proposed |
+| [0103](0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md) | Policy releases an issue written only by the repository's writers | Accepted |
