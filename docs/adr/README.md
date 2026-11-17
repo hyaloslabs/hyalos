@@ -113,3 +113,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0097](0097-the-trusted-root-snapshot-the-pipeline-signs-and-importing-a-newer-one.md) | The trusted-root snapshot the pipeline signs, and importing a newer one | Accepted |
 | [0098](0098-revoking-a-proven-malicious-release.md) | Revoking a proven-malicious release | Accepted |
 | [0099](0099-installing-from-an-offline-bundle-within-a-maximum-age.md) | Installing from an offline bundle within a maximum age | Accepted |
+| [0100](0100-automated-evidence-on-every-release.md) | Automated evidence on every release | Proposed |
