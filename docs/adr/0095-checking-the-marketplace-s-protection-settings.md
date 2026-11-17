@@ -1,6 +1,6 @@
 # ADR-0095: Checking the marketplace's protection settings
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
