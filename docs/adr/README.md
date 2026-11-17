@@ -107,7 +107,7 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0091](0091-the-install-policy-a-capability-ceiling-the-operator-signs.md) | The install policy, a capability ceiling the operator signs | Accepted |
 | [0092](0092-update-checks-that-keep-the-old-version-running.md) | Update checks that keep the old version running | Accepted |
 | [0093](0093-verifying-a-plugin-release-s-sigstore-bundle.md) | Verifying a plugin release's Sigstore bundle with one pinned library | Accepted |
-| [0094](0094-the-marketplace-release-pipeline.md) | The marketplace release pipeline | Accepted |
+| [0094](0094-the-marketplace-release-pipeline.md) | The marketplace release pipeline | Accepted; its rule on `release.yml`'s triggers superseded by [ADR-0097](0097-the-trusted-root-snapshot-the-pipeline-signs-and-importing-a-newer-one.md) |
 | [0095](0095-checking-the-marketplace-s-protection-settings.md) | Checking the marketplace's protection settings | Accepted; its account of the App's grant superseded by [ADR-0096](0096-the-settings-check-s-app-from-a-manifest-and-its-own-grant-checked.md) |
 | [0096](0096-the-settings-check-s-app-from-a-manifest-and-its-own-grant-checked.md) | The settings check's App, from a manifest, with its own grant checked | Accepted |
-| [0097](0097-the-trusted-root-snapshot-the-pipeline-signs-and-importing-a-newer-one.md) | The trusted-root snapshot the pipeline signs, and importing a newer one | Proposed |
+| [0097](0097-the-trusted-root-snapshot-the-pipeline-signs-and-importing-a-newer-one.md) | The trusted-root snapshot the pipeline signs, and importing a newer one | Accepted |

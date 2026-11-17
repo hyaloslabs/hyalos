@@ -1,6 +1,6 @@
 # ADR-0097: The trusted-root snapshot the pipeline signs, and importing a newer one
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
