@@ -25,7 +25,7 @@ So a server installs as a skill does, through `hyalos plugin install` and the sa
 
 **A job given the skill registers the server with its harness.** `hyalos run --skill <name>` mounts the skill as before. The sandbox's command then names the server, from its read-only place at `/opt/hyalos/skills/<name>`:
 - **Codex:** `-c mcp_servers.<name>.command`, `.args` and `.env`.
-- **Claude Code:** `--strict-mcp-config --mcp-config <json>`, so no other server is loaded, and `mcp__<name>` added to `--allowedTools`, so its tools can be called in a run that asks nobody.
+- **Claude Code:** `--mcp-config <json>`, and `mcp__<name>` added to `--allowedTools`, so its tools can be called in a run that asks nobody. Every Claude Code run is given `--strict-mcp-config`, with servers or without, so no server is loaded from a project file the actor finds in the repository it clones.
 
 Each server is given the sandbox's proxy variables, since a harness need not pass its own environment on. A server that ignores them still has no other way out.
 
@@ -43,7 +43,7 @@ The microVM substrate cannot carry skills, so it cannot carry servers either.
 
 Only stdio servers are supported. A server reached over HTTP needs a host to reach, so it is a remote service that the egress gate already governs, not a contained one.
 
-Costs: 104 lines of trusted core: reading `mcp.json` in `hyalos-plugin` (+54), and the harness command and the install line in `hyalos` (+50). Trusted core goes from 27,518 to 27,622 lines of 30,000.
+Costs: 114 lines of trusted core: reading `mcp.json` in `hyalos-plugin` (+54), and the harness command and the install line in `hyalos` (+60). Trusted core goes from 27,518 to 27,632 lines of 30,000.
 
 Tests:
 - `core/plugin/src/skill.rs`: `mcp.json` is read, and its paths placed under the skill's directory. A path outside the skill, a file it lacks, a command that is not executable, text that is not printable ASCII, too many arguments and an unknown field are refused.

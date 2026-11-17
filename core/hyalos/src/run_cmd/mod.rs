@@ -201,10 +201,18 @@ impl Harness {
                 command
             }
             Harness::ClaudeCode => {
-                let mut command: Vec<String> =
-                    ["hyalos-forward", "claude", "-p", &prompt, "--tools", "Bash"]
-                        .map(String::from)
-                        .to_vec();
+                // Only the job's servers, never one from a project file the actor finds.
+                let mut command: Vec<String> = [
+                    "hyalos-forward",
+                    "claude",
+                    "-p",
+                    &prompt,
+                    "--tools",
+                    "Bash",
+                    "--strict-mcp-config",
+                ]
+                .map(String::from)
+                .to_vec();
                 if !servers.is_empty() {
                     let mut env: serde_json::Map<String, serde_json::Value> = proxy
                         .iter()
@@ -221,8 +229,7 @@ impl Harness {
                         })
                         .collect();
                     let config = serde_json::json!({ "mcpServers": config });
-                    command.extend(["--strict-mcp-config".into(), "--mcp-config".into()]);
-                    command.push(config.to_string());
+                    command.extend(["--mcp-config".into(), config.to_string()]);
                 }
                 // Each server's tools, by Claude Code's name for them, beside the shell.
                 command.extend(["--allowedTools".into(), "Bash".into()]);
@@ -649,6 +656,7 @@ mod tests {
         assert!(claude.ends_with(&["--allowedTools".into(), "Bash".into(), "mcp__notes".into()]));
         // With no server, neither harness is given one.
         let plain = Harness::ClaudeCode.command("p".into(), &skills[1..]);
+        assert!(plain.contains(&"--strict-mcp-config".to_string()));
         assert!(
             !plain
                 .iter()
