@@ -1,6 +1,6 @@
 # ADR-0096: The settings check's App, from a manifest, with its own grant checked
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

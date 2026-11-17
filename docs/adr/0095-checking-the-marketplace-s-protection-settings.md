@@ -1,6 +1,6 @@
 # ADR-0095: Checking the marketplace's protection settings
 
-**Status:** Accepted
+**Status:** Accepted. Its account of the App's grant is superseded by [ADR-0096](0096-the-settings-check-s-app-from-a-manifest-and-its-own-grant-checked.md).
 
 ## Context
 
