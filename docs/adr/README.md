@@ -109,3 +109,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0093](0093-verifying-a-plugin-release-s-sigstore-bundle.md) | Verifying a plugin release's Sigstore bundle with one pinned library | Accepted |
 | [0094](0094-the-marketplace-release-pipeline.md) | The marketplace release pipeline | Accepted |
 | [0095](0095-checking-the-marketplace-s-protection-settings.md) | Checking the marketplace's protection settings | Accepted |
+| [0096](0096-the-settings-check-s-app-from-a-manifest-and-its-own-grant-checked.md) | The settings check's App, from a manifest, with its own grant checked | Proposed |

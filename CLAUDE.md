@@ -73,7 +73,7 @@ These are pinned by tests. A change to one bumps its version (except where noted
 | `core/plugin` | The plugin runtime: the Wasmtime host, install, Sigstore verification, update checks, the reference skill the marketplace pins (part budget 3,000) | 0006, 0007, 0086, 0087, 0089, 0090, 0093, 0094 |
 | `core/hyalos` | The binary: keys, log commands, the broker process and channel, doctor, GitHub App, `hyalos run`, the fix-issue workflow, MCP server, operator commands and merge, thin CLI, setup, the capability diff | 0018, 0021, 0022, 0026–0028, 0030, 0035, 0038, 0043, 0044, 0045, 0050, 0052, 0053, 0058, 0062, 0063, 0067–0075, 0078, 0080, 0081, 0082, 0083, 0084, 0088, 0089, 0090, 0091, 0092, 0093 |
 | `.github/workflows/release.yml` | A release: the static binary, the image by digest, provenance | 0081 |
-| `site/setup`, `.github/workflows/pages.yml` | The setup page that creates the GitHub App from a manifest | 0084 |
+| `site/setup`, `.github/workflows/pages.yml` | The setup page that creates the GitHub App from a manifest, and the marketplace settings check's App page | 0084, 0096 |
 | `crates/xtask` | `layout` and `lines` | 0017 |
 | `crates/sim`, `crates/world` | Deterministic simulation and the simulated world | 0013, 0036 |
 | `crates/substrate-contract`, `crates/vm-init` | The contract every substrate passes; the microVM's init | 0032, 0041, 0056, 0058 |
