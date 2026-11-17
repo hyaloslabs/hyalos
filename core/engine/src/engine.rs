@@ -7,13 +7,15 @@ use hyalos_log::{
     Anchor, CompactError, Head, Log, LogError, LogKey, NewEvent, PublicKey, StoredEvent,
     VerifyError, read_verified,
 };
-use hyalos_policy::{GateRequest, LoadError, Outcome, Policies};
+use hyalos_policy::{
+    Action, GateRequest, JobFacts, LoadError, Outcome, Policies, PolicyRequest, TargetFacts,
+};
 use hyalos_types::event::SCHEMA;
 use hyalos_types::snapshot::{STATE_VERSION, StateImage};
 use hyalos_types::{
     AgentId, AgentName, Answer, CommitSha, Digest, Event, EventError, Grant, HoldId, InstallPolicy,
     JobId, MergeMethod, OperatorKey, OperatorPublic, Origin, PluginName, PluginSource, ReasonCode,
-    Resolution, Schema, Signed, TaskId, Timestamp,
+    Resolution, Schema, Signed, TaskId, Timestamp, Writers,
 };
 
 use crate::state::{Pruned, RuleViolation, State};
@@ -950,8 +952,63 @@ impl Engine {
                 by: decider.resolution(),
                 reason,
                 signed: Signed::None,
+                writers: None,
             },
         )
+    }
+
+    /// Releases `handle` to `task` by policy (ADR-0103), if the operator's policy permits
+    /// `release_issue` for a tainted job on `repo` with `budget_tokens`, and everyone who wrote the
+    /// held text can write to `repo`. The baseline forbids it otherwise, and the state refuses it
+    /// again. Only an allow writes anything: `handle.released` by policy, with the writers. Anything
+    /// else is the code it answered with, and nothing is written.
+    pub fn release_issue_by_policy(
+        &mut self,
+        at: Timestamp,
+        task: TaskId,
+        handle: Digest,
+        repo: &str,
+        budget_tokens: u64,
+        writers: Writers,
+    ) -> Result<Head, ReasonCode> {
+        let code = |text: &str| ReasonCode::new(text).unwrap_or_else(ReasonCode::unavailable);
+        let policies = self
+            .policies()
+            .map_err(|_| code("handle.policy_unavailable"))?;
+        let verdict = policies.judge_request(&PolicyRequest {
+            action: Action::ReleaseIssue,
+            // The actor it is released to runs tainted whatever it reads (ADR-0047).
+            job: JobFacts {
+                tainted: true,
+                repo: repo.to_string(),
+                budget_tokens,
+            },
+            target: TargetFacts {
+                repo: repo.to_string(),
+                name: String::new(),
+                in_branch_prefix: false,
+                protected: false,
+            },
+            approved: false,
+            subscription_token: false,
+            writers_only: writers.all_can_write(),
+        });
+        if verdict.answer != Answer::Allow {
+            return Err(verdict.reason);
+        }
+        self.submit_checked(
+            at,
+            Origin::Engine,
+            Event::HandleReleased {
+                task,
+                handle,
+                by: Resolution::Policy,
+                reason: code("handle.policy_released"),
+                signed: Signed::None,
+                writers: Some(writers),
+            },
+        )
+        .map_err(|_| code("handle.refused"))
     }
 
     /// Records a human's approval to merge pull request `pr` of `repo` at commit `head`, by `method`,

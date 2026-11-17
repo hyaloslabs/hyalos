@@ -294,6 +294,7 @@ fn asks(manifest: &Manifest, approved: bool) -> Result<Vec<(String, PolicyReques
         // See the module comment.
         approved: approved && action == Action::Merge,
         subscription_token: false,
+        writers_only: false,
     };
     let mut asks = Vec::new();
     for name in &manifest.actions {

@@ -169,7 +169,7 @@ impl Run<'_> {
         out: &mut dyn Write,
     ) -> Result<(), Failure> {
         let wait = self.remaining().min(STEP_WAIT);
-        let handle = match self.broker.as_mut() {
+        let (handle, writers) = match self.broker.as_mut() {
             Some(broker) => broker.hold_issue(job, number, wait),
             None => Err(code("handle.broker_unavailable")),
         }
@@ -178,6 +178,35 @@ impl Run<'_> {
             reason,
         })?;
         if self.request.await_release {
+            // The operator's policy may release an issue only the repository's writers wrote
+            // (ADR-0103); anything else waits for the operator, as before.
+            let now = self.clock.now();
+            let by_policy = self.engine.release_issue_by_policy(
+                now,
+                self.task,
+                handle,
+                &self.request.repo,
+                self.request.budget_tokens,
+                writers,
+            );
+            match by_policy {
+                Ok(_) => {
+                    let _ = writeln!(
+                        out,
+                        "job {}: issue #{number} held as handle {handle}, released to the task by your policy (handle.policy_released)",
+                        job.seq()
+                    );
+                    self.handle = Some(handle);
+                    return Ok(());
+                }
+                Err(reason) => {
+                    let _ = writeln!(
+                        out,
+                        "job {}: your policy did not release issue #{number} ({reason})",
+                        job.seq()
+                    );
+                }
+            }
             let lock =
                 write_held(&self.held_file, &handle, &self.request.repo, number).map_err(|e| {
                     Failure::new(

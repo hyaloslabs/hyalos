@@ -44,6 +44,14 @@ In a script you run yourself, `--passphrase-stdin` reads one line from standard 
 
 The MCP server has no tool that decides, and never opens `operator.key`. A run the agent starts holds the issue and its actor waits for you ([ADR-0078](../adr/0078-agent-started-runs-wait-for-the-operator-to-release-the-issue.md)). The agent's `job_status` and `list_approvals` show which task waits and for which issue. Read the issue on GitHub, then run `hyalos release <task>`. The command reads the issue again first, and refuses if it changed since the run read it, so you release what you read. The actor may then read the issue's text as its users wrote it. Or run `hyalos stop <task>` instead. If you do neither, the run ends at its deadline (`handle.unreleased`). The agent's credential is not a key and opens nothing.
 
+**Letting your policy release your own issues.** Most of the issues your runs pick up may be ones you or your maintainers wrote. You can let your policy release those, so the run does not wait for you ([ADR-0103](../adr/0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md)). Add this to your policy and approve it:
+
+```cedar
+permit (principal, action == Action::"release_issue", resource);
+```
+
+The broker reads who wrote the issue: its author, everyone who edited its body and everyone who renamed it. It asks GitHub each one's permission on the repository. Policy releases the issue only if every one of them can write to it (`write`, `maintain` or `admin`). The shipped baseline forbids anything else, and no permit of yours can change that: an issue a stranger opened or edited, a bot's, a deleted account's, or one whose writers the broker could not establish still waits for `hyalos release`. A release by policy is recorded with `by: policy`, the reason `handle.policy_released` and the writers' permissions, never their logins. The starter policy does not permit it. A permit of every action, or of `Action::"routine"`, permits it too.
+
 ## Merging
 
 Hyalos merges a pull request only after you approve it ([ADR-0071](../adr/0071-merging-after-the-operators-approval.md)). Review the pull request on GitHub, note the full id of its head commit (the commits tab, or `git rev-parse` on the fetched branch), then:

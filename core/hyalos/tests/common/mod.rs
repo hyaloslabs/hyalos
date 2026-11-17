@@ -331,8 +331,10 @@ fn serve(
             {
                 serde_json::json!({
                     "number": 7, "state": "OPEN", "title": ISSUE_TITLE, "body": ISSUE_BODY,
-                    "author": { "login": "someone" },
+                    "author": { "__typename": "User", "login": "someone" },
                     "labels": { "totalCount": 1, "nodes": [{ "name": "docs" }] },
+                    "userContentEdits": { "totalCount": 0, "nodes": [] },
+                    "timelineItems": { "totalCount": 0, "nodes": [] },
                 })
             } else {
                 serde_json::Value::Null
@@ -341,6 +343,25 @@ fn serve(
                 "200 OK",
                 &serde_json::json!({ "data": { "repository": { "issue": issue } } }).to_string(),
             )
+        }
+        // A user's permission is the role in `<root>/permissions/<login>`, and 404 without one
+        // (ADR-0103).
+        ("GET", p)
+            if tokens.iter().any(|t| t == bearer)
+                && p.starts_with("/repos/octo/repo/collaborators/")
+                && p.ends_with("/permission") =>
+        {
+            let login = p
+                .trim_start_matches("/repos/octo/repo/collaborators/")
+                .trim_end_matches("/permission");
+            match std::fs::read_to_string(root.join("permissions").join(login)) {
+                Ok(role) => reply(
+                    "200 OK",
+                    &serde_json::json!({ "permission": role.trim(), "user": { "login": login } })
+                        .to_string(),
+                ),
+                Err(_) => reply("404 Not Found", r#"{"message":"Not Found"}"#),
+            }
         }
         ("POST", "/repos/octo/repo/pulls") if tokens.iter().any(|t| t == bearer) => reply(
             "201 Created",

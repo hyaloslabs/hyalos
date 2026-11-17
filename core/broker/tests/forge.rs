@@ -489,3 +489,204 @@ fn the_parser_never_panics_on_bytes_it_is_given() {
     }
     assert!(parse_issue(&good).is_ok());
 }
+
+/// GitHub on loopback for the writers' test: the issue query answers `issue`, and a permission
+/// question answers the role `roles` gives that login, or 404. Every path asked is kept.
+fn writers_api(issue: String, roles: &[(&str, &str)]) -> Res<(u16, Arc<Mutex<Vec<String>>>)> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let kept = Arc::clone(&asked);
+    let roles: Vec<(String, String)> = roles
+        .iter()
+        .map(|(l, r)| (l.to_string(), r.to_string()))
+        .collect();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let _ = (|| -> Res {
+                let mut reader = BufReader::new(stream.try_clone()?);
+                let mut line = String::new();
+                reader.read_line(&mut line)?;
+                let path = line
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
+                let (mut length, mut authorization) = (0usize, String::new());
+                loop {
+                    let mut h = String::new();
+                    reader.read_line(&mut h)?;
+                    let h = h.trim_end();
+                    if h.is_empty() {
+                        break;
+                    }
+                    if let Some((n, v)) = h.split_once(':') {
+                        match n.trim().to_ascii_lowercase().as_str() {
+                            "content-length" => length = v.trim().parse()?,
+                            "authorization" => authorization = v.trim().to_ascii_lowercase(),
+                            _ => {}
+                        }
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body)?;
+                if let Ok(mut asked) = kept.lock() {
+                    asked.push(path.clone());
+                }
+                let login = path
+                    .strip_prefix("/repos/octo/repo/collaborators/")
+                    .and_then(|p| p.strip_suffix("/permission"));
+                let (status, text) = match (authorization == format!("bearer {TOKEN}"), login) {
+                    (false, _) => (401, r#"{"message":"Bad credentials"}"#.to_string()),
+                    (true, None) => (200, answer(&issue)),
+                    (true, Some(login)) => match roles.iter().find(|(l, _)| l == login) {
+                        Some((_, role)) => (
+                            200,
+                            format!(
+                                r#"{{"permission":"{role}","role_name":"{role}","user":{{"login":"{login}"}}}}"#
+                            ),
+                        ),
+                        None => (404, r#"{"message":"Not Found"}"#.to_string()),
+                    },
+                };
+                let mut out = stream;
+                out.write_all(
+                    format!(
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{text}",
+                        text.len()
+                    )
+                    .as_bytes(),
+                )?;
+                Ok(())
+            })();
+        }
+    });
+    Ok((port, asked))
+}
+
+/// An issue written by `author`, with its body edited by `editors` and renamed by `renamers`, each an
+/// actor's JSON (`null` for a deleted account), and `extra` more edits than are shown.
+fn written_by(author: &str, editors: &[&str], renamers: &[&str], extra: usize) -> String {
+    format!(
+        r#"{{"number":7,"state":"OPEN","title":"t","body":"b","author":{author},"labels":{{"totalCount":0,"nodes":[]}},"userContentEdits":{{"totalCount":{},"nodes":[{}]}},"timelineItems":{{"totalCount":{},"nodes":[{}]}}}}"#,
+        editors.len() + extra,
+        editors
+            .iter()
+            .map(|e| format!(r#"{{"editor":{e}}}"#))
+            .collect::<Vec<_>>()
+            .join(","),
+        renamers.len(),
+        renamers
+            .iter()
+            .map(|a| format!(r#"{{"actor":{a}}}"#))
+            .collect::<Vec<_>>()
+            .join(","),
+    )
+}
+
+fn user(login: &str) -> String {
+    format!(r#"{{"__typename":"User","login":"{login}"}}"#)
+}
+
+/// S4.9 (ADR-0103): the broker reads who wrote an issue with the issue itself, and each one's
+/// permission on the repository. Only permissions come out, each writer once; a writer it cannot
+/// establish is unknown, and so is every writer it was not shown.
+#[test]
+fn the_writers_of_an_issue_are_read_as_permissions_only() -> Res {
+    use hyalos_types::{Permission, Writers};
+    let roles = [
+        ("alice", "write"),
+        ("bob", "admin"),
+        ("mallory", "read"),
+        ("triager", "read"),
+    ];
+    let (alice, bob, mallory) = (user("alice"), user("bob"), user("mallory"));
+    let bot = r#"{"__typename":"Bot","login":"bob"}"#.to_string();
+    let cases: Vec<(&str, String, Writers)> = vec![
+        (
+            "the author and the maintainer who edited and renamed it, once each",
+            written_by(&alice, &[&alice, &bob, &user("Bob")], &[&bob], 0),
+            Writers {
+                author: Permission::Write,
+                editors: vec![Permission::Admin],
+            },
+        ),
+        (
+            "an edit by someone who can only read",
+            written_by(&alice, &[&mallory], &[], 0),
+            Writers {
+                author: Permission::Write,
+                editors: vec![Permission::Read],
+            },
+        ),
+        (
+            "a rename by a triager",
+            written_by(&bob, &[], &[&user("triager")], 0),
+            Writers {
+                author: Permission::Admin,
+                editors: vec![Permission::Read],
+            },
+        ),
+        (
+            "a bot with a maintainer's login",
+            written_by(&bot, &[], &[], 0),
+            Writers {
+                author: Permission::Unknown,
+                editors: vec![],
+            },
+        ),
+        (
+            "a deleted editor",
+            written_by(&alice, &["null"], &[], 0),
+            Writers {
+                author: Permission::Write,
+                editors: vec![Permission::Unknown],
+            },
+        ),
+        (
+            "an author with no permission to read",
+            written_by(&user("nobody"), &[], &[], 0),
+            Writers {
+                author: Permission::Unknown,
+                editors: vec![],
+            },
+        ),
+        (
+            "more edits than were shown",
+            written_by(&alice, &[&bob], &[], 1),
+            Writers {
+                author: Permission::Write,
+                editors: vec![Permission::Unknown],
+            },
+        ),
+        (
+            "an answer that leaves the edits out",
+            format!(
+                r#"{{"number":7,"state":"OPEN","title":"t","body":"b","author":{alice},"labels":{{"totalCount":0,"nodes":[]}}}}"#
+            ),
+            Writers {
+                author: Permission::Write,
+                editors: vec![Permission::Unknown],
+            },
+        ),
+    ];
+    for (what, issue, expected) in cases {
+        let (port, asked) = writers_api(issue, &roles)?;
+        let forge = Forge::with_base(&format!("http://127.0.0.1:{port}"));
+        let token = ForgeToken::new(TOKEN, Timestamp::from_millis(99_999)).ok_or("token")?;
+        let (read, writers) = forge
+            .read_issue_and_writers(&manifest(1, &["read"]), Some(&token), 7)
+            .map_err(|code| format!("{what}: {code}"))?;
+        assert_eq!(read.number(), 7, "{what}");
+        assert_eq!(writers, expected, "{what}");
+        // One question for the issue, then one per distinct user, never for anyone else.
+        let asked = asked.lock().map(|a| a.clone()).unwrap_or_default();
+        assert_eq!(
+            asked.first().map(String::as_str),
+            Some("/graphql"),
+            "{what}"
+        );
+        assert!(asked.len() <= 3, "{what}: {asked:?}");
+    }
+    Ok(())
+}

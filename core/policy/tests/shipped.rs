@@ -30,6 +30,8 @@ fn fine(action: Action) -> PolicyRequest {
         },
         approved: false,
         subscription_token: false,
+        // Only a release asks it, and a fine one is of an issue only writers wrote.
+        writers_only: action == Action::ReleaseIssue,
     }
 }
 
@@ -51,6 +53,7 @@ fn the_shipped_schema_and_baseline_load_and_validate() -> Res {
             "baseline.push_own_prefix",
             "baseline.tainted_no_merge",
             "baseline.tainted_no_subscription_token",
+            "baseline.release_needs_writers",
             "baseline.irreversible_needs_approval",
         ]
     );
@@ -130,6 +133,7 @@ fn the_irreversible_tier_holds_what_adr_0012_names() {
         (Action::RequestHost, Tier::Escalated),
         (Action::Push, Tier::Routine),
         (Action::Read, Tier::Routine),
+        (Action::ReleaseIssue, Tier::Routine),
     ] {
         assert_eq!(action.tier(), tier, "{}", action.id());
     }
@@ -217,6 +221,22 @@ fn each_baseline_rule_forbids_what_it_says_whatever_the_operator_permits() -> Re
             Action::ExportCredentials,
             |_| {},
         ),
+        (
+            "release of an issue someone else wrote",
+            Action::ReleaseIssue,
+            |r| r.writers_only = false,
+        ),
+        (
+            "release of an issue someone else wrote, approved",
+            Action::ReleaseIssue,
+            |r| {
+                r.approved = true;
+                r.writers_only = false
+            },
+        ),
+        ("release to another repo", Action::ReleaseIssue, |r| {
+            r.target.repo = "elsewhere/else".into()
+        }),
     ];
     for (what, action, breaks) in cases {
         let mut request = fine(action);
@@ -229,7 +249,13 @@ fn each_baseline_rule_forbids_what_it_says_whatever_the_operator_permits() -> Re
         );
     }
     // The same requests mended are allowed, so the rules above are what denied them.
-    for action in [Action::Push, Action::OpenPr, Action::Comment, Action::Read] {
+    for action in [
+        Action::Push,
+        Action::OpenPr,
+        Action::Comment,
+        Action::Read,
+        Action::ReleaseIssue,
+    ] {
         assert_eq!(
             answer(&open, &fine(action)),
             Answer::Allow,
@@ -269,14 +295,14 @@ fn an_operator_policy_cannot_remove_or_take_the_place_of_a_baseline_policy() -> 
     "#;
     let policies = Policies::load(sneaky)?;
     let ids = policies.ids();
-    assert_eq!(ids.len(), 7);
+    assert_eq!(ids.len(), 8);
     for id in [
         "baseline.irreversible_needs_approval",
         "baseline.write_own_repo",
     ] {
         assert_eq!(ids.iter().filter(|i| *i == id).count(), 1, "{id}");
     }
-    assert_eq!(ids[5..], ["operator.0", "operator.1"]);
+    assert_eq!(ids[6..], ["operator.0", "operator.1"]);
     assert_eq!(answer(&policies, &fine(Action::Publish)), Answer::Deny);
     let mut elsewhere = fine(Action::Push);
     elsewhere.target.repo = "elsewhere/else".into();

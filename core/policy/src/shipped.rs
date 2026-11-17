@@ -37,10 +37,11 @@ pub enum Action {
     Publish,
     SpendOverCap,
     ExportCredentials,
+    ReleaseIssue,
 }
 
 impl Action {
-    pub const ALL: [Action; 12] = [
+    pub const ALL: [Action; 13] = [
         Action::Read,
         Action::Push,
         Action::OpenPr,
@@ -53,7 +54,12 @@ impl Action {
         Action::Publish,
         Action::SpendOverCap,
         Action::ExportCredentials,
+        Action::ReleaseIssue,
     ];
+
+    /// The actions that are decisions about a task rather than capabilities a job holds: no manifest
+    /// names them, so the capability vocabulary does not either (ADR-0103).
+    pub const DECISIONS: [Action; 1] = [Action::ReleaseIssue];
 
     /// The action's name in the schema.
     pub fn id(self) -> &'static str {
@@ -70,6 +76,7 @@ impl Action {
             Action::Publish => "publish",
             Action::SpendOverCap => "spend_over_cap",
             Action::ExportCredentials => "export_credentials",
+            Action::ReleaseIssue => "release_issue",
         }
     }
 
@@ -86,7 +93,8 @@ impl Action {
             | Action::OpenPr
             | Action::Comment
             | Action::UseTool
-            | Action::DataFlow => Tier::Routine,
+            | Action::DataFlow
+            | Action::ReleaseIssue => Tier::Routine,
             Action::RequestHost => Tier::Escalated,
             Action::Merge
             | Action::ChangePolicy
@@ -129,6 +137,8 @@ pub struct PolicyRequest {
     pub approved: bool,
     /// The request would use a subscription token.
     pub subscription_token: bool,
+    /// Everyone who wrote the text a `release_issue` releases can write to the repo (ADR-0103).
+    pub writers_only: bool,
 }
 
 impl PolicyRequest {
@@ -160,8 +170,8 @@ impl PolicyRequest {
 
     pub(crate) fn context_json(&self) -> String {
         format!(
-            r#"{{"approved":{},"subscription_token":{}}}"#,
-            self.approved, self.subscription_token
+            r#"{{"approved":{},"subscription_token":{},"writers_only":{}}}"#,
+            self.approved, self.subscription_token, self.writers_only
         )
     }
 }
@@ -190,13 +200,18 @@ mod tests {
     use hyalos_types::capability::{Field, action};
 
     /// The capability vocabulary's actions, and the action each other field is asked as, are exactly
-    /// the policy's actions (ADR-0085): nothing a manifest or plugin holds goes unasked.
+    /// the policy's actions but its decisions (ADR-0085, ADR-0103): nothing a manifest or plugin holds
+    /// goes unasked, and no manifest can name a decision.
     #[test]
     fn the_capability_vocabulary_is_asked_as_the_policy_s_actions() {
         let mut asked: Vec<&str> = action::ALL.to_vec();
         asked.extend(Field::ALL.iter().filter_map(|f| f.asked_as()));
         asked.sort_unstable();
-        let mut policy: Vec<&str> = Action::ALL.iter().map(|a| a.id()).collect();
+        let mut policy: Vec<&str> = Action::ALL
+            .iter()
+            .filter(|a| !Action::DECISIONS.contains(a))
+            .map(|a| a.id())
+            .collect();
         policy.sort_unstable();
         assert_eq!(asked, policy);
     }

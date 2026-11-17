@@ -209,6 +209,7 @@ fn the_starter_policy_still_needs_the_approval_and_an_untainted_job_to_merge() -
         },
         approved,
         subscription_token: false,
+        writers_only: false,
     };
     let answer = |r: &PolicyRequest| policies.judge_request(r).answer;
     assert_eq!(answer(&merge(false, true)), Answer::Allow);

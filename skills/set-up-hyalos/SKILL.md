@@ -148,7 +148,7 @@ Look for a line starting `hyalos:`. Never run `claude mcp get hyalos`: it shows 
    hyalos release <task>
    ```
 
-   You do not run it. Keep checking until the run is over, then show `hyalos result <task>`. A run that succeeds has opened a pull request on the branch `hyalos/job-<id>`. Waiting for the release counts against the run's 30 minutes.
+   You do not run it. If the status says the issue was released by the operator's policy, nothing waits: the operator's policy permits `release_issue`, and everyone who wrote the issue can write to the repository ([ADR-0103](../../docs/adr/0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md)). Tell the operator which kind of release happened. Keep checking until the run is over, then show `hyalos result <task>`. A run that succeeds has opened a pull request on the branch `hyalos/job-<id>`. Waiting for the release counts against the run's 30 minutes.
 6. If the run is held, `hyalos approvals` shows what is waiting and the command the operator runs to decide it. You do not decide it.
 7. Once the run has opened its pull request, find it and its head commit:
 

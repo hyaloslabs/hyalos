@@ -828,6 +828,7 @@ fn a_tainted_manifest_cannot_merge_even_when_the_operator_permits_everything() -
             protected: false,
         },
         approved: true,
+        writers_only: false,
         subscription_token: true,
     };
     assert_eq!(

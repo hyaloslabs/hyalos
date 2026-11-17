@@ -51,6 +51,12 @@ pub const PROPERTIES: &[Property] = &[
             unless { principal.tainted && context.subscription_token };"#,
     },
     Property {
+        name: "no issue released unless everyone who wrote it can write to the job's own repo",
+        allowed_everywhere_but: r#"permit (principal, action, resource)
+            unless { action == Action::"release_issue"
+                && (!context.writers_only || resource.repo != principal.repo) };"#,
+    },
+    Property {
         name: "no irreversible action without an approval",
         allowed_everywhere_but: r#"permit (principal, action, resource)
             unless { action in Action::"irreversible" && !context.approved };"#,

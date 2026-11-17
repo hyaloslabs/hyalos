@@ -19,7 +19,7 @@ use hyalos_types::wire::{
     WireError, read_frame, write_frame,
 };
 use hyalos_types::workflow::{TypedValue, values_fit};
-use hyalos_types::{CommitSha, Digest, JobId, ManifestKey, ManifestPublicKey, ReasonCode};
+use hyalos_types::{CommitSha, Digest, JobId, ManifestKey, ManifestPublicKey, ReasonCode, Writers};
 use std::os::unix::net::UnixStream;
 use zeroize::Zeroizing;
 
@@ -437,22 +437,24 @@ impl BrokerProcess {
     }
 
     /// Asks the broker to hold issue `number` as a handle for `job` (ADR-0063) and waits up to `wait`
-    /// for its digest, which is all the engine learns of it. `Err` is why there is none: the broker's
-    /// refusal (it has ended the job), or one of the engine's own codes. A broker that answers
-    /// something else has broken the protocol and is stopped.
+    /// for its digest and who wrote it, as permissions only (ADR-0103): all the engine learns of it.
+    /// `Err` is why there is none: the broker's refusal (it has ended the job), or one of the engine's
+    /// own codes. A broker that answers something else has broken the protocol and is stopped.
     pub fn hold_issue(
         &mut self,
         job: JobId,
         number: u64,
         wait: Duration,
-    ) -> Result<Digest, ReasonCode> {
+    ) -> Result<(Digest, Writers), ReasonCode> {
         let code = |text: &str| ReasonCode::new(text).unwrap_or_else(ReasonCode::unavailable);
         self.send(&ToBroker::HoldIssue { job, number })
             .map_err(|_| code("handle.broker_unavailable"))?;
         match self.poll(wait) {
-            Ok(Incoming::Message(ToEngine::Held { job: held, handle })) if held == job => {
-                Ok(handle)
-            }
+            Ok(Incoming::Message(ToEngine::Held {
+                job: held,
+                handle,
+                writers,
+            })) if held == job => Ok((handle, writers)),
             Ok(Incoming::Message(ToEngine::Refused { job: held, reason })) if held == job => {
                 Err(reason)
             }

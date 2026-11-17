@@ -197,10 +197,26 @@ impl Rig {
             job: reader.job,
             number: 7,
         })?;
-        let [ToEngine::Held { job, handle }] = answers.as_slice() else {
+        let [
+            ToEngine::Held {
+                job,
+                handle,
+                writers,
+            },
+        ] = answers.as_slice()
+        else {
             return Err(format!("{answers:?}").into());
         };
         assert_eq!(*job, reader.job);
+        // This forge's answer names no writer as a user and leaves out the edits, so none is known
+        // (ADR-0103).
+        assert_eq!(
+            *writers,
+            hyalos_types::Writers {
+                author: hyalos_types::Permission::Unknown,
+                editors: vec![hyalos_types::Permission::Unknown],
+            }
+        );
         let handle = *handle;
         // The handle outlives the job that held it.
         self.ask(ToBroker::EndJob { job: reader.job })?;

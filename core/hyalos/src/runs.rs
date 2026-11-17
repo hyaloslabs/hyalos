@@ -25,7 +25,7 @@ use std::time::Duration;
 use hyalos_engine::{State, TaskStatus};
 use hyalos_types::provenance::Provenance;
 use hyalos_types::workflow::{Field, TypedValue};
-use hyalos_types::{JobOutcome, TaskId, Timestamp};
+use hyalos_types::{JobOutcome, Resolution, TaskId, Timestamp};
 use serde_json::{Map, Value, json};
 
 use crate::paths::{self, Env};
@@ -510,6 +510,22 @@ pub enum Phase {
     Cancelled,
 }
 
+/// How a run's issue was released to its actor (ADR-0078, ADR-0103): by the operator's policy, or by
+/// the operator, and the reason code it was recorded with.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Released {
+    pub issue: Option<u64>,
+    pub by_policy: bool,
+    pub reason: String,
+}
+
+impl Released {
+    /// Who released it, as the agent is told.
+    pub fn by(&self) -> &'static str {
+        if self.by_policy { "policy" } else { "operator" }
+    }
+}
+
 /// A run's task, read from the log.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RunView {
@@ -518,6 +534,8 @@ pub struct RunView {
     /// Its last event.
     pub updated: Timestamp,
     pub phase: Phase,
+    /// Its issue's release, if one is recorded for the task.
+    pub released: Option<Released>,
 }
 
 /// `task` as the agent sees it, if the server started it and its request is the one recorded.
@@ -608,11 +626,21 @@ pub fn view(state: &State, runs: &Runs, task: TaskId) -> Option<RunView> {
         },
         other => other,
     };
+    let released = state
+        .handles()
+        .iter()
+        .find(|h| h.task == task)
+        .map(|h| Released {
+            issue: request.issue_number,
+            by_policy: h.by == Resolution::Policy,
+            reason: h.reason.as_str().to_string(),
+        });
     Some(RunView {
         task,
         created: recorded.created_at,
         updated,
         phase,
+        released,
     })
 }
 

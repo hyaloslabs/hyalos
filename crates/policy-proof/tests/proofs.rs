@@ -23,8 +23,11 @@ fn every_property_holds_for_every_action() -> Res {
         return Ok(());
     };
     let findings = prover.prove_properties()?;
-    // Twelve actions, each against every property: none was skipped.
-    assert_eq!(findings.len(), 12 * PROPERTIES.len());
+    // Every action, each against every property: none was skipped.
+    assert_eq!(
+        findings.len(),
+        hyalos_policy::Action::ALL.len() * PROPERTIES.len()
+    );
     let broken: Vec<String> = findings
         .iter()
         .filter_map(|f| {
@@ -69,7 +72,7 @@ fn the_properties_fail_for_a_baseline_that_lacks_the_rule() -> Res {
         .split("\n\n")
         .filter(|b| b.contains("@id"))
         .collect();
-    assert_eq!(rules.len(), 5);
+    assert_eq!(rules.len(), 6);
     for removed in &rules {
         let weaker = BASELINE.replace(removed, "");
         let comparison = prover.compare(BASELINE, &weaker)?;

@@ -23,11 +23,11 @@ use serde::{Deserialize, Serialize, Serializer};
 use crate::workflow::{Output, TypedValue};
 use crate::{
     Answer, CommitSha, Digest, ForgeIssue, ForgeToken, Gate, JobId, ManifestPublicKey, ReasonCode,
-    Role, hex,
+    Role, Writers, hex,
 };
 
 /// The version of this protocol. Both sides say theirs first and stop on a mismatch.
-pub const WIRE_VERSION: u32 = 10;
+pub const WIRE_VERSION: u32 = 11;
 
 /// The longest job socket path the engine makes and the broker binds (ADR-0038). A Unix socket
 /// path is limited to about 107 bytes; this leaves room.
@@ -169,8 +169,13 @@ pub enum ToEngine {
     /// The issue asked for with `ReadIssue`, as typed forge-authored values (ADR-0047).
     Issue { job: JobId, issue: ForgeIssue },
     /// The issue asked for with `HoldIssue` is held as `handle`, the SHA-256 of the bytes the broker
-    /// keeps (ADR-0063).
-    Held { job: JobId, handle: Digest },
+    /// keeps (ADR-0063), written by `writers`: permissions only, never logins (wire version 11,
+    /// ADR-0103).
+    Held {
+        job: JobId,
+        handle: Digest,
+        writers: Writers,
+    },
     /// A reader step's answer, or a submitted result (`TakeResult`): one typed value per field of
     /// its output, in the output's order. No text: a choice is its option's index (ADR-0061).
     Values { job: JobId, values: Vec<TypedValue> },
@@ -336,7 +341,7 @@ mod tests {
                     forge: None,
                 },
                 format!(
-                    r#"{{"kind":"hello","version":10,"manifest_key":"{}"}}"#,
+                    r#"{{"kind":"hello","version":11,"manifest_key":"{}"}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -350,7 +355,7 @@ mod tests {
                     }),
                 },
                 format!(
-                    r#"{{"kind":"hello","version":10,"manifest_key":"{}","forge":{{"api":"https://api.github.com","git":"https://github.com"}}}}"#,
+                    r#"{{"kind":"hello","version":11,"manifest_key":"{}","forge":{{"api":"https://api.github.com","git":"https://github.com"}}}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -468,8 +473,15 @@ mod tests {
                 ToEngine::Held {
                     job: JobId::from_seq(3),
                     handle: Digest::from_bytes([9; 32]),
+                    writers: Writers {
+                        author: crate::Permission::Write,
+                        editors: vec![crate::Permission::Unknown],
+                    },
                 },
-                format!(r#"{{"kind":"held","job":3,"handle":"{}"}}"#, "09".repeat(32)),
+                format!(
+                    r#"{{"kind":"held","job":3,"handle":"{}","writers":{{"author":"write","editors":["unknown"]}}}}"#,
+                    "09".repeat(32)
+                ),
             ),
             (
                 ToEngine::Merged {

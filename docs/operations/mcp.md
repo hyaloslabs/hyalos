@@ -99,7 +99,7 @@ Each request needs `Authorization: Bearer <credential>`. Without a credential in
 
 ## Jobs the agent starts
 
-The agent gives `start_job` a repository (`owner/name`) and an issue number. Nothing else: no text of its own reaches the job. The run holds the issue, and its actor waits until you release the issue to it with `hyalos release <task>` in your own terminal ([ADR-0078](../adr/0078-agent-started-runs-wait-for-the-operator-to-release-the-issue.md)). Until then, `job_status` says so and `list_approvals` lists it under `releases`. The pull request's base branch is yours, set with `--base` (default `main`). Everything else comes from options you give `hyalos mcp`, as for `hyalos run`:
+The agent gives `start_job` a repository (`owner/name`) and an issue number. Nothing else: no text of its own reaches the job. The run holds the issue, and its actor waits until you release the issue to it with `hyalos release <task>` in your own terminal ([ADR-0078](../adr/0078-agent-started-runs-wait-for-the-operator-to-release-the-issue.md)). Until then, `job_status` says so and `list_approvals` lists it under `releases`. If your policy permits `release_issue`, an issue written only by people who can write to the repository is released by your policy instead, and the actor runs at once ([ADR-0103](../adr/0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md)): `job_status` says which kind of release happened, and `list_approvals` lists the run under `released` with `by` set to `policy` or `operator`. The pull request's base branch is yours, set with `--base` (default `main`). Everything else comes from options you give `hyalos mcp`, as for `hyalos run`:
 
 ```
 hyalos mcp --harness claude-code --minutes 30 --budget-tokens 200000 --base main

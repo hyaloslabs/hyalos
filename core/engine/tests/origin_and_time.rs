@@ -233,6 +233,7 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
                 by: Resolution::Human,
                 reason: why(),
                 signed: hyalos_types::Signed::Unrecorded,
+                writers: None,
             }
         }
         "agent.issued" => Event::AgentIssued {

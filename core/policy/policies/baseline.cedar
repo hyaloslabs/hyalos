@@ -22,6 +22,12 @@ when { principal.tainted };
 forbid (principal, action, resource)
 when { principal.tainted && context.subscription_token };
 
+// No issue released by policy unless everyone who wrote it can write to the job's own repo
+// (ADR-0103).
+@id("baseline.release_needs_writers")
+forbid (principal, action == Action::"release_issue", resource)
+unless { context.writers_only && resource.repo == principal.repo };
+
 // No irreversible action without an approval.
 @id("baseline.irreversible_needs_approval")
 forbid (principal, action in Action::"irreversible", resource)

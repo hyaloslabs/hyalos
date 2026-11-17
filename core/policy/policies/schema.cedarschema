@@ -27,6 +27,9 @@ type Facts = {
   approved: Bool,
   // The request would use a subscription token (ADR-0005).
   subscription_token: Bool,
+  // Everyone who wrote the text a `release_issue` releases can write to the job's repo (ADR-0103).
+  // False for every other action.
+  writers_only: Bool,
 };
 
 // ---- tiers (ADR-0012) -------------------------------------------------------------------
@@ -68,4 +71,8 @@ action publish in [irreversible]
 action spend_over_cap in [irreversible]
   appliesTo { principal: [Job], resource: [Target], context: Facts };
 action export_credentials in [irreversible]
+  appliesTo { principal: [Job], resource: [Target], context: Facts };
+// Releasing a held issue's text to the task's actor (ADR-0103). Routine only because the baseline
+// forbids it unless everyone who wrote the issue can write to the repository; no job holds it.
+action release_issue in [routine]
   appliesTo { principal: [Job], resource: [Target], context: Facts };

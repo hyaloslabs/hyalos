@@ -193,13 +193,20 @@ impl Broker {
                 let result = if clock.now() > manifest.deadline {
                     Err("admission.expired")
                 } else {
+                    // Who wrote it, as permissions only, for policy to release it by (ADR-0103).
                     self.forge
-                        .read_issue(manifest, self.forge_tokens.get(&job), number)
-                        .and_then(|issue| handles::hold(&mut self.held, &issue))
+                        .read_issue_and_writers(manifest, self.forge_tokens.get(&job), number)
+                        .and_then(|(issue, writers)| {
+                            handles::hold(&mut self.held, &issue).map(|handle| (handle, writers))
+                        })
                 };
                 // As a read: one that fails fails its job, never the broker (ADR-0002).
                 match result {
-                    Ok(handle) => Ok(Some(vec![ToEngine::Held { job, handle }])),
+                    Ok((handle, writers)) => Ok(Some(vec![ToEngine::Held {
+                        job,
+                        handle,
+                        writers,
+                    }])),
                     Err(reason) => {
                         self.end(job);
                         Ok(Some(vec![ToEngine::Refused {

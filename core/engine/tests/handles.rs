@@ -171,6 +171,7 @@ fn a_raw_handle_release_is_refused_from_the_engine_and_the_broker() -> Res {
         by: Resolution::Human,
         reason: code("handle.operator"),
         signed: hyalos_types::Signed::Unrecorded,
+        writers: None,
     };
     let before = events(&d)?;
     let v = violation(e.submit(at(4), Origin::Engine, event.clone()))?;
@@ -263,5 +264,74 @@ fn released_handles_survive_replay_and_compaction() -> Res {
     let mut reopened = reopened;
     let job = start(&mut reopened, t, 11)?;
     mint(&reopened, &manifest(job, &[handle(7)]))?;
+    Ok(())
+}
+
+/// S4.9 (ADR-0103): policy releases a held issue only when the operator's policy permits
+/// `release_issue` and everyone who wrote the issue can write to the repository. Anything else writes
+/// nothing, and the release it writes replays.
+#[test]
+fn policy_releases_an_issue_only_writers_wrote_and_only_when_the_operator_permits_it() -> Res {
+    use hyalos_types::{Permission, Writers};
+    let (mut e, t, d) = engine("policy")?;
+    let writers = |author, editors: &[Permission]| Writers {
+        author,
+        editors: editors.to_vec(),
+    };
+    let maintainers = writers(Permission::Admin, &[Permission::Write]);
+
+    // Off unless the operator's policy permits it.
+    let before = events(&d)?;
+    let refused = e.release_issue_by_policy(at(3), t, handle(7), "o/r", 1_000, maintainers.clone());
+    assert_eq!(refused.err(), Some(hyalos_policy::codes::denied()));
+    assert_eq!(events(&d)?, before);
+
+    let permits =
+        format!("{POLICY}\npermit (principal, action == Action::\"release_issue\", resource);");
+    e.approve_policy(at(4), &permits, Decider::Human, code("policy.approved"))?;
+
+    // Permitted, an issue anyone else wrote or edited still waits for a person, whatever the policy.
+    let before = events(&d)?;
+    for outsiders in [
+        writers(Permission::Read, &[]),
+        writers(Permission::Write, &[Permission::Read]),
+        writers(Permission::Admin, &[Permission::None]),
+        writers(Permission::Write, &[Permission::Unknown]),
+        Writers::unknown(),
+    ] {
+        let refused = e.release_issue_by_policy(at(5), t, handle(7), "o/r", 1_000, outsiders);
+        assert_eq!(refused.err(), Some(hyalos_policy::codes::denied()));
+    }
+    assert_eq!(events(&d)?, before);
+    assert!(e.state().handles().is_empty());
+
+    // Permitted, and written only by writers: released by policy, with the writers in the log.
+    e.release_issue_by_policy(at(6), t, handle(7), "o/r", 1_000, maintainers.clone())
+        .map_err(|c| c.as_str().to_string())?;
+    let released = &e.state().handles()[0];
+    assert_eq!(
+        (
+            released.task,
+            released.handle,
+            released.by,
+            released.reason.as_str()
+        ),
+        (t, handle(7), Resolution::Policy, "handle.policy_released")
+    );
+    let all = Log::open(&d.join("events.db"), key())?.events()?;
+    let last = all.last().ok_or("no events")?;
+    let written = Event::decode(&last.kind, last.schema_version, &last.payload)?;
+    assert!(matches!(
+        written,
+        Event::HandleReleased { writers: Some(w), by: Resolution::Policy, .. } if w == maintainers
+    ));
+    assert_eq!(replay(&all)?.handles(), e.state().handles());
+
+    // Policy releases a handle once, as a human does.
+    let again = e.release_issue_by_policy(at(7), t, handle(7), "o/r", 1_000, maintainers);
+    assert_eq!(
+        again.err().map(|c| c.as_str().to_string()).as_deref(),
+        Some("handle.refused")
+    );
     Ok(())
 }

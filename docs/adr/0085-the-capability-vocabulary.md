@@ -1,6 +1,6 @@
 # ADR-0085: The capability vocabulary
 
-**Status:** Accepted
+**Status:** Accepted; its rule that the policy's actions are exactly the vocabulary's superseded by [ADR-0103](0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md)
 
 ## Context
 

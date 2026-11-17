@@ -1,6 +1,6 @@
 # ADR-0063: Gated handles: the broker holds raw text, a human releases it by digest
 
-**Status:** Accepted
+**Status:** Accepted; its rule that only a human releases a handle superseded by [ADR-0103](0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md)
 
 ## Context
 
