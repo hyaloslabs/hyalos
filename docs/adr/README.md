@@ -108,4 +108,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0092](0092-update-checks-that-keep-the-old-version-running.md) | Update checks that keep the old version running | Accepted |
 | [0093](0093-verifying-a-plugin-release-s-sigstore-bundle.md) | Verifying a plugin release's Sigstore bundle with one pinned library | Accepted |
 | [0094](0094-the-marketplace-release-pipeline.md) | The marketplace release pipeline | Accepted |
-| [0095](0095-checking-the-marketplace-s-protection-settings.md) | Checking the marketplace's protection settings | Proposed |
+| [0095](0095-checking-the-marketplace-s-protection-settings.md) | Checking the marketplace's protection settings | Accepted |
