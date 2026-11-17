@@ -5,7 +5,8 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use hyalos_plugin::sigstore::{Identity, MAX_BUNDLE, PIPELINE, Refusal, SNAPSHOT, Trust};
+use hyalos_plugin::sigstore::{Identity, MAX_BUNDLE, PIPELINE, Refusal, Trust};
+use hyalos_plugin::snapshot::Snapshot;
 use serde_json::Value;
 
 type Res<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -48,8 +49,15 @@ const STAGING_SIGNER: Identity<'static> = Identity {
 /// The staging log the Rekor v2 bundle is in (`log2025-alpha3.rekor.sigstage.dev`).
 const REKOR_V2_LOG: &str = "09OnDKEw7/hpZiYVPoTRzRbglHk0sylsUovegnRUlJY=";
 
+/// The trusted root inside the snapshot this release embeds.
+fn snapshot() -> String {
+    Snapshot::embedded()
+        .map(|s| s.root().to_string())
+        .unwrap_or_default()
+}
+
 fn cosign() -> Res<Trust> {
-    Ok(Trust::new(SNAPSHOT, COSIGN)?)
+    Ok(Trust::new(&snapshot(), COSIGN)?)
 }
 
 /// `bundle` with `edit` applied to its JSON.
@@ -97,7 +105,7 @@ fn a_changed_artifact_a_wrong_identity_and_a_flipped_signature_are_refused() -> 
     assert_eq!(trust.verify(&changed, FRESH_BUNDLE), Err(Refusal::Digest));
     // The right bundle for its file, signed by someone else than the identity asked for.
     let attacker = Trust::new(
-        SNAPSHOT,
+        &snapshot(),
         Identity {
             subject: "attacker@example.com",
             ..COSIGN
@@ -105,7 +113,7 @@ fn a_changed_artifact_a_wrong_identity_and_a_flipped_signature_are_refused() -> 
     )?;
     assert_eq!(attacker.verify(FRESH, FRESH_BUNDLE), Err(Refusal::Identity));
     let other_issuer = Trust::new(
-        SNAPSHOT,
+        &snapshot(),
         Identity {
             issuer: "https://token.actions.githubusercontent.com",
             ..COSIGN
@@ -156,7 +164,7 @@ fn a_bundle_without_its_log_entry_proof_or_any_signed_time_is_refused() -> Res {
 fn an_authority_the_snapshot_does_not_list_refuses_the_bundle() -> Res {
     // No fallback to a weaker check: a timestamp it cannot verify is a refusal, even beside the
     // log's own signed time.
-    let no_tsa = root(SNAPSHOT, |r| {
+    let no_tsa = root(&snapshot(), |r| {
         r["timestampAuthorities"] = Value::Array(vec![])
     })?;
     assert!(
@@ -164,14 +172,14 @@ fn an_authority_the_snapshot_does_not_list_refuses_the_bundle() -> Res {
             .verify(FRESH, FRESH_BUNDLE)
             .is_err()
     );
-    let no_ca = root(SNAPSHOT, |r| {
+    let no_ca = root(&snapshot(), |r| {
         r["certificateAuthorities"] = Value::Array(vec![])
     })?;
     assert_eq!(
         Trust::new(&no_ca, COSIGN)?.verify(FRESH, FRESH_BUNDLE),
         Err(Refusal::Certificate)
     );
-    let no_ct = root(SNAPSHOT, |r| r["ctlogs"] = Value::Array(vec![]))?;
+    let no_ct = root(&snapshot(), |r| r["ctlogs"] = Value::Array(vec![]))?;
     assert!(
         Trust::new(&no_ct, COSIGN)?
             .verify(FRESH, FRESH_BUNDLE)
@@ -182,10 +190,10 @@ fn an_authority_the_snapshot_does_not_list_refuses_the_bundle() -> Res {
 
 #[test]
 fn a_github_actions_workflow_identity_verifies_offline_with_its_ref() -> Res {
-    Trust::new(SNAPSHOT, WORKFLOW)?.verify(CONDA, CONDA_BUNDLE)?;
+    Trust::new(&snapshot(), WORKFLOW)?.verify(CONDA, CONDA_BUNDLE)?;
     // The same workflow file run from another branch is another identity.
     let other_ref = Trust::new(
-        SNAPSHOT,
+        &snapshot(),
         Identity {
             git_ref: Some("refs/heads/release"),
             ..WORKFLOW
@@ -197,7 +205,7 @@ fn a_github_actions_workflow_identity_verifies_offline_with_its_ref() -> Res {
     );
     // The same workflow file run for another repository, as a reusable workflow is.
     let other_repository = Trust::new(
-        SNAPSHOT,
+        &snapshot(),
         Identity {
             repository: Some("https://github.com/attacker/plugin"),
             ..WORKFLOW
@@ -251,7 +259,7 @@ fn a_rekor_v2_bundle_verifies_only_against_a_snapshot_listing_its_log() -> Res {
     );
     // The production snapshot this build carries does not list a staging log either.
     assert!(
-        Trust::new(SNAPSHOT, STAGING_SIGNER)?
+        Trust::new(&snapshot(), STAGING_SIGNER)?
             .verify(CONDA, REKOR_V2_BUNDLE)
             .is_err()
     );
@@ -351,7 +359,7 @@ fn the_marketplaces_first_release_verifies_against_the_pinned_trust() -> Res {
     assert_eq!(skill.name.as_str(), "hello");
     // Another identity does not accept it, nor does the pinned one for other bytes.
     assert_eq!(
-        Trust::new(SNAPSHOT, WORKFLOW)?.verify(R1_ARCHIVE, R1_BUNDLE),
+        Trust::new(&snapshot(), WORKFLOW)?.verify(R1_ARCHIVE, R1_BUNDLE),
         Err(Refusal::Identity)
     );
     assert_eq!(

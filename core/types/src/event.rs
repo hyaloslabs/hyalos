@@ -12,11 +12,11 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AgentId, AgentName, Answer, Attestation, CommitSha, Digest, Grant, HoldId, IndexLocation,
     InstallPolicy, JobId, MergeMethod, Origin, PluginName, PluginSource, ReasonCode, Schema,
-    Signed, Stakes, SubstrateName, TaskId, TypedValue, Upcast, Value,
+    Signed, Stakes, SubstrateName, TaskId, Timestamp, TypedValue, Upcast, Value,
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 18;
+pub const SCHEMA_VERSION: u32 = 19;
 
 /// What this build reads: version 15, and versions 1 to 14 upcast to it (ADR-0023, ADR-0025, ADR-0027,
 /// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069,
@@ -38,7 +38,7 @@ pub const SCHEMA_VERSION: u32 = 18;
 /// payload. Version 15 added `plugin.installed` and changed no payload. Version 16 added a plugin
 /// index as a `plugin.installed` source (ADR-0090); a payload written before reads as it was. Version
 /// 17 added `plugin.policy_set` and changed no payload. Version 18 added `plugin.update_pending` and
-/// changed no payload.
+/// changed no payload. Version 19 added `plugin.snapshot_imported` (ADR-0097) and changed no payload.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -381,6 +381,15 @@ pub enum Event {
         asks: Grant,
         location: IndexLocation,
     },
+    /// A trusted-root snapshot was imported (ADR-0097): the file with digest `digest`, which the
+    /// snapshot in force vouched for, issued at `signed_at` by the earliest signed time its bundle
+    /// proves. From then on releases are verified against it. It is not a decision; the engine refuses
+    /// one no later than the last.
+    #[serde(rename = "plugin.snapshot_imported")]
+    PluginSnapshotImported {
+        digest: Digest,
+        signed_at: Timestamp,
+    },
     /// The typed values a running job returned: a reader's or planner's answer, or an actor's submitted
     /// result (ADR-0062, ADR-0064, ADR-0069). A choice is its option's index, so no text is stored. It
     /// is written together with the job's ending, so a resumed run finds every finished step's values
@@ -469,6 +478,7 @@ impl Event {
             | Event::PluginInstalled { .. }
             | Event::PluginPolicySet { .. }
             | Event::PluginUpdatePending { .. }
+            | Event::PluginSnapshotImported { .. }
             | Event::JobValues { .. } => origin == Origin::Engine,
         }
     }
@@ -549,6 +559,7 @@ impl Event {
             Event::PluginInstalled { .. } => "plugin.installed",
             Event::PluginPolicySet { .. } => "plugin.policy_set",
             Event::PluginUpdatePending { .. } => "plugin.update_pending",
+            Event::PluginSnapshotImported { .. } => "plugin.snapshot_imported",
             Event::JobValues { .. } => "job.values",
         }
     }
@@ -559,7 +570,7 @@ impl Event {
     }
 
     /// Every `kind` value, for checking tables and test coverage.
-    pub const KINDS: [&'static str; 19] = [
+    pub const KINDS: [&'static str; 20] = [
         "task.created",
         "task.completed",
         "job.started",
@@ -578,6 +589,7 @@ impl Event {
         "plugin.installed",
         "plugin.policy_set",
         "plugin.update_pending",
+        "plugin.snapshot_imported",
         "job.values",
     ];
 
@@ -828,6 +840,16 @@ mod tests {
                 },
                 r#"{"kind":"plugin.policy_set","policy":{"ceiling":{"actions":[],"egress_hosts":["docs.rs"],"tools":[],"data_flows":[]},"indexes":["https://plugins.example/v1"],"max_snapshot_age_days":90,"max_revocation_age_days":30},"by":"human","reason":"plugin.policy","signed":"unrecorded"}"#
                     .to_string(),
+            ),
+            (
+                Event::PluginSnapshotImported {
+                    digest: d(8),
+                    signed_at: Timestamp::from_millis(1_794_878_463_000),
+                },
+                format!(
+                    r#"{{"kind":"plugin.snapshot_imported","digest":"{}","signed_at":1794878463000}}"#,
+                    h(8)
+                ),
             ),
             (
                 Event::PluginUpdatePending {

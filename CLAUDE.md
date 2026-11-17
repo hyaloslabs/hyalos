@@ -64,14 +64,14 @@ These are pinned by tests. A change to one bumps its version (except where noted
 
 | Code | What | ADRs |
 | --- | --- | --- |
-| `core/types` | Events, schema, manifest, capabilities, wire, provenance, prompts, workflows, results, plugin grants, approvals, merges | 0019, 0023, 0024, 0031, 0035, 0043, 0045, 0047, 0057, 0059, 0060, 0063, 0064, 0066, 0068, 0070, 0071, 0079, 0083, 0085, 0088, 0089, 0090, 0091, 0092 |
+| `core/types` | Events, schema, manifest, capabilities, wire, provenance, prompts, workflows, results, plugin grants, approvals, merges | 0019, 0023, 0024, 0031, 0035, 0043, 0045, 0047, 0057, 0059, 0060, 0063, 0064, 0066, 0068, 0070, 0071, 0079, 0083, 0085, 0088, 0089, 0090, 0091, 0092, 0097 |
 | `core/log` | The signed SQLite log, compaction, pruning, backup | 0018, 0021, 0026, 0027, 0028 |
 | `core/policy` | Cedar, the shipped baseline and schema, gates | 0008, 0009, 0020, 0033, 0085 |
-| `core/engine` | State, holds, cancels, compaction and audit, the policy store, minting, handles, agents, several writers | 0013, 0024, 0025, 0026, 0027, 0028, 0029, 0031, 0034, 0047, 0055, 0063, 0066, 0068, 0069, 0070, 0071, 0083, 0085, 0089, 0091, 0092 |
+| `core/engine` | State, holds, cancels, compaction and audit, the policy store, minting, handles, agents, several writers | 0013, 0024, 0025, 0026, 0027, 0028, 0029, 0031, 0034, 0047, 0055, 0063, 0066, 0068, 0069, 0070, 0071, 0083, 0085, 0089, 0091, 0092, 0097 |
 | `core/broker` | Channel, model relay and TLS, egress, git proxy, forge, content gates, readers, handles, results, merge | 0035, 0037, 0038, 0039, 0042, 0046, 0047, 0048, 0051, 0054, 0055, 0061, 0063, 0064, 0065, 0071, 0079, 0083, 0085 |
 | `core/substrate` | Containers, gVisor, Firecracker, choosing one, attestation | 0032, 0041, 0043, 0056, 0057, 0058, 0089 |
-| `core/plugin` | The plugin runtime: the Wasmtime host, install, Sigstore verification, update checks, the reference skill the marketplace pins (part budget 3,000) | 0006, 0007, 0086, 0087, 0089, 0090, 0093, 0094 |
-| `core/hyalos` | The binary: keys, log commands, the broker process and channel, doctor, GitHub App, `hyalos run`, the fix-issue workflow, MCP server, operator commands and merge, thin CLI, setup, the capability diff | 0018, 0021, 0022, 0026–0028, 0030, 0035, 0038, 0043, 0044, 0045, 0050, 0052, 0053, 0058, 0062, 0063, 0067–0075, 0078, 0080, 0081, 0082, 0083, 0084, 0088, 0089, 0090, 0091, 0092, 0093 |
+| `core/plugin` | The plugin runtime: the Wasmtime host, install, Sigstore verification, the trusted-root snapshot, update checks, the reference skill the marketplace pins (part budget 3,000) | 0006, 0007, 0086, 0087, 0089, 0090, 0093, 0094, 0097 |
+| `core/hyalos` | The binary: keys, log commands, the broker process and channel, doctor, GitHub App, `hyalos run`, the fix-issue workflow, MCP server, operator commands and merge, thin CLI, setup, the capability diff | 0018, 0021, 0022, 0026–0028, 0030, 0035, 0038, 0043, 0044, 0045, 0050, 0052, 0053, 0058, 0062, 0063, 0067–0075, 0078, 0080, 0081, 0082, 0083, 0084, 0088, 0089, 0090, 0091, 0092, 0093, 0097 |
 | `.github/workflows/release.yml` | A release: the static binary, the image by digest, provenance | 0081 |
 | `site/setup`, `.github/workflows/pages.yml` | The setup page that creates the GitHub App from a manifest, and the marketplace settings check's App page | 0084, 0096 |
 | `crates/xtask` | `layout` and `lines` | 0017 |
@@ -82,7 +82,7 @@ These are pinned by tests. A change to one bumps its version (except where noted
 | `crates/mcp-conformance` | The pinned MCP conformance suite | 0067, 0069 |
 | `crates/redteam` | The red-team corpus | 0065 |
 | `crates/sigstore-testkit` | A Sigstore of the tests' own, to sign releases an install verifies | 0093 |
-| `hyaloslabs/marketplace` (its own repository) | The skills, their release pipeline, its workflow rules and the check on its settings | 0007, 0090, 0094, 0095, 0096 |
+| `hyaloslabs/marketplace` (its own repository) | The skills, their release pipeline, its workflow rules, the trusted-root snapshot it signs and the check on its settings | 0007, 0090, 0094, 0095, 0096, 0097 |
 | `skills/set-up-hyalos` | The setup skill (`.claude/skills/set-up-hyalos` links to it; edit this one) | 0078, 0080 |
 
 The image builds from the repository root and must name its target: `--target sandbox -t hyalos-sandbox:latest` for jobs, `--target test -t hyalos-sandbox:test` for the image tests (they skip without that tag), as in `docker build -f images/sandbox/Containerfile --target test -t hyalos-sandbox:test .`. Regenerate the harness lockfile with the image's own npm, not the host's.

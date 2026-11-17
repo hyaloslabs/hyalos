@@ -10,7 +10,7 @@ use std::fmt;
 use hyalos_types::snapshot::{
     AgentImage, CancelledImage, HandleImage, HoldImage, InstallPolicyImage, JobEndImage, JobImage,
     MergeImage, PendingUpdateImage, PluginImage, PolicyImage, PrunedImage, ResolvedImage,
-    RevokedImage, StateImage, TaskImage,
+    RevokedImage, StateImage, TaskImage, TrustedRootImage,
 };
 use hyalos_types::workflow::MAX_FIELDS;
 use hyalos_types::{
@@ -224,6 +224,8 @@ pub enum RuleViolation {
     /// An update was found for a plugin that is not installed from an index, or asks for a name the
     /// vocabulary does not accept (ADR-0092).
     UpdateNotForAnIndexInstall,
+    /// A trusted-root snapshot no later than the one imported before it (ADR-0097).
+    SnapshotNotNewer,
     /// A plugin's grant holds a name the capability vocabulary does not accept (ADR-0085).
     PluginGrantInvalid,
     /// A task holds one merge approval, made before any job runs on it.
@@ -341,6 +343,10 @@ impl fmt::Display for RuleViolation {
             RuleViolation::UpdateNotForAnIndexInstall => write!(
                 f,
                 "an update waits only for a plugin installed from an index, asking for names in the vocabulary (ADR-0092)"
+            ),
+            RuleViolation::SnapshotNotNewer => write!(
+                f,
+                "a trusted-root snapshot is imported only if it is later than the one before it (ADR-0097)"
             ),
             RuleViolation::PluginGrantInvalid => write!(
                 f,
@@ -463,6 +469,8 @@ pub struct State {
     install_policy: Option<SetInstallPolicy>,
     /// The update each plugin has waiting for the operator, if any (ADR-0092).
     pending_updates: BTreeMap<PluginName, PendingUpdate>,
+    /// The trusted-root snapshot imported last, if one was (ADR-0097).
+    trusted_root: Option<ImportedSnapshot>,
     pending: Option<Pending>,
     /// The event of the last decision the operator signed (ADR-0070).
     last_approval: Option<u64>,
@@ -538,6 +546,18 @@ pub struct PendingUpdate {
     pub location: IndexLocation,
 }
 
+/// The trusted-root snapshot imported last (ADR-0097).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportedSnapshot {
+    /// The event that imported it.
+    pub seq: u64,
+    pub at: Timestamp,
+    /// The digest of the snapshot file.
+    pub digest: Digest,
+    /// Its issue time: the earliest signed time its bundle proves.
+    pub signed_at: Timestamp,
+}
+
 /// The install policy the operator set last (ADR-0091).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetInstallPolicy {
@@ -610,6 +630,11 @@ impl State {
     /// The install policy in force, if any (ADR-0091).
     pub fn install_policy(&self) -> Option<&SetInstallPolicy> {
         self.install_policy.as_ref()
+    }
+
+    /// The trusted-root snapshot imported last, if one was (ADR-0097).
+    pub fn trusted_root(&self) -> Option<&ImportedSnapshot> {
+        self.trusted_root.as_ref()
     }
 
     /// The updates waiting for the operator, by name (ADR-0092).
@@ -966,6 +991,15 @@ impl State {
                 }
                 Ok(())
             }
+            Event::PluginSnapshotImported { signed_at, .. } => {
+                if self
+                    .trusted_root
+                    .is_some_and(|last| *signed_at <= last.signed_at)
+                {
+                    return Err(RuleViolation::SnapshotNotNewer);
+                }
+                Ok(())
+            }
             Event::PluginPolicySet { policy, by, .. } => {
                 if !Stakes::irreversible()
                     .touching(Sensitive::CapabilityGrant)
@@ -1294,6 +1328,14 @@ impl State {
                     },
                 );
             }
+            Event::PluginSnapshotImported { digest, signed_at } => {
+                self.trusted_root = Some(ImportedSnapshot {
+                    seq,
+                    at,
+                    digest: *digest,
+                    signed_at: *signed_at,
+                });
+            }
             Event::PluginPolicySet {
                 policy, by, reason, ..
             } => {
@@ -1376,6 +1418,7 @@ impl State {
             plugins,
             install_policy,
             pending_updates,
+            trusted_root,
             pending,
             last_approval,
             signed_since,
@@ -1390,6 +1433,12 @@ impl State {
             last_at: last_at.map(Timestamp::as_millis),
             last_approval: *last_approval,
             signed_since: *signed_since,
+            trusted_root: trusted_root.map(|t| TrustedRootImage {
+                seq: t.seq,
+                at: t.at.as_millis(),
+                digest: t.digest,
+                signed_at: t.signed_at.as_millis(),
+            }),
             pending_updates: pending_updates
                 .iter()
                 .map(|(name, u)| {
@@ -1663,6 +1712,7 @@ impl State {
             plugins,
             install_policy,
             pending_updates,
+            trusted_root,
         } = image;
         let mut waiting = BTreeMap::new();
         for u in pending_updates {
@@ -1696,6 +1746,12 @@ impl State {
         let mut state = State {
             plugins: by_name,
             pending_updates: waiting,
+            trusted_root: trusted_root.map(|t| ImportedSnapshot {
+                seq: t.seq,
+                at: Timestamp::from_millis(t.at),
+                digest: t.digest,
+                signed_at: Timestamp::from_millis(t.signed_at),
+            }),
             install_policy: install_policy.map(|p| SetInstallPolicy {
                 seq: p.seq,
                 at: Timestamp::from_millis(p.at),

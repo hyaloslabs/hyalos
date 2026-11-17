@@ -12,7 +12,9 @@
 //! before, and it is always the operator's decision, never policy's.
 //!
 //! An install or update from an index verifies the release's Sigstore bundle first (S7.12, ADR-0093),
-//! against the trust this build pins: nothing from an index is read without it.
+//! against the trusted-root snapshot in force: nothing from an index is read without it. The snapshot
+//! in force is the one this release embeds, or a later one it vouched for, imported with
+//! `plugin snapshot import` or from the index location an install or update reads (S7.11, ADR-0097).
 
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -23,6 +25,7 @@ use hyalos_engine::Decider;
 use hyalos_plugin::index::{INDEX_FILE, Index, MAX_INDEX};
 use hyalos_plugin::sigstore::{MAX_BUNDLE, Trust};
 use hyalos_plugin::skill::{MAX_ARCHIVE, Skill, Store, digest_of};
+use hyalos_plugin::snapshot::Snapshot;
 use hyalos_types::capability::Field;
 use hyalos_types::{
     Capabilities, Clock, Diff, Digest, Event, Grant, IndexLocation, InstallPolicy,
@@ -35,6 +38,7 @@ use crate::operator;
 use crate::passphrase;
 use crate::paths::{self, Env};
 use crate::plugin_source;
+use crate::plugin_trust::{self, NotImported};
 use crate::policy_cmd;
 use hyalos_types::plugin::{
     DEFAULT_MAX_REVOCATION_AGE_DAYS, DEFAULT_MAX_SNAPSHOT_AGE_DAYS, MAX_AGE_DAYS,
@@ -49,6 +53,8 @@ const USAGE: &str = "usage: hyalos plugin install <dir> [--grant] [--reason <cod
                                 [--max-revocation-age-days <n>] [--reason <code>] [--passphrase-stdin]
        hyalos plugin policy show
        hyalos plugin update [--every <hours>]
+       hyalos plugin snapshot import <location>
+       hyalos plugin snapshot show
        hyalos plugin pack <dir> <file>
        hyalos plugin diff [<installed>] <new>
   install reads the Agent Skill in <dir> (SKILL.md, its scripts, and capabilities.json if it asks for
@@ -72,6 +78,10 @@ const USAGE: &str = "usage: hyalos plugin install <dir> [--grant] [--reason <cod
   policy covers is installed; one that asks for more is recorded as waiting for you, and the
   installed version keeps running until you install it. With --every, it checks again on that
   schedule until stopped (ADR-0092). Exit 1 if a check failed
+  snapshot import reads trusted-root.json and its Sigstore bundle at <location> (an index location, as
+  for install --index) and makes it the trusted root releases are checked against, only if the one in
+  force verifies it as the Hyalos marketplace pipeline's and it is newer (ADR-0097). install --index
+  and update import one from their location the same way first. snapshot show prints the one in force
   list shows every skill installed, its digest, where it came from, what it was granted, and any
   update waiting for you
   pack writes the skill in <dir> as one archive to <file>, a new file, and prints its digest, as an
@@ -83,7 +93,7 @@ const USAGE: &str = "usage: hyalos plugin install <dir> [--grant] [--reason <cod
 pub fn run(args: &[String]) -> ExitCode {
     let env = |name: &str| std::env::var(name).ok();
     let result = match args.first().map(String::as_str) {
-        Some("install" | "list" | "pack" | "policy" | "update") => manage(args, &env),
+        Some("install" | "list" | "pack" | "policy" | "snapshot" | "update") => manage(args, &env),
         _ => run_with(args),
     };
     match result {
@@ -115,19 +125,20 @@ pub fn run_with(args: &[String]) -> Result<String, (u8, String)> {
 }
 
 /// `install` and `list`, which read the log and the store. Exit 1 if refused, 2 for usage. A release
-/// from an index is verified against the trust this build pins.
+/// from an index is verified against the snapshot in force, which starts from the one this release
+/// embeds.
 pub fn manage(args: &[String], env: Env<'_>) -> Result<String, (u8, String)> {
-    let trust = Trust::pinned().map_err(|e| (1, format!("{e} ({})", e.code())))?;
-    manage_with(args, env, &trust, None)
+    let base = Snapshot::embedded().map_err(|e| (1, format!("{e} ({})", e.code())))?;
+    manage_with(args, env, &base, None)
 }
 
-/// As [`manage`], verifying releases against `trust`, and with the operator's passphrase given
-/// rather than read where the arguments say. The binary always calls [`manage`]; this is for tests,
-/// which sign releases with a Sigstore of their own.
+/// As [`manage`], starting from the snapshot `base` rather than the embedded one, and with the
+/// operator's passphrase given rather than read where the arguments say. The binary always calls
+/// [`manage`]; this is for tests, which sign releases and snapshots with a Sigstore of their own.
 pub fn manage_with(
     args: &[String],
     env: Env<'_>,
-    trust: &Trust,
+    base: &Snapshot,
     passphrase: Option<&str>,
 ) -> Result<String, (u8, String)> {
     let (args, source_of_passphrase) = passphrase::source(args);
@@ -174,6 +185,13 @@ pub fn manage_with(
                 target.ok_or_else(|| usage("install needs a directory, or a name with --index"))?;
             let reason = ReasonCode::new(reason)
                 .ok_or_else(|| usage("a reason is a short code, such as plugin.installed"))?;
+            // Everything that can be checked without the passphrase is checked first.
+            let state = if log.log.exists() {
+                Some(log.read().map_err(failed)?)
+            } else {
+                None
+            };
+            let mut notes = String::new();
             let (skill, source) = match index {
                 None if version.is_some() => {
                     return Err(usage("--version picks a version from --index"));
@@ -187,14 +205,22 @@ pub fn manage_with(
                     let name = PluginName::new(target).ok_or_else(|| {
                         usage("with --index, install takes a plugin's name: lowercase letters, digits and hyphens")
                     })?;
-                    from_index(location, &name, version.as_ref(), trust).map_err(failed)?
+                    let current =
+                        plugin_trust::in_force(env, state.as_ref(), base).map_err(failed)?;
+                    let snapshot = match policy_cmd::open(env) {
+                        Ok(mut engine) => {
+                            refreshed(env, &mut engine, &location, current, &mut notes)
+                        }
+                        Err(e) => {
+                            notes.push_str(&format!(
+                                "the trusted-root snapshot there was not looked at: {e}\n"
+                            ));
+                            current
+                        }
+                    };
+                    let trust = trust_of(&snapshot).map_err(failed)?;
+                    from_index(location, &name, version.as_ref(), &trust).map_err(failed)?
                 }
-            };
-            // Everything that can be checked without the passphrase is checked first.
-            let state = if log.log.exists() {
-                Some(log.read().map_err(failed)?)
-            } else {
-                None
             };
             // A local install starts from nothing (ADR-0006): what an index release was granted
             // was granted to that release, not to whatever is in a directory under the same name.
@@ -212,7 +238,7 @@ pub fn manage_with(
                 .is_some_and(|p| p.policy.covers(&source, &skill.asks));
             let diff = held.diff(&skill.asks);
             let mut out = format!(
-                "skill {} ({} files), digest {}{}\n{}",
+                "{notes}skill {} ({} files), digest {}{}\n{}",
                 skill.name,
                 skill.files.len(),
                 skill.digest(),
@@ -409,18 +435,90 @@ pub fn manage_with(
                 _ => return Err(usage("update takes only --every <hours>")),
             };
             let Some(hours) = every else {
-                let (out, clean) = check_updates(env, &log, trust);
+                let (out, clean) = check_updates(env, &log, base);
                 return if clean { Ok(out) } else { Err((1, out)) };
             };
             // On a schedule: a failed check is reported and the next one still runs.
             loop {
-                let (out, _) = check_updates(env, &log, trust);
+                let (out, _) = check_updates(env, &log, base);
                 print!("{out}");
                 std::thread::sleep(std::time::Duration::from_secs(hours * 3600));
             }
         }
+        [snapshot, import, at] if snapshot == "snapshot" && import == "import" => {
+            let location = location(at).ok_or_else(|| {
+                usage("a location is an https:// URL, an http:// URL on loopback, or a directory")
+            })?;
+            let mut engine = policy_cmd::open(env).map_err(failed)?;
+            let current =
+                plugin_trust::in_force(env, Some(engine.state()), base).map_err(failed)?;
+            match plugin_trust::import(env, &mut engine, &location, &current) {
+                Ok((next, seq)) => Ok(format!(
+                    "{}releases are now checked against it\n",
+                    plugin_trust::describe(&next, Some(seq))
+                )),
+                Err(NotImported::Absent) => Err(failed(format!(
+                    "{location}: there is no {} there (snapshot.absent)",
+                    hyalos_plugin::snapshot::FILE
+                ))),
+                Err(NotImported::Refused(e)) => {
+                    Err(failed(format!("it was not imported: {e} ({})", e.code())))
+                }
+                Err(NotImported::Failed(e)) => Err(failed(format!("it was not imported: {e}"))),
+            }
+        }
+        [snapshot, show] if snapshot == "snapshot" && show == "show" => {
+            let state = if log.log.exists() {
+                Some(log.read().map_err(failed)?)
+            } else {
+                None
+            };
+            let current = plugin_trust::in_force(env, state.as_ref(), base).map_err(failed)?;
+            let imported = state
+                .as_ref()
+                .and_then(|s| s.trusted_root())
+                .filter(|t| t.digest == current.digest())
+                .map(|t| t.seq);
+            Ok(plugin_trust::describe(&current, imported))
+        }
         _ => Err(usage("unknown plugin command")),
     }
+}
+
+/// `current`, or the later snapshot at `location` it vouches for, imported; a line in `notes` says
+/// why one there was not.
+fn refreshed(
+    env: Env<'_>,
+    engine: &mut hyalos_engine::Engine,
+    location: &IndexLocation,
+    current: Snapshot,
+    notes: &mut String,
+) -> Snapshot {
+    match plugin_trust::import(env, engine, location, &current) {
+        Ok((next, seq)) => {
+            notes.push_str(&format!(
+                "imported a newer trusted-root snapshot from there at event {seq}, issued {}\n",
+                crate::mcp::rfc3339(next.signed_at().as_millis())
+            ));
+            next
+        }
+        Err(why) => {
+            if let Some(note) = why.note() {
+                notes.push_str(&note);
+            }
+            current
+        }
+    }
+}
+
+/// The trust releases are checked with under `snapshot`.
+fn trust_of(snapshot: &Snapshot) -> Result<Trust, String> {
+    snapshot.trust().map_err(|e| {
+        format!(
+            "the trusted-root snapshot in force cannot be used: {e} ({})",
+            e.code()
+        )
+    })
 }
 
 /// The longest interval `update --every` takes: a week.
@@ -430,7 +528,7 @@ const MAX_EVERY_HOURS: u64 = 168;
 /// newer version the install policy covers is installed by policy. One beyond it is recorded as
 /// waiting for the operator, once, and the installed version keeps running. Returns what it did,
 /// one line a plugin, and whether every check went through.
-fn check_updates(env: Env<'_>, log: &EngineLog, trust: &Trust) -> (String, bool) {
+fn check_updates(env: Env<'_>, log: &EngineLog, base: &Snapshot) -> (String, bool) {
     if !log.log.exists() {
         return ("no skill is installed\n".into(), true);
     }
@@ -453,8 +551,17 @@ fn check_updates(env: Env<'_>, log: &EngineLog, trust: &Trust) -> (String, bool)
         return ("no skill is installed from an index\n".into(), true);
     }
     let (mut out, mut clean) = (String::new(), true);
+    let mut snapshot = match plugin_trust::in_force(env, Some(engine.state()), base) {
+        Ok(snapshot) => snapshot,
+        Err(e) => return (format!("{e}\n"), false),
+    };
     for (name, digest, location) in installed {
-        match update_one(env, &mut engine, &name, digest, location, trust) {
+        snapshot = refreshed(env, &mut engine, &location, snapshot, &mut out);
+        let trust = match trust_of(&snapshot) {
+            Ok(trust) => trust,
+            Err(e) => return (format!("{out}{e}\n"), false),
+        };
+        match update_one(env, &mut engine, &name, digest, location, &trust) {
             Ok(line) => out.push_str(&format!("{name}: {line}\n")),
             Err(e) => {
                 clean = false;
