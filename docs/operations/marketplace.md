@@ -43,8 +43,10 @@ The key does not expire. To replace it: on the App's settings page, generate a n
 Change it in GitHub, then update `settings/expected.json` in a pull request with the live settings, read with your own admin token:
 
 ```
-SETTINGS_READ_TOKEN=$(gh auth token) python3 tools/check_settings.py hyaloslabs/marketplace --print > settings/expected.json
+out=$(SETTINGS_READ_TOKEN=$(gh auth token) python3 tools/check_settings.py hyaloslabs/marketplace --print) && printf '%s\n' "$out" > settings/expected.json
 ```
+
+The file is written only when the read succeeded, so a failed one leaves it as it was.
 
 Without the App's key, `--print` keeps the file's `app` section and says so. Edit that section by hand when the App changes. A ruleset's bypass list is visible only to a token that can write rulesets, so the check pins each ruleset's change time instead. Any edit to a ruleset is drift until the file is updated, even saving it unchanged.
 
