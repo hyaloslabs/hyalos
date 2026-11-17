@@ -26,7 +26,10 @@ use hyalos_types::{
 
 mod common;
 
-use common::{GitHub, PASSPHRASE, Res, World, dir, have_git, ok_cli, repository};
+use common::{
+    GitHub, ISSUE_BODY, ISSUE_TITLE, Model, PASSPHRASE, Res, World, dir, have_git, ok_cli,
+    repository,
+};
 
 /// Releases signed as the pipeline by a Sigstore of the test's own, and install commands run
 /// in-process against its trust.
@@ -1722,6 +1725,93 @@ fn a_workflows_deterministic_step_runs_its_component_in_the_broker() -> Res {
     assert!(said.contains("step score answered: low=true"), "{said}");
     assert_eq!(summary.outcome, JobOutcome::Failed, "{said}");
     assert_eq!(last_ended(&world)?, "forge.no_token", "{said}");
+    let _ = std::fs::remove_dir_all(&repos);
+    let _ = std::fs::remove_dir_all(&home);
+    Ok(())
+}
+
+/// The shape S6.5 names: a reader of the issue, a deterministic step running a component on the
+/// reader's value, a planner reading the component's answer, and an actor.
+const FOUR_STEPS: &str = r#"{"version":2,"name":"composed","inputs":{"issue":"forge_issue","task":"operator_text"},"steps":[
+  {"id":"triage","role":"reader","reads":["issue"],"instructions":"Classify the issue.",
+   "output":{"kind":{"choice":["bug","docs"]}}},
+  {"id":"score","role":"deterministic","plugin":"risk-score","reads":["triage.kind"],"instructions":"Score it.",
+   "output":{"low":"bool"}},
+  {"id":"plan","role":"planner","reads":["task","score.low"],"instructions":"Choose an approach.",
+   "output":{"approach":{"choice":["docs_only","code"]}}},
+  {"id":"fix","role":"actor","reads":["task","triage.kind","score.low","plan.approach"],"instructions":"Fix it."}]}"#;
+
+/// S6.5 (ADR-0102): the four-step workflow runs end to end. The component runs on the reader's
+/// value in a tainted job of its own, which calls no model. The planner gets its answer and never
+/// the issue's text, and the actor gets every typed value.
+#[test]
+fn a_reader_a_component_a_planner_and_an_actor_run_as_one_workflow() -> Res {
+    if !have_git()? {
+        eprintln!("skipped: no git");
+        return Ok(());
+    }
+    let repos = dir("plugin-four-repos")?;
+    let home = dir("plugin-four-home")?;
+    repository(&repos, &home)?;
+    let gh = GitHub::start(&repos, false)?;
+    let world = World::new("plugin-four", Some(&gh))?;
+    let model = Model::start(&[r#"{"kind": "docs"}"#, r#"{"approach": "docs_only"}"#])?;
+    world.use_model(&model)?;
+    let path = component_plugin(&world.root, r#"{"low": true}"#)?;
+    ok_cli(world.signed(&["plugin", "install", &path.to_string_lossy(), "--grant"])?)?;
+
+    let prompt_file = world.root.join("prompt");
+    let mut request = request("risk-score")?;
+    request.skills.clear();
+    // No operator text, so nothing in the planner's or actor's input can coincide with the issue's.
+    request.issue = String::new();
+    request.issue_number = Some(7);
+    request.workflow = Some(FOUR_STEPS.to_string());
+    request.harness = Harness::Command(vec![
+        "sh".into(),
+        "-c".into(),
+        format!("printf '%s' \"$1\" > '{}'", prompt_file.display()),
+        "sh".into(),
+    ]);
+    let mut said = Vec::new();
+    let summary = run_job(
+        &request,
+        world.setup(local_detect(), Duration::from_secs(10)),
+        &mut said,
+    )?;
+    let said = String::from_utf8_lossy(&said).into_owned();
+    assert_eq!(summary.outcome, JobOutcome::Succeeded, "{said}");
+    assert!(said.contains("workflow composed: 4 step(s)"), "{said}");
+    assert!(said.contains("step triage answered: kind=docs"), "{said}");
+    assert!(said.contains("step score answered: low=true"), "{said}");
+    assert!(
+        said.contains("step plan answered: approach=docs_only"),
+        "{said}"
+    );
+
+    // Two model calls: the reader with the issue, the planner with the component's answer and
+    // without the issue. The component called none.
+    let sent = model.sent();
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    let (reader, planner) = (sent[0].to_string(), sent[1].to_string());
+    assert!(reader.contains("issue-body-marker-5b1e"), "{reader}");
+    assert!(planner.contains("score.low: true"), "{planner}");
+    for text in [ISSUE_BODY, ISSUE_TITLE] {
+        assert!(!planner.contains(text), "{planner}");
+    }
+
+    // The actor's prompt has every typed value and none of the issue's text.
+    let prompt = std::fs::read_to_string(&prompt_file)?;
+    for line in [
+        "- triage.kind: docs\n",
+        "- score.low: true\n",
+        "- plan.approach: docs_only\n",
+    ] {
+        assert!(prompt.contains(line), "{prompt}");
+    }
+    for text in [ISSUE_BODY, ISSUE_TITLE] {
+        assert!(!prompt.contains(text), "{prompt}");
+    }
     let _ = std::fs::remove_dir_all(&repos);
     let _ = std::fs::remove_dir_all(&home);
     Ok(())
