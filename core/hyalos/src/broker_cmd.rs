@@ -14,7 +14,12 @@ use hyalos_broker::egress::Egress;
 use hyalos_broker::git::Git;
 use hyalos_broker::model::ThreadSleep;
 use hyalos_broker::sandbox::{Models, Providers, Sandboxes};
-use hyalos_broker::{Exit, serve_with};
+use hyalos_broker::{Exit, Plugins, serve_with_plugins};
+use hyalos_plugin::Runtime;
+use hyalos_plugin::skill::Store;
+use hyalos_types::ReasonCode;
+use hyalos_types::wire::PluginCall;
+use hyalos_types::workflow::TypedValue;
 
 use crate::channel::connect_to_engine;
 use crate::clock::SystemClock;
@@ -58,7 +63,17 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     };
     let (mut input, mut output) = (&stream, &stream);
-    match serve_with(&mut input, &mut output, &SystemClock, Some(sandboxes)) {
+    // Plugins run here, in the broker (ADR-0087). Without a runtime, a deterministic step is refused.
+    let steps = Runtime::new()
+        .ok()
+        .map(|runtime| Arc::new(Steps(runtime)) as Arc<dyn Plugins>);
+    match serve_with_plugins(
+        &mut input,
+        &mut output,
+        &SystemClock,
+        Some(sandboxes),
+        steps,
+    ) {
         Ok(Exit::Shutdown | Exit::EngineClosed) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("hyalos broker: {e}");
@@ -76,4 +91,23 @@ pub(crate) fn providers(path: &Path) -> Result<Providers, String> {
     let raw = read_private(path, KEY_FILE_LIMIT).map_err(|e| e.to_string())?;
     let text = std::str::from_utf8(&raw).map_err(|_| format!("{} is not text", path.display()))?;
     Providers::parse(text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Runs a deterministic step's plugin (ADR-0102): read from the store and checked against the digest
+/// the engine named, then run with no capability.
+struct Steps(Runtime);
+
+impl std::fmt::Debug for Steps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Steps")
+    }
+}
+
+impl Plugins for Steps {
+    fn run(&self, call: &PluginCall) -> Result<Vec<TypedValue>, ReasonCode> {
+        let skill = Store::new(&call.store)
+            .load(&call.digest, &call.name)
+            .map_err(|e| e.code())?;
+        hyalos_plugin::run_step(&self.0, &skill, &call.input, &call.output)
+    }
 }

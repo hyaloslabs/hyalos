@@ -13,13 +13,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::Duration;
 
-use hyalos_types::wire::{ToBroker, ToEngine, WIRE_VERSION, WireError, read_frame, write_frame};
+use hyalos_types::wire::{
+    MAX_PLUGIN_INPUT, PluginCall, ToBroker, ToEngine, WIRE_VERSION, WireError, read_frame,
+    write_frame,
+};
+use hyalos_types::workflow::{TypedValue, output_is_valid};
 use hyalos_types::{
-    Clock, ForgeToken, JobId, Manifest, ManifestPublicKey, ReasonCode, SignedManifest,
+    Clock, ForgeToken, JobId, Manifest, ManifestPublicKey, ReasonCode, Role, SignedManifest,
 };
 
 use crate::forge::Forge;
@@ -29,6 +34,13 @@ use crate::reader;
 use crate::sandbox::{JobSocket, Sandboxes};
 use crate::submit::Submitted;
 use crate::{Admission, Credential, LiveJobs};
+
+/// Runs a deterministic step's plugin (ADR-0102). This crate never links a WASM host (ADR-0086), so
+/// the broker process's own code gives it one. The answer is the step's typed values, or a short
+/// code.
+pub trait Plugins: Send + Sync + fmt::Debug {
+    fn run(&self, call: &PluginCall) -> Result<Vec<TypedValue>, ReasonCode>;
+}
 
 /// The jobs the engine has started and not ended.
 #[derive(Debug, Default)]
@@ -59,6 +71,8 @@ pub struct Broker {
     /// The raw text the broker holds as handles, for the rest of its run (ADR-0063). The engine knows
     /// only their digests.
     held: Held,
+    /// What runs deterministic steps' plugins, if this process has a runtime (ADR-0102).
+    plugins: Option<Arc<dyn Plugins>>,
 }
 
 impl Broker {
@@ -74,7 +88,14 @@ impl Broker {
             reports: None,
             forge: Forge::github(),
             held: Held::new(),
+            plugins: None,
         }
+    }
+
+    /// Runs deterministic steps' plugins with `plugins` (ADR-0102).
+    pub fn with_plugins(mut self, plugins: Arc<dyn Plugins>) -> Self {
+        self.plugins = Some(plugins);
+        self
     }
 
     /// Reads forge content from `forge` instead of github.com. For tests; called only from code.
@@ -236,6 +257,26 @@ impl Broker {
                     reason: code(reason),
                 }]))
             }
+            ToBroker::RunPlugin { job, call } => {
+                // Only for a live deterministic job, and only a call within its limits (ADR-0102).
+                let result = match (self.admitted.get(&job), &self.plugins) {
+                    (None, _) => Err(code("admission.not_live")),
+                    (Some(m), _) if m.role != Role::Deterministic => Err(code("plugin.wrong_role")),
+                    _ if call.input.len() > MAX_PLUGIN_INPUT || !output_is_valid(&call.output) => {
+                        Err(code("plugin.bad_call"))
+                    }
+                    (Some(_), None) => Err(code("plugin.no_runtime")),
+                    (Some(_), Some(plugins)) => plugins.run(&call),
+                };
+                // A plugin that fails fails its job, never the broker.
+                match result {
+                    Ok(values) => Ok(Some(vec![ToEngine::Values { job, values }])),
+                    Err(reason) => {
+                        self.end(job);
+                        Ok(Some(vec![ToEngine::Refused { job, reason }]))
+                    }
+                }
+            }
             ToBroker::Read { job, call } => {
                 let Some(manifest) = self.admitted.get(&job) else {
                     return Ok(Some(vec![ToEngine::Refused {
@@ -395,6 +436,17 @@ pub fn serve<R: Read, W: Write + Send>(
     serve_with(input, output, clock, None)
 }
 
+/// As [`serve_with`], and runs deterministic steps' plugins with `plugins` (ADR-0102).
+pub fn serve_with_plugins<R: Read, W: Write + Send>(
+    input: &mut R,
+    output: &mut W,
+    clock: &dyn Clock,
+    sandboxes: Option<Sandboxes>,
+    plugins: Option<Arc<dyn Plugins>>,
+) -> Result<Exit, ServeError> {
+    serve_inner(input, output, clock, sandboxes, plugins)
+}
+
 /// How often the writer looks for the end of serving.
 const WRITER_POLL: Duration = Duration::from_millis(50);
 
@@ -405,6 +457,16 @@ pub fn serve_with<R: Read, W: Write + Send>(
     output: &mut W,
     clock: &dyn Clock,
     sandboxes: Option<Sandboxes>,
+) -> Result<Exit, ServeError> {
+    serve_inner(input, output, clock, sandboxes, None)
+}
+
+fn serve_inner<R: Read, W: Write + Send>(
+    input: &mut R,
+    output: &mut W,
+    clock: &dyn Clock,
+    sandboxes: Option<Sandboxes>,
+    plugins: Option<Arc<dyn Plugins>>,
 ) -> Result<Exit, ServeError> {
     let Some(ToBroker::Hello {
         version,
@@ -457,6 +519,9 @@ pub fn serve_with<R: Read, W: Write + Send>(
         .report_to(to_writer.clone());
         if let Some(bases) = &forge {
             broker = broker.with_forge(Forge::with_base(&bases.api));
+        }
+        if let Some(plugins) = plugins {
+            broker = broker.with_plugins(plugins);
         }
         let served = (|| {
             while let Some(message) = read_frame::<_, ToBroker>(input)? {

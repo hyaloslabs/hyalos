@@ -19,11 +19,12 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Role;
 use crate::provenance::{Provenance, StepInputs};
+use crate::{PluginName, Role};
 
-/// The only workflow version this build reads.
-pub const WORKFLOW_VERSION: u32 = 1;
+/// The newest workflow version this build reads. Version 2 adds a step's `plugin`, and so
+/// deterministic steps (ADR-0102); version 1 documents read as before.
+pub const WORKFLOW_VERSION: u32 = 2;
 /// The largest workflow document, in bytes.
 pub const MAX_WORKFLOW_DOCUMENT: usize = 64 * 1024;
 pub const MAX_STEPS: usize = 32;
@@ -93,7 +94,11 @@ pub struct Step {
     pub reads: Vec<String>,
     /// The author's instructions: operator text.
     pub instructions: String,
-    /// The typed fields the step returns. Required for a reader and a planner.
+    /// An installed plugin the step uses (version 2, ADR-0102): the WASM component a deterministic
+    /// step runs, which it must name, or a skill an actor is given. A reader or planner names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<PluginName>,
+    /// The typed fields the step returns. Required for a reader, a planner and a deterministic step.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -178,9 +183,21 @@ pub enum WorkflowError {
     NoSteps,
     TooMany(&'static str),
     DuplicateName(String),
-    /// Deterministic steps have nothing to run yet.
+    /// A deterministic step in a version 1 document, which has no way to say what it runs.
     RoleNotSupported {
         step: String,
+    },
+    /// A deterministic step that names no plugin to run.
+    PluginRequired {
+        step: String,
+    },
+    /// A plugin named on a reader or planner, or in a version 1 document.
+    BadPlugin {
+        step: String,
+    },
+    RawTextToDeterministic {
+        step: String,
+        input: String,
     },
     UnknownReference {
         step: String,
@@ -221,6 +238,9 @@ impl WorkflowError {
             WorkflowError::TooMany(_) => "workflow.too_many",
             WorkflowError::DuplicateName(_) => "workflow.duplicate_name",
             WorkflowError::RoleNotSupported { .. } => "workflow.role_not_supported",
+            WorkflowError::PluginRequired { .. } => "workflow.plugin_required",
+            WorkflowError::BadPlugin { .. } => "workflow.bad_plugin",
+            WorkflowError::RawTextToDeterministic { .. } => "workflow.raw_text_to_deterministic",
             WorkflowError::UnknownReference { .. } => "workflow.unknown_reference",
             WorkflowError::ForwardReference { .. } => "workflow.forward_reference",
             WorkflowError::OutputRequired { .. } => "workflow.output_required",
@@ -241,7 +261,7 @@ impl fmt::Display for WorkflowError {
             WorkflowError::UnknownVersion(v) => {
                 write!(
                     f,
-                    "{code}: version {v}; this build reads {WORKFLOW_VERSION}"
+                    "{code}: version {v}; this build reads 1 to {WORKFLOW_VERSION}"
                 )
             }
             WorkflowError::BadName(name) => write!(f, "{code}: {name:?}"),
@@ -249,8 +269,23 @@ impl fmt::Display for WorkflowError {
             WorkflowError::TooMany(what) => write!(f, "{code}: too many {what}"),
             WorkflowError::DuplicateName(name) => write!(f, "{code}: {name} is named twice"),
             WorkflowError::RoleNotSupported { step } => {
-                write!(f, "{code}: step {step}: deterministic steps are not built")
+                write!(
+                    f,
+                    "{code}: step {step}: a deterministic step needs version 2"
+                )
             }
+            WorkflowError::PluginRequired { step } => write!(
+                f,
+                "{code}: deterministic step {step} names no plugin to run"
+            ),
+            WorkflowError::BadPlugin { step } => write!(
+                f,
+                "{code}: step {step}: only a deterministic step or an actor names a plugin, in version 2"
+            ),
+            WorkflowError::RawTextToDeterministic { step, input } => write!(
+                f,
+                "{code}: deterministic step {step} reads {input}, raw forge text; only a reader may"
+            ),
             WorkflowError::UnknownReference { step, reference } => {
                 write!(
                     f,
@@ -264,7 +299,7 @@ impl fmt::Display for WorkflowError {
             WorkflowError::OutputRequired { step } => {
                 write!(
                     f,
-                    "{code}: step {step} is a reader or planner with no output"
+                    "{code}: step {step} is a reader, planner or deterministic step with no output"
                 )
             }
             WorkflowError::BadField { step, field } => write!(
@@ -294,6 +329,7 @@ impl std::error::Error for WorkflowError {}
 pub struct Checked {
     workflow: Workflow,
     inputs: BTreeMap<String, StepInputs>,
+    plugins: BTreeMap<String, BTreeSet<PluginName>>,
 }
 
 impl Checked {
@@ -304,6 +340,12 @@ impl Checked {
     /// What step `id` reads, by provenance: the inputs its manifest is minted with.
     pub fn inputs(&self, id: &str) -> Option<&StepInputs> {
         self.inputs.get(id)
+    }
+
+    /// The plugins whose grants bound step `id` (ADR-0102): its own, and every plugin whose step's
+    /// fields reached it, however many steps between.
+    pub fn plugins(&self, id: &str) -> Option<&BTreeSet<PluginName>> {
+        self.plugins.get(id)
     }
 
     /// Whether step `id` runs tainted (ADR-0047).
@@ -326,7 +368,7 @@ impl Workflow {
 
     /// Checks a workflow (see the module documentation).
     pub fn check(self) -> Result<Checked, WorkflowError> {
-        if self.version != WORKFLOW_VERSION {
+        if !(1..=WORKFLOW_VERSION).contains(&self.version) {
             return Err(WorkflowError::UnknownVersion(self.version));
         }
         name(&self.name)?;
@@ -350,14 +392,26 @@ impl Workflow {
             }
         }
 
-        // What each earlier step's fields carry: model output, tainted if the step ran tainted.
-        let mut fields: BTreeMap<(&str, &str), Provenance> = BTreeMap::new();
-        let mut inputs = BTreeMap::new();
+        // What each earlier step's fields carry: model or plugin output, tainted if the step ran
+        // tainted, and the plugins that made it.
+        type Made = (Provenance, BTreeSet<PluginName>);
+        let mut fields: BTreeMap<(&str, &str), Made> = BTreeMap::new();
+        let (mut inputs, mut plugins) = (BTreeMap::new(), BTreeMap::new());
         for (at, step) in self.steps.iter().enumerate() {
             let here = || step.id.clone();
-            if step.role == Role::Deterministic {
-                return Err(WorkflowError::RoleNotSupported { step: here() });
+            match (self.version, step.role, &step.plugin) {
+                (1, Role::Deterministic, _) => {
+                    return Err(WorkflowError::RoleNotSupported { step: here() });
+                }
+                (1, _, Some(_)) | (_, Role::Reader | Role::Planner, Some(_)) => {
+                    return Err(WorkflowError::BadPlugin { step: here() });
+                }
+                (_, Role::Deterministic, None) => {
+                    return Err(WorkflowError::PluginRequired { step: here() });
+                }
+                _ => {}
             }
+            let mut used: BTreeSet<PluginName> = step.plugin.iter().cloned().collect();
             if step.instructions.len() > MAX_INSTRUCTIONS {
                 return Err(WorkflowError::InstructionsTooLong { step: here() });
             }
@@ -378,13 +432,21 @@ impl Workflow {
                                     step: here(),
                                     input: reference.clone(),
                                 }),
-                                Role::Reader | Role::Deterministic => Ok(kind.provenance()),
+                                // A plugin runs in the broker, given typed values only (ADR-0102).
+                                Role::Deterministic => Err(WorkflowError::RawTextToDeterministic {
+                                    step: here(),
+                                    input: reference.clone(),
+                                }),
+                                Role::Reader => Ok(kind.provenance()),
                             }
                         } else {
                             Ok(kind.provenance())
                         }
                     }),
-                    Some((from, field)) => fields.get(&(from, field)).copied().map(Ok),
+                    Some((from, field)) => fields.get(&(from, field)).map(|(made, by)| {
+                        used.extend(by.iter().cloned());
+                        Ok(*made)
+                    }),
                 };
                 match found {
                     Some(provenance) => {
@@ -403,14 +465,22 @@ impl Workflow {
                     }
                 }
             }
+            // A plugin's instructions or output steer the step, so its grant bounds it (ADR-0066).
+            if !used.is_empty() {
+                reads.insert(Provenance::PluginAuthored);
+            }
             let step_inputs = StepInputs::of(reads);
-            match (&step.output, step.role) {
-                (None, Role::Reader | Role::Planner) => {
+            let typed = matches!(
+                step.role,
+                Role::Reader | Role::Planner | Role::Deterministic
+            );
+            match &step.output {
+                None if typed => {
                     return Err(WorkflowError::OutputRequired { step: here() });
                 }
-                (None, _) => {}
-                (Some(output), _) => {
-                    if output.is_empty() && matches!(step.role, Role::Reader | Role::Planner) {
+                None => {}
+                Some(output) => {
+                    if output.is_empty() && typed {
                         return Err(WorkflowError::OutputRequired { step: here() });
                     }
                     if output.len() > MAX_FIELDS {
@@ -418,6 +488,8 @@ impl Workflow {
                     }
                     let made = if step_inputs.tainted(step.role) {
                         Provenance::ModelFromTainted
+                    } else if !used.is_empty() {
+                        Provenance::PluginAuthored
                     } else {
                         Provenance::Operator
                     };
@@ -429,15 +501,17 @@ impl Workflow {
                                 field: field.clone(),
                             });
                         }
-                        fields.insert((step.id.as_str(), field.as_str()), made);
+                        fields.insert((step.id.as_str(), field.as_str()), (made, used.clone()));
                     }
                 }
             }
             inputs.insert(step.id.clone(), step_inputs);
+            plugins.insert(step.id.clone(), used);
         }
         Ok(Checked {
             workflow: self,
             inputs,
+            plugins,
         })
     }
 }
@@ -599,6 +673,23 @@ pub fn read_answer(output: &Output, text: &str) -> Result<Vec<TypedValue>, &'sta
         Wrong::Unknown => "reader.unknown_field",
         Wrong::Missing => "reader.missing_field",
         Wrong::BadValue => "reader.bad_value",
+    })
+}
+
+/// A plugin's answer to a deterministic step, read as `output` asks: the object a reader answers
+/// with, with no fence and no surrounding text (ADR-0102). Anything else is a short `plugin.*` code.
+pub(crate) fn read_plugin_answer(
+    output: &Output,
+    text: &str,
+) -> Result<Vec<TypedValue>, &'static str> {
+    if text.len() > MAX_ANSWER_TEXT {
+        return Err("plugin.answer_too_large");
+    }
+    typed(output, text.trim()).map_err(|wrong| match wrong {
+        Wrong::NotJson => "plugin.answer_not_json",
+        Wrong::Duplicate | Wrong::Unknown | Wrong::Missing | Wrong::BadValue => {
+            "plugin.answer_does_not_fit"
+        }
     })
 }
 
@@ -829,6 +920,133 @@ mod tests {
         assert_eq!(raw.unwrap_err().code(), "workflow.raw_text_to_actor");
     }
 
+    /// S6.5 (#40, ADR-0102): one workflow composes a reader, a deterministic step that runs an
+    /// installed component, a planner and an actor given a skill. It installs, the role checks of
+    /// E4 still hold, and each step knows the plugins whose grants bound it.
+    const COMPOSED: &str = r#"{"version":2,"name":"composed",
+        "inputs":{"issue":"forge_issue","task":"operator_text"},
+        "steps":[
+          {"id":"triage","role":"reader","reads":["issue"],"instructions":"Classify.",
+           "output":{"kind":{"choice":["bug","docs"]}}},
+          {"id":"score","role":"deterministic","plugin":"risk-score","reads":["task"],"instructions":"",
+           "output":{"risk":{"integer":{"min":1,"max":5}}}},
+          {"id":"plan","role":"planner","reads":["task","score.risk"],"instructions":"Choose.",
+           "output":{"approach":{"choice":["small","large"]}}},
+          {"id":"fix","role":"actor","plugin":"style-guide","reads":["task","triage.kind","plan.approach"],
+           "instructions":"Fix it."}]}"#;
+
+    #[test]
+    fn a_workflow_composes_skills_components_and_deterministic_steps() {
+        let checked = Workflow::parse(COMPOSED).unwrap();
+        let names = |id: &str| -> Vec<&str> {
+            checked
+                .plugins(id)
+                .unwrap()
+                .iter()
+                .map(PluginName::as_str)
+                .collect()
+        };
+        // The component bounds its own step and every step its output reaches; the skill bounds
+        // the actor. The reader reads no plugin.
+        assert_eq!(names("triage"), Vec::<&str>::new());
+        assert_eq!(names("score"), ["risk-score"]);
+        assert_eq!(names("plan"), ["risk-score"]);
+        assert_eq!(names("fix"), ["risk-score", "style-guide"]);
+        let reads = |id: &str| checked.inputs(id).unwrap().reads.clone();
+        assert!(reads("score").contains(&Provenance::PluginAuthored));
+        assert!(reads("plan").contains(&Provenance::PluginAuthored));
+        assert!(reads("fix").contains(&Provenance::PluginAuthored));
+        assert!(!reads("triage").contains(&Provenance::PluginAuthored));
+        // Taint still follows the issue to the actor, and nowhere the issue does not reach.
+        assert_eq!(checked.tainted("triage"), Some(true));
+        assert_eq!(checked.tainted("score"), Some(false));
+        assert_eq!(checked.tainted("plan"), Some(false));
+        assert!(reads("fix").contains(&Provenance::ModelFromTainted));
+
+        // The role checks of E4 hold in a composed workflow.
+        let refused = |from: &str, to: &str| {
+            let doc = COMPOSED.replacen(from, to, 1);
+            Workflow::parse(&doc).unwrap_err().code()
+        };
+        assert_eq!(
+            refused(
+                r#""reads":["task","triage.kind""#,
+                r#""reads":["issue","triage.kind""#
+            ),
+            "workflow.raw_text_to_actor"
+        );
+        assert_eq!(
+            refused(r#""reads":["task","score.risk"]"#, r#""reads":["issue"]"#),
+            "workflow.raw_text_to_planner"
+        );
+        assert_eq!(
+            refused(
+                r#""plugin":"risk-score","reads":["task"]"#,
+                r#""plugin":"risk-score","reads":["issue"]"#
+            ),
+            "workflow.raw_text_to_deterministic"
+        );
+        // A deterministic step names its component and returns typed fields; only it and an actor
+        // name a plugin, and only in version 2.
+        assert_eq!(
+            refused(r#""plugin":"risk-score","#, ""),
+            "workflow.plugin_required"
+        );
+        assert_eq!(
+            refused(
+                r#""role":"reader","reads""#,
+                r#""role":"reader","plugin":"risk-score","reads""#
+            ),
+            "workflow.bad_plugin"
+        );
+        assert_eq!(
+            refused(
+                r#""output":{"risk":{"integer":{"min":1,"max":5}}}"#,
+                r#""output":null"#
+            ),
+            "workflow.output_required"
+        );
+        assert_eq!(
+            refused(r#""plugin":"risk-score""#, r#""plugin":"Risk""#),
+            "workflow.malformed"
+        );
+        assert_eq!(
+            refused(r#""version":2"#, r#""version":1"#),
+            "workflow.role_not_supported"
+        );
+        let v1_plugin = COMPOSED
+            .replacen(r#""version":2"#, r#""version":1"#, 1)
+            .replacen(r#""role":"deterministic""#, r#""role":"planner""#, 1);
+        assert_eq!(
+            Workflow::parse(&v1_plugin).unwrap_err().code(),
+            "workflow.bad_plugin"
+        );
+    }
+
+    #[test]
+    fn a_plugins_answer_is_read_as_typed_values_only() {
+        let output: Output = [(
+            "risk".to_string(),
+            Field::Integer(IntegerRange { min: 1, max: 5 }),
+        )]
+        .into();
+        let answer =
+            |text: &str| crate::PluginText::granted(text, crate::Grant::none()).answer(&output);
+        assert_eq!(answer(r#"{"risk": 3}"#), Ok(vec![TypedValue::Integer(3)]));
+        assert_eq!(answer(r#" {"risk": 3} "#), Ok(vec![TypedValue::Integer(3)]));
+        assert_eq!(
+            answer("```\n{\"risk\": 3}\n```"),
+            Err("plugin.answer_not_json")
+        );
+        assert_eq!(answer(r#"{"risk": 9}"#), Err("plugin.answer_does_not_fit"));
+        assert_eq!(
+            answer(r#"{"risk": 3, "why": "x"}"#),
+            Err("plugin.answer_does_not_fit")
+        );
+        let long = format!(r#"{{"risk": 3}}{}"#, " ".repeat(MAX_ANSWER_TEXT));
+        assert_eq!(answer(&long), Err("plugin.answer_too_large"));
+    }
+
     #[test]
     fn a_reference_must_name_an_input_or_an_earlier_field() {
         let unknown = edited(r#""triage.kind", "triage.severity""#, r#""triage.colour""#);
@@ -884,7 +1102,9 @@ mod tests {
             r#""role": "actor", "tools": ["bash"],"#,
         );
         assert_eq!(step_extra.unwrap_err().code(), "workflow.malformed");
-        let version = edited(r#""version": 1"#, r#""version": 2"#);
+        let version = edited(r#""version": 1"#, r#""version": 3"#);
+        assert_eq!(version.unwrap_err().code(), "workflow.unknown_version");
+        let version = edited(r#""version": 1"#, r#""version": 0"#);
         assert_eq!(version.unwrap_err().code(), "workflow.unknown_version");
         let kind = edited(r#""forge_issue""#, r#""forge_comment""#);
         assert_eq!(kind.unwrap_err().code(), "workflow.malformed");

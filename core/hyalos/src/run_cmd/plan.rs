@@ -8,11 +8,24 @@ use super::*;
 pub(super) enum Planned {
     /// The operator's text is the task: one actor, no workflow.
     Actor,
-    /// `--issue-number`: the fix-issue workflow, checked as at install.
+    /// `--issue-number`: the fix-issue workflow, or `--workflow`: the operator's, checked as at
+    /// install.
     Workflow(Box<Runnable>, Supplied),
 }
 
 impl Planned {
+    /// Every plugin the workflow names, and the one its actor is given (ADR-0102).
+    pub(super) fn plugins(&self) -> (BTreeSet<PluginName>, Option<PluginName>) {
+        match self {
+            Planned::Actor => Default::default(),
+            Planned::Workflow(flow, _) => {
+                let steps = &flow.checked().workflow().steps;
+                let all = steps.iter().filter_map(|s| s.plugin.clone()).collect();
+                (all, flow.actor().plugin.clone())
+            }
+        }
+    }
+
     /// What the actor must submit through `hyalos-submit`: its step's output (ADR-0064). The
     /// operator's text alone asks for none.
     pub(super) fn result(&self) -> Option<&Output> {
@@ -24,24 +37,33 @@ impl Planned {
 }
 
 pub(super) fn plan(request: &Request) -> Result<Planned, String> {
-    let Some(number) = request.issue_number else {
-        return Ok(Planned::Actor);
+    let number = request.issue_number;
+    let (checked, which) = match (&request.workflow, number) {
+        // The operator's own workflow, checked as at install (ADR-0102).
+        (Some(document), _) => (
+            hyalos_types::Workflow::parse(document).map_err(|e| format!("the workflow: {e}"))?,
+            "the workflow",
+        ),
+        (None, Some(_)) => (
+            workflow_run::fix_issue().map_err(|e| format!("the fix-issue workflow: {e}"))?,
+            "the fix-issue workflow",
+        ),
+        (None, None) => return Ok(Planned::Actor),
     };
-    let checked = workflow_run::fix_issue().map_err(|e| format!("the fix-issue workflow: {e}"))?;
     // The operator's description of the work, if given; else what they asked for, in the engine's
     // words. The issue's own text reaches only the reader.
-    let task = if request.issue.trim().is_empty() {
-        format!("Resolve issue #{number} of {}.", request.repo)
-    } else {
-        request.issue.trim_end().to_string()
+    let task = match (request.issue.trim().is_empty(), number) {
+        (false, _) => Some(request.issue.trim_end().to_string()),
+        (true, Some(number)) => Some(format!("Resolve issue #{number} of {}.", request.repo)),
+        (true, None) => None,
     };
     let supplied = Supplied {
-        issue: Some(number),
-        task: Some(task),
+        issue: number,
+        task,
         ..Supplied::default()
     };
-    let runnable = Runnable::new(checked, &supplied)
-        .map_err(|code| format!("the fix-issue workflow cannot run ({code})"))?;
+    let runnable =
+        Runnable::new(checked, &supplied).map_err(|code| format!("{which} cannot run ({code})"))?;
     Ok(Planned::Workflow(Box::new(runnable), supplied))
 }
 

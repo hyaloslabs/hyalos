@@ -182,6 +182,15 @@ impl PluginText {
     pub(crate) fn text(&self) -> &str {
         &self.text
     }
+
+    /// The text read as a deterministic step's typed answer to `output` (ADR-0102). Only typed values
+    /// come out, never the text.
+    pub fn answer(
+        &self,
+        output: &crate::workflow::Output,
+    ) -> Result<Vec<crate::workflow::TypedValue>, &'static str> {
+        crate::workflow::read_plugin_answer(output, &self.text)
+    }
 }
 
 /// Text written on the forge: tainted. It is data to be read, never instructions to the engine, and

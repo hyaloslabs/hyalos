@@ -12,7 +12,8 @@ use hyalos_types::workflow::MAX_WORKFLOW_DOCUMENT;
 
 const USAGE: &str = "usage: hyalos workflow check <file>
   check says whether <file> is a workflow that installs: every reference resolves, every output
-  field is typed, and no actor or planner reads raw forge text. It writes nothing";
+  field is typed, no actor, planner or deterministic step reads raw forge text, and a deterministic
+  step names the plugin it runs. It prints the plugins whose grants bound each step. It writes nothing";
 
 pub fn run(args: &[String]) -> ExitCode {
     match run_with(args) {
@@ -53,8 +54,17 @@ pub fn run_with(args: &[String]) -> Result<String, (u8, String)> {
             Some(true) => "tainted",
             _ => "untainted",
         };
+        // The plugins whose grants bound the step: its own, and any whose output reached it.
+        let bound: Vec<&str> = checked
+            .plugins(&step.id)
+            .map(|p| p.iter().map(|n| n.as_str()).collect())
+            .unwrap_or_default();
+        let bound = match bound.is_empty() {
+            true => String::new(),
+            false => format!("; bounded by {}", bound.join(", ")),
+        };
         out.push_str(&format!(
-            "  {} ({:?}): reads {}; runs {tainted}\n",
+            "  {} ({:?}): reads {}; runs {tainted}{bound}\n",
             step.id,
             step.role,
             reads.join(", ")

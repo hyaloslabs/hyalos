@@ -35,7 +35,7 @@ use hyalos_substrate::{
     Choice, Ending, HOST_OS, Outcome, SKILLS_IN_SANDBOX, SandboxSpec, Substrate, Unsupported,
     detect_with,
 };
-use hyalos_types::wire::{Protocol, ToBroker, ToEngine};
+use hyalos_types::wire::{MAX_PLUGIN_INPUT, PluginCall, Protocol, ToBroker, ToEngine};
 use hyalos_types::workflow::{Output, Step, TypedValue, values_fit};
 use hyalos_types::{
     ActorPrompt, Answer, Attestation, Budget, Clock, CredentialTier, Digest, Event, ForgeToken,
@@ -72,7 +72,7 @@ pub use report::attestation_text;
 const USAGE: &str = "usage: hyalos run --repo <owner/name>
                   (--issue <text> | --issue-file <file> | --issue-number <n>) [--base <branch>] [--harness codex|claude-code] [--image <image>]
                   [--budget-tokens <n>] [--minutes <n>] [--allow-host <host>]... [--step-model <model>]
-                  [--release-issue [--passphrase-stdin] | --await-release] [--skill <name>]...
+                  [--release-issue [--passphrase-stdin] | --await-release] [--skill <name>]... [--workflow <file>]
   runs a harness in a sandbox on <owner/name>: it pushes the branch hyalos/job-<id> and opens a
   pull request into --base (default main). With --issue or --issue-file it works on your text.
   --issue-number runs the fix-issue workflow on issue <n> of <owner/name>: a reader in the broker
@@ -88,7 +88,10 @@ const USAGE: &str = "usage: hyalos run --repo <owner/name>
   the GitHub App (github.app, github-app.pem) in the config directory, and a ready substrate (hyalos
   doctor). --allow-host lets the job reach a web host through the egress gate, if policy allows it.
   --skill gives the harness an installed skill (hyalos plugin install), read-only in its sandbox; the
-  job may then do only what the skill was granted as well (ADR-0089).
+  job may then do only what the skill was granted as well (ADR-0089). --workflow runs your workflow
+  document instead of the fix-issue workflow, checked as hyalos workflow check checks it; a
+  deterministic step runs its installed plugin's component in the broker, and each plugin a step
+  names, or whose output reaches it, bounds it by its grant (ADR-0102).
   Defaults: harness codex, image hyalos-sandbox:latest (or the one a release names by digest),
   200000 tokens, 30 minutes";
 
@@ -147,6 +150,8 @@ pub struct Request {
     /// The installed skills the actor is given (ADR-0089): their files, read-only in its sandbox,
     /// and their grants, which cut its manifest.
     pub skills: BTreeSet<PluginName>,
+    /// A workflow document the operator wrote, run instead of the fix-issue workflow (ADR-0102).
+    pub workflow: Option<String>,
 }
 
 /// The program the sandbox runs.
@@ -453,8 +458,14 @@ struct Run<'a> {
     awaiting: Option<(Digest, u64)>,
     /// Where an awaited handle is written for `hyalos release` (`runs/task-<id>.held`).
     held_file: PathBuf,
-    /// The skills of [`Request::skills`], read from the store and checked against their install.
+    /// The skills the actor is given ([`Request::skills`] and its workflow step's plugin), read from
+    /// the store and checked against their install.
     skills: Vec<(Skill, Grant)>,
+    /// Every plugin the run names, as installed (ADR-0102): what its grants bound and what a
+    /// deterministic step runs.
+    plugins: BTreeMap<PluginName, (Skill, Grant)>,
+    /// The store they were read from, which the broker reads a component from.
+    plugin_store: PathBuf,
     /// The lock on `held_file` while the actor waits: `hyalos release` refuses a file nobody holds,
     /// so a run whose runner stopped is never released to.
     held_lock: Option<std::fs::File>,

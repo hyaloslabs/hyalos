@@ -399,3 +399,93 @@ fn the_forge_token_is_held_only_for_an_admitted_job_and_only_while_it_is_live() 
     assert_eq!(broker.forge_token(plain.job), None);
     Ok(())
 }
+
+/// Stands in for the broker process's plugin runtime: answers every call with one value and records
+/// that it was asked.
+#[derive(Debug, Default)]
+struct Runs(std::sync::Mutex<usize>);
+
+impl hyalos_broker::Plugins for Runs {
+    fn run(
+        &self,
+        _: &hyalos_types::wire::PluginCall,
+    ) -> Result<Vec<hyalos_types::workflow::TypedValue>, ReasonCode> {
+        *self.0.lock().map_err(|_| ReasonCode::unavailable())? += 1;
+        Ok(vec![hyalos_types::workflow::TypedValue::Bool(true)])
+    }
+}
+
+/// S6.5 (ADR-0102): the broker runs a plugin only for a live deterministic job, with a call within
+/// its limits, and only if its process gave it a runtime; anything else fails the job, not the broker.
+#[test]
+fn a_plugin_runs_only_for_a_live_deterministic_job() -> Res {
+    use hyalos_types::wire::{MAX_PLUGIN_INPUT, PluginCall};
+    use hyalos_types::workflow::{Field, TypedValue};
+    let call = |input: String| -> Res<PluginCall> {
+        Ok(PluginCall {
+            store: "/store".into(),
+            name: hyalos_types::PluginName::new("risk-score").ok_or("name")?,
+            digest: hyalos_types::Digest::from_bytes([1; 32]),
+            input,
+            output: [("low".to_string(), Field::Bool)].into(),
+        })
+    };
+    let runs = std::sync::Arc::new(Runs::default());
+    let clock = Now(Cell::new(100));
+    let key = engine_key();
+    let mut broker = Broker::new(key.public()).with_plugins(runs.clone());
+    let ask = |broker: &mut Broker, job: u64, input: String| -> Res<Vec<ToEngine>> {
+        let message = ToBroker::RunPlugin {
+            job: JobId::from_seq(job),
+            call: call(input)?,
+        };
+        Ok(broker.handle(message, &clock)?.ok_or("stopped")?)
+    };
+    let refused = |job: u64, reason: &str| -> Res<Vec<ToEngine>> {
+        Ok(vec![ToEngine::Refused {
+            job: JobId::from_seq(job),
+            reason: code(reason)?,
+        }])
+    };
+    // Not a live job.
+    assert_eq!(
+        ask(&mut broker, 1, "{}".into())?,
+        refused(1, "admission.not_live")?
+    );
+    // An actor's job never runs a plugin here.
+    let actor = manifest(2, Role::Actor, 10_000);
+    broker.handle(start(&key, &actor, Role::Actor)?, &clock)?;
+    assert_eq!(
+        ask(&mut broker, 2, "{}".into())?,
+        refused(2, "plugin.wrong_role")?
+    );
+    // A deterministic job's call past its input limit is refused, and ends the job.
+    let step = manifest(3, Role::Deterministic, 10_000);
+    broker.handle(start(&key, &step, Role::Deterministic)?, &clock)?;
+    let long = " ".repeat(MAX_PLUGIN_INPUT + 1);
+    assert_eq!(ask(&mut broker, 3, long)?, refused(3, "plugin.bad_call")?);
+    assert_eq!(
+        ask(&mut broker, 3, "{}".into())?,
+        refused(3, "admission.not_live")?
+    );
+    assert_eq!(*runs.0.lock().map_err(|_| "lock")?, 0);
+    // A live deterministic job's call within its limits runs.
+    let step = manifest(4, Role::Deterministic, 10_000);
+    broker.handle(start(&key, &step, Role::Deterministic)?, &clock)?;
+    assert_eq!(
+        ask(&mut broker, 4, "{}".into())?,
+        vec![ToEngine::Values {
+            job: JobId::from_seq(4),
+            values: vec![TypedValue::Bool(true)],
+        }]
+    );
+    assert_eq!(*runs.0.lock().map_err(|_| "lock")?, 1);
+    // A broker with no runtime refuses.
+    let mut bare = Broker::new(key.public());
+    bare.handle(start(&key, &step, Role::Deterministic)?, &clock)?;
+    assert_eq!(
+        ask(&mut bare, 4, "{}".into())?,
+        refused(4, "plugin.no_runtime")?
+    );
+    Ok(())
+}

@@ -15,8 +15,8 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use hyalos_types::wire::{
-    ForgeBases, MAX_SOCKET_PATH, ReaderCall, ToBroker, ToEngine, WIRE_VERSION, WireError,
-    read_frame, write_frame,
+    ForgeBases, MAX_SOCKET_PATH, PluginCall, ReaderCall, ToBroker, ToEngine, WIRE_VERSION,
+    WireError, read_frame, write_frame,
 };
 use hyalos_types::workflow::{TypedValue, values_fit};
 use hyalos_types::{CommitSha, Digest, JobId, ManifestKey, ManifestPublicKey, ReasonCode};
@@ -383,15 +383,41 @@ impl BrokerProcess {
         call: &ReaderCall,
         wait: Duration,
     ) -> Result<Vec<TypedValue>, ReasonCode> {
-        let code = |text: &str| ReasonCode::new(text).unwrap_or_else(ReasonCode::unavailable);
-        self.send(&ToBroker::Read {
+        let message = ToBroker::Read {
             job,
             call: call.clone(),
-        })
-        .map_err(|_| code("reader.broker_unavailable"))?;
+        };
+        self.values(job, message, &call.output, wait)
+    }
+
+    /// Asks the broker to run a deterministic step's plugin for `job` (ADR-0102), and waits as
+    /// [`read`](Self::read) does for its values.
+    pub fn run_plugin(
+        &mut self,
+        job: JobId,
+        call: &PluginCall,
+        wait: Duration,
+    ) -> Result<Vec<TypedValue>, ReasonCode> {
+        let message = ToBroker::RunPlugin {
+            job,
+            call: call.clone(),
+        };
+        self.values(job, message, &call.output, wait)
+    }
+
+    fn values(
+        &mut self,
+        job: JobId,
+        message: ToBroker,
+        output: &hyalos_types::workflow::Output,
+        wait: Duration,
+    ) -> Result<Vec<TypedValue>, ReasonCode> {
+        let code = |text: &str| ReasonCode::new(text).unwrap_or_else(ReasonCode::unavailable);
+        self.send(&message)
+            .map_err(|_| code("reader.broker_unavailable"))?;
         match self.poll(wait) {
             Ok(Incoming::Message(ToEngine::Values { job: read, values }))
-                if read == job && values_fit(&call.output, &values) =>
+                if read == job && values_fit(output, &values) =>
             {
                 Ok(values)
             }

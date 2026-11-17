@@ -28,6 +28,8 @@ pub const MCP_FILE: &str = "mcp.json";
 pub const MCP_ARGS: usize = 32;
 /// The longest an MCP server's command or one of its arguments may be.
 pub const MCP_ARG_BYTES: usize = 512;
+/// A plugin's WASM component, at its root, if it has one: what a deterministic step runs (ADR-0102).
+pub const COMPONENT_FILE: &str = "component.wasm";
 /// The most files a skill may hold.
 pub const MAX_FILES: usize = 256;
 /// The most bytes a skill's files may hold together.

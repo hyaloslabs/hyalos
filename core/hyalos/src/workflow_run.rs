@@ -7,18 +7,21 @@
 //! - A **reader** or **planner** is one model call the broker makes ([`ReaderCall`], ADR-0061). The
 //!   engine names the issue by number and passes operator text and typed values as context; it gets
 //!   back typed values, checked against its own copy of the step's output.
+//! - A **deterministic** step runs an installed plugin's component in the broker, with no capability,
+//!   given the step's instructions and the typed values and operator text it reads as JSON; it returns
+//!   typed values too (ADR-0102).
 //! - The **actor** is the last step. Its prompt is an [`ActorPrompt`] of the step's instructions, the
 //!   operator's text and the typed values it reads, so no text a model or the forge wrote reaches it.
 //!
 //! The fix-issue workflow ships in the binary ([`FIX_ISSUE`]); `hyalos run --issue-number` runs it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hyalos_types::wire::{Protocol, ReaderCall};
 use hyalos_types::workflow::{Checked, Field, InputKind, Output, Step, TypedValue, WorkflowError};
 use hyalos_types::{
-    ActorPrompt, Choice, Choices, OperatorText, PluginText, Provenance, Role, Sourced, StepInputs,
-    Workflow,
+    ActorPrompt, Choice, Choices, OperatorText, PluginName, PluginText, Provenance, Role, Sourced,
+    StepInputs, Workflow,
 };
 
 /// The shipped fix-issue workflow: a reader classifies the issue, a planner chooses an approach from
@@ -32,7 +35,8 @@ pub fn fix_issue() -> Result<Checked, WorkflowError> {
 
 /// Why a checked workflow cannot run here. Each is a short code.
 pub mod codes {
-    /// A workflow whose steps are not readers and planners followed by one actor, the only shape
+    /// A workflow whose steps are not readers, planners and deterministic steps followed by one actor,
+    /// the only shape
     /// this runner runs: an actor's result goes back to the operator, not to a later step
     /// (ADR-0064).
     pub const NOT_RUNNABLE: &str = "workflow.not_runnable";
@@ -70,7 +74,7 @@ impl Runnable {
         if actor.role != Role::Actor
             || typed
                 .iter()
-                .any(|s| !matches!(s.role, Role::Reader | Role::Planner))
+                .any(|s| !matches!(s.role, Role::Reader | Role::Planner | Role::Deterministic))
         {
             return Err(codes::NOT_RUNNABLE);
         }
@@ -97,7 +101,35 @@ impl Runnable {
         &self.checked
     }
 
-    /// The readers and planners, in order.
+    /// The plugins whose grants bound `step`, as the check derived (ADR-0102).
+    pub fn plugins(&self, step: &Step) -> BTreeSet<PluginName> {
+        self.checked.plugins(&step.id).cloned().unwrap_or_default()
+    }
+
+    /// What a deterministic step's plugin is given (ADR-0102): a JSON object of the step's
+    /// instructions and, by reference, each value it reads: the operator's text, a bool, a number or
+    /// a choice's option.
+    pub fn plugin_input(&self, step: &Step, supplied: &Supplied, values: &Values) -> String {
+        let mut reads = serde_json::Map::new();
+        for reference in &step.reads {
+            let value = match self.checked.workflow().inputs.get(reference) {
+                Some(InputKind::OperatorText) => supplied.task.clone().map(Into::into),
+                // The check refuses forge text here, and `Runnable::new` plugin text.
+                Some(_) => None,
+                None => values.get(reference).map(|value| match value {
+                    Value::Bool(b) => (*b.value()).into(),
+                    Value::Integer(n) => (*n.value()).into(),
+                    Value::Choice(_) => value.render().into(),
+                }),
+            };
+            if let Some(value) = value {
+                reads.insert(reference.clone(), value);
+            }
+        }
+        serde_json::json!({ "instructions": step.instructions, "reads": reads }).to_string()
+    }
+
+    /// The readers, planners and deterministic steps, in order.
     pub fn typed_steps(&self) -> &[Step] {
         let steps = &self.checked.workflow().steps;
         &steps[..steps.len() - 1]
@@ -165,8 +197,11 @@ impl Runnable {
         if output.len() != returned.len() {
             return false;
         }
+        // As the check derived: taint first, then any plugin that reached the step (ADR-0102).
         let made = if self.tainted(step) {
             Provenance::ModelFromTainted
+        } else if !self.plugins(step).is_empty() {
+            Provenance::PluginAuthored
         } else {
             Provenance::Operator
         };
