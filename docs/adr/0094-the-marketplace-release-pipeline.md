@@ -1,6 +1,6 @@
 # ADR-0094: The marketplace release pipeline
 
-**Status:** Accepted
+**Status:** Accepted. Its rule that `release.yml` runs only on a push to `main` is superseded by [ADR-0097](0097-the-trusted-root-snapshot-the-pipeline-signs-and-importing-a-newer-one.md), which also allows its schedule.
 
 ## Context
 

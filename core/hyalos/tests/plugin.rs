@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use hyalos::run_cmd::{Harness, Request, run_job};
-use hyalos_plugin::sigstore::{PIPELINE, Trust};
+use hyalos_plugin::sigstore::PIPELINE;
+use hyalos_plugin::snapshot::Snapshot;
 use hyalos_sigstore_testkit::{Signer, TestSigstore};
 use hyalos_substrate::{Substrate, choose};
 use hyalos_substrate_contract::LocalProcessSubstrate;
@@ -31,14 +32,18 @@ use common::{GitHub, PASSPHRASE, Res, World, dir, have_git, ok_cli, repository};
 /// in-process against its trust.
 struct Release {
     sigstore: TestSigstore,
-    trust: Trust,
+    base: Snapshot,
 }
 
 impl Release {
     fn new() -> Res<Self> {
         let sigstore = TestSigstore::new().map_err(|e| e.to_string())?;
-        let trust = Trust::new(&sigstore.root().map_err(|e| e.to_string())?, PIPELINE)?;
-        Ok(Self { sigstore, trust })
+        let base = Snapshot::trusted(
+            &sigstore.root().map_err(|e| e.to_string())?,
+            PIPELINE,
+            hyalos_types::Timestamp::from_millis(0),
+        )?;
+        Ok(Self { sigstore, base })
     }
 
     /// Writes `<file>.sigstore.json` beside the archive `dir/<file>`, as the pipeline would.
@@ -84,7 +89,7 @@ impl Release {
             .skip_while(|a| **a == "plugin")
             .map(|a| a.to_string())
             .collect();
-        hyalos::plugin_cmd::manage_with(&args, &env, &self.trust, Some(passphrase))
+        hyalos::plugin_cmd::manage_with(&args, &env, Some(&self.base), Some(passphrase))
     }
 }
 
@@ -640,6 +645,8 @@ fn a_skill_installs_by_name_from_an_index_served_as_release_assets() -> Res {
         said.contains("version 2.0.0 from http://127.0.0.1"),
         "{said}"
     );
+    // An index served without a trusted-root snapshot has nothing to import, and nothing is said.
+    assert!(!said.contains("trusted-root"), "{said}");
     let recorded = installs(&world)?;
     let [
         Event::PluginInstalled {
@@ -956,5 +963,203 @@ fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_ru
     ] {
         assert_eq!(world.cli(args)?.status.code(), Some(2), "{args:?}");
     }
+    Ok(())
+}
+
+/// A trusted-root snapshot file holding `sigstore`'s root, as the pipeline wraps one.
+fn snapshot_of(sigstore: &TestSigstore) -> Res<String> {
+    Ok(format!(
+        r#"{{"kind":"hyalos.trusted_root_snapshot","trusted_root":{},"version":1}}"#,
+        sigstore.root().map_err(|e| e.to_string())?
+    ))
+}
+
+/// Writes `sigstore`'s snapshot into `dir`, signed as the pipeline by `signer`'s Sigstore.
+fn put_snapshot(dir: &Path, sigstore: &TestSigstore, signer: &Release) -> Res {
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(
+        dir.join(hyalos_plugin::snapshot::FILE),
+        snapshot_of(sigstore)?,
+    )?;
+    signer.sign(dir, hyalos_plugin::snapshot::FILE)
+}
+
+fn imports(world: &World) -> Res<usize> {
+    Ok(world
+        .events()?
+        .iter()
+        .filter(|e| matches!(e, Event::PluginSnapshotImported { .. }))
+        .count())
+}
+
+#[test]
+fn a_newer_snapshot_is_imported_only_if_the_one_in_force_vouches_for_it() -> Res {
+    let world = World::new("plugin-snapshot", None)?;
+    let release = Release::new()?;
+    let next = Release::new()?;
+    let dir = world.root.join("next");
+    put_snapshot(&dir, &next.sigstore, &release)?;
+    let at = dir.to_string_lossy().into_owned();
+
+    // The binary embeds the pipeline's own snapshot, which cannot vouch for one a test signed.
+    let shown = ok_cli(world.cli(&["plugin", "snapshot", "show"])?)?;
+    assert!(
+        shown.contains("embedded in this release") && shown.contains("issued 2026-11-17T01:21:03"),
+        "{shown}"
+    );
+    let out = world.cli(&["plugin", "snapshot", "import", &at])?;
+    assert_eq!(out.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        said.contains("snapshot.unverifiable") && said.contains("a new Hyalos release is needed"),
+        "{said}"
+    );
+    assert_eq!(imports(&world)?, 0);
+
+    // Under a snapshot that vouches for it, it is imported, recorded and in force.
+    let said = release
+        .cli(&world, &["plugin", "snapshot", "import", &at])
+        .map_err(|e| e.1)?;
+    assert!(said.contains("imported at event"), "{said}");
+    assert_eq!(imports(&world)?, 1);
+    let shown = release
+        .cli(&world, &["plugin", "snapshot", "show"])
+        .map_err(|e| e.1)?;
+    assert!(shown.contains("imported at event"), "{shown}");
+    // The same one again is refused: the snapshot now in force is the one it holds, which did not
+    // sign it. (One the snapshot in force signed but no newer is `snapshot.not_newer`, in the
+    // plugin crate's tests.)
+    let said = refused(
+        release.cli(&world, &["plugin", "snapshot", "import", &at]),
+        1,
+    )?;
+    assert!(said.contains("it was not imported"), "{said}");
+    assert_eq!(imports(&world)?, 1);
+
+    // Releases are now checked against the new root: the old one's signature is refused.
+    let src = skill(&world.root, None)?;
+    let bundle = world.root.join("bundle");
+    std::fs::create_dir(&bundle)?;
+    let digest = pack(&world, &src, &bundle, "pdf-1.0.0.skill")?;
+    std::fs::write(
+        bundle.join("index.json"),
+        index(&[("1.0.0", &digest, "pdf-1.0.0.skill")]),
+    )?;
+    let index_at = bundle.to_string_lossy().into_owned();
+    release.sign(&bundle, "pdf-1.0.0.skill")?;
+    let said = refused(
+        release.signed(
+            &world,
+            &["plugin", "install", "--index", &index_at, "pdf-tools"],
+        ),
+        1,
+    )?;
+    assert!(said.contains("(sigstore."), "{said}");
+    next.sign(&bundle, "pdf-1.0.0.skill")?;
+    release
+        .signed(
+            &world,
+            &["plugin", "install", "--index", &index_at, "pdf-tools"],
+        )
+        .map_err(|e| e.1)?;
+
+    // A kept snapshot changed on disk is not read, and nothing falls back to an older one.
+    let Some(Event::PluginSnapshotImported { digest, .. }) = world
+        .events()?
+        .into_iter()
+        .find(|e| matches!(e, Event::PluginSnapshotImported { .. }))
+    else {
+        return Err("no import".into());
+    };
+    std::fs::write(
+        world.data.join("trust").join(format!("{digest}.json")),
+        "{}",
+    )?;
+    let said = refused(release.cli(&world, &["plugin", "snapshot", "show"]), 1)?;
+    assert!(said.contains("snapshot.unreadable"), "{said}");
+    let said = refused(
+        release.signed(
+            &world,
+            &["plugin", "install", "--index", &index_at, "pdf-tools"],
+        ),
+        1,
+    )?;
+    assert!(said.contains("snapshot.unreadable"), "{said}");
+    // Gone altogether, as after a crash: it is put back from a copy with the digest the log
+    // recorded, and from nothing else.
+    std::fs::remove_file(world.data.join("trust").join(format!("{digest}.json")))?;
+    let said = refused(
+        release.cli(&world, &["plugin", "snapshot", "import", &index_at]),
+        1,
+    )?;
+    assert!(said.contains("snapshot.unreadable"), "{said}");
+    let said = release
+        .cli(&world, &["plugin", "snapshot", "import", &at])
+        .map_err(|e| e.1)?;
+    assert!(said.contains("put back the kept snapshot"), "{said}");
+    let shown = release
+        .cli(&world, &["plugin", "snapshot", "show"])
+        .map_err(|e| e.1)?;
+    assert!(shown.contains("imported at event"), "{shown}");
+    assert_eq!(imports(&world)?, 1);
+    Ok(())
+}
+
+#[test]
+fn an_install_imports_a_newer_snapshot_its_index_location_carries() -> Res {
+    let world = World::new("plugin-snapshot-install", None)?;
+    let release = Release::new()?;
+    let next = Release::new()?;
+    let src = skill(&world.root, None)?;
+    let bundle = world.root.join("bundle");
+    std::fs::create_dir(&bundle)?;
+    let digest = pack(&world, &src, &bundle, "pdf-1.0.0.skill")?;
+    std::fs::write(
+        bundle.join("index.json"),
+        index(&[("1.0.0", &digest, "pdf-1.0.0.skill")]),
+    )?;
+    // The release is signed under the new root, and the location carries the snapshot for it.
+    next.sign(&bundle, "pdf-1.0.0.skill")?;
+    put_snapshot(&bundle, &next.sigstore, &release)?;
+    let at = bundle.to_string_lossy().into_owned();
+    let said = release
+        .signed(&world, &["plugin", "install", "--index", &at, "pdf-tools"])
+        .map_err(|e| e.1)?;
+    assert!(
+        said.contains("imported a newer trusted-root snapshot from there"),
+        "{said}"
+    );
+    let kinds: Vec<&str> = world
+        .events()?
+        .iter()
+        .map(Event::kind)
+        .filter(|k| k.starts_with("plugin."))
+        .collect();
+    assert_eq!(kinds, ["plugin.snapshot_imported", "plugin.installed"]);
+
+    // A location whose snapshot the one in force cannot vouch for changes nothing: the install is
+    // checked against the one in force, and says so.
+    let other = Release::new()?;
+    let elsewhere = world.root.join("elsewhere");
+    std::fs::create_dir(&elsewhere)?;
+    std::fs::copy(
+        bundle.join("pdf-1.0.0.skill"),
+        elsewhere.join("pdf-1.0.0.skill"),
+    )?;
+    std::fs::write(
+        elsewhere.join("index.json"),
+        index(&[("1.0.0", &digest, "pdf-1.0.0.skill")]),
+    )?;
+    next.sign(&elsewhere, "pdf-1.0.0.skill")?;
+    put_snapshot(&elsewhere, &other.sigstore, &other)?;
+    let at = elsewhere.to_string_lossy().into_owned();
+    let said = release
+        .signed(&world, &["plugin", "install", "--index", &at, "pdf-tools"])
+        .map_err(|e| e.1)?;
+    assert!(
+        said.contains("was not imported") && said.contains("snapshot.unverifiable"),
+        "{said}"
+    );
+    assert_eq!(imports(&world)?, 1);
     Ok(())
 }

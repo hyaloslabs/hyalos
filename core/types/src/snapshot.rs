@@ -31,8 +31,10 @@ use crate::{
 /// plugins installed (ADR-0089); earlier images have none. Version 11 added a plugin index as where
 /// an installed plugin came from (ADR-0090); an earlier image holds only local installs, which read as
 /// they were. Version 12 added the install policy (ADR-0091); earlier images have none. Version 13
-/// added the updates waiting for the operator (ADR-0092); earlier images have none.
-pub const STATE_VERSION: u32 = 13;
+/// added the updates waiting for the operator (ADR-0092); earlier images have none. Version 14 added
+/// the trusted-root snapshot imported last (ADR-0097); earlier images have none, so the embedded one
+/// is in force.
+pub const STATE_VERSION: u32 = 14;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +71,20 @@ pub struct StateImage {
     pub install_policy: Option<InstallPolicyImage>,
     /// Each update an update check found waiting for the operator, by name (ADR-0092).
     pub pending_updates: Vec<PendingUpdateImage>,
+    /// The trusted-root snapshot imported last, if one was (ADR-0097).
+    pub trusted_root: Option<TrustedRootImage>,
+}
+
+/// The latest `plugin.snapshot_imported` event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrustedRootImage {
+    /// The sequence number of the event that imported it.
+    pub seq: u64,
+    pub at: u64,
+    pub digest: Digest,
+    /// Its issue time, in milliseconds.
+    pub signed_at: u64,
 }
 
 /// The latest `plugin.update_pending` event for one name, not yet installed.
@@ -380,7 +396,11 @@ impl StateImage {
             object.insert("install_policy".into(), Value::Null);
         }
         // 12 -> 13: no update was waiting.
-        object.insert("pending_updates".into(), Value::Array(Vec::new()));
+        if version < 13 {
+            object.insert("pending_updates".into(), Value::Array(Vec::new()));
+        }
+        // 13 -> 14: no trusted-root snapshot had been imported.
+        object.insert("trusted_root".into(), Value::Null);
         // 6 -> 7: no job's reason was kept, and no job had returned values.
         if version >= 7 {
             return serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()));
@@ -553,6 +573,7 @@ mod tests {
             plugins: vec![],
             install_policy: None,
             pending_updates: vec![],
+            trusted_root: None,
         }
     }
 

@@ -303,6 +303,10 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
                 location,
             }
         }
+        "plugin.snapshot_imported" => Event::PluginSnapshotImported {
+            digest: d(4),
+            signed_at: at(1),
+        },
         "plugin.policy_set" => Event::PluginPolicySet {
             policy: hyalos_types::InstallPolicy {
                 ceiling: hyalos_types::Grant::none(),

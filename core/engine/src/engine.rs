@@ -1018,6 +1018,22 @@ impl Engine {
         )
     }
 
+    /// Records that the trusted-root snapshot with digest `digest`, issued at `signed_at`, was
+    /// imported (ADR-0097). The caller has verified it under the snapshot in force; the engine refuses
+    /// one no later than the last imported.
+    pub fn import_snapshot(
+        &mut self,
+        at: Timestamp,
+        digest: Digest,
+        signed_at: Timestamp,
+    ) -> Result<Head, EngineError> {
+        self.submit_checked(
+            at,
+            Origin::Engine,
+            Event::PluginSnapshotImported { digest, signed_at },
+        )
+    }
+
     /// Sets the install policy (ADR-0091): from then on, a plugin from one of its indexes asking for
     /// nothing beyond its ceiling may be installed by [`Decider::Policy`]. Only a human sets it,
     /// signed with the operator's key.

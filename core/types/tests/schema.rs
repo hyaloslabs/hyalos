@@ -567,6 +567,24 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
                 .ok_or("location")?,
         },
     ));
+
+    // Version 19 added `plugin.snapshot_imported` (ADR-0097) and changed no payload.
+    let at_18: Vec<_> = all.iter().filter(|g| g.0 == 18).cloned().collect();
+    for (_, kind, json, event) in at_18 {
+        all.push((19, kind, json, event));
+    }
+    all.push((
+        19,
+        "plugin.snapshot_imported",
+        format!(
+            r#"{{"kind":"plugin.snapshot_imported","digest":"{}","signed_at":1794878463000}}"#,
+            hex(9)
+        ),
+        Event::PluginSnapshotImported {
+            digest: d(9),
+            signed_at: hyalos_types::Timestamp::from_millis(1_794_878_463_000),
+        },
+    ));
     Ok(all)
 }
 
@@ -583,6 +601,7 @@ fn introduced(kind: &str) -> u32 {
         "plugin.installed" => 15,
         "plugin.policy_set" => 17,
         "plugin.update_pending" => 18,
+        "plugin.snapshot_imported" => 19,
         _ => 1,
     }
 }

@@ -15,13 +15,14 @@
 //! - the bundle holds at least one verified signed time (the log's or a timestamp authority's).
 //!
 //! The trust is a value: [`Trust::pinned`] is the snapshot built into this release with the
-//! pipeline's identity, and it is what an install uses. [`Trust::new`] takes any root and identity,
-//! for tests and for the vectors. A refusal is a reason code only: the library's message can carry
+//! pipeline's identity, and an install uses it unless a newer snapshot it vouched for was imported
+//! ([`crate::snapshot`], ADR-0097). [`Trust::new`] takes any root and identity, for tests and for the
+//! vectors. A refusal is a reason code only: the library's message can carry
 //! values from the bundle, which is untrusted, so it is never shown.
 
 use std::fmt;
 
-use hyalos_types::ReasonCode;
+use hyalos_types::{ReasonCode, Timestamp};
 use sigstore_verify::trust_root::TrustedRoot;
 use sigstore_verify::types::Bundle;
 use sigstore_verify::{
@@ -30,13 +31,6 @@ use sigstore_verify::{
 
 /// The most bytes a bundle may hold. A release's bundle is a few kilobytes.
 pub const MAX_BUNDLE: u64 = 256 << 10;
-
-/// The trusted-root snapshot this release carries: Sigstore's trusted root as of
-/// [`SNAPSHOT_DATE`]. The pipeline's signed snapshot replaces it (S7.11).
-pub const SNAPSHOT: &str = include_str!("../trust/trusted_root.json");
-
-/// When [`SNAPSHOT`] was taken.
-pub const SNAPSHOT_DATE: &str = "2026-11-02";
 
 /// The identity a plugin release is signed by: the Hyalos marketplace pipeline's release workflow,
 /// run for the marketplace repository's main branch (ADR-0007). Not the plugin author's, whose own CI
@@ -144,10 +138,11 @@ impl fmt::Display for Refusal {
 impl std::error::Error for Refusal {}
 
 impl Trust {
-    /// The trust an install uses: [`SNAPSHOT`] and the [`PIPELINE`] identity, both fixed by this
-    /// release.
+    /// The snapshot this release embeds ([`crate::snapshot::Snapshot::embedded`]) and the
+    /// [`PIPELINE`] identity, both fixed by this release.
     pub fn pinned() -> Result<Trust, Refusal> {
-        Trust::new(SNAPSHOT, PIPELINE)
+        let snapshot = crate::snapshot::Snapshot::embedded().map_err(|_| Refusal::Snapshot)?;
+        Trust::new(snapshot.root(), PIPELINE)
     }
 
     /// `root` (a `trusted_root.json`) vouching for `identity`.
@@ -169,6 +164,12 @@ impl Trust {
 
     /// Accepts `bundle` for `artifact`, or says why not.
     pub fn verify(&self, artifact: &[u8], bundle: &[u8]) -> Result<(), Refusal> {
+        self.verify_signed(artifact, bundle).map(|_| ())
+    }
+
+    /// As [`Trust::verify`], and the earliest signed time the bundle proves: when it was signed, at
+    /// the latest.
+    pub fn verify_signed(&self, artifact: &[u8], bundle: &[u8]) -> Result<Timestamp, Refusal> {
         if bundle.len() as u64 > MAX_BUNDLE {
             return Err(Refusal::TooLarge);
         }
@@ -191,9 +192,13 @@ impl Trust {
         {
             return Err(Refusal::Refused);
         }
-        if result.verified_timestamps().is_empty() {
-            return Err(Refusal::Time);
-        }
+        let earliest = result
+            .verified_timestamps()
+            .iter()
+            .map(|t| t.as_millisecond())
+            .min()
+            .and_then(|millis| u64::try_from(millis).ok())
+            .ok_or(Refusal::Time)?;
         let claims = result.certificate().map(|c| &c.ci_claims);
         let claim_is = |want: &Option<String>, got: Option<&str>| {
             want.as_deref().is_none_or(|want| got == Some(want))
@@ -207,7 +212,7 @@ impl Trust {
         ) {
             return Err(Refusal::Identity);
         }
-        Ok(())
+        Ok(Timestamp::from_millis(earliest))
     }
 }
 

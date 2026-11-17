@@ -357,3 +357,34 @@ fn an_update_waits_for_an_index_install_until_any_install_answers_it() -> Res {
     assert!(e.state().pending_updates().is_empty());
     Ok(())
 }
+
+#[test]
+fn a_trusted_root_snapshot_is_imported_only_newer_and_survives_compaction() -> Res {
+    let p = path("snapshot")?;
+    let mut e = Engine::open(&p, key())?.with_operator(operator());
+    let digest = |b: u8| Digest::from_bytes([b; 32]);
+    assert_eq!(e.state().trusted_root(), None);
+    e.import_snapshot(at(1), digest(1), Timestamp::from_millis(5_000))?;
+    // The same issue time, or an earlier one, is a rollback, and the log never records one.
+    for older in [5_000, 4_999] {
+        assert!(matches!(
+            e.import_snapshot(at(2), digest(2), Timestamp::from_millis(older)),
+            Err(EngineError::Rule(RuleViolation::SnapshotNotNewer))
+        ));
+    }
+    e.import_snapshot(at(3), digest(3), Timestamp::from_millis(6_000))?;
+    let last = e.state().trusted_root().copied().ok_or("imported")?;
+    assert_eq!(
+        (last.digest, last.signed_at),
+        (digest(3), Timestamp::from_millis(6_000))
+    );
+    e.compact(at(4), &p.with_file_name("archive.db"))?;
+    drop(e);
+    let mut e = Engine::open(&p, key())?.with_operator(operator());
+    assert_eq!(e.state().trusted_root().copied(), Some(last));
+    assert!(matches!(
+        e.import_snapshot(at(5), digest(4), Timestamp::from_millis(6_000)),
+        Err(EngineError::Rule(RuleViolation::SnapshotNotNewer))
+    ));
+    Ok(())
+}

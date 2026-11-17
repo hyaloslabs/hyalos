@@ -17,6 +17,7 @@ pub use engine::{
 };
 pub use mint::{MintRefusal, mint_codes};
 pub use state::{
-    Agent, ApprovedMerge, Cancelled, Hold, InstalledPlugin, Job, PolicyApproval, Pruned,
-    ReleasedHandle, Resolved, Revoked, RuleViolation, SetInstallPolicy, State, Task, TaskStatus,
+    Agent, ApprovedMerge, Cancelled, Hold, ImportedSnapshot, InstalledPlugin, Job, PolicyApproval,
+    Pruned, ReleasedHandle, Resolved, Revoked, RuleViolation, SetInstallPolicy, State, Task,
+    TaskStatus,
 };
