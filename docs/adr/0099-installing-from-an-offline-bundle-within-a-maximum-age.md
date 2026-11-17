@@ -1,6 +1,6 @@
 # ADR-0099: Installing from an offline bundle within a maximum age
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

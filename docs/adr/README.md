@@ -112,4 +112,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0096](0096-the-settings-check-s-app-from-a-manifest-and-its-own-grant-checked.md) | The settings check's App, from a manifest, with its own grant checked | Accepted |
 | [0097](0097-the-trusted-root-snapshot-the-pipeline-signs-and-importing-a-newer-one.md) | The trusted-root snapshot the pipeline signs, and importing a newer one | Accepted |
 | [0098](0098-revoking-a-proven-malicious-release.md) | Revoking a proven-malicious release | Accepted |
-| [0099](0099-installing-from-an-offline-bundle-within-a-maximum-age.md) | Installing from an offline bundle within a maximum age | Proposed |
+| [0099](0099-installing-from-an-offline-bundle-within-a-maximum-age.md) | Installing from an offline bundle within a maximum age | Accepted |
