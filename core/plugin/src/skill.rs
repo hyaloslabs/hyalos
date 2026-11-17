@@ -22,6 +22,12 @@ pub const SKILL_FILE: &str = "SKILL.md";
 /// The capabilities a skill asks for, at its root, as a capabilities document (ADR-0085). A skill
 /// without one asks for none.
 pub const CAPABILITIES_FILE: &str = "capabilities.json";
+/// The MCP server a skill runs, at its root, if it is one (ADR-0101): `{"command": .., "args": [..]}`.
+pub const MCP_FILE: &str = "mcp.json";
+/// The most arguments an MCP server's command may have.
+pub const MCP_ARGS: usize = 32;
+/// The longest an MCP server's command or one of its arguments may be.
+pub const MCP_ARG_BYTES: usize = 512;
 /// The most files a skill may hold.
 pub const MAX_FILES: usize = 256;
 /// The most bytes a skill's files may hold together.
@@ -50,6 +56,8 @@ pub struct SkillFile {
 pub struct Skill {
     pub name: PluginName,
     pub asks: Capabilities,
+    /// The MCP server it runs in the job's sandbox, if it has an `mcp.json` (ADR-0101).
+    pub mcp: Option<McpServer>,
     pub files: BTreeMap<String, SkillFile>,
 }
 
@@ -69,6 +77,8 @@ pub enum SkillError {
     TooLarge,
     /// `capabilities.json` is not a document this build reads.
     Capabilities(CapabilityError),
+    /// `mcp.json` is not a command this build runs.
+    Mcp,
     /// The stored files do not have the digest they were installed with, or another name.
     Altered,
     /// Writing to the store or a job's directory failed.
@@ -84,6 +94,7 @@ impl SkillError {
             Self::BadEntry => "plugin.bad_entry",
             Self::TooLarge => "plugin.too_large",
             Self::Capabilities(_) => "plugin.bad_capabilities",
+            Self::Mcp => "plugin.bad_mcp",
             Self::Altered => "plugin.altered",
             Self::Write => "plugin.write_failed",
         };
@@ -109,6 +120,11 @@ impl fmt::Display for SkillError {
                 "larger than a skill may be ({MAX_FILES} files, {MAX_BYTES} bytes, {MAX_DEPTH} levels)"
             ),
             Self::Capabilities(e) => write!(f, "{CAPABILITIES_FILE}: {e}"),
+            Self::Mcp => write!(
+                f,
+                "{MCP_FILE} is not a command of printable ASCII, with at most {MCP_ARGS} arguments, \
+                 naming a program by its name or an executable file of the skill by ./path"
+            ),
             Self::Altered => write!(f, "its stored files are not the ones that were installed"),
             Self::Write => write!(f, "cannot write its files"),
         }
@@ -140,7 +156,16 @@ impl Skill {
             }
             None => Capabilities::none(),
         };
-        Ok(Skill { name, asks, files })
+        let mcp = match files.get(MCP_FILE) {
+            Some(file) => Some(McpServer::read(&file.bytes, &files).ok_or(SkillError::Mcp)?),
+            None => None,
+        };
+        Ok(Skill {
+            name,
+            asks,
+            mcp,
+            files,
+        })
     }
 
     /// The SHA-256 of the skill's archive: what an install records, so the decision covers exactly
@@ -213,6 +238,53 @@ impl Skill {
                 .map_err(|_| SkillError::Write)?;
         }
         Ok(())
+    }
+}
+
+/// The stdio MCP server a skill runs (ADR-0101). It runs in the job's sandbox like the skill's
+/// scripts, so it can do no more than the job, which the skill's grant has already cut.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServer {
+    /// A program on the sandbox's `PATH` by its plain name, or `./path` to an executable file of
+    /// the skill.
+    pub command: String,
+    /// Its arguments. One starting `./` names a file of the skill.
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+impl McpServer {
+    /// Reads `mcp.json`. Every string is printable ASCII within the limits, so it can be shown to the
+    /// operator and passed to a harness as it is; a `./` path must be a file of the skill, and the
+    /// command's must be executable.
+    fn read(bytes: &[u8], files: &BTreeMap<String, SkillFile>) -> Option<McpServer> {
+        let server: McpServer = serde_json::from_slice(bytes).ok()?;
+        let printable = |s: &String| {
+            (1..=MCP_ARG_BYTES).contains(&s.len()) && s.bytes().all(|b| (0x20..0x7f).contains(&b))
+        };
+        let file = |s: &str| s.strip_prefix("./").map(|path| files.get(path));
+        let command = match file(&server.command) {
+            Some(found) => found.is_some_and(|f| f.executable),
+            None => plain(&server.command),
+        };
+        let args = server.args.len() <= MCP_ARGS
+            && server.args.iter().all(printable)
+            && server
+                .args
+                .iter()
+                .all(|a| file(a).is_none_or(|f| f.is_some()));
+        (command && args && printable(&server.command)).then_some(server)
+    }
+
+    /// The command and its arguments, with each `./` path made absolute under `root`, the skill's
+    /// directory in the sandbox.
+    pub fn launch(&self, root: &str) -> (String, Vec<String>) {
+        let place = |s: &String| match s.strip_prefix("./") {
+            Some(path) => format!("{root}/{path}"),
+            None => s.clone(),
+        };
+        (place(&self.command), self.args.iter().map(place).collect())
     }
 }
 
@@ -446,6 +518,56 @@ mod tests {
         );
         assert!(skill.files["scripts/extract.sh"].executable);
         assert!(!skill.files["SKILL.md"].executable);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_mcp_server_is_read_and_placed_under_the_skills_directory() {
+        let root = scratch("mcp");
+        let dir = skill_dir(&root);
+        assert_eq!(Skill::read(&dir).unwrap().mcp, None);
+        let server = |json: &str| {
+            fs::write(dir.join(MCP_FILE), json).unwrap();
+            Skill::read(&dir).map(|s| s.mcp.unwrap())
+        };
+        let read =
+            server(r#"{"command":"./scripts/extract.sh","args":["--port","./SKILL.md"]}"#).unwrap();
+        assert_eq!(
+            read.launch("/opt/hyalos/skills/pdf-tools"),
+            (
+                "/opt/hyalos/skills/pdf-tools/scripts/extract.sh".to_string(),
+                vec![
+                    "--port".to_string(),
+                    "/opt/hyalos/skills/pdf-tools/SKILL.md".to_string()
+                ]
+            )
+        );
+        assert_eq!(
+            server(r#"{"command":"node"}"#).unwrap().args,
+            Vec::<String>::new()
+        );
+        // Not a program by name, not an executable file of the skill, a file it lacks, text that
+        // is not printable ASCII, too many arguments or a field this build does not know.
+        let too_many = format!(
+            r#"{{"command":"node","args":{:?}}}"#,
+            vec!["a"; MCP_ARGS + 1]
+        );
+        for bad in [
+            r#"{"command":"/bin/sh"}"#,
+            r#"{"command":"../sh"}"#,
+            r#"{"command":"./SKILL.md"}"#,
+            r#"{"command":"./missing"}"#,
+            r#"{"command":"node","args":["./missing"]}"#,
+            r#"{"command":"node","args":["a[2J"]}"#,
+            r#"{"command":"node","args":[""]}"#,
+            r#"{"command":"node","env":{"A":"b"}}"#,
+            r#"{"args":[]}"#,
+            "not json",
+            too_many.as_str(),
+        ] {
+            assert_eq!(server(bad), Err(SkillError::Mcp), "{bad}");
+        }
+        assert_eq!(SkillError::Mcp.code().as_str(), "plugin.bad_mcp");
         let _ = fs::remove_dir_all(root);
     }
 

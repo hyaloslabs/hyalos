@@ -122,7 +122,7 @@ impl Run<'_> {
         let mut spec = SandboxSpec::new(
             job,
             &request.image,
-            request.harness.command(prompt),
+            request.harness.command(prompt, &self.skills),
             job_dir.socket(),
         );
         spec.deadline = self.remaining();
