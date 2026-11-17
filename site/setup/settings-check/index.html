@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action https://github.com; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Marketplace settings check</title>
+<link rel="stylesheet" href="../style.css">
+<script src="setup.js" defer></script>
+</head>
+<body>
+<main>
+<h1>Create the marketplace's settings-check App</h1>
+
+<section id="start">
+<p>For hyaloslabs maintainers. The daily settings check in <code>hyaloslabs/marketplace</code> reads its protection settings with a GitHub App of its own. This page asks GitHub to create that App in the <code>hyaloslabs</code> organization, with only:</p>
+<ul>
+<li>Actions, Administration and Metadata: read</li>
+<li>The organization's Members: read</li>
+<li>No webhook, no events, private to <code>hyaloslabs</code></li>
+</ul>
+<p>GitHub shows you all of it before anything is created. The page holds no secret and sends nothing anywhere but GitHub. The App's key never reaches this page: your terminal fetches it from GitHub and stores it straight into the repository's environment.</p>
+<form id="create">
+<label for="name">App name (must be unique on GitHub; you can change it on the next page)</label>
+<input id="name" name="name" maxlength="34" spellcheck="false" placeholder="hyaloslabs-settings-check">
+<button type="submit">Continue to GitHub</button>
+<p id="problem" role="alert" hidden></p>
+</form>
+</section>
+
+<section id="done" hidden>
+<p>GitHub created the App. This is its one-time code. It works once, within an hour:</p>
+<p class="code"><code id="code"></code> <button type="button" id="copy">Copy</button></p>
+<p>In a terminal of your own, with <code>gh</code> logged in as a <code>hyaloslabs</code> admin, run the command below and paste the code when it asks. It exchanges the code for the App's key and client ID, checks the App's permissions, and stores the key as the secret <code>SETTINGS_APP_KEY</code> and the client ID as the variable <code>SETTINGS_APP_CLIENT_ID</code> in the <code>settings-check</code> environment. Nothing is written to disk.</p>
+<pre><code id="command"></code></pre>
+<p>Then install the App on <code>hyaloslabs/marketplace</code> alone (<strong>Only select repositories</strong>), from the App's page on GitHub, and close this page. The rest is in the maintainer runbook, <code>docs/operations/marketplace.md</code>.</p>
+</section>
+
+<p class="small">Hyalos runs coding agents in sandboxes that hold no secrets. This page is static: it keeps nothing, and posts only to GitHub.</p>
+</main>
+</body>
+</html>
