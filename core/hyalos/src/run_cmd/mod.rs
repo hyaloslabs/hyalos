@@ -297,10 +297,20 @@ pub(crate) fn setup(env: Env<'_>) -> Result<Setup, String> {
 /// A second signal: stop at once, and say what that leaves undone (ADR-0053).
 fn again(signal: i32) {
     eprintln!(
-        "hyalos: interrupted again ({}), so stopping now without finishing. The job's GitHub token          may still be live: revoke it on GitHub (the App's installation tokens expire within an          hour); see docs/operations/github-app.md. The log does not record how the job ended, and          its sandbox may still be running until its deadline",
-        interrupt::name(signal).unwrap_or("a signal")
+        "{}",
+        again_message(interrupt::name(signal).unwrap_or("a signal"))
     );
     std::process::exit(130);
+}
+
+/// What a second interrupt prints. A test keeps runs of spaces out of it.
+fn again_message(signal: &str) -> String {
+    format!(
+        "hyalos: interrupted again ({signal}), so stopping now without finishing. The job's \
+         GitHub token may still be live: revoke it on GitHub (the App's installation tokens \
+         expire within an hour); see docs/operations/github-app.md. The log does not record how \
+         the job ended, and its sandbox may still be running until its deadline"
+    )
 }
 
 /// A clock that never goes back, since the log refuses an event stamped before the one before it.
@@ -400,6 +410,15 @@ mod tests {
 
     fn args(text: &[&str]) -> Vec<String> {
         text.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_second_interrupt_message_has_no_runs_of_spaces() {
+        let message = again_message("SIGINT");
+        assert!(!message.contains("  "), "{message}");
+        assert!(message.contains("GitHub token may still be live"));
+        assert!(message.contains("expire within an hour"));
+        assert!(message.starts_with("hyalos: interrupted again (SIGINT), "));
     }
 
     #[test]
