@@ -97,6 +97,7 @@ fn drive(
         request,
         &engine,
         &Store::new(log.with_file_name(paths::PLUGIN_STORE_DIR)),
+        &log.with_file_name(crate::plugin_trust::TRUST_DIR),
     )?;
     // Never before the log's last event, which another process may have written.
     let mut clock = Stamps(
@@ -540,13 +541,21 @@ fn choose(
 }
 
 /// Each skill `request` names, as installed: its files from `store`, checked against the digest the
-/// install recorded, and the grant a human gave it. A skill not installed, or whose files changed
-/// since, refuses the run.
+/// install recorded, and the grant a human gave it. A skill not installed, revoked (ADR-0098), or
+/// whose files changed since, refuses the run.
 fn installed_skills(
     request: &Request,
     engine: &Engine,
     store: &Store,
+    trust: &std::path::Path,
 ) -> Result<Vec<(Skill, Grant)>, String> {
+    // The list in force, not only the marks it left: an import cut short before it marked every
+    // release still keeps them from jobs, and a list that cannot be read keeps every skill out.
+    let list = if request.skills.is_empty() {
+        None
+    } else {
+        crate::plugin_trust::revocations_kept_in(trust, Some(engine.state()))?
+    };
     request
         .skills
         .iter()
@@ -554,6 +563,17 @@ fn installed_skills(
             let installed = engine.state().plugins().get(name).ok_or_else(|| {
                 format!("there is no skill {name} installed; install it with hyalos plugin install")
             })?;
+            let reason = engine
+                .state()
+                .revoked_plugins()
+                .get(name)
+                .map(|r| &r.reason)
+                .or_else(|| list.as_ref().and_then(|l| l.reason(&installed.digest)));
+            if let Some(reason) = reason {
+                return Err(format!(
+                    "skill {name} is revoked ({reason}) and disabled, so no job is given it; install a release that is not revoked (plugin.revoked)"
+                ));
+            }
             let skill = store
                 .load(&installed.digest, name)
                 .map_err(|e| format!("skill {name}: {e} ({})", e.code()))?;

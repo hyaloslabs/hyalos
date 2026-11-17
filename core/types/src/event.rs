@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 19;
+pub const SCHEMA_VERSION: u32 = 20;
 
 /// What this build reads: version 15, and versions 1 to 14 upcast to it (ADR-0023, ADR-0025, ADR-0027,
 /// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069,
@@ -39,6 +39,8 @@ pub const SCHEMA_VERSION: u32 = 19;
 /// index as a `plugin.installed` source (ADR-0090); a payload written before reads as it was. Version
 /// 17 added `plugin.policy_set` and changed no payload. Version 18 added `plugin.update_pending` and
 /// changed no payload. Version 19 added `plugin.snapshot_imported` (ADR-0097) and changed no payload.
+/// Version 20 added `plugin.revocations_imported` and `plugin.revoked` (ADR-0098) and changed no
+/// payload.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -390,6 +392,25 @@ pub enum Event {
         digest: Digest,
         signed_at: Timestamp,
     },
+    /// A revocation list was imported (ADR-0098): the file with digest `digest`, signed by the
+    /// marketplace pipeline and verified against the trusted-root snapshot in force, issued at
+    /// `signed_at`. Installs are checked against it from then on. It is not a decision; the engine
+    /// refuses one no later than the last.
+    #[serde(rename = "plugin.revocations_imported")]
+    PluginRevocationsImported {
+        digest: Digest,
+        signed_at: Timestamp,
+    },
+    /// The installed release of plugin `name`, with digest `digest`, is revoked for `reason`, as the
+    /// revocation list in force says (ADR-0098). It is disabled: no job is given it until a release
+    /// that is not revoked is installed under the name. Not an operator's decision: the maintainers
+    /// revoked it, and the engine records that it applies here.
+    #[serde(rename = "plugin.revoked")]
+    PluginRevoked {
+        name: PluginName,
+        digest: Digest,
+        reason: ReasonCode,
+    },
     /// The typed values a running job returned: a reader's or planner's answer, or an actor's submitted
     /// result (ADR-0062, ADR-0064, ADR-0069). A choice is its option's index, so no text is stored. It
     /// is written together with the job's ending, so a resumed run finds every finished step's values
@@ -479,6 +500,8 @@ impl Event {
             | Event::PluginPolicySet { .. }
             | Event::PluginUpdatePending { .. }
             | Event::PluginSnapshotImported { .. }
+            | Event::PluginRevocationsImported { .. }
+            | Event::PluginRevoked { .. }
             | Event::JobValues { .. } => origin == Origin::Engine,
         }
     }
@@ -560,6 +583,8 @@ impl Event {
             Event::PluginPolicySet { .. } => "plugin.policy_set",
             Event::PluginUpdatePending { .. } => "plugin.update_pending",
             Event::PluginSnapshotImported { .. } => "plugin.snapshot_imported",
+            Event::PluginRevocationsImported { .. } => "plugin.revocations_imported",
+            Event::PluginRevoked { .. } => "plugin.revoked",
             Event::JobValues { .. } => "job.values",
         }
     }
@@ -570,7 +595,7 @@ impl Event {
     }
 
     /// Every `kind` value, for checking tables and test coverage.
-    pub const KINDS: [&'static str; 20] = [
+    pub const KINDS: [&'static str; 22] = [
         "task.created",
         "task.completed",
         "job.started",
@@ -590,6 +615,8 @@ impl Event {
         "plugin.policy_set",
         "plugin.update_pending",
         "plugin.snapshot_imported",
+        "plugin.revocations_imported",
+        "plugin.revoked",
         "job.values",
     ];
 
@@ -849,6 +876,27 @@ mod tests {
                 format!(
                     r#"{{"kind":"plugin.snapshot_imported","digest":"{}","signed_at":1794878463000}}"#,
                     h(8)
+                ),
+            ),
+            (
+                Event::PluginRevocationsImported {
+                    digest: d(9),
+                    signed_at: Timestamp::from_millis(1_794_882_145_000),
+                },
+                format!(
+                    r#"{{"kind":"plugin.revocations_imported","digest":"{}","signed_at":1794882145000}}"#,
+                    h(9)
+                ),
+            ),
+            (
+                Event::PluginRevoked {
+                    name: PluginName::new("pdf-tools").unwrap(),
+                    digest: d(10),
+                    reason: ReasonCode::new("malware.exfiltration").unwrap(),
+                },
+                format!(
+                    r#"{{"kind":"plugin.revoked","name":"pdf-tools","digest":"{}","reason":"malware.exfiltration"}}"#,
+                    h(10)
                 ),
             ),
             (

@@ -585,6 +585,38 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             signed_at: hyalos_types::Timestamp::from_millis(1_794_878_463_000),
         },
     ));
+
+    // Version 20 added `plugin.revocations_imported` and `plugin.revoked` (ADR-0098) and changed no
+    // payload.
+    let at_19: Vec<_> = all.iter().filter(|g| g.0 == 19).cloned().collect();
+    for (_, kind, json, event) in at_19 {
+        all.push((20, kind, json, event));
+    }
+    all.push((
+        20,
+        "plugin.revocations_imported",
+        format!(
+            r#"{{"kind":"plugin.revocations_imported","digest":"{}","signed_at":1794882145000}}"#,
+            hex(10)
+        ),
+        Event::PluginRevocationsImported {
+            digest: d(10),
+            signed_at: hyalos_types::Timestamp::from_millis(1_794_882_145_000),
+        },
+    ));
+    all.push((
+        20,
+        "plugin.revoked",
+        format!(
+            r#"{{"kind":"plugin.revoked","name":"lint","digest":"{}","reason":"malware.exfiltration"}}"#,
+            hex(11)
+        ),
+        Event::PluginRevoked {
+            name: hyalos_types::PluginName::new("lint").ok_or("name")?,
+            digest: d(11),
+            reason: ReasonCode::new("malware.exfiltration").ok_or("reason")?,
+        },
+    ));
     Ok(all)
 }
 
@@ -602,6 +634,7 @@ fn introduced(kind: &str) -> u32 {
         "plugin.policy_set" => 17,
         "plugin.update_pending" => 18,
         "plugin.snapshot_imported" => 19,
+        "plugin.revocations_imported" | "plugin.revoked" => 20,
         _ => 1,
     }
 }

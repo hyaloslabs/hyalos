@@ -333,6 +333,66 @@ fn a_run_gets_a_skill_only_as_installed_and_never_without_its_mount() -> Res {
         "{said}"
     );
     assert_eq!(last_ended(&world)?, "sandbox.not_started");
+
+    // Revoked: disabled, and the run is refused before anything is written (ADR-0098).
+    let release = Release::new()?;
+    let Some(Event::PluginInstalled { digest, .. }) = installs(&world)?.pop() else {
+        return Err("no install".into());
+    };
+    let lists = world.root.join("lists");
+    put_revocations(
+        &lists,
+        &[(&digest.to_string(), "malware.exfiltration")],
+        &release,
+    )?;
+    // An import cut short after the list was recorded and before the release was marked: the list
+    // in force still keeps the skill from the job.
+    let file = std::fs::read(lists.join(hyalos_plugin::revocation::FILE))?;
+    let kept = hyalos_plugin::skill::digest_of(&file);
+    std::fs::create_dir_all(world.data.join("trust"))?;
+    std::fs::write(world.data.join("trust").join(format!("{kept}.json")), &file)?;
+    {
+        let key = hyalos::keys::load(&world.config.join("engine.key"))?;
+        let mut engine = hyalos_engine::Engine::open(&world.data.join("events.db"), key)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as u64;
+        engine.import_revocations(
+            hyalos_types::Timestamp::from_millis(now),
+            kept,
+            hyalos_types::Timestamp::from_millis(1),
+        )?;
+    }
+    let refused = run_job(&request("pdf-tools")?, setup(), &mut Vec::new())
+        .err()
+        .ok_or("a run with a revoked, unmarked skill started")?;
+    assert!(
+        refused.contains("revoked (malware.exfiltration)"),
+        "{refused}"
+    );
+    // A list that cannot be read keeps every skill out.
+    std::fs::remove_file(world.data.join("trust").join(format!("{kept}.json")))?;
+    let refused = run_job(&request("pdf-tools")?, setup(), &mut Vec::new())
+        .err()
+        .ok_or("a run with an unreadable list started")?;
+    assert!(refused.contains("revocations.unreadable"), "{refused}");
+    std::fs::write(world.data.join("trust").join(format!("{kept}.json")), &file)?;
+    // The next import, of the same list signed later, marks it.
+    release
+        .cli(
+            &world,
+            &["plugin", "snapshot", "import", &lists.to_string_lossy()],
+        )
+        .map_err(|e| e.1)?;
+    let before = world.events()?.len();
+    let refused = run_job(&request("pdf-tools")?, setup(), &mut Vec::new())
+        .err()
+        .ok_or("a run with a revoked skill started")?;
+    assert!(
+        refused.contains("revoked (malware.exfiltration)") && refused.contains("plugin.revoked"),
+        "{refused}"
+    );
+    assert_eq!(world.events()?.len(), before);
     let _ = std::fs::remove_dir_all(&repos);
     let _ = std::fs::remove_dir_all(&home);
     Ok(())
@@ -1161,5 +1221,209 @@ fn an_install_imports_a_newer_snapshot_its_index_location_carries() -> Res {
         "{said}"
     );
     assert_eq!(imports(&world)?, 1);
+    Ok(())
+}
+
+/// Writes a revocation list revoking `entries` (digest, reason) into `dir`, signed as the pipeline.
+fn put_revocations(dir: &Path, entries: &[(&str, &str)], signer: &Release) -> Res {
+    std::fs::create_dir_all(dir)?;
+    let revoked: Vec<String> = entries
+        .iter()
+        .map(|(digest, reason)| format!(r#"{{"digest":"{digest}","reason":"{reason}"}}"#))
+        .collect();
+    std::fs::write(
+        dir.join(hyalos_plugin::revocation::FILE),
+        format!(
+            r#"{{"kind":"hyalos.revocation_list","revoked":[{}],"version":1}}"#,
+            revoked.join(",")
+        ),
+    )?;
+    signer.sign(dir, hyalos_plugin::revocation::FILE)
+}
+
+#[test]
+fn a_revoked_release_is_disabled_and_never_installed_while_an_older_list_cannot_undo_it() -> Res {
+    let world = World::new("plugin-revoked", None)?;
+    let release = Release::new()?;
+    let src = skill(
+        &world.root,
+        Some(r#"{"version":1,"egress_hosts":["docs.rs"]}"#),
+    )?;
+    let bundle = world.root.join("bundle");
+    std::fs::create_dir(&bundle)?;
+    let old = pack(&world, &src, &bundle, "pdf-1.0.0.skill")?;
+    skill(&world.root, None)?;
+    let new = pack(&world, &src, &bundle, "pdf-1.1.0.skill")?;
+    release.sign(&bundle, "pdf-1.0.0.skill")?;
+    release.sign(&bundle, "pdf-1.1.0.skill")?;
+    std::fs::write(
+        bundle.join("index.json"),
+        index(&[
+            ("1.0.0", &old, "pdf-1.0.0.skill"),
+            ("1.1.0", &new, "pdf-1.1.0.skill"),
+        ]),
+    )?;
+    let at = bundle.to_string_lossy().into_owned();
+    let install = |version: &str| {
+        release.signed(
+            &world,
+            &[
+                "plugin",
+                "install",
+                "--index",
+                &at,
+                "pdf-tools",
+                "--version",
+                version,
+                "--grant",
+            ],
+        )
+    };
+    install("1.0.0").map_err(|e| e.1)?;
+    let shown = release
+        .cli(&world, &["plugin", "snapshot", "show"])
+        .map_err(|e| e.1)?;
+    assert!(
+        shown.contains("no revocation list has been imported"),
+        "{shown}"
+    );
+
+    // The installed release is revoked: a list the pipeline signed disables it.
+    let lists = world.root.join("lists");
+    put_revocations(&lists, &[(&old, "malware.exfiltration")], &release)?;
+    let first = (
+        std::fs::read(lists.join(hyalos_plugin::revocation::FILE))?,
+        std::fs::read(lists.join(hyalos_plugin::revocation::BUNDLE))?,
+    );
+    let list_at = lists.to_string_lossy().into_owned();
+    let said = release
+        .cli(&world, &["plugin", "snapshot", "import", &list_at])
+        .map_err(|e| e.1)?;
+    assert!(said.contains("revokes 1 release(s)"), "{said}");
+    assert!(
+        said.contains(&format!(
+            "pdf-tools: the installed release {old} is revoked (malware.exfiltration)"
+        )),
+        "{said}"
+    );
+    let listed = release.cli(&world, &["plugin", "list"]).map_err(|e| e.1)?;
+    assert!(
+        listed.contains("revoked (malware.exfiltration) since event"),
+        "{listed}"
+    );
+    let revoked = |world: &World| -> Res<usize> {
+        Ok(world
+            .events()?
+            .iter()
+            .filter(|e| matches!(e, Event::PluginRevoked { .. }))
+            .count())
+    };
+    assert_eq!(revoked(&world)?, 1);
+    // Never installed again, and an update does not offer it.
+    let said = refused(install("1.0.0"), 1)?;
+    assert!(said.contains("plugin.revoked"), "{said}");
+    assert_eq!(installs(&world)?.len(), 1);
+
+    // A later list revokes the newer release too: an install from the index, or of the same files
+    // from a directory, is refused.
+    // A signed time is in whole seconds, and a list must be later than the one in force.
+    std::thread::sleep(Duration::from_millis(1100));
+    put_revocations(
+        &lists,
+        &[(&old, "malware.exfiltration"), (&new, "malware.miner")],
+        &release,
+    )?;
+    release
+        .cli(&world, &["plugin", "snapshot", "import", &list_at])
+        .map_err(|e| e.1)?;
+    let said = refused(install("1.1.0"), 1)?;
+    assert!(said.contains("revoked (malware.miner)"), "{said}");
+    let said = refused(
+        release.signed(&world, &["plugin", "install", &src.to_string_lossy()]),
+        1,
+    )?;
+    assert!(said.contains("plugin.revoked"), "{said}");
+
+    // The first list again is older than the one in force: nothing it leaves out is un-revoked.
+    std::fs::write(lists.join(hyalos_plugin::revocation::FILE), &first.0)?;
+    std::fs::write(lists.join(hyalos_plugin::revocation::BUNDLE), &first.1)?;
+    let said = release
+        .cli(&world, &["plugin", "snapshot", "import", &list_at])
+        .map_err(|e| e.1)?;
+    assert!(
+        said.contains("not newer than the revocation list in force"),
+        "{said}"
+    );
+    assert!(refused(install("1.1.0"), 1)?.contains("plugin.revoked"));
+
+    // A list another identity signed is refused, and changes nothing.
+    let forged = world.root.join("forged");
+    std::fs::create_dir(&forged)?;
+    std::fs::write(forged.join(hyalos_plugin::revocation::FILE), &first.0)?;
+    std::fs::write(
+        forged.join(hyalos_plugin::revocation::BUNDLE),
+        release
+            .sigstore
+            .sign(
+                &first.0,
+                Signer {
+                    subject: "https://github.com/someone/fork/.github/workflows/release.yml@refs/heads/main",
+                    issuer: PIPELINE.issuer,
+                    repository: PIPELINE.repository,
+                    git_ref: PIPELINE.git_ref,
+                },
+            )
+            .map_err(|e| e.to_string())?,
+    )?;
+    let said = refused(
+        release.cli(
+            &world,
+            &["plugin", "snapshot", "import", &forged.to_string_lossy()],
+        ),
+        1,
+    )?;
+    assert!(said.contains("revocations.unverifiable"), "{said}");
+
+    // Lost from the trust store, the list in force cannot be told, so nothing installs, and it is
+    // put back from a copy with the digest the log recorded.
+    let digest = world
+        .events()?
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            Event::PluginRevocationsImported { digest, .. } => Some(*digest),
+            _ => None,
+        })
+        .ok_or("no list imported")?;
+    std::fs::remove_file(world.data.join("trust").join(format!("{digest}.json")))?;
+    let said = refused(
+        release.signed(&world, &["plugin", "install", &src.to_string_lossy()]),
+        1,
+    )?;
+    assert!(said.contains("revocations.unreadable"), "{said}");
+    // A signed time is in whole seconds, and a list must be later than the one in force.
+    std::thread::sleep(Duration::from_millis(1100));
+    put_revocations(
+        &lists,
+        &[(&old, "malware.exfiltration"), (&new, "malware.miner")],
+        &release,
+    )?;
+    // The bytes are the same as the list in force, so they are put back, and then this copy, signed
+    // later, is imported as newer.
+    let said = release
+        .cli(&world, &["plugin", "snapshot", "import", &list_at])
+        .map_err(|e| e.1)?;
+    assert!(said.contains("put back the kept revocation list"), "{said}");
+    assert!(refused(install("1.1.0"), 1)?.contains("plugin.revoked"));
+
+    // A release that is not revoked replaces the revoked one and runs again.
+    let fixed = skill(&world.root, Some(r#"{"version":1}"#))?;
+    std::fs::write(fixed.join("NOTES.md"), "fixed\n")?;
+    release
+        .signed(&world, &["plugin", "install", &fixed.to_string_lossy()])
+        .map_err(|e| e.1)?;
+    let listed = release.cli(&world, &["plugin", "list"]).map_err(|e| e.1)?;
+    assert!(!listed.contains("revoked ("), "{listed}");
+    assert_eq!(revoked(&world)?, 1);
     Ok(())
 }
