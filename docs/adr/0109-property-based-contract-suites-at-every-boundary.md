@@ -1,6 +1,6 @@
 # ADR-0109: Property-based contract suites at every boundary
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
