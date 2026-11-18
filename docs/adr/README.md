@@ -119,3 +119,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0103](0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md) | Policy releases an issue written only by the repository's writers | Accepted |
 | [0104](0104-fault-schedules-swept-in-ci.md) | Fault schedules, swept in CI | Accepted; its rule that `simulation` is required by name superseded by [ADR-0105](0105-the-required-check-gathers-ci-s-split-jobs.md) |
 | [0105](0105-the-required-check-gathers-ci-s-split-jobs.md) | The required check gathers CI's split jobs | Accepted |
+| [0106](0106-a-dependency-lost-mid-job-holds-the-task.md) | A dependency lost mid-job holds the task | Proposed |

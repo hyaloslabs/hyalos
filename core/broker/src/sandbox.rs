@@ -321,7 +321,18 @@ impl JobSocket {
                 "content.too_many_refusals",
                 reports.clone(),
             ),
-            role: Reports::for_gate(manifest.job, Gate::Role, "role.too_many_refusals", reports),
+            role: Reports::for_gate(
+                manifest.job,
+                Gate::Role,
+                "role.too_many_refusals",
+                reports.clone(),
+            ),
+            dependency: Reports::for_gate(
+                manifest.job,
+                Gate::Dependency,
+                "dependency.too_many_losses",
+                reports,
+            ),
         });
         let submitted = Submission::default();
         let manifest = Arc::new(Job {
@@ -418,6 +429,36 @@ struct JobReports {
     content: Reports,
     /// The role's refusals: a reader's call with tools (ADR-0061).
     role: Reports,
+    /// A model provider or forge lost mid-job, which holds the task (ADR-0106).
+    dependency: Reports,
+}
+
+/// What a refusal says was lost, if it says the model provider or the forge is gone rather than that
+/// it refused (ADR-0106): the dependency's name and the code its unknown answer carries. A provider
+/// still busy after every retry is lost; so is a forge that cannot be reached, answers what cannot be
+/// read, or answers with a status it has no meaning for.
+fn lost(reason: Option<&ReasonCode>) -> Option<(&'static str, &'static str)> {
+    match reason.map(ReasonCode::as_str)? {
+        "provider.overloaded" => Some(("model", MODEL_LOST)),
+        "transport.unreachable" | "transport.bad_response" | "forge.upstream_status" => {
+            Some(("forge", FORGE_LOST))
+        }
+        _ => None,
+    }
+}
+
+/// The code a lost model provider's unknown answer carries (ADR-0106).
+pub const MODEL_LOST: &str = "model.lost";
+/// The code a lost forge's unknown answer carries (ADR-0106).
+pub const FORGE_LOST: &str = "forge.lost";
+
+/// Reports a loss the refusal `response` shows, if it shows one. The sandbox still gets the refusal.
+fn report_lost(response: &Response, reports: &JobReports, ended: &AtomicBool) {
+    if let Some((dependency, code)) = lost(response.reason.as_ref()) {
+        reports
+            .dependency
+            .unknown(code, egress::inputs_digest(dependency), ended);
+    }
 }
 
 /// Why a reader's call that defines a tool is refused (ADR-0037, ADR-0061).
@@ -560,6 +601,7 @@ fn connection(
                 ended,
             )
         };
+        report_lost(&response, reports, ended);
         return write_response(&mut &*stream, response);
     }
     // A git call, for the git proxy (ADR-0046).
@@ -584,6 +626,7 @@ fn connection(
                 ended,
             )
         };
+        report_lost(&response, reports, ended);
         response.body = Box::new(UntilEnded {
             inner: response.body,
             ended: Arc::clone(ended),
@@ -615,6 +658,7 @@ fn connection(
             let mut response = sandboxes
                 .models
                 .answer(manifest, request, sandboxes.clock.as_ref());
+            report_lost(&response, reports, ended);
             // A reader that defines a tool is refused, and the refusal is recorded (ADR-0061).
             if response.reason.as_ref().map(ReasonCode::as_str) == Some(READER_TOOLS) {
                 reports

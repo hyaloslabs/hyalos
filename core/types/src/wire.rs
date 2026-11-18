@@ -27,7 +27,7 @@ use crate::{
 };
 
 /// The version of this protocol. Both sides say theirs first and stop on a mismatch.
-pub const WIRE_VERSION: u32 = 11;
+pub const WIRE_VERSION: u32 = 12;
 
 /// The longest job socket path the engine makes and the broker binds (ADR-0038). A Unix socket
 /// path is limited to about 107 bytes; this leaves room.
@@ -182,7 +182,8 @@ pub enum ToEngine {
     /// The pull request was merged, as commit `sha` (wire version 9, ADR-0071).
     Merged { job: JobId, sha: CommitSha },
     /// A gate answered for a job. This is the one fact the broker reports that the engine records
-    /// (`gate.answered`, ADR-0024): a verdict, the digest of what was asked, and a code.
+    /// (`gate.answered`, ADR-0024): a verdict, the digest of what was asked, and a code. Since wire
+    /// version 12 the gate may be `dependency`: the model provider or the forge was lost (ADR-0106).
     Gate {
         job: JobId,
         gate: Gate,
@@ -341,7 +342,7 @@ mod tests {
                     forge: None,
                 },
                 format!(
-                    r#"{{"kind":"hello","version":11,"manifest_key":"{}"}}"#,
+                    r#"{{"kind":"hello","version":12,"manifest_key":"{}"}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -355,7 +356,7 @@ mod tests {
                     }),
                 },
                 format!(
-                    r#"{{"kind":"hello","version":11,"manifest_key":"{}","forge":{{"api":"https://api.github.com","git":"https://github.com"}}}}"#,
+                    r#"{{"kind":"hello","version":12,"manifest_key":"{}","forge":{{"api":"https://api.github.com","git":"https://github.com"}}}}"#,
                     "07".repeat(32)
                 ),
             ),
@@ -525,6 +526,19 @@ mod tests {
                 format!(
                     r#"{{"kind":"gate","job":3,"gate":"egress","inputs":"{}","answer":"deny","reason":"egress.host_not_allowed"}}"#,
                     "01".repeat(32)
+                ),
+            ),
+            (
+                ToEngine::Gate {
+                    job: JobId::from_seq(3),
+                    gate: Gate::Dependency,
+                    inputs: Digest::from_bytes([2; 32]),
+                    answer: Answer::Unknown,
+                    reason: code("model.lost")?,
+                },
+                format!(
+                    r#"{{"kind":"gate","job":3,"gate":"dependency","inputs":"{}","answer":"unknown","reason":"model.lost"}}"#,
+                    "02".repeat(32)
                 ),
             ),
         ];

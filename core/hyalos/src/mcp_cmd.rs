@@ -707,6 +707,7 @@ fn gate_name(gate: Gate) -> &'static str {
         Gate::Content => "content",
         Gate::Role => "role",
         Gate::Manifest => "manifest",
+        Gate::Dependency => "dependency",
     }
 }
 

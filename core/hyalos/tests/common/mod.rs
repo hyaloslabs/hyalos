@@ -144,6 +144,8 @@ pub struct GitHub {
     port: u16,
     seen: Arc<Mutex<Vec<Seen>>>,
     issued: Arc<Mutex<Vec<String>>>,
+    /// While set, every request is answered 503, as by a forge that is down (ADR-0106's chaos).
+    down: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl GitHub {
@@ -152,17 +154,34 @@ impl GitHub {
         let port = listener.local_addr()?.port();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let issued = Arc::new(Mutex::new(Vec::new()));
+        let down = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (root, log, tokens) = (root.to_path_buf(), seen.clone(), issued.clone());
+        let is_down = down.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
                 let (root, log, tokens) = (root.clone(), log.clone(), tokens.clone());
+                let down = is_down.load(std::sync::atomic::Ordering::SeqCst);
                 std::thread::spawn(move || {
-                    let _ = serve(stream, &root, &log, &tokens, revoke_fails);
+                    let _ = serve(stream, &root, &log, &tokens, revoke_fails, down);
                 });
             }
         });
-        Ok(Self { port, seen, issued })
+        Ok(Self {
+            port,
+            seen,
+            issued,
+            down,
+        })
+    }
+
+    /// Answers every request from now on with 503, until [`GitHub::come_up`].
+    pub fn go_down(&self) {
+        self.down.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn come_up(&self) {
+        self.down.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn base(&self) -> String {
@@ -184,6 +203,7 @@ fn serve(
     log: &Mutex<Vec<Seen>>,
     issued: &Mutex<Vec<String>>,
     revoke_fails: bool,
+    down: bool,
 ) -> Res {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
@@ -237,6 +257,9 @@ fn serve(
         )?;
         Ok(())
     };
+    if down {
+        return reply("503 Service Unavailable", "{}");
+    }
     if path.starts_with("/octo/repo.git/") {
         let token = tokens.last().cloned().unwrap_or_default();
         let expected = format!(
