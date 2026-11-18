@@ -1,6 +1,6 @@
 # ADR-0106: A dependency lost mid-job holds the task
 
-**Status:** Proposed. Supersedes [ADR-0053](0053-an-interrupted-run-ends-its-job.md)'s `broker.stopped` row, and its `sandbox.failed` row for a sandbox the runtime lost.
+**Status:** Accepted. Supersedes [ADR-0053](0053-an-interrupted-run-ends-its-job.md)'s `broker.stopped` row, and its `sandbox.failed` row for a sandbox the runtime lost.
 
 ## Context
 
