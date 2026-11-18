@@ -1,0 +1,18 @@
+[package]
+name = "hyalos-plugin-contract"
+description = "The plugin host's property-based contract suite: linking and calls checked against generated grants (ADR-0013, ADR-0087, ADR-0109). Not part of the trusted core."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hyalos-types = { path = "../../core/types" }
+hyalos-plugin = { path = "../../core/plugin" }
+hyalos-props = { path = "../props" }
+
+[dev-dependencies]
+wat = "=1.261.0"

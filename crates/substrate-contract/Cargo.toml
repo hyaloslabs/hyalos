@@ -12,3 +12,4 @@ workspace = true
 [dependencies]
 hyalos-types = { path = "../../core/types" }
 hyalos-substrate = { path = "../../core/substrate" }
+hyalos-props = { path = "../props" }

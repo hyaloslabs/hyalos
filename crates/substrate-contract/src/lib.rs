@@ -8,11 +8,16 @@
 //!   root filesystem, the broker's socket as the one way out, and an init as PID 1 that reaps orphans. A fake that runs programs on the host
 //!   skips these and says so in the report: a skip is never a pass.
 //!
+//! Behaviour also has a generated half (S8.3, ADR-0109): properties checked on specs a seeded generator
+//! draws, so every driver is held to the same properties on many specs, not only the ones written
+//! out. A failing case names its seed and replays with `HYALOS_PROP_SEED=<seed>`.
+//!
 //! The programs it runs are `sh` and `perl` scripts, so the image needs both. They are short and
 //! use no network.
 
 mod checks;
 mod fake;
+mod properties;
 
 pub use checks::run;
 pub use fake::LocalProcessSubstrate;

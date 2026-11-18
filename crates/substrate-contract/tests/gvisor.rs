@@ -61,7 +61,7 @@ fn the_gvisor_driver_passes_the_whole_contract() -> Res {
     );
     assert!(report.is_clean(), "{}", report.summary());
     assert!(report.skipped.is_empty(), "{}", report.summary());
-    assert_eq!(report.passed.len(), 20);
+    assert_eq!(report.passed.len(), 22);
     Ok(())
 }
 
