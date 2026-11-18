@@ -1,6 +1,6 @@
 # ADR-0113: Skills drafted from successful runs are tainted and read-only
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
