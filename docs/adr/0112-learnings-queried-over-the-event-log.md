@@ -1,6 +1,6 @@
 # ADR-0112: Learnings queried over the event log
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
