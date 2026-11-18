@@ -50,16 +50,18 @@ jobs:
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
 
-  rust:
-    name: build, lint, test
+  # The time budget (#320). Every job has a 20-minute limit and should finish in 15. The test run is
+  # split in two, each on its own runner, because the whole workspace took 18 to 20 minutes in one job.
+  # When a job's run nears 15 minutes, move packages between the parts of `test`, or add a part, rather
+  # than raising the limit. A new part needs nothing else: `build, lint, test` gathers every part.
+
+  # Formatting, lints and the layout checks: everything that needs no test to run.
+  lint:
+    name: lint
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # Line tables only: full debug info for every test binary, with Wasmtime's in the build (ADR-0087),
-    # fills the runner's disk, and the linker dies with a bus error. Backtraces still name lines.
-    env:
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,6 +73,37 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy, warnings denied
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Crate layout (ADR-0017)
+        run: cargo xtask layout
+      - name: Trusted-core size (ADR-0017)
+        run: cargo xtask lines
+
+  # The workspace's tests in two parts that together are the whole workspace: the `hyalos` crate, and
+  # every other package (`--exclude`, so a new package lands in the second part without an edit here).
+  test:
+    name: test (${{ matrix.part.name }})
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        part:
+          - name: the hyalos crate
+            packages: -p hyalos
+          - name: the rest of the workspace
+            packages: --workspace --exclude hyalos
+    # Line tables only: full debug info for every test binary, with Wasmtime's in the build (ADR-0087),
+    # fills the runner's disk, and the linker dies with a bus error. Backtraces still name lines.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
       # The container driver's contract runs against Docker here (ADR-0032), and a missing runtime fails.
       - name: Pull the substrate contract's image
         run: docker pull ubuntu:24.04
@@ -82,19 +115,40 @@ jobs:
         run: .github/scripts/install-firecracker.sh "$RUNNER_TEMP/microvm"
       # The git proxy's test runs the real git client and git http-backend (ADR-0046); missing git fails.
       - name: Test
-        run: cargo test --workspace --locked
+        run: cargo test ${{ matrix.part.packages }} --locked
         env:
           HYALOS_REQUIRE_CONTAINER: "1"
           HYALOS_REQUIRE_GVISOR: "1"
           HYALOS_REQUIRE_MICROVM: "1"
           HYALOS_REQUIRE_GIT: "1"
-      - name: Crate layout (ADR-0017)
-        run: cargo xtask layout
-      - name: Trusted-core size (ADR-0017)
-        run: cargo xtask lines
       - name: Disk left
         if: ${{ always() }}
         run: df -h / "$GITHUB_WORKSPACE"; du -sh target 2>/dev/null || true
+
+  # The required check (ADR-0105). It passes only when lint, every part of the tests and the simulation
+  # sweep passed, or when only documentation changed and they were all skipped. Anything else, a
+  # failure, a cancellation or a job that never ran, fails it, so splitting a job never makes it optional.
+  rust:
+    name: build, lint, test
+    needs: [changes, lint, test, simulation]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every gathered job passed
+        env:
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          RESULTS: ${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.simulation.result }}
+        run: |
+          echo "docs only: ${DOCS_ONLY:-unknown}; lint, test, simulation: ${RESULTS}"
+          want=success
+          if [ "${DOCS_ONLY}" = "true" ]; then want=skipped; fi
+          for r in ${RESULTS}; do
+            if [ "$r" != "$want" ]; then
+              echo "::error::a gathered job ended '$r', not '$want'"
+              exit 1
+            fi
+          done
 
   deny:
     name: dependency audit
