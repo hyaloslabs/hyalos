@@ -6,6 +6,7 @@
 mod approvals;
 mod audit;
 mod engine;
+mod learnings;
 mod mint;
 mod state;
 
@@ -15,6 +16,7 @@ pub use engine::{
     Compaction, Decider, Engine, EngineError, PolicyUnavailable, Reevaluation, Ruling,
     pruned_archives, read_state, replay, replay_from, replay_with,
 };
+pub use learnings::{Learning, Learnings, Lesson, MAX_SOURCES, Source, learn, learnings};
 pub use mint::{MintRefusal, mint_codes};
 pub use state::{
     Agent, ApprovedMerge, Cancelled, Hold, ImportedRevocations, ImportedSnapshot, InstalledPlugin,

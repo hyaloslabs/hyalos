@@ -48,14 +48,15 @@ fn command(args: &[String]) -> ExitCode {
         Some("plugin") => plugin_cmd::run(args.get(1..).unwrap_or_default()),
         Some("setup") => setup_cmd::run(args.get(1..).unwrap_or_default()),
         // The MCP server's tools, one command each (ADR-0075).
-        Some(command @ ("tasks" | "start" | "status" | "result" | "approvals" | "stop")) => {
-            tools_cmd::run(command, args.get(1..).unwrap_or_default())
-        }
+        Some(
+            command
+            @ ("tasks" | "start" | "status" | "result" | "approvals" | "learnings" | "stop"),
+        ) => tools_cmd::run(command, args.get(1..).unwrap_or_default()),
         // Started by the engine, never by hand; it refuses any other parent (ADR-0035).
         Some("broker") => broker_cmd::run(args.get(1..).unwrap_or_default()),
         Some(other) => {
             eprintln!(
-                "hyalos: unknown command {other}\nusage: hyalos [--version | init | doctor [--image <image>] | setup [--next] [--json] | setup walk|operator-key|provider-key|github-app|policy|agent | github check <owner/repo> | run --repo <owner/name> --issue <text> ... | operator init|show | approve <hold> | cancel <task> | release <task> | merge <owner/repo> <pr> --head <commit> | policy check|approve|show ... | workflow check <file> | plugin install|list|update|policy|snapshot|pack|diff ... | agent issue|revoke|list ... | mcp [--listen <127.0.0.1:port>] | tasks | start <owner/repo> <issue> | status <task> | result <task> | approvals | stop <task> | log verify|audit|backup|restore|compact|prune ...]"
+                "hyalos: unknown command {other}\nusage: hyalos [--version | init | doctor [--image <image>] | setup [--next] [--json] | setup walk|operator-key|provider-key|github-app|policy|agent | github check <owner/repo> | run --repo <owner/name> --issue <text> ... | operator init|show | approve <hold> | cancel <task> | release <task> | merge <owner/repo> <pr> --head <commit> | policy check|approve|show ... | workflow check <file> | plugin install|list|update|policy|snapshot|pack|diff ... | agent issue|revoke|list ... | mcp [--listen <127.0.0.1:port>] | tasks | start <owner/repo> <issue> | status <task> | result <task> | approvals | learnings | stop <task> | log verify|audit|backup|restore|compact|prune ...]"
             );
             ExitCode::from(2)
         }

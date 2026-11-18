@@ -958,7 +958,8 @@ fn approvals_are_shown_with_the_operators_commands_and_the_server_cannot_decide_
             "start_job",
             "job_status",
             "job_result",
-            "list_approvals"
+            "list_approvals",
+            "list_learnings"
         ]
     );
 
@@ -1141,5 +1142,271 @@ fn approvals_are_shown_with_the_operators_commands_and_the_server_cannot_decide_
     assert!(!inner.contains("commands below"), "{inner}");
     assert_eq!(decided[1]["result"]["structuredContent"]["total"], 0);
     assert!(text(&decided[1]).starts_with("No approval is waiting"));
+    drop(lock);
+}
+
+#[test]
+fn learnings_come_with_their_provenance_and_the_events_they_were_learned_from() {
+    use hyalos_types::TypedValue::{Bool, Choice};
+    use hyalos_types::{Answer, Gate};
+    let m = Machine::new("learnings").unwrap();
+    m.install_key().unwrap();
+    let credential = m.issue("claude-code").unwrap();
+    let args: Vec<String> = ["--repo", "octo/repo", "--issue-number", "7"]
+        .map(String::from)
+        .to_vec();
+    let asked = hyalos::run_cmd::parse(&args).unwrap();
+    let mut engine = Engine::open(&m.root.join("data/events.db"), LogKey::from_seed(SEED)).unwrap();
+    let mut at = 4_000_000_000_000;
+    let mut write = |engine: &mut Engine, origin, events: Vec<Event>| {
+        at += 1;
+        let events: Vec<_> = events.into_iter().map(|e| (origin, e)).collect();
+        engine
+            .submit_all(Timestamp::from_millis(at), &events)
+            .unwrap()
+    };
+    // A run the server started, which succeeded: three steps, each returning its values.
+    let task = TaskId::from_seq(
+        write(
+            &mut engine,
+            Origin::Engine,
+            vec![Event::TaskCreated {
+                request: hyalos::run_cmd::request_digest(&asked),
+            }],
+        )
+        .seq,
+    );
+    let runs = m.root.join("data/runs");
+    std::fs::create_dir_all(&runs).unwrap();
+    std::fs::write(
+        runs.join(format!("task-{}.json", task.seq())),
+        serde_json::to_vec(&asked.stored()).unwrap(),
+    )
+    .unwrap();
+    let lock = std::fs::File::create(runs.join(format!("task-{}.lock", task.seq()))).unwrap();
+    lock.lock().unwrap();
+    let mut heads = Vec::new();
+    for (values, reason) in [
+        (
+            vec![Bool(true), Bool(false), Choice(2), Choice(0)],
+            "step.answered",
+        ),
+        (vec![Bool(false), Choice(2)], "step.answered"),
+        (vec![Choice(0), Bool(true)], "step.submitted"),
+    ] {
+        let job = JobId::from_seq(
+            write(
+                &mut engine,
+                Origin::Engine,
+                vec![Event::JobStarted {
+                    task,
+                    substrate: SubstrateName::new("broker").unwrap(),
+                    credentials: CredentialTier::BrokerHeld,
+                    attestation: Attestation::no_hardware_root(),
+                }],
+            )
+            .seq,
+        );
+        let values = write(
+            &mut engine,
+            Origin::Engine,
+            vec![Event::JobValues { job, values }],
+        );
+        write(
+            &mut engine,
+            Origin::Engine,
+            vec![Event::JobEnded {
+                job,
+                outcome: JobOutcome::Succeeded,
+                reason: ReasonCode::new(reason).unwrap(),
+            }],
+        );
+        heads.push((job, values));
+    }
+    write(
+        &mut engine,
+        Origin::Engine,
+        vec![Event::TaskCompleted { task }],
+    );
+    // Another task's job, whose egress the broker refused twice before it failed.
+    let other = TaskId::from_seq(
+        write(
+            &mut engine,
+            Origin::Engine,
+            vec![Event::TaskCreated {
+                request: Digest::from_bytes([4; 32]),
+            }],
+        )
+        .seq,
+    );
+    let job = JobId::from_seq(
+        write(
+            &mut engine,
+            Origin::Engine,
+            vec![Event::JobStarted {
+                task: other,
+                substrate: SubstrateName::new("container.podman").unwrap(),
+                credentials: CredentialTier::BrokerHeld,
+                attestation: Attestation::no_hardware_root(),
+            }],
+        )
+        .seq,
+    );
+    let refused = || Event::GateAnswered {
+        job,
+        gate: Gate::Egress,
+        inputs: Digest::from_bytes([5; 32]),
+        answer: Answer::Deny,
+        reason: ReasonCode::new("egress.host_not_allowed").unwrap(),
+    };
+    let denials = [
+        write(&mut engine, Origin::Broker, vec![refused()]),
+        write(&mut engine, Origin::Broker, vec![refused()]),
+    ];
+    write(
+        &mut engine,
+        Origin::Engine,
+        vec![Event::JobEnded {
+            job,
+            outcome: JobOutcome::Failed,
+            reason: ReasonCode::new("harness.no_result").unwrap(),
+        }],
+    );
+    drop(engine);
+
+    let before = events(&m).unwrap();
+    let answers = m
+        .stdio(
+            Some(&credential),
+            &[
+                request(
+                    1,
+                    "tools/call",
+                    json!({"name": "list_learnings", "arguments": {}}),
+                ),
+                request(
+                    2,
+                    "tools/call",
+                    json!({"name": "list_learnings", "arguments": {"limit": 2}}),
+                ),
+                request(
+                    3,
+                    "tools/call",
+                    json!({"name": "list_learnings", "arguments": {"since": 1}}),
+                ),
+            ],
+        )
+        .unwrap();
+    assert_eq!(events(&m).unwrap(), before, "asking wrote nothing");
+    let got = &answers[0]["result"]["structuredContent"];
+    assert_eq!(answers[0]["result"]["isError"], false, "{got}");
+    assert_eq!(got["from_seq"], 1);
+    let learnings = got["learnings"].as_array().unwrap();
+    let lesson = |l: &Value| l["lesson"].as_str().unwrap_or("").to_string();
+    assert_eq!(
+        learnings.iter().map(lesson).collect::<Vec<_>>(),
+        [
+            "job_ended",
+            "gate_answered",
+            "job_ended",
+            "values",
+            "job_ended",
+            "values",
+            "values"
+        ],
+        "{got}"
+    );
+    assert_eq!(got["total"], 7);
+
+    // Hyalos's own record, reported by the broker: its provenance, and each event by seq, hash and
+    // origin, as the log holds them.
+    let gate = &learnings[1];
+    assert_eq!(
+        (&gate["gate"], &gate["answer"], &gate["reason"]),
+        (
+            &json!("egress"),
+            &json!("deny"),
+            &json!("egress.host_not_allowed")
+        )
+    );
+    assert_eq!(
+        (&gate["provenance"], &gate["untrusted"], &gate["count"]),
+        (&json!("operator"), &json!(false), &json!(2))
+    );
+    assert_eq!(
+        gate["sources"],
+        json!(denials.map(|h| json!({
+            "seq": h.seq,
+            "hash": Digest::from_bytes(h.hash).to_string(),
+            "origin": "broker",
+        })))
+    );
+    // A run's result: named by its workflow, with the run's provenance, and so untrusted.
+    let (actor, values_head) = heads[2];
+    let result = &learnings[3];
+    assert_eq!(result["job"], actor.seq());
+    assert_eq!(result["task"], task.seq());
+    assert_eq!(
+        result["result"],
+        json!({"outcome": "pr_opened", "tests_added": true})
+    );
+    assert_eq!(result["values"], json!([{"choice": 0}, {"bool": true}]));
+    assert_eq!(
+        (&result["provenance"], &result["untrusted"]),
+        (&json!("model_from_tainted"), &json!(true))
+    );
+    assert_eq!(result["sources"][0]["seq"], values_head.seq);
+    // An earlier step's values are not a run's result: as the log holds them, and tainted.
+    let reader = &learnings[6];
+    assert_eq!(reader["job"], heads[0].0.seq());
+    assert!(reader.get("result").is_none(), "{reader}");
+    assert_eq!(reader["provenance"], "model_from_tainted");
+
+    // The text gives Hyalos's records as sentences, and a model's values only inside the marked
+    // untrusted block.
+    let plain = text(&answers[0]);
+    assert!(
+        plain.starts_with("7 learning(s) from event 1 on."),
+        "{plain}"
+    );
+    assert!(
+        plain.contains(&format!(
+            "- the egress gate answered deny (egress.host_not_allowed): 2 time(s), last {}; latest events {}, {}",
+            hyalos::mcp::rfc3339(gate["last_at_ms"].as_u64().unwrap()),
+            denials[0].seq,
+            denials[1].seq
+        )),
+        "{plain}"
+    );
+    let (trusted, block) = plain.split_once(hyalos::mcp::UNTRUSTED_NOTICE).unwrap();
+    assert!(!trusted.contains("pr_opened"), "{plain}");
+    assert!(
+        block.contains("<untrusted-data provenance=\"model_from_tainted\">")
+            && block.contains("pr_opened"),
+        "{plain}"
+    );
+
+    // A limit shows fewer and says so; an argument it does not take is refused.
+    let limited = &answers[1]["result"];
+    assert_eq!(
+        limited["structuredContent"]["learnings"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(limited["structuredContent"]["total"], 7);
+    assert!(text(&answers[1]).contains("5 more not shown."));
+    assert_eq!(answers[2]["result"]["isError"], true);
+
+    // The command answers as the tool does (S5.6).
+    let (code, out) = m.cli(&["learnings"]).unwrap();
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out.trim_end(), plain);
+    let (_, out) = m.cli(&["learnings", "--json"]).unwrap();
+    assert_eq!(&serde_json::from_str::<Value>(&out).unwrap(), got);
+    let (code, _) = m.cli(&["learnings", "--limit", "0"]).unwrap();
+    assert_eq!(code, 1);
+    assert_eq!(events(&m).unwrap(), before);
     drop(lock);
 }
