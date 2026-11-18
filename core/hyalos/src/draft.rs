@@ -132,6 +132,7 @@ pub fn store(
 /// Replays the draft `name` from the log at `log`, checked against `key`, and the plugin store at
 /// `store`, and returns its digest if it holds (ADR-0114). Otherwise it returns why, and the draft
 /// stays tainted:
+/// - `draft.log_unverified`: the log does not check out against `key`, or cannot be replayed;
 /// - `draft.unknown`: the log records no such draft;
 /// - `draft.not_succeeded`: in the replay, its task did not end in success;
 /// - `draft.capabilities`: its recorded grant, or what its files ask for, is more than read;
@@ -146,7 +147,7 @@ pub fn replay(
 ) -> Result<Digest, ReasonCode> {
     let code = |c: &str| ReasonCode::new(c).unwrap_or_else(ReasonCode::unavailable);
     // The log, checked link by link and folded into a fresh state; never the running engine's.
-    let state = hyalos_engine::read_state(log, key).map_err(|_| code("draft.unknown"))?;
+    let state = hyalos_engine::read_state(log, key).map_err(|_| code("draft.log_unverified"))?;
     let draft = state
         .drafts()
         .get(name)

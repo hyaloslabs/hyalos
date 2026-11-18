@@ -25,6 +25,7 @@ The simulator in `crates/sim` is not in the binary ([ADR-0017](0017-workspace-la
 **The capability checks are part of it.** The recorded grant and what the files ask for must both be within `Grant::read_only()`, and a draft may name no MCP server.
 
 **A draft that fails stays tainted, with a reason code:**
+- `draft.log_unverified`, when the log does not check out or cannot be replayed;
 - `draft.unknown`;
 - `draft.not_succeeded`;
 - `draft.capabilities`;
