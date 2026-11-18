@@ -276,15 +276,7 @@ impl Run<'_> {
                 show(out);
             }
             let _ = writeln!(out, "job {}: held; see the open hold in the log", job.seq());
-            let revoked = match (&self.revoked, revoked) {
-                (Err(earlier), _) => Err(earlier.clone()),
-                (Ok(()), now) => now,
-            };
-            return Ok(Summary {
-                job,
-                outcome: JobOutcome::Held,
-                revoked,
-            });
+            return Ok(self.held_summary(job, revoked));
         }
         // A dependency lost while the job ran holds the task (ADR-0106): what the job would have done
         // next is unknown. The operator's own interrupt is not a loss, and a refusal already said why.
@@ -385,15 +377,20 @@ impl Run<'_> {
             "job {}: the {dependency} was lost; held, see the open hold in the log",
             job.seq()
         );
+        Ok(self.held_summary(job, revoked))
+    }
+
+    /// A held job's summary: its own revoke's result, or an earlier job's failed one.
+    fn held_summary(&self, job: JobId, revoked: Result<(), String>) -> Summary {
         let revoked = match (&self.revoked, revoked) {
             (Err(earlier), _) => Err(earlier.clone()),
             (Ok(()), now) => now,
         };
-        Ok(Summary {
+        Summary {
             job,
             outcome: JobOutcome::Held,
             revoked,
-        })
+        }
     }
 }
 
