@@ -3,9 +3,10 @@
 
 use std::collections::BTreeMap;
 use std::ops::Range;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use hyalos_types::JobOutcome;
 
@@ -193,12 +194,16 @@ pub fn check(schedule: &Schedule, run: &Run) -> Result<(), String> {
     }
 }
 
-/// Runs one seed under its own schedule in `dir` and checks it.
+/// Runs one seed under its own schedule in `dir` and checks it. A run that panics is a failure of
+/// that seed, so a sweep names it rather than dying with it.
 pub fn run_seed(seed: u64, dir: &Path) -> (Schedule, Result<Run, String>) {
     let schedule = Schedule::for_seed(seed);
-    let result = run_with(seed, &schedule, dir)
-        .map_err(|e| e.to_string())
-        .and_then(|run| check(&schedule, &run).map(|()| run));
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        run_with(seed, &schedule, dir)
+            .map_err(|e| e.to_string())
+            .and_then(|run| check(&schedule, &run).map(|()| run))
+    }))
+    .unwrap_or_else(|_| Err("the run panicked".into()));
     (schedule, result)
 }
 
@@ -218,7 +223,8 @@ pub fn sweep(seeds: Range<u64>, root: &Path, threads: usize) -> Sweep {
                     let dir = seed_dir(root, seed);
                     let _ = std::fs::remove_dir_all(&dir);
                     let (schedule, result) = run_seed(seed, &dir);
-                    let Ok(mut total) = total.lock() else { break };
+                    // A poisoned lock still holds every count; giving up on it would skip seeds.
+                    let mut total = total.lock().unwrap_or_else(PoisonError::into_inner);
                     match result {
                         Ok(run) => {
                             total.record(&schedule, &run);
@@ -238,7 +244,7 @@ pub fn sweep(seeds: Range<u64>, root: &Path, threads: usize) -> Sweep {
             });
         }
     });
-    let mut total = total.into_inner().unwrap_or_default();
+    let mut total = total.into_inner().unwrap_or_else(PoisonError::into_inner);
     total.failures.sort_by_key(|f| f.seed);
     total
 }

@@ -96,7 +96,16 @@ fn run_sweep(from: &str, to: &str, threads: Option<&str>, root: PathBuf) -> Exit
             reproduce(f.seed)
         );
     }
-    if result.failures.is_empty() && gaps.is_empty() {
+    // Every seed asked for ran, or the sweep did not cover its range and is not a pass.
+    let short = result.runs != to.saturating_sub(from);
+    if short {
+        println!(
+            "SHORT: {} of {} seeds ran",
+            result.runs,
+            to.saturating_sub(from)
+        );
+    }
+    if result.failures.is_empty() && gaps.is_empty() && !short {
         let _ = std::fs::remove_dir_all(&root);
         println!("pass");
         ExitCode::SUCCESS

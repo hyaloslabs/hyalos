@@ -132,7 +132,10 @@ fn passing(profile: Profile) -> Result<(Schedule, Run), Box<dyn std::error::Erro
             continue;
         }
         let run = run_with(seed, &schedule, &dir(&format!("doctored-{seed}")))?;
-        if run.outcome == JobOutcome::Succeeded || profile != Profile::Usual {
+        // A Usual run that succeeded after asking a gate, so every doctored property has something
+        // to break.
+        let usable = run.outcome == JobOutcome::Succeeded && run.counts.gates_asked > 0;
+        if usable || profile != Profile::Usual {
             check(&schedule, &run)?;
             return Ok((schedule, run));
         }
@@ -147,7 +150,7 @@ fn the_check_refuses_a_run_that_breaks_a_property() -> Res {
 
     let mut r = passing(Profile::Usual)?.1;
     r.events.retain(|e| e.kind != "gate.answered");
-    assert!(check(&schedule, &r).is_err() || r.counts.gates_asked == 0);
+    assert!(check(&schedule, &r).unwrap_err().contains("gate.answered"));
 
     let mut r = passing(Profile::Usual)?.1;
     r.counts.expired = true;
