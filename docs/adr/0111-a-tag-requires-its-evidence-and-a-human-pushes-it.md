@@ -1,6 +1,6 @@
 # ADR-0111: A tag requires its evidence, and a human pushes it
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
