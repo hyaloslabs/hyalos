@@ -1,6 +1,6 @@
 # ADR-0053: An interrupted run ends its job
 
-**Status:** Accepted
+**Status:** Accepted; its `broker.stopped` row, and its `sandbox.failed` row for a sandbox the runtime lost, superseded by [ADR-0106](0106-a-dependency-lost-mid-job-holds-the-task.md)
 
 ## Context
 

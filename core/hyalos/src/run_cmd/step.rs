@@ -172,6 +172,10 @@ impl Run<'_> {
                 self.end(job, out, JobOutcome::Failed, failure, revoked)
                     .map(Some)
             }
+            // A broker lost while it ran the step holds the task, as in an actor's job (ADR-0106).
+            Err(failure) if failure.reason.as_str() == "reader.broker_unavailable" => self
+                .hold_lost(job, out, "broker", why::BROKER_LOST, revoked)
+                .map(Some),
             Err(failure) => self
                 .end(job, out, JobOutcome::Failed, failure, revoked)
                 .map(Some),

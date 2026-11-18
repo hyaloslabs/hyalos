@@ -180,8 +180,7 @@ impl Run<'_> {
             stop.stop();
             let _ = done.recv();
             let revoked = finish(self, job_dir, out);
-            let failure = Failure::new(why::BROKER_STOPPED, "the broker stopped");
-            return self.end(job, out, JobOutcome::Failed, failure, revoked);
+            return self.hold_lost(job, out, "broker", why::BROKER_LOST, revoked);
         };
         let mut state = Reported::default();
         let mut interruption = None;
@@ -215,14 +214,12 @@ impl Run<'_> {
                     Err(TryRecvError::Empty) => {}
                 }
                 if state.broker_gone {
-                    // Nothing more can be reported; the job's socket is gone, so the sandbox ends
-                    // soon.
+                    // Nothing more can be reported or guarded, so the sandbox is stopped and the task
+                    // holds (ADR-0106).
                     if interruption.is_none() {
                         interruption = interrupted(&self.interrupt, job, out);
                     }
-                    if interruption.is_some() {
-                        stop.stop();
-                    }
+                    stop.stop();
                     break done.recv().unwrap_or_else(|_| lost());
                 }
                 state.take(&mut broker, POLL, &mut ended, out);
@@ -279,15 +276,24 @@ impl Run<'_> {
                 show(out);
             }
             let _ = writeln!(out, "job {}: held; see the open hold in the log", job.seq());
-            let revoked = match (&self.revoked, revoked) {
-                (Err(earlier), _) => Err(earlier.clone()),
-                (Ok(()), now) => now,
+            return Ok(self.held_summary(job, revoked));
+        }
+        // A dependency lost while the job ran holds the task (ADR-0106): what the job would have done
+        // next is unknown. The operator's own interrupt is not a loss, and a refusal already said why.
+        if interruption.is_none() && state.refused.is_none() {
+            let lost = if state.broker_gone {
+                Some(("broker", why::BROKER_LOST))
+            } else if outcome.ending == Ending::Lost {
+                Some(("sandbox", why::SANDBOX_LOST))
+            } else {
+                None
             };
-            return Ok(Summary {
-                job,
-                outcome: JobOutcome::Held,
-                revoked,
-            });
+            if let Some((dependency, code)) = lost {
+                if result.is_some() {
+                    show(out);
+                }
+                return self.hold_lost(job, out, dependency, code, revoked);
+            }
         }
         let outcome_of = match (interruption, &state.refused, outcome.ending) {
             (Some(failure), _, _) => (JobOutcome::Failed, failure),
@@ -297,10 +303,6 @@ impl Run<'_> {
                     reason: reason.clone(),
                     why: format!("the broker refused ({reason})"),
                 },
-            ),
-            (None, None, _) if state.broker_gone => (
-                JobOutcome::Failed,
-                Failure::new(why::BROKER_STOPPED, "the broker stopped"),
             ),
             (None, None, Ending::Exited(0)) => match (&result, &state.values) {
                 (None, _) => (
@@ -342,6 +344,53 @@ impl Run<'_> {
             .values
             .filter(|_| failure.reason.as_str() == why::SUBMITTED);
         self.end_values(job, out, ended, failure, revoked, values)
+    }
+}
+
+impl Run<'_> {
+    /// Holds the task because `dependency` was lost while its job ran (ADR-0106). It is the
+    /// dependency gate answering unknown: the answer, the job ending held and the hold opening are one
+    /// write, as for any gate (ADR-0020), and only a human releases it.
+    pub(super) fn hold_lost(
+        &mut self,
+        job: JobId,
+        out: &mut dyn Write,
+        dependency: &str,
+        code: &str,
+        revoked: Result<(), String>,
+    ) -> Result<Summary, String> {
+        let request = GateRequest {
+            gate: hyalos_types::Gate::Dependency,
+            inputs: hyalos_broker::egress::inputs_digest(dependency),
+            stakes: Stakes::irreversible(),
+        };
+        let outcome = GateOutcome::Hold {
+            reason: ReasonCode::new(code).ok_or("a dependency's code")?,
+            why: HoldReason::Unknown,
+        };
+        let at = self.clock.now();
+        self.engine
+            .rule_gate(at, Origin::Engine, job, &request, outcome)
+            .map_err(|e| format!("cannot record the hold: {e}"))?;
+        let _ = writeln!(
+            out,
+            "job {}: the {dependency} was lost; held, see the open hold in the log",
+            job.seq()
+        );
+        Ok(self.held_summary(job, revoked))
+    }
+
+    /// A held job's summary: its own revoke's result, or an earlier job's failed one.
+    fn held_summary(&self, job: JobId, revoked: Result<(), String>) -> Summary {
+        let revoked = match (&self.revoked, revoked) {
+            (Err(earlier), _) => Err(earlier.clone()),
+            (Ok(()), now) => now,
+        };
+        Summary {
+            job,
+            outcome: JobOutcome::Held,
+            revoked,
+        }
     }
 }
 

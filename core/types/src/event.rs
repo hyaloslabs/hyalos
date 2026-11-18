@@ -16,11 +16,11 @@ use crate::{
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 21;
+pub const SCHEMA_VERSION: u32 = 22;
 
-/// What this build reads: version 21, and versions 1 to 20 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// What this build reads: version 22, and versions 1 to 21 upcast to it (ADR-0023, ADR-0025, ADR-0027,
 /// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069,
-/// ADR-0070, ADR-0071, ADR-0089).
+/// ADR-0070, ADR-0071, ADR-0089, ADR-0106).
 ///
 /// Version 2 added the stakes of a hold and the reason for resolving one. A version 1 hold is given the
 /// most cautious stakes, so only a human can release it; a version 1 resolution is given an explicit
@@ -41,7 +41,8 @@ pub const SCHEMA_VERSION: u32 = 21;
 /// changed no payload. Version 19 added `plugin.snapshot_imported` (ADR-0097) and changed no payload.
 /// Version 20 added `plugin.revocations_imported` and `plugin.revoked` (ADR-0098) and changed no
 /// payload. Version 21 added `writers` to `handle.released` (ADR-0103); a payload written before has
-/// none and reads as it was.
+/// none and reads as it was. Version 22 added the `dependency` gate (ADR-0106), which `gate.answered`
+/// and `hold.opened` may name, and changed no payload.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -183,6 +184,9 @@ pub enum Gate {
     Content,
     Role,
     Manifest,
+    /// Whether what the job runs on is still there: the broker, the sandbox, the model provider and
+    /// the forge. A dependency lost mid-job answers unknown, so the task holds (ADR-0106).
+    Dependency,
 }
 
 /// Why a hold was opened. A gate that answers `deny` does not hold; it refuses.

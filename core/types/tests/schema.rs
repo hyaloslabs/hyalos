@@ -649,6 +649,48 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             }),
         },
     ));
+
+    // Version 22 added the `dependency` gate (ADR-0106) and changed no payload, so every kind reads
+    // as it did at version 21. Its samples for the two kinds that name a gate are a lost broker's
+    // unknown answer and the hold it opens.
+    let at_21: Vec<_> = all
+        .iter()
+        .filter(|g| g.0 == 21 && g.1 != "gate.answered" && g.1 != "hold.opened")
+        .cloned()
+        .collect();
+    for (_, kind, json, event) in at_21 {
+        all.push((22, kind, json, event));
+    }
+    all.push((
+        22,
+        "gate.answered",
+        format!(
+            r#"{{"kind":"gate.answered","job":4,"gate":"dependency","inputs":"{}","answer":"unknown","reason":"broker.lost"}}"#,
+            hex(13)
+        ),
+        Event::GateAnswered {
+            job: JobId::from_seq(4),
+            gate: Gate::Dependency,
+            inputs: d(13),
+            answer: Answer::Unknown,
+            reason: ReasonCode::new("broker.lost").ok_or("reason")?,
+        },
+    ));
+    all.push((
+        22,
+        "hold.opened",
+        format!(
+            r#"{{"kind":"hold.opened","task":3,"gate":"dependency","inputs":"{}","reason":"unknown","stakes":{{"tier":"irreversible","touches":[]}}}}"#,
+            hex(13)
+        ),
+        Event::HoldOpened {
+            task: TaskId::from_seq(3),
+            gate: Gate::Dependency,
+            inputs: d(13),
+            reason: HoldReason::Unknown,
+            stakes: Stakes::irreversible(),
+        },
+    ));
     Ok(all)
 }
 

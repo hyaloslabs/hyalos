@@ -66,7 +66,7 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0050](0050-running-one-job-from-the-command-line.md) | Running one job from the command line | Accepted |
 | [0051](0051-provider-hosts-the-egress-gate-never-reaches.md) | Provider hosts the egress gate never reaches | Accepted |
 | [0052](0052-reading-the-jobs-issue-from-github.md) | Reading the job's issue from GitHub | Accepted |
-| [0053](0053-an-interrupted-run-ends-its-job.md) | An interrupted run ends its job | Accepted |
+| [0053](0053-an-interrupted-run-ends-its-job.md) | An interrupted run ends its job | Accepted; its `broker.stopped` row, and its `sandbox.failed` row for a lost sandbox, superseded by [ADR-0106](0106-a-dependency-lost-mid-job-holds-the-task.md) |
 | [0054](0054-the-content-gate-on-what-a-push-carries.md) | The content gate on what a push carries | Accepted |
 | [0055](0055-data-flows-name-where-the-jobs-data-may-go.md) | Data flows name where the job's data may go | Accepted |
 | [0056](0056-the-gvisor-substrate.md) | The gVisor substrate | Accepted |
@@ -119,3 +119,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0103](0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md) | Policy releases an issue written only by the repository's writers | Accepted |
 | [0104](0104-fault-schedules-swept-in-ci.md) | Fault schedules, swept in CI | Accepted; its rule that `simulation` is required by name superseded by [ADR-0105](0105-the-required-check-gathers-ci-s-split-jobs.md) |
 | [0105](0105-the-required-check-gathers-ci-s-split-jobs.md) | The required check gathers CI's split jobs | Accepted |
+| [0106](0106-a-dependency-lost-mid-job-holds-the-task.md) | A dependency lost mid-job holds the task | Accepted |
