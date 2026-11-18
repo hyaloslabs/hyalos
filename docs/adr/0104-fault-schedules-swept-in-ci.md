@@ -1,6 +1,6 @@
 # ADR-0104: Fault schedules, swept in CI
 
-**Status:** Proposed
+**Status:** Accepted. Supersedes [ADR-0036](0036-the-simulated-world-and-the-log-scan.md)'s rule that failure rates are fixed in the code.
 
 ## Context
 
