@@ -7,6 +7,10 @@
 //!
 //! Every run plants secrets and raw content ([`Fixtures`]) where the real ones would be, and [`scan`]
 //! looks for them in the files the engine wrote.
+//!
+//! A [`Schedule`] drawn from the seed says how often and from when each boundary fails, and [`sweep`]
+//! runs thousands of seeds, each under its own schedule, and checks every run against the properties
+//! in [`check`] (S8.1, ADR-0104). A failing seed reproduces with [`reproduce`]'s command.
 
 mod fixtures;
 mod forge;
@@ -14,15 +18,19 @@ mod gate;
 mod model;
 mod run;
 mod scan;
+mod schedule;
 mod substrate;
+mod sweep;
 
 pub use fixtures::Fixtures;
 pub use forge::{FakeForge, Forge, PullRequest};
 pub use gate::SeededGate;
 pub use model::{FakeModel, Model, Reply};
-pub use run::{Counts, Run, TOKEN_BUDGET, run_job};
+pub use run::{Counts, Run, TOKEN_BUDGET, run_job, run_with};
 pub use scan::{Leak, scan};
+pub use schedule::{Boundary, Failing, GateMix, Odds, Profile, SandboxMix, Schedule};
 pub use substrate::SeededSubstrate;
+pub use sweep::{Failure, Sweep, check, reproduce, run_seed, seed_dir, sweep};
 
 /// Why a boundary did not do what it was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

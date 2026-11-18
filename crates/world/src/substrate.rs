@@ -13,10 +13,13 @@ use hyalos_substrate::{
 };
 use hyalos_types::SeededRng;
 
+use crate::schedule::{Odds, SandboxMix, Schedule};
+
 #[derive(Debug, Clone)]
 pub struct SeededSubstrate {
     rng: Arc<Mutex<SeededRng>>,
     clock: FakeClock,
+    mix: SandboxMix,
     live: Arc<Mutex<Vec<String>>>,
     started: Arc<Mutex<Vec<SandboxSpec>>>,
 }
@@ -26,9 +29,16 @@ impl SeededSubstrate {
         Self {
             rng: Arc::new(Mutex::new(rng)),
             clock,
+            mix: Schedule::default().sandbox,
             live: Arc::default(),
             started: Arc::default(),
         }
+    }
+
+    /// Starts and ends sandboxes as the schedule says instead of at the usual rates.
+    pub fn with_mix(mut self, mix: SandboxMix) -> Self {
+        self.mix = mix;
+        self
     }
 
     /// Every spec this substrate was asked to start, in order.
@@ -38,6 +48,13 @@ impl SeededSubstrate {
 
     fn draw(&self, bound: u64) -> u64 {
         self.rng.lock().map(|mut r| r.below(bound)).unwrap_or(0)
+    }
+
+    fn hit(&self, odds: Odds) -> bool {
+        self.rng
+            .lock()
+            .map(|mut r| odds.hit(&mut r))
+            .unwrap_or(false)
     }
 }
 
@@ -60,16 +77,21 @@ impl Substrate for SeededSubstrate {
 
     fn start(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, StartError> {
         spec.validate().map_err(StartError::Spec)?;
-        // About one start in forty is refused by the runtime.
-        if self.draw(40) == 0 {
+        // At the usual rate, about one start in forty is refused by the runtime.
+        if self.hit(self.mix.refused) {
             return Err(StartError::Refused("the runtime refused".into()));
         }
         // Decided at the start, so the same seed gives the same ending however the run is driven.
-        let ending = match self.draw(20) {
-            0 => Ending::DeadlineExceeded,
-            1 => Ending::Lost,
-            2 | 3 => Ending::Exited(1),
-            _ => Ending::Exited(0),
+        let m = self.mix;
+        let slot = self.draw(m.of);
+        let ending = if slot < m.deadline {
+            Ending::DeadlineExceeded
+        } else if slot < m.deadline + m.lost {
+            Ending::Lost
+        } else if slot < m.deadline + m.lost + m.failed {
+            Ending::Exited(1)
+        } else {
+            Ending::Exited(0)
         };
         let id = format!("seeded-{}", spec.job);
         if let Ok(mut live) = self.live.lock() {

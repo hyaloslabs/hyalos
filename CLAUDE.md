@@ -75,7 +75,7 @@ These are pinned by tests. A change to one bumps its version (except where noted
 | `.github/workflows/release.yml` | A release: the static binary, the image by digest, provenance | 0081 |
 | `site/setup`, `.github/workflows/pages.yml` | The setup page that creates the GitHub App from a manifest, and the marketplace settings check's App page | 0084, 0096 |
 | `crates/xtask` | `layout` and `lines` | 0017 |
-| `crates/sim`, `crates/world` | Deterministic simulation and the simulated world | 0013, 0036 |
+| `crates/sim`, `crates/world` | Deterministic simulation, the simulated world, fault schedules and the `sim` sweep | 0013, 0036, 0104 |
 | `crates/substrate-contract`, `crates/vm-init` | The contract every substrate passes; the microVM's init | 0032, 0041, 0056, 0058 |
 | `crates/sandbox-tools`, `images/sandbox` | The sandbox image and the tools in it | 0016, 0040, 0049, 0064, 0089 |
 | `crates/policy-proof` | Symbolic proofs of the baseline (cvc5) | 0033 |

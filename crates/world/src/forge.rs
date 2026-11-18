@@ -7,6 +7,7 @@ use hyalos_types::{Entropy, SeededRng};
 
 use crate::Fault;
 use crate::fixtures::Fixtures;
+use crate::schedule::{Failing, Schedule};
 
 /// What the broker asks of a forge. The real adapters will sit behind the same two calls; the token
 /// is the broker's, never the sandbox's.
@@ -30,6 +31,7 @@ pub struct FakeForge {
     clock: FakeClock,
     token: String,
     content: String,
+    faults: Failing,
     /// Requests served, faults included.
     pub requests: u32,
 }
@@ -41,8 +43,15 @@ impl FakeForge {
             clock,
             token: fixtures.forge_token.clone(),
             content: fixtures.forge_content.clone(),
+            faults: Schedule::default().forge,
             requests: 0,
         }
+    }
+
+    /// Fails as the schedule says instead of at the usual rate.
+    pub fn with_faults(mut self, faults: Failing) -> Self {
+        self.faults = faults;
+        self
     }
 
     fn begin(&mut self, token: &str) -> Result<(), Fault> {
@@ -52,8 +61,8 @@ impl FakeForge {
         if token != self.token {
             return Err(Fault::Unauthorized);
         }
-        // About one request in ten fails.
-        if self.rng.below(10) == 0 {
+        // At the usual rate, about one request in ten fails.
+        if self.faults.fails(self.requests, &mut self.rng) {
             return Err(Fault::Unavailable);
         }
         Ok(())
