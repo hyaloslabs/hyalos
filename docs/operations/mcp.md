@@ -5,6 +5,7 @@
 - `job_status` and `job_result` read that job, for clients without the Tasks extension.
 - `list_tasks` returns the newest tasks in the event log, with each task's status and the outcome of each of its jobs.
 - `list_approvals` returns the holds waiting for your decision, with the command you run for each ([ADR-0074](../adr/0074-approvals-shown-to-the-driving-agent.md)).
+- `list_learnings` returns what the event log says happened, grouped: how jobs ended and why, what gates refused or could not decide, how holds were decided, and the values each job returned. Each learning has its provenance and the events it was learned from, by sequence number and hash, so you can check it with `hyalos log verify`. Values a model chose after reading the issue are marked untrusted ([ADR-0112](../adr/0112-learnings-queried-over-the-event-log.md)).
 
 ## What waits for you
 
@@ -29,6 +30,7 @@ Each tool has one command that makes the same call and prints the same answer ([
 | `hyalos status <task>` | `job_status` |
 | `hyalos result <task>` | `job_result` |
 | `hyalos approvals [--limit <n>]` | `list_approvals` |
+| `hyalos learnings [--limit <n>]` | `list_learnings` |
 | `hyalos stop <task>` | `tasks/cancel` |
 
 - Each prints the tool's text; `--json` prints its structured content instead, and is always JSON.

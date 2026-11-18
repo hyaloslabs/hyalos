@@ -1,5 +1,5 @@
 //! The driving agent's MCP tools on the command line, one command each (S5.6, ADR-0075): `hyalos
-//! tasks`, `start`, `status`, `result` and `approvals`. Each builds the server's own `EngineTools`
+//! tasks`, `start`, `status`, `result`, `approvals` and `learnings`. Each builds the server's own `EngineTools`
 //! and makes the same call, so a command and its tool cannot answer differently.
 //!
 //! Operator decisions are not here, and no MCP tool makes one: approving, cancelling, merging,
@@ -16,12 +16,13 @@ use crate::mcp_cmd::{self, EngineTools};
 use crate::run_cmd::Request;
 
 /// Each command and the MCP tool it calls, in the server's order. Every tool has exactly one.
-pub const COMMANDS: [(&str, &str); 5] = [
+pub const COMMANDS: [(&str, &str); 6] = [
     ("tasks", "list_tasks"),
     ("start", "start_job"),
     ("status", "job_status"),
     ("result", "job_result"),
     ("approvals", "list_approvals"),
+    ("learnings", "list_learnings"),
 ];
 
 /// The Tasks extension's methods that act on a run, one command each. `stop` is `tasks/cancel`: it
@@ -52,9 +53,10 @@ const USAGE: &str = "usage: hyalos tasks [--limit <n>] [--json]
        hyalos status <task> [--json]
        hyalos result <task> [--json]
        hyalos approvals [--limit <n>] [--json]
+       hyalos learnings [--limit <n>] [--json]
        hyalos stop <task>
   the MCP server's tools, one command each (list_tasks, start_job, job_status, job_result,
-  list_approvals): the same call and the same answer. Each prints the tool's text, or with --json its
+  list_approvals, list_learnings): the same call and the same answer. Each prints the tool's text, or with --json its
   structured content. start starts hyalos run as a process of its own, as start_job does, with these
   options (as for hyalos mcp). status and result, like the server, resume a run whose runner
   stopped, and that run writes to the log. stop asks a run start started to stop, as tasks/cancel
@@ -161,7 +163,7 @@ fn parse(
     let mut arguments = Map::new();
     let mut template_args = Vec::new();
     match tool {
-        "list_tasks" | "list_approvals" => match args {
+        "list_tasks" | "list_approvals" | "list_learnings" => match args {
             [] => {}
             [flag, n] if flag.as_str() == "--limit" => {
                 let n: u64 = n.parse().map_err(|_| "--limit is a number")?;
@@ -233,6 +235,11 @@ mod tests {
         assert_eq!(
             (tool, Value::Object(a)),
             ("list_approvals", json!({"limit": 5}))
+        );
+        let (tool, a) = parsed("learnings", &["--limit", "3"]).unwrap();
+        assert_eq!(
+            (tool, Value::Object(a)),
+            ("list_learnings", json!({"limit": 3}))
         );
         let (tool, a) = parsed("status", &["12"]).unwrap();
         assert_eq!(

@@ -125,3 +125,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0109](0109-property-based-contract-suites-at-every-boundary.md) | Property-based contract suites at every boundary | Accepted |
 | [0110](0110-the-red-team-reach-is-recorded-per-release-and-may-not-regress.md) | The red-team reach is recorded per release and may not regress | Accepted |
 | [0111](0111-a-tag-requires-its-evidence-and-a-human-pushes-it.md) | A tag requires its evidence, and a human pushes it | Accepted |
+| [0112](0112-learnings-queried-over-the-event-log.md) | Learnings queried over the event log | Accepted |

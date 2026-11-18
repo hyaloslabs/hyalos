@@ -150,7 +150,7 @@ fn restored_state(schema: &Schema, log: &Log) -> Result<State, EngineError> {
 }
 
 /// The state a snapshot stood for, if there is one, carried on through `events`.
-fn state_from(
+pub(crate) fn state_from(
     schema: &Schema,
     anchor: Option<&Anchor>,
     events: &[StoredEvent],
