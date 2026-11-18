@@ -1,6 +1,6 @@
 # ADR-0104: Fault schedules, swept in CI
 
-**Status:** Accepted. Supersedes [ADR-0036](0036-the-simulated-world-and-the-log-scan.md)'s rule that failure rates are fixed in the code.
+**Status:** Accepted. Supersedes [ADR-0036](0036-the-simulated-world-and-the-log-scan.md)'s rule that failure rates are fixed in the code. Its rule that `simulation` is added to the ruleset by name is superseded by [ADR-0105](0105-the-required-check-gathers-ci-s-split-jobs.md), which gathers it into `build, lint, test`.
 
 ## Context
 

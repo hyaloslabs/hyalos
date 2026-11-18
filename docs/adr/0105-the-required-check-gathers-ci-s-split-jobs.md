@@ -1,6 +1,6 @@
 # ADR-0105: The required check gathers CI's split jobs
 
-**Status:** Proposed
+**Status:** Accepted. Supersedes [ADR-0104](0104-fault-schedules-swept-in-ci.md)'s rule that `simulation` is added to the ruleset's required checks by name.
 
 ## Context
 
