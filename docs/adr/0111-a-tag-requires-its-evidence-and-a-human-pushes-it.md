@@ -38,6 +38,6 @@ A tag without evidence releases nothing. The run fails in its first job, names w
 
 The workflow cannot stop the tag itself from being pushed. To refuse that too, the operator adds a tag ruleset on `v*` that only maintainers may create. That is a repository setting, documented in [releases.md](../operations/releases.md), not something this repository can check.
 
-The evidence is `ci`'s run on `main` for the exact commit. With squash merges, that is the run of the merge itself. A commit that never ran `ci` on `main`, such as one pushed to a tag only, can never be released.
+The evidence is `ci`'s run on `main` for the exact commit. With squash merges, that is the run of the merge itself. A commit that never ran `ci` on `main`, such as one pushed to a tag only, can never be released. Neither can one whose run `ci` cancelled because a newer push to `main` superseded it (`cancel-in-progress`). The release is cut from the newer head instead.
 
 Adding a kind of evidence means adding its job to `ci.yml` and its name to the script's list. The xtask test then holds the name to the job.
