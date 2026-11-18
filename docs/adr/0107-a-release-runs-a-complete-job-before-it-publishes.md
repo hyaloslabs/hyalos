@@ -1,6 +1,6 @@
 # ADR-0107: A release runs a complete job before it publishes
 
-**Status:** Proposed. Supersedes [ADR-0081](0081-prebuilt-releases.md)'s rule that the workflow checks only that the binary is static, runs and names its image, and its pull-request check jobs.
+**Status:** Accepted. Supersedes [ADR-0081](0081-prebuilt-releases.md)'s rule that the workflow checks only that the binary is static, runs and names its image, and its pull-request check jobs.
 
 ## Context
 
