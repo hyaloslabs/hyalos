@@ -378,7 +378,23 @@ fn an_issue_number_runs_the_fix_issue_workflow_and_only_the_reader_sees_the_issu
         })
         .collect();
     assert_eq!(values, finished_values());
-    assert!(matches!(events.last(), Some(Event::TaskCompleted { .. })));
+    // The run succeeded, so Hyalos drafted a skill from it after completing the task: tainted, and
+    // held to read capabilities (S9.2, ADR-0113).
+    let n = events.len();
+    assert!(
+        matches!(events[n - 2], Event::TaskCompleted { .. }),
+        "{events:?}"
+    );
+    let Event::SkillDrafted {
+        name, task, grant, ..
+    } = &events[n - 1]
+    else {
+        return Err(format!("no draft: {events:?}").into());
+    };
+    assert_eq!(*task, started[0].0);
+    assert_eq!(name.as_str(), format!("draft-{}", task.seq()));
+    assert_eq!(*grant, hyalos_types::Grant::read_only());
+    assert!(said.contains(&format!("drafted skill {name}")), "{said}");
     // The forge's text is not in the log: the task records a digest of the request.
     let raw = std::fs::read(world.data.join("events.db"))?;
     assert!(!contains(&raw, b"issue-body-marker-5b1e"));
@@ -455,11 +471,23 @@ fn a_released_issue_reaches_the_actor_only_through_its_handle() -> Res {
     for forge in [ISSUE_TITLE, ISSUE_BODY, "issue-body-marker-5b1e"] {
         assert!(!prompt.contains(forge), "{forge} is in the prompt");
     }
-    // Nothing of the text is in the log or beside it.
-    for entry in std::fs::read_dir(&world.data)? {
-        let raw = std::fs::read(entry?.path())?;
-        assert!(!contains(&raw, b"issue-body-marker-5b1e"));
+    // Nothing of the text is in the log or beside it, the skill drafted from the run included.
+    let mut paths = vec![world.data.clone()];
+    while let Some(path) = paths.pop() {
+        if path.is_dir() {
+            for entry in std::fs::read_dir(&path)? {
+                paths.push(entry?.path());
+            }
+        } else {
+            let raw = std::fs::read(&path)?;
+            assert!(!contains(&raw, b"issue-body-marker-5b1e"), "{path:?}");
+        }
     }
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::SkillDrafted { task: t, .. } if t == task))
+    );
     assert!(gh.issued().is_empty(), "no token is left live");
     let _ = std::fs::remove_dir_all(&repos);
     Ok(())
@@ -1551,7 +1579,10 @@ fn a_run_whose_runner_stopped_resumes_from_the_log_and_reruns_only_the_cut_step(
         .count();
     assert_eq!(started, 4);
     assert_ne!(summary.job, cut);
-    assert!(matches!(events.last(), Some(Event::TaskCompleted { task: t }) if *t == task));
+    // The resumed run succeeded, so it is drafted from, the cut job's missing values and all.
+    let n = events.len();
+    assert!(matches!(events[n - 2], Event::TaskCompleted { task: t } if t == task));
+    assert!(matches!(events[n - 1], Event::SkillDrafted { task: t, .. } if t == task));
     assert!(gh.issued().is_empty(), "no token is left live");
 
     // A finished run has nothing left, and a request that is not the task's is refused.

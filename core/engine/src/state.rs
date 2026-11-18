@@ -8,9 +8,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use hyalos_types::snapshot::{
-    AgentImage, CancelledImage, HandleImage, HoldImage, InstallPolicyImage, JobEndImage, JobImage,
-    MergeImage, PendingUpdateImage, PluginImage, PolicyImage, PrunedImage, ResolvedImage,
-    RevocationListImage, RevokedImage, RevokedPluginImage, StateImage, TaskImage, TrustedRootImage,
+    AgentImage, CancelledImage, DraftImage, HandleImage, HoldImage, InstallPolicyImage,
+    JobEndImage, JobImage, MergeImage, PendingUpdateImage, PluginImage, PolicyImage, PrunedImage,
+    ResolvedImage, RevocationListImage, RevokedImage, RevokedPluginImage, StateImage, TaskImage,
+    TrustedRootImage,
 };
 use hyalos_types::workflow::MAX_FIELDS;
 use hyalos_types::{
@@ -236,6 +237,9 @@ pub enum RuleViolation {
     PluginRevoked,
     /// A plugin's grant holds a name the capability vocabulary does not accept (ADR-0085).
     PluginGrantInvalid,
+    /// A skill was drafted from a task that did not end in success, with a grant beyond
+    /// `Grant::read_only`, or under a name already drafted or installed (ADR-0113).
+    DraftRefused,
     /// A task holds one merge approval, made before any job runs on it.
     MergeAlreadyApproved(TaskId),
     /// A second job on a task whose merge approval a job has already had.
@@ -368,6 +372,10 @@ impl fmt::Display for RuleViolation {
                 f,
                 "a release recorded as revoked is not installed again (ADR-0098)"
             ),
+            RuleViolation::DraftRefused => write!(
+                f,
+                "a skill is drafted once per name, from a task whose last job succeeded, with no more than read capabilities (ADR-0113)"
+            ),
             RuleViolation::PluginGrantInvalid => write!(
                 f,
                 "a plugin's grant holds a name the capability vocabulary does not accept (ADR-0085)"
@@ -495,6 +503,8 @@ pub struct State {
     revocations: Option<ImportedRevocations>,
     /// The installed plugins whose release is revoked, by name (ADR-0098).
     revoked_plugins: BTreeMap<PluginName, RevokedPlugin>,
+    /// The skills Hyalos drafted from runs that succeeded, by name (ADR-0113).
+    drafts: BTreeMap<PluginName, Draft>,
     pending: Option<Pending>,
     /// The event of the last decision the operator signed (ADR-0070).
     last_approval: Option<u64>,
@@ -556,6 +566,18 @@ pub struct InstalledPlugin {
     pub source: PluginSource,
     pub by: Resolution,
     pub reason: ReasonCode,
+}
+
+/// A skill Hyalos drafted from task `task` (ADR-0113): the files with SHA-256 `digest` in the plugin
+/// store, tainted, and held to `grant`, which is never more than `Grant::read_only`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Draft {
+    /// The event that drafted it.
+    pub seq: u64,
+    pub at: Timestamp,
+    pub digest: Digest,
+    pub task: TaskId,
+    pub grant: Grant,
 }
 
 /// An update a check found beyond the install policy, waiting for the operator (ADR-0092).
@@ -692,6 +714,11 @@ impl State {
     /// The installed plugins whose release is revoked, by name (ADR-0098).
     pub fn revoked_plugins(&self) -> &BTreeMap<PluginName, RevokedPlugin> {
         &self.revoked_plugins
+    }
+
+    /// The skills Hyalos drafted, by name (ADR-0113).
+    pub fn drafts(&self) -> &BTreeMap<PluginName, Draft> {
+        &self.drafts
     }
 
     /// The updates waiting for the operator, by name (ADR-0092).
@@ -862,6 +889,28 @@ impl State {
     fn check_rules(&self, event: &Event) -> Result<(), RuleViolation> {
         match event {
             Event::TaskCreated { .. } => Ok(()),
+            Event::SkillDrafted {
+                name, task, grant, ..
+            } => {
+                let succeeded = self
+                    .tasks
+                    .get(task)
+                    .is_some_and(|t| t.status() == TaskStatus::Completed)
+                    && self
+                        .jobs
+                        .values()
+                        .rfind(|j| j.task == *task)
+                        .is_some_and(|j| j.ended.is_some_and(|(_, o)| o == JobOutcome::Succeeded));
+                let taken = self.drafts.contains_key(name) || self.plugins.contains_key(name);
+                if !succeeded
+                    || taken
+                    || grant.check().is_err()
+                    || !grant.within(&Grant::read_only())
+                {
+                    return Err(RuleViolation::DraftRefused);
+                }
+                Ok(())
+            }
             Event::TaskCompleted { task } => {
                 let status = self.task(*task)?.status();
                 if status != TaskStatus::Open {
@@ -1221,6 +1270,23 @@ impl State {
         }
         self.check_stamped(at, origin, event)?;
         match event {
+            Event::SkillDrafted {
+                name,
+                digest,
+                task,
+                grant,
+            } => {
+                self.drafts.insert(
+                    name.clone(),
+                    Draft {
+                        seq,
+                        at,
+                        digest: *digest,
+                        task: *task,
+                        grant: grant.clone(),
+                    },
+                );
+            }
             Event::TaskCreated { request } => {
                 self.tasks.insert(
                     TaskId::from_seq(seq),
@@ -1546,6 +1612,7 @@ impl State {
             trusted_root,
             revocations,
             revoked_plugins,
+            drafts,
             pending,
             last_approval,
             signed_since,
@@ -1572,6 +1639,17 @@ impl State {
                 digest: r.digest,
                 signed_at: r.signed_at.as_millis(),
             }),
+            drafts: drafts
+                .iter()
+                .map(|(name, d)| DraftImage {
+                    seq: d.seq,
+                    at: d.at.as_millis(),
+                    name: name.clone(),
+                    digest: d.digest,
+                    task: d.task,
+                    grant: d.grant.clone(),
+                })
+                .collect(),
             revoked_plugins: revoked_plugins
                 .iter()
                 .map(|(name, r)| {
@@ -1866,7 +1944,21 @@ impl State {
             trusted_root,
             revocations,
             revoked_plugins,
+            drafts,
         } = image;
+        let mut drafted = BTreeMap::new();
+        for d in drafts {
+            let draft = Draft {
+                seq: d.seq,
+                at: Timestamp::from_millis(d.at),
+                digest: d.digest,
+                task: d.task,
+                grant: d.grant,
+            };
+            if drafted.insert(d.name.clone(), draft).is_some() {
+                return Err(format!("draft {} is in the snapshot twice", d.name));
+            }
+        }
         let mut revoked_by_name = BTreeMap::new();
         for r in revoked_plugins {
             let revoked = RevokedPlugin {
@@ -1912,6 +2004,7 @@ impl State {
             }
         }
         let mut state = State {
+            drafts: drafted,
             plugins: by_name,
             pending_updates: waiting,
             trusted_root: trusted_root.map(|t| ImportedSnapshot {
@@ -2168,6 +2261,11 @@ impl State {
                 out.push(format!(
                     "plugin {name} holds a grant the vocabulary refuses"
                 ));
+            }
+        }
+        for (name, d) in &self.drafts {
+            if d.grant.check().is_err() || !d.grant.within(&Grant::read_only()) {
+                out.push(format!("draft {name} holds more than read capabilities"));
             }
         }
         for (name, r) in &self.revoked_plugins {

@@ -357,6 +357,36 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
                 values: vec![hyalos_types::TypedValue::Bool(true)],
             }
         }
+        "skill.drafted" => {
+            // Only a task whose last job succeeded is drafted from (ADR-0113).
+            let task = TaskId::from_seq(go(&mut e, 1, Event::TaskCreated { request: d(1) })?);
+            let job = JobId::from_seq(go(
+                &mut e,
+                2,
+                Event::JobStarted {
+                    task,
+                    substrate: SubstrateName::new("test").unwrap_or_else(SubstrateName::unrecorded),
+                    credentials: hyalos_types::CredentialTier::BrokerHeld,
+                    attestation: hyalos_types::Attestation::no_hardware_root(),
+                },
+            )?);
+            go(
+                &mut e,
+                3,
+                Event::JobEnded {
+                    job,
+                    outcome: hyalos_types::JobOutcome::Succeeded,
+                    reason: why(),
+                },
+            )?;
+            go(&mut e, 4, Event::TaskCompleted { task })?;
+            Event::SkillDrafted {
+                name: hyalos_types::PluginName::new("draft-1").ok_or("name")?,
+                digest: d(2),
+                task,
+                grant: hyalos_types::Grant::read_only(),
+            }
+        }
         "archive.pruned" => {
             // Only an archive the log made can be named, so compact first and name where it ended.
             go(&mut e, 1, Event::TaskCreated { request: d(1) })?;

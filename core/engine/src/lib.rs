@@ -19,7 +19,7 @@ pub use engine::{
 pub use learnings::{Learning, Learnings, Lesson, MAX_SOURCES, Source, learn, learnings};
 pub use mint::{MintRefusal, mint_codes};
 pub use state::{
-    Agent, ApprovedMerge, Cancelled, Hold, ImportedRevocations, ImportedSnapshot, InstalledPlugin,
-    Job, PolicyApproval, Pruned, ReleasedHandle, Resolved, Revoked, RevokedPlugin, RuleViolation,
-    SetInstallPolicy, State, Task, TaskStatus,
+    Agent, ApprovedMerge, Cancelled, Draft, Hold, ImportedRevocations, ImportedSnapshot,
+    InstalledPlugin, Job, PolicyApproval, Pruned, ReleasedHandle, Resolved, Revoked, RevokedPlugin,
+    RuleViolation, SetInstallPolicy, State, Task, TaskStatus,
 };
