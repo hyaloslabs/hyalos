@@ -288,11 +288,15 @@ impl Run<'_> {
     /// printed and leaves the run as it ended.
     fn draft(&mut self, workflow: &hyalos_types::workflow::Workflow, out: &mut dyn Write) {
         let task = self.task;
-        let request = serde_json::to_vec(&self.request.stored()).unwrap_or_default();
         let values = crate::draft::values(self.engine.state(), task);
-        let drafted = crate::draft::files(task, workflow, &values, &request)
+        // A draft carries the request `task.created` digests, or it is not drafted (ADR-0113).
+        let drafted = serde_json::to_vec(&self.request.stored())
+            .ok()
+            .and_then(|request| crate::draft::files(task, workflow, &values, &request))
             .zip(crate::draft::name(task))
-            .ok_or_else(|| "its values do not fit its workflow".to_string())
+            .ok_or_else(|| {
+                "its request cannot be encoded or its values do not fit its workflow".to_string()
+            })
             .and_then(|(files, name)| {
                 let digest = crate::draft::store(&self.plugin_store, task, &files)?;
                 let event = Event::SkillDrafted {
