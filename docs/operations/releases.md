@@ -52,7 +52,7 @@ A release has no microVM init (`hyalos-vm-init`): to run jobs in a microVM, buil
 
 ## Cutting one
 
-1. Bump `version` in the workspace's `Cargo.toml` (and `Cargo.lock`, with `cargo update -w`), and merge that.
+1. Bump `version` in the workspace's `Cargo.toml` (and `Cargo.lock`, with `cargo update -w`). Record the red-team reach for the new version in the same change: run `HYALOS_REDTEAM_RELEASE=<version> cargo test -p hyalos-redteam --test corpus`, which fails and prints the row this release must have, and append that row to `crates/redteam/reach.json` ([ADR-0110](../adr/0110-the-red-team-reach-is-recorded-per-release-and-may-not-regress.md)). Merge that. A tag whose version has no row, or a row other than what the corpus reaches, is not released.
 2. Tag the merge commit and push the tag:
 
    ```

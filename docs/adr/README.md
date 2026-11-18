@@ -123,3 +123,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0107](0107-a-release-runs-a-complete-job-before-it-publishes.md) | A release runs a complete job before it publishes | Accepted |
 | [0108](0108-the-job-state-machine-s-tla-spec-and-its-model-check.md) | The job state machine's TLA+ spec and its model check | Accepted |
 | [0109](0109-property-based-contract-suites-at-every-boundary.md) | Property-based contract suites at every boundary | Accepted |
+| [0110](0110-the-red-team-reach-is-recorded-per-release-and-may-not-regress.md) | The red-team reach is recorded per release and may not regress | Proposed |

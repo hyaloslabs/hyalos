@@ -7,6 +7,8 @@ name: release
 #   private repositories only on Enterprise Cloud);
 # - one complete job runs with that binary and that image, and the release is published only if it
 #   succeeds (ADR-0107);
+# - the red-team corpus runs offline against the gates, and the release goes ahead only if its reach
+#   is recorded in crates/redteam/reach.json and has not regressed from the release before (ADR-0110);
 # - the binary and its SHA-256 (SHA256SUMS) are published on a GitHub release.
 # A pull request that changes the release runs only the check job, which can write nothing: it builds
 # the image and the binary as a release would, and runs the same job with them.
@@ -59,9 +61,28 @@ jobs:
       - name: Run a complete job with the binary
         run: .github/scripts/run-release-job.sh dist/hyalos-x86_64-linux hyalos-sandbox:latest
 
+  reach:
+    name: red-team reach
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The exact toolchain is pinned in rust-toolchain.toml.
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      # The run must find this release's row in reach.json, recording exactly what it reached.
+      - name: The corpus's reach is recorded for this release and has not regressed
+        env:
+          TAG: ${{ github.ref_name }}
+        run: HYALOS_REDTEAM_RELEASE="${TAG#v}" cargo test -p hyalos-redteam --locked --lib --test corpus
+
   image:
     name: sandbox image
     if: github.event_name == 'push'
+    needs: reach
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
