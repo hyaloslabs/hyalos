@@ -207,7 +207,9 @@ jobs:
           echo "${TLA_SHA256}  ${RUNNER_TEMP}/tla2tools.jar" | sha256sum --check --strict
           java -version
       - name: Model-check the spec and its mutants
-        run: .github/scripts/check-spec.sh "${RUNNER_TEMP}/tla2tools.jar" | tee -a "${GITHUB_STEP_SUMMARY}"
+        run: |
+          .github/scripts/check-spec.sh "${RUNNER_TEMP}/tla2tools.jar" | tee "${RUNNER_TEMP}/spec.out"
+          grep -E '^== |broken|No error|states generated,|::error' "${RUNNER_TEMP}/spec.out" >> "${GITHUB_STEP_SUMMARY}" || true
         # Named, so the step runs with pipefail and the check's exit status survives the tee.
         shell: bash
 

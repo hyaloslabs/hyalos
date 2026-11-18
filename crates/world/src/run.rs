@@ -60,6 +60,8 @@ pub struct Counts {
     pub expired: bool,
     /// The merge job's ending, when the operator approved a merge of the job's pull request.
     pub merge: Option<MergeEnding>,
+    /// Forge requests the merge served: a push after the review, and the merge's answer.
+    pub merge_forge_served: u32,
 }
 
 /// How a simulated merge job ended (ADR-0071).
@@ -390,8 +392,10 @@ pub fn run_with(seed: u64, schedule: &Schedule, dir: &Path) -> Res<Run> {
                 fixtures: &fixtures,
                 rng: sim.stream("merge"),
                 admissions: &mut admissions,
+                served: 0,
             };
             counts.merge = Some(merging.run(&pr, &manifest_key)?);
+            counts.merge_forge_served = merging.served;
         }
     }
 
@@ -449,6 +453,8 @@ struct Merging<'a> {
     fixtures: &'a Fixtures,
     rng: SeededRng,
     admissions: &'a mut Vec<Admitted>,
+    /// Forge requests served, faults excluded.
+    served: u32,
 }
 
 impl Merging<'_> {
@@ -465,7 +471,8 @@ impl Merging<'_> {
             .ok_or("the forge lost the pull request")?;
         if self.rng.below(2) == 0 {
             match self.forge.push(&token, pr.number) {
-                Ok(_) | Err(Fault::Unavailable) => {}
+                Ok(_) => self.served += 1,
+                Err(Fault::Unavailable) => {}
                 Err(Fault::Unauthorized) => {
                     return Err("the forge refused the broker's token".into());
                 }
@@ -563,7 +570,11 @@ impl Merging<'_> {
                     at: self.clock.now(),
                     deadline,
                 });
-                match self.forge.merge(&token, pr.number, head.as_str()) {
+                let answer = self.forge.merge(&token, pr.number, head.as_str());
+                if answer.is_ok() {
+                    self.served += 1;
+                }
+                match answer {
                     Ok(Merged::At(_)) => MergeEnding::Merged,
                     Ok(Merged::HeadMoved) => MergeEnding::HeadMoved,
                     Err(Fault::Unavailable) => MergeEnding::ForgeDown,

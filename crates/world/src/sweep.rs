@@ -173,7 +173,7 @@ pub fn check(schedule: &Schedule, run: &Run) -> Result<(), String> {
         }
         Profile::Outage(Boundary::Forge) => {
             let after = schedule.forge.down_after.unwrap_or(0);
-            if c.issues_read + c.pull_requests > after {
+            if c.issues_read + c.pull_requests + c.merge_forge_served > after {
                 return fail("the forge served a request after its outage began".into());
             }
         }
