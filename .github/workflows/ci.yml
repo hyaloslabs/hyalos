@@ -125,12 +125,13 @@ jobs:
         if: ${{ always() }}
         run: df -h / "$GITHUB_WORKSPACE"; du -sh target 2>/dev/null || true
 
-  # The required check (ADR-0105). It passes only when lint, every part of the tests and the simulation
-  # sweep passed, or when only documentation changed and they were all skipped. Anything else, a
+  # The required check (ADR-0105, ADR-0108). It passes only when lint, every part of the tests, the
+  # simulation sweep and the job spec's model check passed, or when only documentation changed and they
+  # were all skipped. Anything else, a
   # failure, a cancellation or a job that never ran, fails it, so splitting a job never makes it optional.
   rust:
     name: build, lint, test
-    needs: [changes, lint, test, simulation]
+    needs: [changes, lint, test, simulation, spec]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -138,9 +139,9 @@ jobs:
       - name: Every gathered job passed
         env:
           DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
-          RESULTS: ${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.simulation.result }}
+          RESULTS: ${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.simulation.result }} ${{ needs.spec.result }}
         run: |
-          echo "docs only: ${DOCS_ONLY:-unknown}; lint, test, simulation: ${RESULTS}"
+          echo "docs only: ${DOCS_ONLY:-unknown}; lint, test, simulation, spec: ${RESULTS}"
           want=success
           if [ "${DOCS_ONLY}" = "true" ]; then want=skipped; fi
           for r in ${RESULTS}; do
@@ -182,6 +183,32 @@ jobs:
       - name: Sweep 10,000 fault schedules
         run: cargo run --release --locked -p hyalos-world --bin sim -- --sweep 0 10000 | tee -a "${GITHUB_STEP_SUMMARY}"
         # Named, so the step runs with pipefail and the sweep's exit status survives the tee.
+        shell: bash
+
+  # The job state machine's TLA+ spec (ADR-0013, ADR-0108): TLC checks every invariant of spec/Job.tla,
+  # then that each mutant breaks the one invariant it is for. The tools are a pinned release checked
+  # against its checksum, run on the runner's Java. They are never part of the binary.
+  spec:
+    name: job spec
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      TLA_VERSION: "1.7.4"
+      TLA_SHA256: "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the TLA+ tools
+        run: |
+          curl -fsSL -o "${RUNNER_TEMP}/tla2tools.jar" "https://github.com/tlaplus/tlaplus/releases/download/v${TLA_VERSION}/tla2tools.jar"
+          echo "${TLA_SHA256}  ${RUNNER_TEMP}/tla2tools.jar" | sha256sum --check --strict
+          java -version
+      - name: Model-check the spec and its mutants
+        run: .github/scripts/check-spec.sh "${RUNNER_TEMP}/tla2tools.jar" | tee -a "${GITHUB_STEP_SUMMARY}"
+        # Named, so the step runs with pipefail and the check's exit status survives the tee.
         shell: bash
 
   # The official MCP conformance suite against the engine's MCP protocol layer (ADR-0067). The suite

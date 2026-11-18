@@ -1,5 +1,6 @@
 //! A fake forge: issues to read and pull requests to open, from a seeded stream (ADR-0013).
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use hyalos_sim::FakeClock;
@@ -16,6 +17,28 @@ pub trait Forge {
     fn read_issue(&mut self, token: &str, number: u64) -> Result<String, Fault>;
     /// Opens a pull request from `branch` and returns its head commit.
     fn open_pr(&mut self, token: &str, branch: &str) -> Result<PullRequest, Fault>;
+    /// Pushes a commit to pull request `pr`'s branch and returns its new head.
+    fn push(&mut self, token: &str, pr: u64) -> Result<String, Fault>;
+    /// Merges pull request `pr` if its head is still `sha`, as GitHub does when it is given the
+    /// commit the operator approved (ADR-0071).
+    fn merge(&mut self, token: &str, pr: u64, sha: &str) -> Result<Merged, Fault>;
+}
+
+/// What a forge answered a merge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Merged {
+    /// Merged at the commit asked for.
+    At(String),
+    /// Refused: the head is no longer the commit asked for (`merge.head_moved`).
+    HeadMoved,
+}
+
+/// A merge the forge made: the commit it was asked to merge, and the pull request's head then.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForgeMerge {
+    pub pr: u64,
+    pub sha: String,
+    pub head: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +57,17 @@ pub struct FakeForge {
     faults: Failing,
     /// Requests served, faults included.
     pub requests: u32,
+    /// Each open pull request's head.
+    pub heads: BTreeMap<u64, String>,
+    /// Every merge, in order.
+    pub merges: Vec<ForgeMerge>,
+}
+
+/// A 40-digit commit id made from `seed` alone, so naming a commit draws nothing from the stream.
+fn commit_id(seed: &[u8]) -> String {
+    use sha2::{Digest as _, Sha256};
+    let digest = Sha256::digest(seed);
+    digest.iter().take(20).map(|b| format!("{b:02x}")).collect()
 }
 
 impl FakeForge {
@@ -45,6 +79,8 @@ impl FakeForge {
             content: fixtures.forge_content.clone(),
             faults: Schedule::default().forge,
             requests: 0,
+            heads: BTreeMap::new(),
+            merges: Vec::new(),
         }
     }
 
@@ -86,9 +122,34 @@ impl Forge for FakeForge {
     fn open_pr(&mut self, token: &str, _branch: &str) -> Result<PullRequest, Fault> {
         self.begin(token)?;
         let (a, b) = (self.rng.next_u64(), self.rng.next_u64());
-        Ok(PullRequest {
+        let pr = PullRequest {
             number: 1 + self.rng.below(5000),
-            head_sha: format!("{a:016x}{b:016x}"),
-        })
+            head_sha: commit_id(format!("{a:016x}{b:016x}").as_bytes()),
+        };
+        self.heads.insert(pr.number, pr.head_sha.clone());
+        Ok(pr)
+    }
+
+    fn push(&mut self, token: &str, pr: u64) -> Result<String, Fault> {
+        self.begin(token)?;
+        let old = self.heads.get(&pr).ok_or(Fault::Unavailable)?;
+        let new = commit_id(format!("{old}+{}", self.requests).as_bytes());
+        self.heads.insert(pr, new.clone());
+        Ok(new)
+    }
+
+    fn merge(&mut self, token: &str, pr: u64, sha: &str) -> Result<Merged, Fault> {
+        self.begin(token)?;
+        let head = self.heads.get(&pr).ok_or(Fault::Unavailable)?.clone();
+        if head != sha {
+            return Ok(Merged::HeadMoved);
+        }
+        self.heads.remove(&pr);
+        self.merges.push(ForgeMerge {
+            pr,
+            sha: sha.to_string(),
+            head,
+        });
+        Ok(Merged::At(sha.to_string()))
     }
 }

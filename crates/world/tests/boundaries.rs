@@ -72,7 +72,7 @@ fn pull_requests_have_a_head_commit() -> Result<(), Box<dyn std::error::Error>> 
     let mut heads = BTreeSet::new();
     for _ in 0..50 {
         if let Ok(pr) = f.open_pr(&fx.forge_token, "hyalos/x") {
-            assert_eq!(pr.head_sha.len(), 32);
+            assert_eq!(pr.head_sha.len(), 40);
             assert!(pr.head_sha.bytes().all(|b| b.is_ascii_hexdigit()));
             assert!((1..=5000).contains(&pr.number));
             heads.insert(pr.head_sha);
