@@ -94,7 +94,7 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0078](0078-agent-started-runs-wait-for-the-operator-to-release-the-issue.md) | Agent-started runs wait for the operator to release the issue | Accepted |
 | [0079](0079-readers-hold-the-provider-to-their-fields-schema.md) | Readers hold the provider to their fields' schema | Accepted |
 | [0080](0080-setup-asks-the-operator-in-their-own-terminal.md) | Setup asks the operator in their own terminal | Accepted; its account of `github-app` superseded by [ADR-0084](0084-setup-creates-the-github-app-from-a-manifest.md) |
-| [0081](0081-prebuilt-releases.md) | Prebuilt releases: a static binary that names its image by digest | Accepted |
+| [0081](0081-prebuilt-releases.md) | Prebuilt releases: a static binary that names its image by digest | Accepted; its release check and pull-request check jobs superseded by [ADR-0107](0107-a-release-runs-a-complete-job-before-it-publishes.md) |
 | [0082](0082-the-starter-policy-permits-merge.md) | The starter policy permits merge | Accepted |
 | [0083](0083-a-fix-issue-pull-request-closes-its-issue.md) | A fix-issue pull request closes its issue | Accepted |
 | [0084](0084-setup-creates-the-github-app-from-a-manifest.md) | Setup creates the GitHub App from a manifest | Accepted |
@@ -120,3 +120,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0104](0104-fault-schedules-swept-in-ci.md) | Fault schedules, swept in CI | Accepted; its rule that `simulation` is required by name superseded by [ADR-0105](0105-the-required-check-gathers-ci-s-split-jobs.md) |
 | [0105](0105-the-required-check-gathers-ci-s-split-jobs.md) | The required check gathers CI's split jobs | Accepted |
 | [0106](0106-a-dependency-lost-mid-job-holds-the-task.md) | A dependency lost mid-job holds the task | Accepted |
+| [0107](0107-a-release-runs-a-complete-job-before-it-publishes.md) | A release runs a complete job before it publishes | Accepted |

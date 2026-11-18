@@ -1,6 +1,6 @@
 # ADR-0081: Prebuilt releases: a static binary that names its image by digest
 
-**Status:** Accepted
+**Status:** Accepted; its rule that the workflow checks only that the binary is static, runs and names its image, and its pull-request check jobs, superseded by [ADR-0107](0107-a-release-runs-a-complete-job-before-it-publishes.md)
 
 ## Context
 

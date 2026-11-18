@@ -59,4 +59,12 @@ A release has no microVM init (`hyalos-vm-init`): to run jobs in a microVM, buil
    git tag v0.1.5 && git push origin v0.1.5
    ```
 
-The `release` workflow refuses a tag that is not `v` and the workspace's version, one that is not on `main`, and one whose image is published already. It builds and pushes the image, pulls it back by digest, and builds the binary to name it. It attests both while the repository is public. Then it publishes the GitHub release with the binary and `SHA256SUMS`, with the image's digest in the notes. A pull request that changes the workflow runs only check jobs, which build both and can write nothing. A tag that failed part-way is cut again under the next version.
+The `release` workflow refuses a tag that is not `v` and the workspace's version, one that is not on `main`, and one whose image is published already. It builds and pushes the image, pulls it back by digest, and builds the binary to name it. It attests both while the repository is public. Then it runs one complete job with that binary and that image, and only if it succeeds publishes the GitHub release with the binary and `SHA256SUMS`, with the image's digest in the notes. A pull request that changes the release runs one check job, which builds both as a release would, runs the same job, and can write nothing.
+
+**What the job proves** ([ADR-0107](../adr/0107-a-release-runs-a-complete-job-before-it-publishes.md)): the binary about to be published runs the fix-issue workflow end to end, against a scripted model and a stand-in GitHub, with no secret. It shows that:
+- a reader reads the issue as tainted and a planner plans from its typed values;
+- Codex runs in the image the binary names by digest, pushes a branch and opens a pull request;
+- every job succeeds, the task completes, and no token is left live;
+- the binary's own `hyalos log verify` passes.
+
+A binary that refuses every job, as v0.1.0 did, fails it, and nothing is published. It does not show that the binary works with GitHub itself, a real model, Claude Code, gVisor or a microVM. A tag that failed part-way is cut again under the next version.
