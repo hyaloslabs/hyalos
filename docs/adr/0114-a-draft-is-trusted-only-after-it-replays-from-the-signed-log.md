@@ -1,6 +1,6 @@
 # ADR-0114: A draft is trusted only after it replays from the signed log
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
