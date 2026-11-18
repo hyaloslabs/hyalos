@@ -49,7 +49,7 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0033](0033-the-shipped-policy-schema-baseline-and-proofs.md) | The shipped policy schema, baseline and proofs | Accepted |
 | [0034](0034-the-operator-policy-store-and-minting-within-policy.md) | The operator policy store and minting within policy | Accepted |
 | [0035](0035-the-private-channel-between-engine-and-broker.md) | The private channel between the engine and the broker | Accepted |
-| [0036](0036-the-simulated-world-and-the-log-scan.md) | The simulated world and the log scan | Accepted; its rule that failure rates are fixed in the code superseded by [ADR-0104](0104-fault-schedules-swept-in-ci.md) |
+| [0036](0036-the-simulated-world-and-the-log-scan.md) | The simulated world and the log scan | Accepted |
 | [0037](0037-model-protocol-adapters-and-their-line-budget.md) | Model protocol adapters and their line budget | Accepted |
 | [0038](0038-model-calls-from-the-sandbox-and-the-provider-key-file.md) | Model calls from the sandbox, and the provider key file | Accepted |
 | [0039](0039-tls-to-model-providers.md) | TLS to model providers | Accepted |
@@ -117,4 +117,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0101](0101-a-third-party-mcp-server-runs-in-the-job-s-sandbox.md) | A third-party MCP server runs in the job's sandbox | Accepted |
 | [0102](0102-composing-skills-components-and-deterministic-steps.md) | Composing skills, components and deterministic steps in a workflow | Accepted |
 | [0103](0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md) | Policy releases an issue written only by the repository's writers | Accepted |
-| [0104](0104-fault-schedules-swept-in-ci.md) | Fault schedules, swept in CI | Accepted |
+| [0104](0104-fault-schedules-swept-in-ci.md) | Fault schedules, swept in CI | Proposed |

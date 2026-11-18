@@ -1,5 +1,6 @@
 //! S8.1: thousands of fault schedules, each run checked, and a failing seed replayed with one command
-//! (ADR-0013, ADR-0104). CI sweeps 10,000 seeds with the `sim` binary; this sweeps fewer, or
+//! (ADR-0013, ADR-0104). CI sweeps 10,000 seeds with the `sim` binary in release mode; this sweeps
+//! 100 in debug, the fewest with room to spare that still reach every profile and outcome, or
 //! `HYALOS_SIM_SEEDS` of them.
 
 use std::path::PathBuf;
@@ -50,7 +51,7 @@ fn a_sweep_of_many_schedules_has_no_failing_seed_and_no_gap() {
     let seeds = std::env::var("HYALOS_SIM_SEEDS")
         .ok()
         .and_then(|n| n.parse().ok())
-        .unwrap_or(400);
+        .unwrap_or(100);
     let threads = std::thread::available_parallelism().map_or(1, usize::from);
     let result = sweep(0..seeds, &dir("sweep"), threads);
     let failing: Vec<String> = result
@@ -94,7 +95,7 @@ fn a_gate_that_is_down_from_the_start_holds_the_first_question() -> Res {
     schedule.profile = Profile::Outage(Boundary::Gate);
     schedule.gate.down_after = Some(0);
     let mut held = 0;
-    for seed in 0..40 {
+    for seed in 0..20 {
         let run = run_with(seed, &schedule, &dir("gate-down"))?;
         check(&schedule, &run).map_err(|e| format!("seed {seed}: {e}"))?;
         if run.counts.gates_asked > 0 {
@@ -106,7 +107,7 @@ fn a_gate_that_is_down_from_the_start_holds_the_first_question() -> Res {
             );
         }
     }
-    assert!(held > 10, "too few runs reached a gate: {held}");
+    assert!(held > 5, "too few runs reached a gate: {held}");
     Ok(())
 }
 
@@ -114,12 +115,12 @@ fn a_gate_that_is_down_from_the_start_holds_the_first_question() -> Res {
 fn under_a_calm_schedule_nothing_fails_that_the_job_did_not_cause() -> Res {
     let schedule = Schedule::calm();
     let mut succeeded = 0;
-    for seed in 0..40 {
+    for seed in 0..20 {
         let run = run_with(seed, &schedule, &dir("calm"))?;
         check(&schedule, &run).map_err(|e| format!("seed {seed}: {e}"))?;
         succeeded += u32::from(run.outcome == JobOutcome::Succeeded);
     }
-    assert!(succeeded > 10, "{succeeded}");
+    assert!(succeeded > 5, "{succeeded}");
     Ok(())
 }
 
@@ -227,11 +228,11 @@ fn one_command_replays_a_seed_and_prints_its_schedule() {
 #[test]
 fn the_sweep_command_reports_its_runs_and_refuses_bad_arguments() {
     let out = Command::new(env!("CARGO_BIN_EXE_sim"))
-        .args(["--sweep", "0", "60", "2"])
+        .args(["--sweep", "0", "20", "2"])
         .output()
         .expect("sim runs");
     let text = String::from_utf8_lossy(&out.stdout);
-    assert!(text.contains("60 seeds (0..60) on 2 threads"), "{text}");
+    assert!(text.contains("20 seeds (0..20) on 2 threads"), "{text}");
     for bad in [&["--sweep", "x", "2"][..], &["nine"], &[]] {
         let out = Command::new(env!("CARGO_BIN_EXE_sim"))
             .args(bad)

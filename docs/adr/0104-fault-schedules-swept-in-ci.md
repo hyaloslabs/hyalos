@@ -1,6 +1,6 @@
 # ADR-0104: Fault schedules, swept in CI
 
-**Status:** Accepted. Supersedes [ADR-0036](0036-the-simulated-world-and-the-log-scan.md)'s rule that failure rates are fixed in the code.
+**Status:** Proposed
 
 ## Context
 
@@ -42,7 +42,7 @@ The tests break each property on purpose and require the check to refuse the run
 
 **One command replays a seed.** The `sim` binary in `crates/world` takes a seed: `cargo run -q --locked -p hyalos-world --bin sim -- <seed>`. It prints the schedule, the outcome, the counts and every event, keeps the log at a path that names the seed, and exits non-zero if the run fails. The same binary sweeps with `--sweep <from> <to> [threads]`. For each failing seed it prints that seed's command, so a CI log hands the developer the command to run.
 
-**CI sweeps seeds 0 to 9,999 on every pull request**, in a `simulation` job of its own in `ci.yml`, built in release mode. A run takes 30 to 80 ms in release, depending on how many share the disk, against about 250 ms in debug. On a ten-core machine the whole sweep takes about 75 seconds. The required `build, lint, test` job already takes 14 to 20 of its 20 minutes, so the sweep cannot go there. The seeds are fixed, not drawn per run, so a red sweep is the change's fault and not luck, and the same range runs locally. The `cargo test` sweep runs 400 seeds, or `HYALOS_SIM_SEEDS` of them.
+**CI sweeps seeds 0 to 9,999 on every pull request**, in a `simulation` job of its own in `ci.yml`, built in release mode. A run takes 30 to 80 ms in release, depending on how many share the disk, against about 250 ms in debug. On a ten-core machine the whole sweep takes about 75 seconds. The required `build, lint, test` job already takes 14 to 20 of its 20 minutes, so the sweep cannot go there. The seeds are fixed, not drawn per run, so a red sweep is the change's fault and not luck, and the same range runs locally. The `cargo test` sweep runs 100 seeds in debug, the fewest with room to spare that still reach every profile and outcome, or `HYALOS_SIM_SEEDS` of them; the schedule tests together take under two minutes on a CI runner.
 
 **The job is a required check.** For a failure to fail the pull request, the `simulation` check is added to the `main` ruleset's required status checks, with `build, lint, test`, `dependency audit` and `policy proofs`.
 

@@ -1,6 +1,6 @@
 # ADR-0036: The simulated world and the log scan
 
-**Status:** Accepted. Its rule that failure rates are fixed in the code is superseded by [ADR-0104](0104-fault-schedules-swept-in-ci.md), which keeps those rates as the usual schedule.
+**Status:** Accepted
 
 ## Context
 
