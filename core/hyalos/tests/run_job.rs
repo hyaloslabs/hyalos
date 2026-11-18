@@ -379,15 +379,19 @@ fn an_issue_number_runs_the_fix_issue_workflow_and_only_the_reader_sees_the_issu
         .collect();
     assert_eq!(values, finished_values());
     // The run succeeded, so Hyalos drafted a skill from it after completing the task: tainted, and
-    // held to read capabilities (S9.2, ADR-0113).
+    // held to read capabilities (S9.2, ADR-0113). Replayed from the log, it was then trusted
+    // (S9.3, ADR-0114).
     let n = events.len();
     assert!(
-        matches!(events[n - 2], Event::TaskCompleted { .. }),
+        matches!(events[n - 3], Event::TaskCompleted { .. }),
         "{events:?}"
     );
     let Event::SkillDrafted {
-        name, task, grant, ..
-    } = &events[n - 1]
+        name,
+        task,
+        grant,
+        digest,
+    } = &events[n - 2]
     else {
         return Err(format!("no draft: {events:?}").into());
     };
@@ -395,6 +399,25 @@ fn an_issue_number_runs_the_fix_issue_workflow_and_only_the_reader_sees_the_issu
     assert_eq!(name.as_str(), format!("draft-{}", task.seq()));
     assert_eq!(*grant, hyalos_types::Grant::read_only());
     assert!(said.contains(&format!("drafted skill {name}")), "{said}");
+    assert_eq!(
+        events[n - 1],
+        Event::SkillTrusted {
+            name: name.clone(),
+            digest: *digest
+        }
+    );
+    assert!(
+        said.contains(&format!("skill {name}: replayed from the log and trusted")),
+        "{said}"
+    );
+    let listed = ok_cli(world.cli(&["plugin", "list"])?)?;
+    assert!(
+        listed.contains(&format!(
+            "{name}\t{digest}\tdrafted from task {}",
+            task.seq()
+        )) && listed.contains("trusted after replay at event"),
+        "{listed}"
+    );
     // The forge's text is not in the log: the task records a digest of the request.
     let raw = std::fs::read(world.data.join("events.db"))?;
     assert!(!contains(&raw, b"issue-body-marker-5b1e"));
@@ -1581,8 +1604,12 @@ fn a_run_whose_runner_stopped_resumes_from_the_log_and_reruns_only_the_cut_step(
     assert_ne!(summary.job, cut);
     // The resumed run succeeded, so it is drafted from, the cut job's missing values and all.
     let n = events.len();
-    assert!(matches!(events[n - 2], Event::TaskCompleted { task: t } if t == task));
-    assert!(matches!(events[n - 1], Event::SkillDrafted { task: t, .. } if t == task));
+    assert!(matches!(events[n - 3], Event::TaskCompleted { task: t } if t == task));
+    assert!(matches!(events[n - 2], Event::SkillDrafted { task: t, .. } if t == task));
+    assert!(
+        matches!(events[n - 1], Event::SkillTrusted { .. }),
+        "{events:?}"
+    );
     assert!(gh.issued().is_empty(), "no token is left live");
 
     // A finished run has nothing left, and a request that is not the task's is refused.

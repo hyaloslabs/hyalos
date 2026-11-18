@@ -711,6 +711,24 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             grant: hyalos_types::Grant::read_only(),
         },
     ));
+
+    // Version 24 added `skill.trusted` (ADR-0114) and changed no payload.
+    let at_23: Vec<_> = all.iter().filter(|g| g.0 == 23).cloned().collect();
+    for (_, kind, json, event) in at_23 {
+        all.push((24, kind, json, event));
+    }
+    all.push((
+        24,
+        "skill.trusted",
+        format!(
+            r#"{{"kind":"skill.trusted","name":"draft-3","digest":"{}"}}"#,
+            hex(14)
+        ),
+        Event::SkillTrusted {
+            name: hyalos_types::PluginName::new("draft-3").ok_or("name")?,
+            digest: d(14),
+        },
+    ));
     Ok(all)
 }
 
@@ -730,6 +748,7 @@ fn introduced(kind: &str) -> u32 {
         "plugin.snapshot_imported" => 19,
         "plugin.revocations_imported" | "plugin.revoked" => 20,
         "skill.drafted" => 23,
+        "skill.trusted" => 24,
         _ => 1,
     }
 }

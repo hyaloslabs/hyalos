@@ -446,7 +446,7 @@ pub fn manage_with(
                 return Ok("no skill is installed\n".into());
             }
             let state = log.read().map_err(failed)?;
-            if state.plugins().is_empty() {
+            if state.plugins().is_empty() && state.drafts().is_empty() {
                 return Ok("no skill is installed\n".into());
             }
             let list = plugin_trust::revocations_in_force(env, Some(&state)).map_err(failed)?;
@@ -481,6 +481,20 @@ pub fn manage_with(
                         u.location
                     ));
                 }
+            }
+            // The skills Hyalos drafted, which no one installed (ADR-0113, ADR-0114).
+            for (name, d) in state.drafts() {
+                let trust = match d.trusted {
+                    Some(seq) => format!("trusted after replay at event {seq}"),
+                    None => "tainted: not replayed, only --skill gives it to a job".into(),
+                };
+                out.push_str(&format!(
+                    "{name}\t{}\tdrafted from task {} at event {}\tgranted {}\t{trust}\n",
+                    d.digest,
+                    d.task.seq(),
+                    d.seq,
+                    summary(&d.grant)
+                ));
             }
             Ok(out)
         }

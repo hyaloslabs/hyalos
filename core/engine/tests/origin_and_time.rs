@@ -357,6 +357,17 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
                 values: vec![hyalos_types::TypedValue::Bool(true)],
             }
         }
+        "skill.trusted" => {
+            let (mut e, drafted) = ready(name, "skill.drafted")?;
+            accept(&mut e, 5, drafted)?;
+            return Ok((
+                e,
+                Event::SkillTrusted {
+                    name: hyalos_types::PluginName::new("draft-1").ok_or("name")?,
+                    digest: d(2),
+                },
+            ));
+        }
         "skill.drafted" => {
             // Only a task whose last job succeeded is drafted from (ADR-0113).
             let task = TaskId::from_seq(go(&mut e, 1, Event::TaskCreated { request: d(1) })?);

@@ -35,8 +35,9 @@ use crate::{
 /// the trusted-root snapshot imported last (ADR-0097); earlier images have none, so the embedded one
 /// is in force. Version 15 added the revocation list imported last and the installed plugins it
 /// revoked (ADR-0098); earlier images have neither. Version 16 added the skills Hyalos drafted
-/// (ADR-0113); earlier images have none.
-pub const STATE_VERSION: u32 = 16;
+/// (ADR-0113); earlier images have none. Version 17 added when each draft was trusted (ADR-0114);
+/// an earlier draft reads as not trusted.
+pub const STATE_VERSION: u32 = 17;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +95,8 @@ pub struct DraftImage {
     pub digest: Digest,
     pub task: TaskId,
     pub grant: Grant,
+    /// The `skill.trusted` event that trusted it, if one did (ADR-0114).
+    pub trusted: Option<u64>,
 }
 
 /// The latest `plugin.revocations_imported` event.
@@ -456,6 +459,14 @@ impl StateImage {
         // 15 -> 16: no skill had been drafted.
         if version < 16 {
             object.insert("drafts".into(), Value::Array(Vec::new()));
+        }
+        // 16 -> 17: no draft had been trusted.
+        if let Some(Value::Array(drafts)) = object.get_mut("drafts") {
+            for draft in drafts {
+                if let Some(draft) = draft.as_object_mut() {
+                    draft.insert("trusted".into(), Value::Null);
+                }
+            }
         }
         // 6 -> 7: no job's reason was kept, and no job had returned values.
         if version >= 7 {

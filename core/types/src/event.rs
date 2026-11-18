@@ -16,9 +16,9 @@ use crate::{
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 23;
+pub const SCHEMA_VERSION: u32 = 24;
 
-/// What this build reads: version 23, and versions 1 to 22 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// What this build reads: version 24, and versions 1 to 23 upcast to it (ADR-0023, ADR-0025, ADR-0027,
 /// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069,
 /// ADR-0070, ADR-0071, ADR-0089, ADR-0106).
 ///
@@ -43,7 +43,7 @@ pub const SCHEMA_VERSION: u32 = 23;
 /// payload. Version 21 added `writers` to `handle.released` (ADR-0103); a payload written before has
 /// none and reads as it was. Version 22 added the `dependency` gate (ADR-0106), which `gate.answered`
 /// and `hold.opened` may name, and changed no payload. Version 23 added `skill.drafted` (ADR-0113)
-/// and changed no payload.
+/// and changed no payload. Version 24 added `skill.trusted` (ADR-0114) and changed no payload.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -439,6 +439,12 @@ pub enum Event {
         task: TaskId,
         grant: Grant,
     },
+    /// Draft `name`, with SHA-256 `digest`, was replayed from the signed log and passed its
+    /// capability checks, so it is trusted (ADR-0114): its text counts as `PluginAuthored`, and a
+    /// workflow may name it. Its grant stays the read-only one it was drafted with. A draft that
+    /// fails replay never gets this event and stays tainted.
+    #[serde(rename = "skill.trusted")]
+    SkillTrusted { name: PluginName, digest: Digest },
 }
 
 /// The largest policy document an event may hold, in bytes. Events are read whole into memory by
@@ -525,7 +531,8 @@ impl Event {
             | Event::PluginRevocationsImported { .. }
             | Event::PluginRevoked { .. }
             | Event::JobValues { .. }
-            | Event::SkillDrafted { .. } => origin == Origin::Engine,
+            | Event::SkillDrafted { .. }
+            | Event::SkillTrusted { .. } => origin == Origin::Engine,
         }
     }
 
@@ -610,6 +617,7 @@ impl Event {
             Event::PluginRevoked { .. } => "plugin.revoked",
             Event::JobValues { .. } => "job.values",
             Event::SkillDrafted { .. } => "skill.drafted",
+            Event::SkillTrusted { .. } => "skill.trusted",
         }
     }
 
@@ -619,7 +627,7 @@ impl Event {
     }
 
     /// Every `kind` value, for checking tables and test coverage.
-    pub const KINDS: [&'static str; 23] = [
+    pub const KINDS: [&'static str; 24] = [
         "task.created",
         "task.completed",
         "job.started",
@@ -643,6 +651,7 @@ impl Event {
         "plugin.revoked",
         "job.values",
         "skill.drafted",
+        "skill.trusted",
     ];
 
     /// Reads an event back from a log row's `kind`, `schema_version` and `payload`, as this build's
@@ -962,6 +971,16 @@ mod tests {
                 },
                 format!(
                     r#"{{"kind":"skill.drafted","name":"draft-3","digest":"{}","task":3,"grant":{{"actions":["read"],"egress_hosts":[],"tools":[],"data_flows":["job->model"]}}}}"#,
+                    h(9)
+                ),
+            ),
+            (
+                Event::SkillTrusted {
+                    name: PluginName::new("draft-3").unwrap(),
+                    digest: d(9),
+                },
+                format!(
+                    r#"{{"kind":"skill.trusted","name":"draft-3","digest":"{}"}}"#,
                     h(9)
                 ),
             ),

@@ -535,6 +535,43 @@ fn a_draft_comes_only_from_a_success_holds_only_read_and_survives_compaction() -
         e.submit(at(101), Origin::Engine, ok),
         Err(EngineError::Rule(RuleViolation::DraftRefused))
     ));
+    // S9.3: a draft is trusted once, under the name and digest it was drafted with (ADR-0114).
+    assert_eq!(
+        e.state()
+            .drafts()
+            .get(&name("draft-ok")?)
+            .map(|d| d.trusted),
+        Some(None),
+        "a draft starts tainted"
+    );
+    let trust = |plugin: &str, digest: u8| -> Res<Event> {
+        Ok(Event::SkillTrusted {
+            name: name(plugin)?,
+            digest: Digest::from_bytes([digest; 32]),
+        })
+    };
+    for refused in [
+        trust("draft-ok", 8)?,
+        trust("draft-a", 7)?,
+        trust("lint", 2)?,
+    ] {
+        assert!(
+            matches!(
+                e.submit(at(101), Origin::Engine, refused.clone()),
+                Err(EngineError::Rule(RuleViolation::TrustRefused))
+            ),
+            "{refused:?}"
+        );
+    }
+    assert!(
+        e.submit(at(101), Origin::Broker, trust("draft-ok", 7)?)
+            .is_err()
+    );
+    let trusted = e.submit(at(101), Origin::Engine, trust("draft-ok", 7)?)?;
+    assert!(matches!(
+        e.submit(at(101), Origin::Engine, trust("draft-ok", 7)?),
+        Err(EngineError::Rule(RuleViolation::TrustRefused))
+    ));
     let kept = e
         .state()
         .drafts()
@@ -542,8 +579,13 @@ fn a_draft_comes_only_from_a_success_holds_only_read_and_survives_compaction() -
         .cloned()
         .ok_or("drafted")?;
     assert_eq!(
-        (kept.seq, kept.task, kept.grant.clone()),
-        (drafted.seq, succeeded, Grant::read_only())
+        (kept.seq, kept.task, kept.grant.clone(), kept.trusted),
+        (
+            drafted.seq,
+            succeeded,
+            Grant::read_only(),
+            Some(trusted.seq)
+        )
     );
     e.compact(at(102), &p.with_file_name("archive.db"))?;
     drop(e);
