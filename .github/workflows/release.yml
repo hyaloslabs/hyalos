@@ -5,8 +5,11 @@ name: release
 # - the static `hyalos` binary is built to name that image as its default;
 # - both get build provenance while the repository is public (GitHub offers attestations for
 #   private repositories only on Enterprise Cloud);
+# - one complete job runs with that binary and that image, and the release is published only if it
+#   succeeds (ADR-0107);
 # - the binary and its SHA-256 (SHA256SUMS) are published on a GitHub release.
-# A pull request that changes the release runs only the check jobs, which can write nothing.
+# A pull request that changes the release runs only the check job, which can write nothing: it builds
+# the image and the binary as a release would, and runs the same job with them.
 on:
   push:
     tags: ["v*"]
@@ -14,6 +17,11 @@ on:
     paths:
       - ".github/workflows/release.yml"
       - ".github/scripts/build-release-binary.sh"
+      - ".github/scripts/run-release-job.sh"
+      # The job the release runs, and what it runs against.
+      - "core/hyalos/tests/release_job.rs"
+      - "core/hyalos/tests/common/**"
+      - "images/sandbox/**"
       # What the musl check covers (#280): the command thread, its test, and Cedar's pin.
       - "core/hyalos/src/main.rs"
       - "core/hyalos/src/stack.rs"
@@ -34,29 +42,22 @@ defaults:
     shell: bash
 
 jobs:
-  image-check:
-    name: sandbox image (check)
+  check:
+    name: release (check)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # A check build of the binary names hyalos-sandbox:latest as its default image.
       - name: Build the image
-        run: docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:release .
-
-  binary-check:
-    name: hyalos binary (check)
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+        run: docker build -f images/sandbox/Containerfile --target sandbox -t hyalos-sandbox:latest .
       - name: Build and check the static binary
         run: .github/scripts/build-release-binary.sh ""
+      - name: Run a complete job with the binary
+        run: .github/scripts/run-release-job.sh dist/hyalos-x86_64-linux hyalos-sandbox:latest
 
   image:
     name: sandbox image
@@ -119,7 +120,7 @@ jobs:
     if: github.event_name == 'push'
     needs: image
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 50
     permissions:
       contents: write
       packages: read
@@ -141,6 +142,11 @@ jobs:
         env:
           IMAGE: ${{ needs.image.outputs.image }}
         run: .github/scripts/build-release-binary.sh "$IMAGE"
+      # Nothing is published unless the binary runs a whole job in the image it names (ADR-0107).
+      - name: Run a complete job with the binary
+        env:
+          IMAGE: ${{ needs.image.outputs.image }}
+        run: .github/scripts/run-release-job.sh dist/hyalos-x86_64-linux "$IMAGE"
       - name: Attest the binary's provenance
         if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

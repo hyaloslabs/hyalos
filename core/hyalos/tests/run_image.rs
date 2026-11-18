@@ -22,11 +22,11 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 mod common;
 
-use common::{GitHub, Res, World, dir, git, have_git, ok, ok_cli, repository};
+use common::{GitHub, Res, World, codex, dir, git, have_git, ok, ok_cli, repository};
 use hyalos_types::{Answer, CredentialTier, Event, Gate, JobOutcome};
 
 const IMAGE: &str = "hyalos-sandbox:test";
@@ -123,7 +123,7 @@ fn answer(
         .is_some_and(|t| t.iter().any(|t| t["name"] == "exec_command"));
     let answered = body.to_string().contains("\"function_call_output\"");
     let reply = if offered && !answered {
-        run_command(stream_wanted)
+        codex::run_command(SCRIPT, stream_wanted)
     } else {
         if answered {
             // The command has run and Codex is waiting: hold here while the sandbox is dumped.
@@ -133,7 +133,7 @@ fn answer(
                 let _ = waiting.recv_timeout(HOLD);
             }
         }
-        done(stream_wanted)
+        codex::done(stream_wanted)
     };
     let content_type = if stream_wanted {
         "text/event-stream"
@@ -146,64 +146,6 @@ fn answer(
         reply.len()
     )?;
     Ok(())
-}
-
-fn response(status: &str, output: Value) -> Value {
-    json!({
-        "id": "resp_scripted", "object": "response", "created_at": 1_700_000_000, "model": "scripted",
-        "status": status, "output": output,
-        "usage": {
-            "input_tokens": 10, "output_tokens": 2, "total_tokens": 12,
-            "input_tokens_details": { "cached_tokens": 0 },
-            "output_tokens_details": { "reasoning_tokens": 0 }
-        }
-    })
-}
-
-fn sse(events: &[Value]) -> String {
-    events
-        .iter()
-        .map(|e| format!("event: {}\ndata: {e}\n\n", e["type"].as_str().unwrap_or("")))
-        .collect()
-}
-
-fn run_command(stream: bool) -> String {
-    let arguments = json!({ "cmd": SCRIPT }).to_string();
-    let call = |status: &str, arguments: &str| {
-        json!({
-            "type": "function_call", "id": "fc_scripted", "call_id": "call_scripted",
-            "name": "exec_command", "arguments": arguments, "status": status
-        })
-    };
-    let finished = call("completed", &arguments);
-    if !stream {
-        return response("completed", json!([finished])).to_string();
-    }
-    sse(&[
-        json!({ "type": "response.created", "response": response("in_progress", json!([])) }),
-        json!({ "type": "response.output_item.added", "output_index": 0, "item": call("in_progress", "") }),
-        json!({ "type": "response.function_call_arguments.delta", "output_index": 0, "item_id": "fc_scripted", "delta": arguments }),
-        json!({ "type": "response.function_call_arguments.done", "output_index": 0, "item_id": "fc_scripted", "arguments": arguments }),
-        json!({ "type": "response.output_item.done", "output_index": 0, "item": finished }),
-        json!({ "type": "response.completed", "response": response("completed", json!([finished])) }),
-    ])
-}
-
-fn done(stream: bool) -> String {
-    let message = json!({
-        "type": "message", "id": "msg_scripted", "role": "assistant", "status": "completed",
-        "content": [{ "type": "output_text", "text": "Done.", "annotations": [] }]
-    });
-    if !stream {
-        return response("completed", json!([message])).to_string();
-    }
-    sse(&[
-        json!({ "type": "response.created", "response": response("in_progress", json!([])) }),
-        json!({ "type": "response.output_item.added", "output_index": 0, "item": { "type": "message", "id": "msg_scripted", "role": "assistant", "status": "in_progress", "content": [] } }),
-        json!({ "type": "response.output_text.delta", "output_index": 0, "content_index": 0, "item_id": "msg_scripted", "delta": "Done." }),
-        json!({ "type": "response.output_item.done", "output_index": 0, "item": message }),
-        json!({ "type": "response.completed", "response": response("completed", json!([message])) }),
-    ])
 }
 
 /// Reads every readable mapping of every other process, written to standard output. Run in the
@@ -491,7 +433,7 @@ fn quiet_model() -> Res<u16> {
                 let _ = reader.read_exact(&mut body);
                 let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
                 let stream_wanted = body["stream"].as_bool().unwrap_or(false);
-                let reply = done(stream_wanted);
+                let reply = codex::done(stream_wanted);
                 let kind = if stream_wanted {
                     "text/event-stream"
                 } else {
