@@ -15,7 +15,10 @@ use hyalos_types::{
     TypedValue,
 };
 
-use crate::EngineError;
+use hyalos_types::event::SCHEMA;
+
+use crate::engine::state_from;
+use crate::{EngineError, State};
 
 /// Most source events one learning lists, the latest ones. `count` says how many there were.
 pub const MAX_SOURCES: usize = 20;
@@ -78,17 +81,20 @@ pub struct Learnings {
     pub learnings: Vec<Learning>,
 }
 
-/// The learnings in the log at `path`, after checking it against `key`.
-pub fn learnings(path: &Path, key: &PublicKey) -> Result<Learnings, EngineError> {
+/// The state of the log at `path` and its learnings, after checking it against `key`, both from one
+/// read so they stand at the same head.
+pub fn learnings(path: &Path, key: &PublicKey) -> Result<(State, Learnings), EngineError> {
     let contents = read_verified(path, key).map_err(EngineError::Verify)?;
+    let state = state_from(&SCHEMA, contents.anchor.as_ref(), &contents.events)?;
     let from_seq = contents.anchor.as_ref().map_or(1, |a| a.seq + 1);
-    learn(from_seq, &contents.events)
+    Ok((state, learn(from_seq, &contents.events)?))
 }
 
 /// The learnings in `events`, which start at `from_seq`. An event this build cannot read is an
 /// error, never skipped: a learning that left it out would say less happened than did.
 pub fn learn(from_seq: u64, events: &[StoredEvent]) -> Result<Learnings, EngineError> {
     let mut learnings: Vec<Learning> = Vec::new();
+    let mut aggregates = 0;
     for e in events {
         let event = Event::decode(&e.kind, e.schema_version, &e.payload)
             .map_err(|error| EngineError::Event { seq: e.seq, error })?;
@@ -128,23 +134,40 @@ pub fn learn(from_seq: u64, events: &[StoredEvent]) -> Result<Learnings, EngineE
             hash: Digest::from_bytes(e.hash),
             origin: e.origin,
         };
-        match learnings.iter_mut().find(|l| l.lesson == lesson) {
+        // A job returns its values once, so a values lesson is never grouped: only the others,
+        // which are few (closed sets and reason codes), are searched.
+        let grouped = !matches!(lesson, Lesson::Values { .. });
+        match learnings
+            .iter_mut()
+            .take(if grouped { aggregates } else { 0 })
+            .find(|l| l.lesson == lesson)
+        {
             Some(learning) => {
                 learning.count += 1;
+                learning.first_at = learning.first_at.min(e.at);
                 learning.last_at = learning.last_at.max(e.at);
                 if learning.sources.len() == MAX_SOURCES {
                     learning.sources.remove(0);
                 }
                 learning.sources.push(source);
             }
-            None => learnings.push(Learning {
-                lesson,
-                provenance,
-                count: 1,
-                first_at: e.at,
-                last_at: e.at,
-                sources: vec![source],
-            }),
+            None => {
+                let learning = Learning {
+                    lesson,
+                    provenance,
+                    count: 1,
+                    first_at: e.at,
+                    last_at: e.at,
+                    sources: vec![source],
+                };
+                // Aggregates are kept first, so the search above covers only them.
+                if grouped {
+                    learnings.insert(aggregates, learning);
+                    aggregates += 1;
+                } else {
+                    learnings.push(learning);
+                }
+            }
         }
     }
     // The most recent first; two learned at the same time, the one whose latest event is later.

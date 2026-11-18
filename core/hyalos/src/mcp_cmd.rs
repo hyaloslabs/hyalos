@@ -178,8 +178,9 @@ impl EngineLog {
             .map_err(|e| format!("the event log does not check out: {e}"))
     }
 
-    /// The learnings in the log, checked against the engine's public key (ADR-0112).
-    pub fn learnings(&self) -> Result<Learnings, String> {
+    /// The state and the learnings in the log, from one read checked against the engine's public key
+    /// (ADR-0112).
+    pub fn learnings(&self) -> Result<(State, Learnings), String> {
         hyalos_engine::learnings(&self.log, &self.key()?)
             .map_err(|e| format!("the event log does not check out: {e}"))
     }
@@ -572,8 +573,7 @@ impl EngineTools {
             Ok(limit) => limit,
             Err(called) => return called,
         };
-        let read = self.log.read().and_then(|s| Ok((s, self.log.learnings()?)));
-        let (state, learned) = match read {
+        let (state, learned) = match self.log.learnings() {
             Ok(read) => read,
             Err(e) => return Called::error(&e),
         };
