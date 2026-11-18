@@ -15,4 +15,4 @@
 
 ## License
 
-MIT (planned for v1).
+MIT. See [`LICENSE`](LICENSE). Contributions are signed off under the DCO. See [`CONTRIBUTING.md`](CONTRIBUTING.md).

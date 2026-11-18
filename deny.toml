@@ -36,7 +36,7 @@ allow = [
 ]
 confidence-threshold = 0.93
 
-# Our own crates are unpublished and declare no license. The project license is decided in S10.5 (#65).
+# Our own crates are MIT (ADR-0115) and unpublished, so the audit does not check them.
 [licenses.private]
 ignore = true
 

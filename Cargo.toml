@@ -7,6 +7,7 @@ version = "0.1.5"
 edition = "2024"
 rust-version = "1.99"
 publish = false
+license = "MIT"
 
 # The strict set applies to the trusted core (ADR-0017). crates/xtask does not inherit it.
 [workspace.lints.rust]
