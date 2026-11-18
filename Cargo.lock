@@ -1114,6 +1114,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyalos-broker-contract"
+version = "0.1.5"
+dependencies = [
+ "hyalos-broker",
+ "hyalos-props",
+ "hyalos-types",
+]
+
+[[package]]
 name = "hyalos-engine"
 version = "0.1.5"
 dependencies = [
@@ -1159,6 +1168,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyalos-plugin-contract"
+version = "0.1.5"
+dependencies = [
+ "hyalos-plugin",
+ "hyalos-props",
+ "hyalos-types",
+ "wat",
+]
+
+[[package]]
 name = "hyalos-policy"
 version = "0.1.5"
 dependencies = [
@@ -1175,6 +1194,13 @@ dependencies = [
  "cedar-policy-symcc",
  "hyalos-policy",
  "tokio",
+]
+
+[[package]]
+name = "hyalos-props"
+version = "0.1.5"
+dependencies = [
+ "hyalos-types",
 ]
 
 [[package]]
@@ -1228,6 +1254,7 @@ dependencies = [
 name = "hyalos-substrate-contract"
 version = "0.1.5"
 dependencies = [
+ "hyalos-props",
  "hyalos-substrate",
  "hyalos-types",
 ]

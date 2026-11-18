@@ -80,13 +80,13 @@ impl Drop for Broker {
     }
 }
 
-struct Ctx {
-    fx: Fixture,
+pub(crate) struct Ctx {
+    pub(crate) fx: Fixture,
     broker: Broker,
 }
 
 impl Ctx {
-    fn spec(&self, command: &[&str]) -> SandboxSpec {
+    pub(crate) fn spec(&self, command: &[&str]) -> SandboxSpec {
         let mut spec = SandboxSpec::new(
             JobId::from_seq(1),
             &self.fx.image,
@@ -97,12 +97,12 @@ impl Ctx {
         spec
     }
 
-    fn sh(&self, script: &str) -> SandboxSpec {
+    pub(crate) fn sh(&self, script: &str) -> SandboxSpec {
         self.spec(&["sh", "-c", script])
     }
 }
 
-fn run_to_end(substrate: &dyn Substrate, spec: &SandboxSpec) -> Result<Outcome, String> {
+pub(crate) fn run_to_end(substrate: &dyn Substrate, spec: &SandboxSpec) -> Result<Outcome, String> {
     let mut sandbox = substrate.start(spec).map_err(|e| e.to_string())?;
     Ok(sandbox.wait())
 }
@@ -561,6 +561,14 @@ const BEHAVIOUR: &[(&str, Check)] = &[
         cleans_up,
     ),
     ("a bad spec is refused and starts nothing", bad_specs),
+    (
+        "generated arguments, environments and exit codes reach the sandbox exactly",
+        crate::properties::round_trip,
+    ),
+    (
+        "a generated bad spec is refused and starts nothing",
+        crate::properties::bad_specs,
+    ),
     ("an image that does not exist is refused", missing_image),
 ];
 

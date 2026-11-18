@@ -78,7 +78,8 @@ These are pinned by tests. A change to one bumps its version (except where noted
 | `crates/xtask` | `layout` and `lines` | 0017 |
 | `crates/sim`, `crates/world` | Deterministic simulation, the simulated world, fault schedules the `sim` sweep, and the spec's invariants on every run | 0013, 0036, 0104, 0108 |
 | `spec/Job.tla`, `.github/scripts/check-spec.sh` | The job state machine's TLA+ spec, its invariants and mutants, and the model check | 0013, 0108 |
-| `crates/substrate-contract`, `crates/vm-init` | The contract every substrate passes; the microVM's init | 0032, 0041, 0056, 0058 |
+| `crates/substrate-contract`, `crates/vm-init` | The contract every substrate passes, its generated half; the microVM's init | 0032, 0041, 0056, 0058, 0109 |
+| `crates/props`, `crates/broker-contract`, `crates/plugin-contract` | The property runner on seeded streams; the broker's and the plugin host's property-based contract suites | 0013, 0109 |
 | `crates/sandbox-tools`, `images/sandbox` | The sandbox image and the tools in it | 0016, 0040, 0049, 0064, 0089 |
 | `crates/policy-proof` | Symbolic proofs of the baseline (cvc5) | 0033 |
 | `crates/mcp-conformance` | The pinned MCP conformance suite | 0067, 0069 |
