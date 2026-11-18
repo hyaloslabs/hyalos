@@ -34,6 +34,9 @@ pub struct Sweep {
     pub outcomes: BTreeMap<String, u64>,
     /// Gate-outage runs that asked a gate after the outage began, which must all be held.
     pub held_by_outage: u64,
+    /// How each merge job ended, so a sweep shows the merge invariant was checked on real merges
+    /// and on refused ones (ADR-0108).
+    pub merges: BTreeMap<String, u64>,
     pub failures: Vec<Failure>,
 }
 
@@ -55,6 +58,11 @@ impl Sweep {
         if self.held_by_outage == 0 {
             gaps.push("no gate outage was ever asked a question".into());
         }
+        for want in ["Merged", "HeadMoved", "Expired"] {
+            if !self.merges.contains_key(want) {
+                gaps.push(format!("no merge ended {want}"));
+            }
+        }
         gaps
     }
 
@@ -70,6 +78,9 @@ impl Sweep {
             .or_default() += 1;
         if gate_outage_reached(schedule, run) {
             self.held_by_outage += 1;
+        }
+        if let Some(ending) = run.counts.merge {
+            *self.merges.entry(format!("{ending:?}")).or_default() += 1;
         }
     }
 }
@@ -162,7 +173,7 @@ pub fn check(schedule: &Schedule, run: &Run) -> Result<(), String> {
         }
         Profile::Outage(Boundary::Forge) => {
             let after = schedule.forge.down_after.unwrap_or(0);
-            if c.issues_read + c.pull_requests > after {
+            if c.issues_read + c.pull_requests + c.merge_forge_served > after {
                 return fail("the forge served a request after its outage began".into());
             }
         }

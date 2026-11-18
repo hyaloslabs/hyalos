@@ -72,11 +72,12 @@ These are pinned by tests. A change to one bumps its version (except where noted
 | `core/substrate` | Containers, gVisor, Firecracker, choosing one, attestation | 0032, 0041, 0043, 0056, 0057, 0058, 0089 |
 | `core/plugin` | The plugin runtime: the Wasmtime host, install, Sigstore verification, the trusted-root snapshot, the revocation list, update checks, the reference skill the marketplace pins (part budget 3,000) | 0006, 0007, 0086, 0087, 0089, 0090, 0093, 0094, 0097, 0098, 0099, 0101, 0102 |
 | `core/hyalos` | The binary: keys, log commands, the broker process and channel, doctor, GitHub App, `hyalos run`, the fix-issue workflow, MCP server, operator commands and merge, thin CLI, setup, the capability diff | 0018, 0021, 0022, 0026–0028, 0030, 0035, 0038, 0043, 0044, 0045, 0050, 0052, 0053, 0058, 0062, 0063, 0067–0075, 0078, 0080, 0081, 0082, 0083, 0084, 0088, 0089, 0090, 0091, 0092, 0093, 0097, 0098, 0099, 0101, 0102, 0103, 0106 |
-| `.github/workflows/ci.yml` | CI's jobs, their time budget, and the required check that gathers them | 0104, 0105 |
+| `.github/workflows/ci.yml` | CI's jobs, their time budget, and the required check that gathers them | 0104, 0105, 0108 |
 | `.github/workflows/release.yml` | A release: the static binary, the image by digest, provenance, the complete job it runs before publishing | 0081, 0107 |
 | `site/setup`, `.github/workflows/pages.yml` | The setup page that creates the GitHub App from a manifest, and the marketplace settings check's App page | 0084, 0096 |
 | `crates/xtask` | `layout` and `lines` | 0017 |
-| `crates/sim`, `crates/world` | Deterministic simulation, the simulated world, fault schedules and the `sim` sweep | 0013, 0036, 0104 |
+| `crates/sim`, `crates/world` | Deterministic simulation, the simulated world, fault schedules the `sim` sweep, and the spec's invariants on every run | 0013, 0036, 0104, 0108 |
+| `spec/Job.tla`, `.github/scripts/check-spec.sh` | The job state machine's TLA+ spec, its invariants and mutants, and the model check | 0013, 0108 |
 | `crates/substrate-contract`, `crates/vm-init` | The contract every substrate passes; the microVM's init | 0032, 0041, 0056, 0058 |
 | `crates/sandbox-tools`, `images/sandbox` | The sandbox image and the tools in it | 0016, 0040, 0049, 0064, 0089 |
 | `crates/policy-proof` | Symbolic proofs of the baseline (cvc5) | 0033 |

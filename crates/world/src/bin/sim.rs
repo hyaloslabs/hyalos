@@ -83,6 +83,7 @@ fn run_sweep(from: &str, to: &str, threads: Option<&str>, root: PathBuf) -> Exit
     println!("profiles:  {:?}", result.profiles);
     println!("outcomes:  {:?}", result.outcomes);
     println!("held because the gate was down: {}", result.held_by_outage);
+    println!("merges:    {:?}", result.merges);
     let gaps = result.gaps();
     for gap in &gaps {
         println!("GAP: {gap}");

@@ -190,6 +190,11 @@ fn the_check_refuses_a_run_that_breaks_its_profile() -> Res {
             .contains("refused every start")
     );
 
+    // A forge that served the merge after its outage began.
+    let (forge, mut r) = passing(Profile::Outage(Boundary::Forge))?;
+    r.counts.merge_forge_served = forge.forge.down_after.unwrap_or(0) + 1;
+    assert!(check(&forge, &r).unwrap_err().contains("outage began"));
+
     let (mut gate, r) = passing(Profile::Usual)?;
     gate.gate.down_after = Some(0);
     if r.counts.gates_asked > 0 && r.outcome != JobOutcome::Held {

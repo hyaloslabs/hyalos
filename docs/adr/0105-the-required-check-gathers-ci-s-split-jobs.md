@@ -1,6 +1,6 @@
 # ADR-0105: The required check gathers CI's split jobs
 
-**Status:** Accepted. Supersedes [ADR-0104](0104-fault-schedules-swept-in-ci.md)'s rule that `simulation` is added to the ruleset's required checks by name.
+**Status:** Accepted. Supersedes [ADR-0104](0104-fault-schedules-swept-in-ci.md)'s rule that `simulation` is added to the ruleset's required checks by name. Its list of the jobs `build, lint, test` gathers is superseded by [ADR-0108](0108-the-job-state-machine-s-tla-spec-and-its-model-check.md), which adds `spec`.
 
 ## Context
 

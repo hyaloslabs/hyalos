@@ -11,6 +11,11 @@
 //! A [`Schedule`] drawn from the seed says how often and from when each boundary fails, and [`sweep`]
 //! runs thousands of seeds, each under its own schedule, and checks every run against the properties
 //! in [`check`] (S8.1, ADR-0104). A failing seed reproduces with [`reproduce`]'s command.
+//!
+//! Every run is also checked against the invariants of the job state machine's TLA+ spec,
+//! `spec/Job.tla`, under the spec's names ([`spec`], S8.2, ADR-0108). A job that succeeds with a pull
+//! request is followed by the operator's merge of it, so the merge invariant is checked on real
+//! merges.
 
 mod fixtures;
 mod forge;
@@ -19,14 +24,15 @@ mod model;
 mod run;
 mod scan;
 mod schedule;
+pub mod spec;
 mod substrate;
 mod sweep;
 
 pub use fixtures::Fixtures;
-pub use forge::{FakeForge, Forge, PullRequest};
+pub use forge::{FakeForge, Forge, ForgeMerge, Merged, PullRequest};
 pub use gate::SeededGate;
 pub use model::{FakeModel, Model, Reply};
-pub use run::{Counts, Run, TOKEN_BUDGET, run_job, run_with};
+pub use run::{Counts, MergeEnding, Run, TOKEN_BUDGET, run_job, run_with};
 pub use scan::{Leak, scan};
 pub use schedule::{Boundary, Failing, GateMix, Odds, Profile, SandboxMix, Schedule};
 pub use substrate::SeededSubstrate;
