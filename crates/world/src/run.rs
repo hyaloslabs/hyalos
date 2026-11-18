@@ -17,7 +17,8 @@ use hyalos_types::{
 use sha2::{Digest as _, Sha256};
 
 use crate::{
-    FakeForge, FakeModel, Fault, Fixtures, Forge, Model, SeededGate, SeededSubstrate, scan::Leak,
+    FakeForge, FakeModel, Fault, Fixtures, Forge, Model, Schedule, SeededGate, SeededSubstrate,
+    scan::Leak,
 };
 
 /// The operator's policy for the simulated repo: what the manifest asks for, no more.
@@ -106,18 +107,26 @@ fn names(items: &[&str]) -> BTreeSet<String> {
     items.iter().map(|s| s.to_string()).collect()
 }
 
-/// Runs one job to the end of its task on the seed, in a log under `dir`, and checks the run: the
-/// state holds the properties of ADR-0009, a replay of the log gives the same state, and the log
-/// verifies against the engine's public key.
+/// Runs one job to the end of its task on the seed at the usual fault rates ([`Schedule::default`]),
+/// in a log under `dir`, and checks the run: the state holds the properties of ADR-0009, a replay of
+/// the log gives the same state, and the log verifies against the engine's public key.
 pub fn run_job(seed: u64, dir: &Path) -> Res<Run> {
+    run_with(seed, &Schedule::default(), dir)
+}
+
+/// [`run_job`], with each boundary failing as `schedule` says (ADR-0104).
+pub fn run_with(seed: u64, schedule: &Schedule, dir: &Path) -> Res<Run> {
     std::fs::create_dir_all(dir)?;
     let sim = Sim::new(seed);
     let clock = sim.clock();
     let fixtures = Fixtures::for_seed(seed);
-    let mut forge = FakeForge::new(sim.stream("forge"), clock.clone(), &fixtures);
-    let mut model = FakeModel::new(sim.stream("model"), clock.clone(), &fixtures);
-    let substrate = SeededSubstrate::new(sim.stream("substrate"), clock.clone());
-    let mut gate = SeededGate::new(sim.stream("gate"), clock.clone());
+    let mut forge =
+        FakeForge::new(sim.stream("forge"), clock.clone(), &fixtures).with_faults(schedule.forge);
+    let mut model =
+        FakeModel::new(sim.stream("model"), clock.clone(), &fixtures).with_faults(schedule.model);
+    let substrate =
+        SeededSubstrate::new(sim.stream("substrate"), clock.clone()).with_mix(schedule.sandbox);
+    let mut gate = SeededGate::new(sim.stream("gate"), clock.clone()).with_mix(schedule.gate);
     let mut order = sim.stream("order");
     let mut counts = Counts::default();
 

@@ -117,3 +117,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0101](0101-a-third-party-mcp-server-runs-in-the-job-s-sandbox.md) | A third-party MCP server runs in the job's sandbox | Accepted |
 | [0102](0102-composing-skills-components-and-deterministic-steps.md) | Composing skills, components and deterministic steps in a workflow | Accepted |
 | [0103](0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md) | Policy releases an issue written only by the repository's writers | Accepted |
+| [0104](0104-fault-schedules-swept-in-ci.md) | Fault schedules, swept in CI | Proposed |

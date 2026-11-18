@@ -110,6 +110,26 @@ jobs:
         with:
           command: check
 
+  # Ten thousand simulated jobs, each under the fault schedule its seed draws (ADR-0013, ADR-0104). The
+  # seeds are fixed, so a failure is the change's and not luck, and the log names the one command that
+  # replays each failing seed. Release mode: a run is several times faster there than in debug.
+  simulation:
+    name: simulation
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - name: Sweep 10,000 fault schedules
+        run: cargo run --release --locked -p hyalos-world --bin sim -- --sweep 0 10000 | tee -a "${GITHUB_STEP_SUMMARY}"
+        # Named, so the step runs with pipefail and the sweep's exit status survives the tee.
+        shell: bash
+
   # The official MCP conformance suite against the engine's MCP protocol layer (ADR-0067). The suite
   # is pinned with its lockfile and installed without install scripts; it runs on the runner's Node.
   mcp-conformance:
