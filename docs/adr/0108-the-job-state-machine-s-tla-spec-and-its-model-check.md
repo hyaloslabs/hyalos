@@ -1,6 +1,6 @@
 # ADR-0108: The job state machine's TLA+ spec and its model check
 
-**Status:** Proposed. Supersedes [ADR-0105](0105-the-required-check-gathers-ci-s-split-jobs.md)'s list of the jobs `build, lint, test` gathers.
+**Status:** Accepted. Supersedes [ADR-0105](0105-the-required-check-gathers-ci-s-split-jobs.md)'s list of the jobs `build, lint, test` gathers.
 
 ## Context
 
