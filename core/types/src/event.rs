@@ -16,9 +16,9 @@ use crate::{
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 22;
+pub const SCHEMA_VERSION: u32 = 23;
 
-/// What this build reads: version 22, and versions 1 to 21 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// What this build reads: version 23, and versions 1 to 22 upcast to it (ADR-0023, ADR-0025, ADR-0027,
 /// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069,
 /// ADR-0070, ADR-0071, ADR-0089, ADR-0106).
 ///
@@ -42,7 +42,8 @@ pub const SCHEMA_VERSION: u32 = 22;
 /// Version 20 added `plugin.revocations_imported` and `plugin.revoked` (ADR-0098) and changed no
 /// payload. Version 21 added `writers` to `handle.released` (ADR-0103); a payload written before has
 /// none and reads as it was. Version 22 added the `dependency` gate (ADR-0106), which `gate.answered`
-/// and `hold.opened` may name, and changed no payload.
+/// and `hold.opened` may name, and changed no payload. Version 23 added `skill.drafted` (ADR-0113)
+/// and changed no payload.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -425,6 +426,19 @@ pub enum Event {
     /// in the log.
     #[serde(rename = "job.values")]
     JobValues { job: JobId, values: Vec<TypedValue> },
+    /// Hyalos drafted skill `name` from task `task`, a run that succeeded (ADR-0113). Its files, with
+    /// SHA-256 `digest`, are in the plugin store. Hyalos wrote them from the run's typed values and
+    /// the workflow's own words, never from text the forge or a model wrote; but a model chose those
+    /// values after reading the issue, so the draft is tainted and `grant` holds no more than
+    /// `Grant::read_only`, which the state refuses otherwise. It is not a decision: it grants nothing
+    /// a job did not already have.
+    #[serde(rename = "skill.drafted")]
+    SkillDrafted {
+        name: PluginName,
+        digest: Digest,
+        task: TaskId,
+        grant: Grant,
+    },
 }
 
 /// The largest policy document an event may hold, in bytes. Events are read whole into memory by
@@ -510,7 +524,8 @@ impl Event {
             | Event::PluginSnapshotImported { .. }
             | Event::PluginRevocationsImported { .. }
             | Event::PluginRevoked { .. }
-            | Event::JobValues { .. } => origin == Origin::Engine,
+            | Event::JobValues { .. }
+            | Event::SkillDrafted { .. } => origin == Origin::Engine,
         }
     }
 
@@ -594,6 +609,7 @@ impl Event {
             Event::PluginRevocationsImported { .. } => "plugin.revocations_imported",
             Event::PluginRevoked { .. } => "plugin.revoked",
             Event::JobValues { .. } => "job.values",
+            Event::SkillDrafted { .. } => "skill.drafted",
         }
     }
 
@@ -603,7 +619,7 @@ impl Event {
     }
 
     /// Every `kind` value, for checking tables and test coverage.
-    pub const KINDS: [&'static str; 22] = [
+    pub const KINDS: [&'static str; 23] = [
         "task.created",
         "task.completed",
         "job.started",
@@ -626,6 +642,7 @@ impl Event {
         "plugin.revocations_imported",
         "plugin.revoked",
         "job.values",
+        "skill.drafted",
     ];
 
     /// Reads an event back from a log row's `kind`, `schema_version` and `payload`, as this build's
@@ -935,6 +952,18 @@ mod tests {
                 },
                 r#"{"kind":"job.values","job":4,"values":[{"choice":2},{"bool":true},{"integer":-3}]}"#
                     .to_string(),
+            ),
+            (
+                Event::SkillDrafted {
+                    name: PluginName::new("draft-3").unwrap(),
+                    digest: d(9),
+                    task: TaskId::from_seq(3),
+                    grant: Grant::read_only(),
+                },
+                format!(
+                    r#"{{"kind":"skill.drafted","name":"draft-3","digest":"{}","task":3,"grant":{{"actions":["read"],"egress_hosts":[],"tools":[],"data_flows":["job->model"]}}}}"#,
+                    h(9)
+                ),
             ),
         ]
     }

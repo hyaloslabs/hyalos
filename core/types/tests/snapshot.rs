@@ -1,14 +1,15 @@
 //! The state a snapshot carries, as each released version wrote it (ADR-0026).
 //!
 //! A snapshot sits in the log for good, signed, so a build must read every version it has ever written.
-//! These bytes are what versions 1 to 15 store. Never edit a row: when `STATE_VERSION` is bumped, add the new
+//! These bytes are what versions 1 to 16 store. Never edit a row: when `STATE_VERSION` is bumped, add the new
 //! version's row and the step that brings the old one up to it.
 
 use hyalos_types::snapshot::STATE_VERSION;
 use hyalos_types::snapshot::{
-    AgentImage, CancelledImage, HandleImage, HoldImage, InstallPolicyImage, JobEndImage, JobImage,
-    MergeImage, PendingUpdateImage, PluginImage, PolicyImage, PrunedImage, ResolvedImage,
-    RevocationListImage, RevokedImage, RevokedPluginImage, StateImage, TaskImage, TrustedRootImage,
+    AgentImage, CancelledImage, DraftImage, HandleImage, HoldImage, InstallPolicyImage,
+    JobEndImage, JobImage, MergeImage, PendingUpdateImage, PluginImage, PolicyImage, PrunedImage,
+    ResolvedImage, RevocationListImage, RevokedImage, RevokedPluginImage, StateImage, TaskImage,
+    TrustedRootImage,
 };
 use hyalos_types::{
     AgentId, AgentName, CommitSha, Digest, Gate, Grant, HoldId, HoldReason, IndexLocation,
@@ -180,6 +181,7 @@ fn base(pruned: Vec<PrunedImage>) -> StateImage {
         trusted_root: None,
         revocations: None,
         revoked_plugins: vec![],
+        drafts: vec![],
     }
 }
 
@@ -302,24 +304,41 @@ fn golden() -> Vec<(u32, String, StateImage)> {
         (14, PINNED_V14.to_string(), v14_image()),
         // Version 15 added the revocation list imported and the plugins it revoked; the older versions
         // read as having neither.
-        (15, PINNED_V15.to_string(), {
-            let mut image = v14_image();
-            image.revocations = Some(RevocationListImage {
-                seq: 30,
-                at: 6_600,
-                digest: d(16),
-                signed_at: 1_794_882_145_000,
-            });
-            image.revoked_plugins.push(RevokedPluginImage {
-                seq: 31,
-                at: 6_700,
-                name: PluginName::new("pdf-tools").unwrap_or_else(|| unreachable!()),
-                digest: d(12),
-                reason: ReasonCode::new("malware.exfiltration").unwrap_or_else(|| unreachable!()),
+        (15, PINNED_V15.to_string(), v15_image()),
+        // Version 16 added the skills Hyalos drafted; the older versions read as having none.
+        (16, PINNED_V16.to_string(), {
+            let mut image = v15_image();
+            image.drafts.push(DraftImage {
+                seq: 32,
+                at: 6_800,
+                name: PluginName::new("draft-8").unwrap_or_else(|| unreachable!()),
+                digest: d(17),
+                task: TaskId::from_seq(8),
+                grant: Grant::read_only(),
             });
             image
         }),
     ]
+}
+
+fn v15_image() -> StateImage {
+    {
+        let mut image = v14_image();
+        image.revocations = Some(RevocationListImage {
+            seq: 30,
+            at: 6_600,
+            digest: d(16),
+            signed_at: 1_794_882_145_000,
+        });
+        image.revoked_plugins.push(RevokedPluginImage {
+            seq: 31,
+            at: 6_700,
+            name: PluginName::new("pdf-tools").unwrap_or_else(|| unreachable!()),
+            digest: d(12),
+            reason: ReasonCode::new("malware.exfiltration").unwrap_or_else(|| unreachable!()),
+        });
+        image
+    }
 }
 
 fn v14_image() -> StateImage {
@@ -505,3 +524,5 @@ const PINNED_V10: &str = r#"{"last_seq":17,"last_at":4000,"tasks":[{"id":1,"crea
 const PINNED_V7: &str = r#"{"last_seq":17,"last_at":4000,"tasks":[{"id":1,"created_at":1000,"request":"0101010101010101010101010101010101010101010101010101010101010101","completed_at":null,"open_holds":[5],"cancelled":null},{"id":8,"created_at":2000,"request":"0303030303030303030303030303030303030303030303030303030303030303","completed_at":3000,"open_holds":[],"cancelled":null},{"id":20,"created_at":5000,"request":"0808080808080808080808080808080808080808080808080808080808080808","completed_at":null,"open_holds":[],"cancelled":{"at":5500,"by":"human","reason":"gate.unavailable"}}],"jobs":[{"id":2,"task":1,"started_at":1500,"ended":{"at":1800,"outcome":"held","reason":"gate.unavailable"},"values":null},{"id":7,"task":6,"started_at":2500,"ended":null,"values":[{"choice":1},{"integer":-2}]}],"holds":[{"id":5,"task":1,"gate":"egress","inputs":"0202020202020202020202020202020202020202020202020202020202020202","reason":"unknown","stakes":{"tier":"irreversible","touches":["credentials"]},"opened_at":1800,"resolved":null},{"id":16,"task":12,"gate":"content","inputs":"0404040404040404040404040404040404040404040404040404040404040404","reason":"timed_out","stakes":{"tier":"routine","touches":[]},"opened_at":3500,"resolved":{"at":3900,"by":"policy","reason":"gate.unavailable"}}],"pruned":[{"seq":10,"at":4100,"last_seq":3,"last_hash":"0505050505050505050505050505050505050505050505050505050505050505"},{"seq":18,"at":4800,"last_seq":9,"last_hash":"0606060606060606060606060606060606060606060606060606060606060606"}],"policy":{"seq":19,"at":5200,"by":"human","reason":"gate.unavailable","document":"permit (principal, action, resource);"},"handles":[{"seq":21,"at":5600,"task":1,"handle":"0909090909090909090909090909090909090909090909090909090909090909","by":"human","reason":"gate.unavailable"}],"agents":[{"id":22,"at":5700,"name":"claude-code","credential":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","by":"human","reason":"gate.unavailable","revoked":{"at":5900,"by":"human","reason":"gate.unavailable"}},{"id":23,"at":5800,"name":"hermes","credential":"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","by":"human","reason":"gate.unavailable","revoked":null}]}"#;
 
 const PINNED_V8: &str = r#"{"last_seq":17,"last_at":4000,"tasks":[{"id":1,"created_at":1000,"request":"0101010101010101010101010101010101010101010101010101010101010101","completed_at":null,"open_holds":[5],"cancelled":null},{"id":8,"created_at":2000,"request":"0303030303030303030303030303030303030303030303030303030303030303","completed_at":3000,"open_holds":[],"cancelled":null},{"id":20,"created_at":5000,"request":"0808080808080808080808080808080808080808080808080808080808080808","completed_at":null,"open_holds":[],"cancelled":{"at":5500,"by":"human","reason":"gate.unavailable"}}],"jobs":[{"id":2,"task":1,"started_at":1500,"ended":{"at":1800,"outcome":"held","reason":"gate.unavailable"},"values":null},{"id":7,"task":6,"started_at":2500,"ended":null,"values":[{"choice":1},{"integer":-2}]}],"holds":[{"id":5,"task":1,"gate":"egress","inputs":"0202020202020202020202020202020202020202020202020202020202020202","reason":"unknown","stakes":{"tier":"irreversible","touches":["credentials"]},"opened_at":1800,"resolved":null},{"id":16,"task":12,"gate":"content","inputs":"0404040404040404040404040404040404040404040404040404040404040404","reason":"timed_out","stakes":{"tier":"routine","touches":[]},"opened_at":3500,"resolved":{"at":3900,"by":"policy","reason":"gate.unavailable"}}],"pruned":[{"seq":10,"at":4100,"last_seq":3,"last_hash":"0505050505050505050505050505050505050505050505050505050505050505"},{"seq":18,"at":4800,"last_seq":9,"last_hash":"0606060606060606060606060606060606060606060606060606060606060606"}],"policy":{"seq":19,"at":5200,"by":"human","reason":"gate.unavailable","document":"permit (principal, action, resource);"},"handles":[{"seq":21,"at":5600,"task":1,"handle":"0909090909090909090909090909090909090909090909090909090909090909","by":"human","reason":"gate.unavailable"}],"agents":[{"id":22,"at":5700,"name":"claude-code","credential":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","by":"human","reason":"gate.unavailable","revoked":{"at":5900,"by":"human","reason":"gate.unavailable"}},{"id":23,"at":5800,"name":"hermes","credential":"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","by":"human","reason":"gate.unavailable","revoked":null}],"last_approval":21,"signed_since":19}"#;
+
+const PINNED_V16: &str = r#"{"last_seq":17,"last_at":4000,"tasks":[{"id":1,"created_at":1000,"request":"0101010101010101010101010101010101010101010101010101010101010101","completed_at":null,"open_holds":[5],"cancelled":null},{"id":8,"created_at":2000,"request":"0303030303030303030303030303030303030303030303030303030303030303","completed_at":3000,"open_holds":[],"cancelled":null},{"id":20,"created_at":5000,"request":"0808080808080808080808080808080808080808080808080808080808080808","completed_at":null,"open_holds":[],"cancelled":{"at":5500,"by":"human","reason":"gate.unavailable"}}],"jobs":[{"id":2,"task":1,"started_at":1500,"ended":{"at":1800,"outcome":"held","reason":"gate.unavailable"},"values":null},{"id":7,"task":6,"started_at":2500,"ended":null,"values":[{"choice":1},{"integer":-2}]}],"holds":[{"id":5,"task":1,"gate":"egress","inputs":"0202020202020202020202020202020202020202020202020202020202020202","reason":"unknown","stakes":{"tier":"irreversible","touches":["credentials"]},"opened_at":1800,"resolved":null},{"id":16,"task":12,"gate":"content","inputs":"0404040404040404040404040404040404040404040404040404040404040404","reason":"timed_out","stakes":{"tier":"routine","touches":[]},"opened_at":3500,"resolved":{"at":3900,"by":"policy","reason":"gate.unavailable"}}],"pruned":[{"seq":10,"at":4100,"last_seq":3,"last_hash":"0505050505050505050505050505050505050505050505050505050505050505"},{"seq":18,"at":4800,"last_seq":9,"last_hash":"0606060606060606060606060606060606060606060606060606060606060606"}],"policy":{"seq":19,"at":5200,"by":"human","reason":"gate.unavailable","document":"permit (principal, action, resource);"},"handles":[{"seq":21,"at":5600,"task":1,"handle":"0909090909090909090909090909090909090909090909090909090909090909","by":"human","reason":"gate.unavailable"}],"agents":[{"id":22,"at":5700,"name":"claude-code","credential":"0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a","by":"human","reason":"gate.unavailable","revoked":{"at":5900,"by":"human","reason":"gate.unavailable"}},{"id":23,"at":5800,"name":"hermes","credential":"0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b","by":"human","reason":"gate.unavailable","revoked":null}],"last_approval":21,"signed_since":19,"merges":[{"seq":24,"at":6000,"task":20,"repo":"octo/repo","pr":42,"head":"0123456789abcdef0123456789abcdef01234567","method":"squash","by":"human","reason":"gate.unavailable"}],"plugins":[{"seq":25,"at":6100,"name":"pdf-tools","digest":"0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c","grant":{"actions":["read"],"egress_hosts":["docs.rs"],"tools":[],"data_flows":["job->web"]},"source":"local","by":"human","reason":"gate.unavailable"},{"seq":26,"at":6200,"name":"lint","digest":"0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d","grant":{"actions":[],"egress_hosts":[],"tools":[],"data_flows":[]},"source":{"index":{"location":"https://plugins.example/v1","version":"1.2.0"}},"by":"human","reason":"gate.unavailable"}],"install_policy":{"seq":27,"at":6300,"policy":{"ceiling":{"actions":[],"egress_hosts":["docs.rs"],"tools":[],"data_flows":[]},"indexes":["https://plugins.example/v1"],"max_snapshot_age_days":90,"max_revocation_age_days":30},"by":"human","reason":"gate.unavailable"},"pending_updates":[{"seq":28,"at":6400,"name":"lint","version":"2.0.0","digest":"0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e","asks":{"actions":["push"],"egress_hosts":[],"tools":[],"data_flows":[]},"location":"https://plugins.example/v1"}],"trusted_root":{"seq":29,"at":6500,"digest":"0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f","signed_at":1794878463000},"revocations":{"seq":30,"at":6600,"digest":"1010101010101010101010101010101010101010101010101010101010101010","signed_at":1794882145000},"revoked_plugins":[{"seq":31,"at":6700,"name":"pdf-tools","digest":"0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c","reason":"malware.exfiltration"}],"drafts":[{"seq":32,"at":6800,"name":"draft-8","digest":"1111111111111111111111111111111111111111111111111111111111111111","task":8,"grant":{"actions":["read"],"egress_hosts":[],"tools":[],"data_flows":["job->model"]}}]}"#;

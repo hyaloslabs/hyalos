@@ -691,6 +691,26 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             stakes: Stakes::irreversible(),
         },
     ));
+
+    // Version 23 added `skill.drafted` (ADR-0113) and changed no payload.
+    let at_22: Vec<_> = all.iter().filter(|g| g.0 == 22).cloned().collect();
+    for (_, kind, json, event) in at_22 {
+        all.push((23, kind, json, event));
+    }
+    all.push((
+        23,
+        "skill.drafted",
+        format!(
+            r#"{{"kind":"skill.drafted","name":"draft-3","digest":"{}","task":3,"grant":{{"actions":["read"],"egress_hosts":[],"tools":[],"data_flows":["job->model"]}}}}"#,
+            hex(14)
+        ),
+        Event::SkillDrafted {
+            name: hyalos_types::PluginName::new("draft-3").ok_or("name")?,
+            digest: d(14),
+            task: TaskId::from_seq(3),
+            grant: hyalos_types::Grant::read_only(),
+        },
+    ));
     Ok(all)
 }
 
@@ -709,6 +729,7 @@ fn introduced(kind: &str) -> u32 {
         "plugin.update_pending" => 18,
         "plugin.snapshot_imported" => 19,
         "plugin.revocations_imported" | "plugin.revoked" => 20,
+        "skill.drafted" => 23,
         _ => 1,
     }
 }

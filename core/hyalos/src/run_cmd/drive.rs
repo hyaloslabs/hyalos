@@ -219,6 +219,9 @@ fn drive(
         && last.outcome != JobOutcome::Held
     {
         run.complete(out);
+        if let (JobOutcome::Succeeded, Planned::Workflow(flow, _)) = (last.outcome, &planned) {
+            run.draft(flow.checked().workflow(), out);
+        }
     }
     summary
 }
@@ -279,6 +282,42 @@ impl Run<'_> {
             job,
         };
         ended.with(out, outcome, failure, revoked, values)
+    }
+
+    /// Drafts a skill from the run, which succeeded (ADR-0113). A draft that cannot be written is
+    /// printed and leaves the run as it ended.
+    fn draft(&mut self, workflow: &hyalos_types::workflow::Workflow, out: &mut dyn Write) {
+        let task = self.task;
+        let values = crate::draft::values(self.engine.state(), task);
+        // A draft carries the request `task.created` digests, or it is not drafted (ADR-0113).
+        let drafted = serde_json::to_vec(&self.request.stored())
+            .ok()
+            .and_then(|request| crate::draft::files(task, workflow, &values, &request))
+            .zip(crate::draft::name(task))
+            .ok_or_else(|| {
+                "its request cannot be encoded or its values do not fit its workflow".to_string()
+            })
+            .and_then(|(files, name)| {
+                let digest = crate::draft::store(&self.plugin_store, task, &files)?;
+                let event = Event::SkillDrafted {
+                    name,
+                    digest,
+                    task,
+                    grant: Grant::read_only(),
+                };
+                let head = self.engine.submit(self.clock.now(), Origin::Engine, event);
+                head.map_err(|e| e.to_string())
+            });
+        let _ = match drafted {
+            Ok(head) => writeln!(
+                out,
+                "task {}: drafted skill draft-{} (event {}), tainted and held to read capabilities",
+                task.seq(),
+                task.seq(),
+                head.seq
+            ),
+            Err(e) => writeln!(out, "task {}: no skill was drafted: {e}", task.seq()),
+        };
     }
 
     /// Records that the run is over (`task.completed`), however its last job ended.
@@ -573,9 +612,16 @@ fn installed_skills(
     names
         .iter()
         .map(|name| {
-            let installed = engine.state().plugins().get(name).ok_or_else(|| {
-                format!("there is no skill {name} installed; install it with hyalos plugin install")
-            })?;
+            // A skill Hyalos drafted, held to the read-only grant it was drafted with (ADR-0113).
+            let Some(installed) = engine.state().plugins().get(name) else {
+                let draft = engine.state().drafts().get(name).ok_or_else(|| {
+                    format!("there is no skill {name} installed; install it with hyalos plugin install")
+                })?;
+                let skill = store
+                    .load(&draft.digest, name)
+                    .map_err(|e| format!("skill {name}: {e} ({})", e.code()))?;
+                return Ok((skill, draft.grant.clone()));
+            };
             let reason = engine
                 .state()
                 .revoked_plugins()
@@ -593,4 +639,105 @@ fn installed_skills(
             Ok((skill, installed.grant.clone()))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hyalos_types::{
+        Attestation, CredentialTier, Digest, JobId, SubstrateName, TaskId, Timestamp, TypedValue,
+    };
+
+    /// S9.2: a job given a skill Hyalos drafted is held to the read-only grant it was drafted with,
+    /// whatever its files ask for (ADR-0113).
+    #[test]
+    fn a_drafted_skill_is_given_to_a_job_with_read_capabilities_only() {
+        let dir = std::env::temp_dir().join(format!("hyalos-drive-draft-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut engine = Engine::open(
+            &dir.join("events.db"),
+            hyalos_log::LogKey::from_seed([3; 32]),
+        )
+        .unwrap();
+        let mut n = 0;
+        let mut submit = |engine: &mut Engine, event| {
+            n += 1;
+            engine
+                .submit(Timestamp::from_millis(n), Origin::Engine, event)
+                .unwrap()
+                .seq
+        };
+        let task = TaskId::from_seq(submit(
+            &mut engine,
+            Event::TaskCreated {
+                request: Digest::from_bytes([1; 32]),
+            },
+        ));
+        let flow = crate::workflow_run::fix_issue().unwrap().workflow().clone();
+        use TypedValue::{Bool, Choice};
+        let values = [
+            vec![Bool(true), Bool(false), Choice(2), Choice(0)],
+            vec![Bool(false), Choice(2)],
+            vec![Choice(0), Bool(true)],
+        ];
+        for values in &values {
+            let job = JobId::from_seq(submit(
+                &mut engine,
+                Event::JobStarted {
+                    task,
+                    substrate: SubstrateName::new("broker").unwrap(),
+                    credentials: CredentialTier::BrokerHeld,
+                    attestation: Attestation::no_hardware_root(),
+                },
+            ));
+            submit(
+                &mut engine,
+                Event::JobValues {
+                    job,
+                    values: values.clone(),
+                },
+            );
+            submit(
+                &mut engine,
+                Event::JobEnded {
+                    job,
+                    outcome: JobOutcome::Succeeded,
+                    reason: hyalos_types::ReasonCode::new("step.answered").unwrap(),
+                },
+            );
+        }
+        submit(&mut engine, Event::TaskCompleted { task });
+        let store_dir = dir.join("plugins");
+        let logged = crate::draft::values(engine.state(), task);
+        assert_eq!(logged, values);
+        let files = crate::draft::files(task, &flow, &logged, b"{}").unwrap();
+        let digest = crate::draft::store(&store_dir, task, &files).unwrap();
+        let name = crate::draft::name(task).unwrap();
+        submit(
+            &mut engine,
+            Event::SkillDrafted {
+                name: name.clone(),
+                digest,
+                task,
+                grant: Grant::read_only(),
+            },
+        );
+        let given = installed_skills(
+            &[name.clone()].into(),
+            &engine,
+            &Store::new(&store_dir),
+            &dir.join("trust"),
+        )
+        .unwrap();
+        assert_eq!(given.len(), 1);
+        assert_eq!(
+            (given[0].0.name.clone(), given[0].1.clone()),
+            (name, Grant::read_only())
+        );
+        // A name neither installed nor drafted still refuses the run.
+        let other = PluginName::new("draft-999").unwrap();
+        assert!(installed_skills(&[other].into(), &engine, &Store::new(&store_dir), &dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

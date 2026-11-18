@@ -448,3 +448,106 @@ fn a_revoked_release_is_recorded_for_the_one_installed_and_never_installed_again
     );
     Ok(())
 }
+
+/// S9.2: a skill is drafted only from a task whose last job succeeded, once per name, held to read
+/// capabilities, and the state keeps it through compaction (ADR-0113).
+#[test]
+fn a_draft_comes_only_from_a_success_holds_only_read_and_survives_compaction() -> Res {
+    use hyalos_types::{Attestation, CredentialTier, JobId, JobOutcome, SubstrateName, TaskId};
+    let p = path("drafts")?;
+    let mut e = Engine::open(&p, key())?.with_operator(operator());
+    let mut n = 0;
+    let mut submit = |e: &mut Engine, event: Event| {
+        n += 1;
+        e.submit(at(n), Origin::Engine, event)
+    };
+    // Task 1 runs one job, which ends `outcome`; the task completes unless it is `None`.
+    let mut run = |e: &mut Engine, outcome: Option<JobOutcome>| -> Res<TaskId> {
+        let task = TaskId::from_seq(
+            submit(
+                e,
+                Event::TaskCreated {
+                    request: Digest::from_bytes([1; 32]),
+                },
+            )?
+            .seq,
+        );
+        let job = JobId::from_seq(
+            submit(
+                e,
+                Event::JobStarted {
+                    task,
+                    substrate: SubstrateName::new("broker").ok_or("substrate")?,
+                    credentials: CredentialTier::BrokerHeld,
+                    attestation: Attestation::no_hardware_root(),
+                },
+            )?
+            .seq,
+        );
+        if let Some(outcome) = outcome {
+            submit(
+                e,
+                Event::JobEnded {
+                    job,
+                    outcome,
+                    reason: why(),
+                },
+            )?;
+            submit(e, Event::TaskCompleted { task })?;
+        }
+        Ok(task)
+    };
+    let open = run(&mut e, None)?;
+    let failed = run(&mut e, Some(JobOutcome::Failed))?;
+    let succeeded = run(&mut e, Some(JobOutcome::Succeeded))?;
+    install(&mut e, 90, "lint", 2, Grant::none(), Decider::Human)?;
+    let draft = |plugin: &str, task, grant| -> Res<Event> {
+        Ok(Event::SkillDrafted {
+            name: name(plugin)?,
+            digest: Digest::from_bytes([7; 32]),
+            task,
+            grant,
+        })
+    };
+    let wider = Grant {
+        actions: ["read".to_string(), "push".to_string()].into(),
+        ..Grant::read_only()
+    };
+    for refused in [
+        draft("draft-a", open, Grant::read_only())?,
+        draft("draft-b", failed, Grant::read_only())?,
+        draft("draft-c", succeeded, wider)?,
+        draft("lint", succeeded, Grant::read_only())?,
+    ] {
+        assert!(
+            matches!(
+                e.submit(at(100), Origin::Engine, refused.clone()),
+                Err(EngineError::Rule(RuleViolation::DraftRefused))
+            ),
+            "{refused:?}"
+        );
+    }
+    // The broker never drafts.
+    let ok = draft("draft-ok", succeeded, Grant::read_only())?;
+    assert!(e.submit(at(100), Origin::Broker, ok.clone()).is_err());
+    let drafted = e.submit(at(100), Origin::Engine, ok.clone())?;
+    assert!(matches!(
+        e.submit(at(101), Origin::Engine, ok),
+        Err(EngineError::Rule(RuleViolation::DraftRefused))
+    ));
+    let kept = e
+        .state()
+        .drafts()
+        .get(&name("draft-ok")?)
+        .cloned()
+        .ok_or("drafted")?;
+    assert_eq!(
+        (kept.seq, kept.task, kept.grant.clone()),
+        (drafted.seq, succeeded, Grant::read_only())
+    );
+    e.compact(at(102), &p.with_file_name("archive.db"))?;
+    drop(e);
+    let e = Engine::open(&p, key())?;
+    assert_eq!(e.state().drafts().get(&name("draft-ok")?), Some(&kept));
+    Ok(())
+}

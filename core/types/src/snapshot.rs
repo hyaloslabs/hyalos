@@ -34,8 +34,9 @@ use crate::{
 /// added the updates waiting for the operator (ADR-0092); earlier images have none. Version 14 added
 /// the trusted-root snapshot imported last (ADR-0097); earlier images have none, so the embedded one
 /// is in force. Version 15 added the revocation list imported last and the installed plugins it
-/// revoked (ADR-0098); earlier images have neither.
-pub const STATE_VERSION: u32 = 15;
+/// revoked (ADR-0098); earlier images have neither. Version 16 added the skills Hyalos drafted
+/// (ADR-0113); earlier images have none.
+pub const STATE_VERSION: u32 = 16;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +79,21 @@ pub struct StateImage {
     pub revocations: Option<RevocationListImage>,
     /// Each installed plugin whose release is revoked, by name (ADR-0098).
     pub revoked_plugins: Vec<RevokedPluginImage>,
+    /// Each skill Hyalos drafted from a run that succeeded, by name (ADR-0113).
+    pub drafts: Vec<DraftImage>,
+}
+
+/// A `skill.drafted` event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DraftImage {
+    /// The sequence number of the event that recorded it.
+    pub seq: u64,
+    pub at: u64,
+    pub name: PluginName,
+    pub digest: Digest,
+    pub task: TaskId,
+    pub grant: Grant,
 }
 
 /// The latest `plugin.revocations_imported` event.
@@ -433,8 +449,14 @@ impl StateImage {
             object.insert("trusted_root".into(), Value::Null);
         }
         // 14 -> 15: no revocation list had been imported, so nothing installed was revoked.
-        object.insert("revocations".into(), Value::Null);
-        object.insert("revoked_plugins".into(), Value::Array(Vec::new()));
+        if version < 15 {
+            object.insert("revocations".into(), Value::Null);
+            object.insert("revoked_plugins".into(), Value::Array(Vec::new()));
+        }
+        // 15 -> 16: no skill had been drafted.
+        if version < 16 {
+            object.insert("drafts".into(), Value::Array(Vec::new()));
+        }
         // 6 -> 7: no job's reason was kept, and no job had returned values.
         if version >= 7 {
             return serde_json::from_value(value).map_err(|e| ImageError::Decode(e.to_string()));
@@ -610,6 +632,7 @@ mod tests {
             trusted_root: None,
             revocations: None,
             revoked_plugins: Vec::new(),
+            drafts: Vec::new(),
         }
     }
 

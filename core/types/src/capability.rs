@@ -200,6 +200,16 @@ impl Capabilities {
         Self::default()
     }
 
+    /// The most a skill Hyalos drafted may hold (ADR-0113): it reads the repository and sends the job's
+    /// data to the model, and nothing else.
+    pub fn read_only() -> Self {
+        Self {
+            actions: ["read".to_string()].into(),
+            data_flows: [crate::manifest::flow::MODEL.to_string()].into(),
+            ..Self::none()
+        }
+    }
+
     /// Reads a plugin's capabilities, written as `{"version": 1, "actions": [...], ...}`. A version
     /// this build does not read, a field it does not know, or a name a field does not accept is
     /// refused, never skipped.
