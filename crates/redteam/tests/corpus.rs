@@ -5,7 +5,8 @@
 //! to the host a tool lives on. A write is refused if the broker answered with a refusal and nothing
 //! reached the stand-in. The test fails if an attack expected to be refused reached its sink, if a
 //! known gap stopped reaching (so the corpus says so), or if a benign control was refused. It prints
-//! the reach rate, which the PRD measures (worst case, offline).
+//! the reach rate, which the PRD measures (worst case, offline), and holds it to the rate the last
+//! release recorded in `reach.json`, which it may not regress from (S8.4, ADR-0110).
 //!
 //! The control runs the same writes from an untainted job, which only the byte check of ADR-0048
 //! guards: most pull request attacks then reach GitHub, so the refusals above are the published-text
@@ -26,7 +27,7 @@ use hyalos_broker::forge::Forge;
 use hyalos_broker::git::Git;
 use hyalos_broker::model::Meter;
 use hyalos_broker::sandbox::{Models, Sandboxes};
-use hyalos_redteam::{Class, Expected, REPO, Write, corpus};
+use hyalos_redteam::{Class, Expected, REPO, Reach, Write, corpus, record, regressions};
 use hyalos_types::wire::{ToBroker, ToEngine};
 use hyalos_types::{
     Budget, Clock, ForgeToken, JobId, MANIFEST_VERSION, Manifest, ManifestKey, Role, Timestamp,
@@ -150,6 +151,8 @@ fn make(socket: &PathBuf, job: u64, write: &Write) -> Res<(u16, String)> {
 struct Run {
     attacks: usize,
     reached: usize,
+    /// The attacks that reached, by id.
+    reached_ids: BTreeSet<String>,
     /// Attacks that reached, by form.
     by_form: BTreeMap<String, (usize, usize)>,
     /// Refusals by the broker's code.
@@ -160,7 +163,7 @@ struct Run {
 
 #[test]
 fn every_steered_write_in_the_corpus_is_refused_but_the_known_gaps() -> Res {
-    let run = run(true)?;
+    let run = run(true, "tainted")?;
     eprintln!(
         "red-team corpus, offline worst case: {} of {} attacks reached a sink ({:.1}%)",
         run.reached,
@@ -179,9 +182,66 @@ fn every_steered_write_in_the_corpus_is_refused_but_the_known_gaps() -> Res {
     Ok(())
 }
 
+/// The reach-a-sink rate is tracked per release and may not regress (S8.4, ADR-0110). Every run is
+/// held to the newest release in `reach.json`: no attack that release refused may reach, and the rate
+/// may not rise. A release's own run (`HYALOS_REDTEAM_RELEASE=<version>`, as `release.yml` sets it)
+/// must also find its row there, recording exactly what this run reached.
+#[test]
+fn the_reach_rate_does_not_regress_from_the_last_release() -> Res {
+    let run = run(true, "reach")?;
+    let items = corpus()?;
+    let version = items.iter().map(|i| i.version()).max().unwrap_or(1);
+    let now = Reach {
+        release: "this change".into(),
+        corpus: version,
+        attacks: run.attacks,
+        reached: run.reached_ids.clone(),
+    };
+    let rows = record()?;
+    let last = rows.last().ok_or("reach.json has no release")?;
+    let line = format!(
+        "red-team reach: {} of {} attacks ({:.1}%), against {} of {} ({:.1}%) in {}",
+        now.reached.len(),
+        now.attacks,
+        100.0 * now.rate(),
+        last.reached.len(),
+        last.attacks,
+        100.0 * last.rate(),
+        last.release
+    );
+    eprintln!("{line}");
+    if let Ok(summary) = std::env::var("GITHUB_STEP_SUMMARY") {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(summary) {
+            let _ = writeln!(f, "{line}\n");
+        }
+    }
+    let found = regressions(last, &now, &items);
+    assert!(
+        found.is_empty(),
+        "the red-team reach regressed:\n{}",
+        found.join("\n")
+    );
+
+    if let Ok(release) = std::env::var("HYALOS_REDTEAM_RELEASE") {
+        let row = Reach {
+            release: release.clone(),
+            ..now
+        };
+        let recorded = rows.iter().find(|r| r.release == release);
+        assert_eq!(
+            recorded,
+            Some(&row),
+            "release {release} must record its reach in crates/redteam/reach.json:\n{}",
+            serde_json::to_string_pretty(&row).unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn without_taint_most_pull_request_attacks_reach_github() -> Res {
-    let run = run(false)?;
+    let run = run(false, "untainted")?;
     let pull_requests = run.codes.get("content.credential").copied().unwrap_or(0)
         + run.codes.get("content.hidden_text").copied().unwrap_or(0);
     eprintln!(
@@ -204,7 +264,7 @@ fn without_taint_most_pull_request_attacks_reach_github() -> Res {
 }
 
 /// Makes every item's writes from jobs whose manifests are `tainted` or not.
-fn run(tainted: bool) -> Res<Run> {
+fn run(tainted: bool, label: &str) -> Res<Run> {
     let (port, seen) = github()?;
     let key = ManifestKey::from_seed([29; 32]);
     let mut broker = Broker::with_sandboxes(
@@ -222,7 +282,7 @@ fn run(tainted: bool) -> Res<Run> {
             clock: Arc::new(Fixed),
         },
     );
-    let dir = std::env::temp_dir().join(format!("hy-{}-rt-{tainted}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("hy-{}-rt-{label}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
 
@@ -265,6 +325,9 @@ fn run(tainted: bool) -> Res<Run> {
         if item.class == Class::Attack {
             run.attacks += 1;
             run.reached += usize::from(any);
+            if any {
+                run.reached_ids.insert(item.id.clone());
+            }
             let form = run.by_form.entry(item.steered.form.clone()).or_default();
             form.0 += 1;
             form.1 += usize::from(any);
