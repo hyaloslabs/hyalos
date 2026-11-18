@@ -17,7 +17,7 @@ This file holds the rules. The design is in the ADRs: start at [`docs/adr/README
 
 The driving agent and the operator are different principals, and an agent working on this repository is held to the same split:
 - Never read, print or ask for a secret: `engine.key`, `operator.key`, `provider.keys`, `github-app.pem`, the operator's passphrase, an agent credential.
-- Never run a decision: `hyalos approve`, `cancel`, `release`, `merge`, `policy approve`, `agent issue|revoke`, `plugin install`, `plugin policy set`, `run --release-issue`. The operator runs them in a terminal of their own (`tools_cmd::DECISIONS`).
+- Never run a decision: `hyalos approve`, `cancel`, `release`, `merge`, `policy approve`, `agent issue|revoke`, `plugin install`, `plugin policy set`, `run --release-issue`. Nor tag a release (`.github/scripts/tag-release.sh`, or pushing a `v*` tag, ADR-0111). The operator runs them in a terminal of their own (`tools_cmd::DECISIONS`).
 - No MCP tool decides. A new MCP tool needs its thin-CLI command in the same change (`tools_cmd::COMMANDS`, ADR-0075).
 
 ## Rules for the code
@@ -73,9 +73,9 @@ These are pinned by tests. A change to one bumps its version (except where noted
 | `core/plugin` | The plugin runtime: the Wasmtime host, install, Sigstore verification, the trusted-root snapshot, the revocation list, update checks, the reference skill the marketplace pins (part budget 3,000) | 0006, 0007, 0086, 0087, 0089, 0090, 0093, 0094, 0097, 0098, 0099, 0101, 0102 |
 | `core/hyalos` | The binary: keys, log commands, the broker process and channel, doctor, GitHub App, `hyalos run`, the fix-issue workflow, MCP server, operator commands and merge, thin CLI, setup, the capability diff | 0018, 0021, 0022, 0026–0028, 0030, 0035, 0038, 0043, 0044, 0045, 0050, 0052, 0053, 0058, 0062, 0063, 0067–0075, 0078, 0080, 0081, 0082, 0083, 0084, 0088, 0089, 0090, 0091, 0092, 0093, 0097, 0098, 0099, 0101, 0102, 0103, 0106 |
 | `.github/workflows/ci.yml` | CI's jobs, their time budget, and the required check that gathers them | 0104, 0105, 0108 |
-| `.github/workflows/release.yml` | A release: the static binary, the image by digest, provenance, the complete job it runs before publishing, the red-team reach it must record | 0081, 0107, 0110 |
+| `.github/workflows/release.yml`, `.github/scripts/release-evidence.sh`, `.github/scripts/tag-release.sh` | A release: the evidence its commit needs, the operator's tag, the static binary, the image by digest, provenance, the complete job it runs before publishing, the red-team reach it must record | 0081, 0107, 0110, 0111 |
 | `site/setup`, `.github/workflows/pages.yml` | The setup page that creates the GitHub App from a manifest, and the marketplace settings check's App page | 0084, 0096 |
-| `crates/xtask` | `layout` and `lines` | 0017 |
+| `crates/xtask` | `layout` and `lines`; the release gate's check on the workflows | 0017, 0111 |
 | `crates/sim`, `crates/world` | Deterministic simulation, the simulated world, fault schedules the `sim` sweep, and the spec's invariants on every run | 0013, 0036, 0104, 0108 |
 | `spec/Job.tla`, `.github/scripts/check-spec.sh` | The job state machine's TLA+ spec, its invariants and mutants, and the model check | 0013, 0108 |
 | `crates/substrate-contract`, `crates/vm-init` | The contract every substrate passes, its generated half; the microVM's init | 0032, 0041, 0056, 0058, 0109 |

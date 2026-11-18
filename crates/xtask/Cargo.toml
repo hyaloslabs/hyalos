@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Repository checks for the layout and size rules in ADR-0017. Not part of the trusted core."
+description = "Repository checks for the layout and size rules in ADR-0017, and the release gate's check on the workflows (ADR-0111). Not part of the trusted core."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

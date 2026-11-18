@@ -53,13 +53,19 @@ A release has no microVM init (`hyalos-vm-init`): to run jobs in a microVM, buil
 ## Cutting one
 
 1. Bump `version` in the workspace's `Cargo.toml` (and `Cargo.lock`, with `cargo update -w`). Record the red-team reach for the new version in the same change: run `HYALOS_REDTEAM_RELEASE=<version> cargo test -p hyalos-redteam --test corpus`, which fails and prints the row this release must have, and append that row to `crates/redteam/reach.json` ([ADR-0110](../adr/0110-the-red-team-reach-is-recorded-per-release-and-may-not-regress.md)). Merge that. A tag whose version has no row, or a row other than what the corpus reaches, is not released.
-2. Tag the merge commit and push the tag:
+2. Wait for `ci` to finish on that commit on `main`. Then tag it from your own terminal. Publishing is irreversible, so this is your decision, and nothing tags a release for you ([ADR-0111](../adr/0111-a-tag-requires-its-evidence-and-a-human-pushes-it.md)):
 
    ```
-   git tag v0.1.5 && git push origin v0.1.5
+   .github/scripts/tag-release.sh
    ```
 
-The `release` workflow refuses a tag that is not `v` and the workspace's version, one that is not on `main`, and one whose image is published already. It builds and pushes the image, pulls it back by digest, and builds the binary to name it. It attests both while the repository is public. Then it runs one complete job with that binary and that image, and only if it succeeds publishes the GitHub release with the binary and `SHA256SUMS`, with the image's digest in the notes. A pull request that changes the release runs one check job, which builds both as a release would, runs the same job, and can write nothing.
+   It tags `main`'s head as `v` and the workspace's version, but only if that commit has its evidence. The evidence is a `ci` run on `main` in which the simulation, the job spec, both test parts (the contract suites, the red-team corpus and the chaos scenarios) and `build, lint, test` all succeeded. Otherwise it refuses and says which job is missing. It creates the tag locally only, and prints the push:
+
+   ```
+   git push origin v0.1.6
+   ```
+
+The `release` workflow's first job, `release evidence`, checks the same evidence again for the tagged commit, however the tag was made. It refuses a tag without it, and every other job waits for it. If `ci` was still running, re-run the workflow once it has finished. It also refuses a tag that is not `v` and the workspace's version, one that is not on `main`, and one whose image is published already. It builds and pushes the image, pulls it back by digest, and builds the binary to name it. It attests both while the repository is public. Then it runs one complete job with that binary and that image, and only if it succeeds publishes the GitHub release with the binary and `SHA256SUMS`, with the image's digest in the notes. A pull request that changes the release runs one check job, which builds both as a release would, runs the same job, and can write nothing.
 
 **What the job proves** ([ADR-0107](../adr/0107-a-release-runs-a-complete-job-before-it-publishes.md)): the binary about to be published runs the fix-issue workflow end to end, against a scripted model and a stand-in GitHub, with no secret. It shows that:
 - a reader reads the issue as tainted and a planner plans from its typed values;
@@ -68,3 +74,5 @@ The `release` workflow refuses a tag that is not `v` and the workspace's version
 - the binary's own `hyalos log verify` passes.
 
 A binary that refuses every job, as v0.1.0 did, fails it, and nothing is published. It does not show that the binary works with GitHub itself, a real model, Claude Code, gVisor or a microVM. A tag that failed part-way is cut again under the next version.
+
+**Who may tag.** The workflow refuses a release without evidence, but it cannot stop someone pushing a tag. To refuse the tag itself, add a tag ruleset on `v*` in the repository's settings that lets only maintainers create tags. That is a setting, not code, so this repository cannot check it.

@@ -1,6 +1,9 @@
 name: release
 
-# A release (ADR-0081). On a tag vX.Y.Z that is on main and matches the workspace's version:
+# A release (ADR-0081). On a tag vX.Y.Z that is on main and matches the workspace's version, and
+# whose commit has green evidence from ci's run on main (ADR-0013, ADR-0111): simulation, the job
+# spec, the contract suites, the red-team corpus and the chaos scenarios. A tag without it releases
+# nothing. Green evidence never tags: a human pushes the tag (.github/scripts/tag-release.sh).
 # - the sandbox image is built and pushed to ghcr.io, and named from then on by its digest;
 # - the static `hyalos` binary is built to name that image as its default;
 # - both get build provenance while the repository is public (GitHub offers attestations for
@@ -20,6 +23,7 @@ on:
       - ".github/workflows/release.yml"
       - ".github/scripts/build-release-binary.sh"
       - ".github/scripts/run-release-job.sh"
+      - ".github/scripts/release-evidence.sh"
       # The job the release runs, and what it runs against.
       - "core/hyalos/tests/release_job.rs"
       - "core/hyalos/tests/common/**"
@@ -61,9 +65,37 @@ jobs:
       - name: Run a complete job with the binary
         run: .github/scripts/run-release-job.sh dist/hyalos-x86_64-linux hyalos-sandbox:latest
 
+  # Before anything is built or pushed: the tag is the workspace's version on main, and its commit has
+  # its evidence. Any doubt refuses.
+  evidence:
+    name: release evidence
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: The tag is on main and is the workspace's version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          test "$TAG" = "v$version" || { echo "tag $TAG is not v$version"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$TAG is not on main"; exit 1; }
+      - name: The commit has green simulation, spec, contract, red-team and chaos results
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/release-evidence.sh "$GITHUB_SHA"
+
   reach:
     name: red-team reach
     if: github.event_name == 'push'
+    needs: evidence
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -82,7 +114,7 @@ jobs:
   image:
     name: sandbox image
     if: github.event_name == 'push'
-    needs: reach
+    needs: [evidence, reach]
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
@@ -96,14 +128,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
-      - name: The tag is on main and is the workspace's version
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
-          test "$TAG" = "v$version" || { echo "tag $TAG is not v$version"; exit 1; }
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "$TAG is not on main"; exit 1; }
       - name: Log in to the registry
         env:
           GH_TOKEN: ${{ github.token }}
