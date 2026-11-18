@@ -66,7 +66,9 @@ pub mod why;
 
 use self::{plan::*, release::*, report::*};
 pub use drive::{resume_job, run_job};
-pub use parse::{STORED_VERSION, Stored, check, is_branch, is_repo, parse, request_digest};
+pub use parse::{
+    STORED_VERSION, Stored, check, is_branch, is_repo, parse, request_digest, request_digest_of,
+};
 pub use report::attestation_text;
 
 const USAGE: &str = "usage: hyalos run --repo <owner/name>

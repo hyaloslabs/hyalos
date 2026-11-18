@@ -240,6 +240,9 @@ pub enum RuleViolation {
     /// A skill was drafted from a task that did not end in success, with a grant beyond
     /// `Grant::read_only`, or under a name already drafted or installed (ADR-0113).
     DraftRefused,
+    /// A draft was trusted that is not drafted under that name and digest, or is trusted already
+    /// (ADR-0114).
+    TrustRefused,
     /// A task holds one merge approval, made before any job runs on it.
     MergeAlreadyApproved(TaskId),
     /// A second job on a task whose merge approval a job has already had.
@@ -375,6 +378,10 @@ impl fmt::Display for RuleViolation {
             RuleViolation::DraftRefused => write!(
                 f,
                 "a skill is drafted once per name, from a task whose last job succeeded, with no more than read capabilities (ADR-0113)"
+            ),
+            RuleViolation::TrustRefused => write!(
+                f,
+                "a draft is trusted once, by the name and digest it was drafted with (ADR-0114)"
             ),
             RuleViolation::PluginGrantInvalid => write!(
                 f,
@@ -578,6 +585,9 @@ pub struct Draft {
     pub digest: Digest,
     pub task: TaskId,
     pub grant: Grant,
+    /// The `skill.trusted` event that trusted it after replay, if one did (ADR-0114). Until then it
+    /// is tainted.
+    pub trusted: Option<u64>,
 }
 
 /// An update a check found beyond the install policy, waiting for the operator (ADR-0092).
@@ -911,6 +921,10 @@ impl State {
                 }
                 Ok(())
             }
+            Event::SkillTrusted { name, digest } => match self.drafts.get(name) {
+                Some(d) if d.digest == *digest && d.trusted.is_none() => Ok(()),
+                _ => Err(RuleViolation::TrustRefused),
+            },
             Event::TaskCompleted { task } => {
                 let status = self.task(*task)?.status();
                 if status != TaskStatus::Open {
@@ -1284,8 +1298,14 @@ impl State {
                         digest: *digest,
                         task: *task,
                         grant: grant.clone(),
+                        trusted: None,
                     },
                 );
+            }
+            Event::SkillTrusted { name, .. } => {
+                if let Some(draft) = self.drafts.get_mut(name) {
+                    draft.trusted = Some(seq);
+                }
             }
             Event::TaskCreated { request } => {
                 self.tasks.insert(
@@ -1648,6 +1668,7 @@ impl State {
                     digest: d.digest,
                     task: d.task,
                     grant: d.grant.clone(),
+                    trusted: d.trusted,
                 })
                 .collect(),
             revoked_plugins: revoked_plugins
@@ -1954,6 +1975,7 @@ impl State {
                 digest: d.digest,
                 task: d.task,
                 grant: d.grant,
+                trusted: d.trusted,
             };
             if drafted.insert(d.name.clone(), draft).is_some() {
                 return Err(format!("draft {} is in the snapshot twice", d.name));
@@ -2266,6 +2288,9 @@ impl State {
         for (name, d) in &self.drafts {
             if d.grant.check().is_err() || !d.grant.within(&Grant::read_only()) {
                 out.push(format!("draft {name} holds more than read capabilities"));
+            }
+            if d.trusted.is_some_and(|t| t <= d.seq) {
+                out.push(format!("draft {name} was trusted before it was drafted"));
             }
         }
         for (name, r) in &self.revoked_plugins {

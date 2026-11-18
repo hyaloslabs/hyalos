@@ -127,3 +127,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0111](0111-a-tag-requires-its-evidence-and-a-human-pushes-it.md) | A tag requires its evidence, and a human pushes it | Accepted |
 | [0112](0112-learnings-queried-over-the-event-log.md) | Learnings queried over the event log | Accepted |
 | [0113](0113-skills-drafted-from-successful-runs-are-tainted-and-read-only.md) | Skills drafted from successful runs are tainted and read-only | Accepted |
+| [0114](0114-a-draft-is-trusted-only-after-it-replays-from-the-signed-log.md) | A draft is trusted only after it replays from the signed log | Proposed |

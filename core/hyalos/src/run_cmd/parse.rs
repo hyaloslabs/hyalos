@@ -243,8 +243,12 @@ impl Request {
 
 /// The digest a task records of what was asked for: SHA-256 of the request's stored form.
 pub fn request_digest(request: &Request) -> Digest {
-    let bytes = serde_json::to_vec(&request.stored()).unwrap_or_default();
-    let hash = ring::digest::digest(&ring::digest::SHA256, &bytes);
+    request_digest_of(&serde_json::to_vec(&request.stored()).unwrap_or_default())
+}
+
+/// The digest `task.created` records for a request stored as `bytes`.
+pub fn request_digest_of(bytes: &[u8]) -> Digest {
+    let hash = ring::digest::digest(&ring::digest::SHA256, bytes);
     let mut out = [0u8; 32];
     out.copy_from_slice(hash.as_ref());
     Digest::from_bytes(out)
