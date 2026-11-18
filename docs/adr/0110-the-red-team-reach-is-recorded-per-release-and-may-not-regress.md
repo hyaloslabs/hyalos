@@ -1,6 +1,6 @@
 # ADR-0110: The red-team reach is recorded per release and may not regress
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
