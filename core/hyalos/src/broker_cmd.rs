@@ -84,12 +84,14 @@ pub fn run(args: &[String]) -> ExitCode {
         .ok()
         .map(|runtime| Arc::new(Steps(runtime)) as Arc<dyn Plugins>);
     // Everything read at startup is read: from here on the broker reaches only what it was granted,
-    // never the engine's keys (ADR-0118). Landlock refusing the rules stops the broker.
+    // never the engine's keys (ADR-0118). A broker that cannot confine itself does not serve
+    // (ADR-0121).
     match confine::apply(&grants) {
         Ok(Confined::Fully | Confined::Partly) => {}
-        Ok(Confined::Not) => eprintln!(
-            "hyalos broker: this kernel has no Landlock, so the broker is not confined to its own files"
-        ),
+        Ok(Confined::Not) => {
+            eprintln!("hyalos broker: {}", confine::NO_LANDLOCK);
+            return ExitCode::from(1);
+        }
         Err(e) => {
             eprintln!("hyalos broker: {e}");
             return ExitCode::from(1);

@@ -8,9 +8,13 @@
 //! - making and removing sockets in the runtime directory, where each job's socket is bound.
 //!
 //! The config directory, which holds `engine.key`, `github-app.pem` and `operator.key`, is never
-//! granted, and the engine refuses to start a broker whose read grants would reach it.
+//! granted, and the engine refuses to start a broker whose read grants would reach it. Without
+//! Landlock, no broker starts (ADR-0121).
 
 use std::path::{Path, PathBuf};
+
+/// Why no broker runs on this host (ADR-0121).
+pub const NO_LANDLOCK: &str = "this kernel has no Landlock, or it is turned off, so the broker cannot be kept from the engine's keys and does not start. Use Linux 5.13 or later with landlock in the kernel's lsm= list";
 
 /// The system's own directories the broker may read. Those that do not exist are skipped.
 pub const SYSTEM_READS: &[&str] = &[

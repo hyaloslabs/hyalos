@@ -27,7 +27,7 @@ Keep what you print between steps short, and run long commands in the background
 
 ## 1. Check the machine
 
-Hyalos runs jobs only on Linux (WSL2 counts). Check for:
+Hyalos runs jobs only on Linux (WSL2 counts), with Landlock: Linux 5.13 or later, with `landlock` in the kernel's LSM list. The broker confines itself with it and does not start without it ([ADR-0121](../../docs/adr/0121-no-broker-runs-without-landlock.md)); `hyalos doctor` checks it once installed. Check for:
 - `git`;
 - `docker` or `podman`;
 - `gh`, logged in (`gh auth status`). A release is downloaded with it, and you open a first issue with it in part 5. Without it, Hyalos is built from source and the operator opens the issue on GitHub.

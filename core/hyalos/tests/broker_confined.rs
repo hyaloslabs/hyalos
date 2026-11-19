@@ -110,7 +110,14 @@ fn a_broker_process_cannot_open_engine_key_or_github_app_pem() -> Res {
         if std::env::var_os("HYALOS_REQUIRE_LANDLOCK").is_some() {
             return Err("HYALOS_REQUIRE_LANDLOCK is set and this kernel has no Landlock".into());
         }
-        eprintln!("skipped: this kernel has no Landlock");
+        // Without Landlock no broker starts at all (ADR-0121), so none can read the keys.
+        let d = dir("no-landlock")?;
+        let started =
+            BrokerProcess::launch(Path::new(EXE), &d, &fresh_manifest_key()?.public(), WAIT);
+        assert!(matches!(
+            started,
+            Err(hyalos::launch::LaunchError::NoLandlock)
+        ));
         return Ok(());
     }
     let d = dir("keys")?;
