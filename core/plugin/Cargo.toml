@@ -13,7 +13,7 @@ workspace = true
 [dependencies]
 # The WASM host (S6.1, ADR-0087). Pinned exactly; no WASI, no default features: a plugin reaches the
 # world only through the host imports its capabilities grant.
-wasmtime = { version = "=50.0.1", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
+wasmtime = { version = "=50.0.2", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
 hyalos-types = { path = "../types" }
 # The digest that binds an install to its files (S6.2, ADR-0089).
 sha2 = "0.11"
