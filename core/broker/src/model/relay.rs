@@ -178,6 +178,19 @@ impl Relay {
                 "the broker does not serve background responses",
             ));
         }
+        // Only fields the adapter names, or that the relay handles itself, are served (ADR-0120). The
+        // field is not named back: it is the sandbox's text.
+        let known = self.adapter.fields();
+        if body.keys().any(|field| {
+            !known.contains(&field.as_str()) && !RELAY_HANDLES.contains(&field.as_str())
+        }) {
+            return Err(refused(
+                400,
+                "model.field_refused",
+                "the request has a field the broker does not pass on",
+            ));
+        }
+        body.remove("background");
         if manifest.role == Role::Reader && declares_tools(&body) {
             return Err(refused(
                 403,
@@ -217,8 +230,6 @@ impl Relay {
         } else {
             None
         };
-        let known = self.adapter.fields();
-        body.retain(|field, _| known.contains(&field.as_str()));
         strip_hosted(self.adapter.as_ref(), &mut body);
         let upstream = Upstream {
             target: request.target.clone(),
@@ -339,6 +350,10 @@ impl Relay {
         }
     }
 }
+
+/// Top-level fields the relay handles itself, whatever the protocol: a background response, refused
+/// unless it is `false`, and hosted MCP servers, removed (ADR-0120).
+const RELAY_HANDLES: &[&str] = &["background", "mcp_servers"];
 
 /// Whether a request defines any tool, of any kind, including MCP servers for the provider to call.
 fn declares_tools(body: &Map<String, Value>) -> bool {

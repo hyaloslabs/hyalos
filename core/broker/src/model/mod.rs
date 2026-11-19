@@ -101,9 +101,9 @@ pub trait Adapter: Send + Sync {
     fn harness_runs(&self, tool: &Value) -> bool;
     /// Removes request fields that only make sense with a provider-hosted tool.
     fn scrub(&self, _body: &mut Map<String, Value>) {}
-    /// The top-level request fields passed on. Every other one is dropped (ADR-0117): a field the
-    /// broker does not know may name state the provider holds or work it runs where no gate or meter
-    /// sees it.
+    /// The top-level request fields passed on. A request with any other field is refused (ADR-0120):
+    /// a field the broker does not know may name state the provider holds or work it runs where no
+    /// gate or meter sees it.
     fn fields(&self) -> &'static [&'static str];
     /// The request field that caps a generation's output tokens.
     fn output_limit(&self) -> &'static str;

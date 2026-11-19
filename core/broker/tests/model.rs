@@ -264,12 +264,20 @@ fn call(case: &Case, path: &str, body: &Value) -> Request {
     }
 }
 
-fn plain() -> Value {
-    json!({ "model": "m", "stream": false, "max_tokens": 64, "input": "hello", "messages": [] })
+/// A small request in `case`'s protocol, with only fields it names (ADR-0120).
+fn plain(case: &Case) -> Value {
+    let mut body = json!({ "model": "m", "stream": false });
+    body[case.adapter.output_limit()] = json!(64);
+    if case.adapter.fields().contains(&"messages") {
+        body["messages"] = json!([]);
+    } else {
+        body["input"] = json!("hello");
+    }
+    body
 }
 
-fn with_tools(tools: Vec<Value>) -> Value {
-    let mut body = plain();
+fn with_tools(case: &Case, tools: Vec<Value>) -> Value {
+    let mut body = plain(case);
     body["tools"] = Value::Array(tools);
     body
 }
@@ -297,7 +305,7 @@ fn contract(case: &Case) -> Res {
     a_spent_budget_is_402_naming_it(case)?;
     a_reader_may_send_no_tools(case)?;
     hosted_tools_are_removed_from_every_request(case)?;
-    fields_the_broker_does_not_know_are_dropped(case)?;
+    fields_the_broker_does_not_know_are_refused(case)?;
     a_busy_provider_is_retried_then_answered_retryably(case)?;
     unknown_paths_and_methods_are_refused(case)?;
     Ok(())
@@ -308,7 +316,7 @@ fn key_is_added_and_placeholder_dropped(case: &Case) -> Res {
     r.script.answer(200, &[], OK);
     let response = r.relay.handle(
         &manifest(1, Role::Actor, 1000),
-        call(case, case.path, &plain()),
+        call(case, case.path, &plain(case)),
     );
     assert_eq!(response.status, 200);
     let sent = r.script.sent();
@@ -343,7 +351,7 @@ fn usage_is_metered_per_job(case: &Case) -> Res {
         &[("content-type", "application/json")],
         &serde_json::to_vec(&case.json_response)?,
     );
-    let response = r.relay.handle(&job, call(case, case.path, &plain()));
+    let response = r.relay.handle(&job, call(case, case.path, &plain(case)));
     assert_eq!(response.status, 200);
     read_all(response.body)?;
     assert_eq!(r.meter.spent(job.job), case.json_tokens);
@@ -353,7 +361,7 @@ fn usage_is_metered_per_job(case: &Case) -> Res {
         &[("content-type", "text/event-stream; charset=utf-8")],
         case.stream.as_bytes(),
     );
-    let response = r.relay.handle(&job, call(case, case.path, &plain()));
+    let response = r.relay.handle(&job, call(case, case.path, &plain(case)));
     let text = read_all(response.body)?;
     assert_eq!(
         text, case.stream,
@@ -369,7 +377,7 @@ fn usage_is_metered_per_job(case: &Case) -> Res {
     r.script.answer(200, &[], br#"{"input_tokens": 999}"#);
     let response = r
         .relay
-        .handle(&other, call(case, case.count_path, &plain()));
+        .handle(&other, call(case, case.count_path, &plain(case)));
     assert_eq!(response.status, 200);
     read_all(response.body)?;
     assert_eq!(r.meter.spent(other.job), 0);
@@ -385,7 +393,11 @@ fn usage_is_metered_per_job(case: &Case) -> Res {
         &[("content-type", "text/event-stream")],
         long.as_bytes(),
     );
-    read_all(r.relay.handle(&big, call(case, case.path, &plain())).body)?;
+    read_all(
+        r.relay
+            .handle(&big, call(case, case.path, &plain(case)))
+            .body,
+    )?;
     assert_eq!(r.meter.spent(big.job), case.stream_tokens);
     Ok(())
 }
@@ -396,7 +408,7 @@ fn calls_in_flight_hold_their_output(case: &Case) -> Res {
     let r = rig(case)?;
     let field = case.adapter.output_limit();
     let job = manifest(60, Role::Actor, 100);
-    let mut asks = plain();
+    let mut asks = plain(case);
     asks[field] = json!(70);
 
     let first = r.relay.handle(&job, call(case, case.path, &asks));
@@ -423,14 +435,18 @@ fn calls_in_flight_hold_their_output(case: &Case) -> Res {
 
     // A call with no limit asks for no more than is left.
     let open = manifest(61, Role::Actor, 500);
-    let mut body = plain();
+    let mut body = plain(case);
     body.as_object_mut().ok_or("object")?.remove(field);
     read_all(r.relay.handle(&open, call(case, case.path, &body)).body)?;
     assert_eq!(r.script.sent().last().ok_or("sent")?.2[field], 500);
 
     // A refused or failed call holds nothing afterwards.
     r.script.answer(400, &[], b"{}");
-    read_all(r.relay.handle(&open, call(case, case.path, &plain())).body)?;
+    read_all(
+        r.relay
+            .handle(&open, call(case, case.path, &plain(case)))
+            .body,
+    )?;
     assert_eq!(r.meter.held(open.job), 0);
     Ok(())
 }
@@ -447,7 +463,11 @@ fn unread_usage_spends_the_budget(case: &Case) -> Res {
         let job = manifest(40 + n as u64, Role::Actor, 777);
         r.script
             .answer(200, &[("content-type", content_type)], body);
-        read_all(r.relay.handle(&job, call(case, case.path, &plain())).body)?;
+        read_all(
+            r.relay
+                .handle(&job, call(case, case.path, &plain(case)))
+                .body,
+        )?;
         assert_eq!(r.meter.spent(job.job), 777, "{content_type} {body:?}");
     }
 
@@ -458,7 +478,7 @@ fn unread_usage_spends_the_budget(case: &Case) -> Res {
         &[("content-type", "text/event-stream")],
         case.stream.as_bytes(),
     );
-    drop(r.relay.handle(&job, call(case, case.path, &plain())));
+    drop(r.relay.handle(&job, call(case, case.path, &plain(case))));
     assert_eq!(r.meter.spent(job.job), 555);
 
     // A stream that stops before the event that ends it has reported only provisional usage
@@ -472,7 +492,11 @@ fn unread_usage_spends_the_budget(case: &Case) -> Res {
         &[("content-type", "text/event-stream")],
         short.as_bytes(),
     );
-    read_all(r.relay.handle(&job, call(case, case.path, &plain())).body)?;
+    read_all(
+        r.relay
+            .handle(&job, call(case, case.path, &plain(case)))
+            .body,
+    )?;
     assert_eq!(r.meter.spent(job.job), 666, "a stream that ended early");
 
     let job = manifest(45, Role::Actor, 444);
@@ -481,7 +505,10 @@ fn unread_usage_spends_the_budget(case: &Case) -> Res {
         &[("content-type", "text/event-stream")],
         case.stream.as_bytes(),
     );
-    let mut body = r.relay.handle(&job, call(case, case.path, &plain())).body;
+    let mut body = r
+        .relay
+        .handle(&job, call(case, case.path, &plain(case)))
+        .body;
     let mut part = vec![0; cut];
     body.read_exact(&mut part)?;
     drop(body);
@@ -498,12 +525,12 @@ fn a_malformed_request_is_refused_not_retried(case: &Case) -> Res {
     let r = rig(case)?;
     let actor = manifest(50, Role::Actor, 1000);
     let spaced = format!("{} HTTP/1.1", case.path);
-    let mut tab = call(case, case.path, &plain());
+    let mut tab = call(case, case.path, &plain(case));
     tab.headers.push(("accept".into(), "a\tb".into()));
-    let mut background = plain();
+    let mut background = plain(case);
     background["background"] = json!(true);
     for (request, code) in [
-        (call(case, &spaced, &plain()), "model.bad_request"),
+        (call(case, &spaced, &plain(case)), "model.bad_request"),
         (tab, "model.bad_request"),
         (
             call(case, case.path, &background),
@@ -519,7 +546,7 @@ fn a_malformed_request_is_refused_not_retried(case: &Case) -> Res {
 
     // An answer that could not be read is not retried: the provider may have generated already.
     r.script.fail_with("transport.bad_response");
-    let response = r.relay.handle(&actor, call(case, case.path, &plain()));
+    let response = r.relay.handle(&actor, call(case, case.path, &plain(case)));
     assert_eq!(response.status, 502);
     assert_eq!(r.script.sent().len(), 1);
     assert!(r.waits.all().is_empty());
@@ -534,10 +561,14 @@ fn a_spent_budget_is_402_naming_it(case: &Case) -> Res {
         &[("content-type", "application/json")],
         &serde_json::to_vec(&case.json_response)?,
     );
-    read_all(r.relay.handle(&job, call(case, case.path, &plain())).body)?;
+    read_all(
+        r.relay
+            .handle(&job, call(case, case.path, &plain(case)))
+            .body,
+    )?;
     assert!(r.meter.spent(job.job) >= 100);
 
-    let response = r.relay.handle(&job, call(case, case.path, &plain()));
+    let response = r.relay.handle(&job, call(case, case.path, &plain(case)));
     assert_eq!(response.status, 402);
     assert_eq!(
         response.reason.as_ref().map(|r| r.as_str()),
@@ -560,10 +591,10 @@ fn a_reader_may_send_no_tools(case: &Case) -> Res {
     let r = rig(case)?;
     let reader = manifest(5, Role::Reader, 1000);
     for body in [
-        with_tools(vec![case.client_tool.clone()]),
-        with_tools(vec![case.hosted[0].clone()]),
+        with_tools(case, vec![case.client_tool.clone()]),
+        with_tools(case, vec![case.hosted[0].clone()]),
         {
-            let mut b = plain();
+            let mut b = plain(case);
             b["mcp_servers"] =
                 json!([{ "type": "url", "url": "https://example.com", "name": "x" }]);
             b
@@ -583,24 +614,36 @@ fn a_reader_may_send_no_tools(case: &Case) -> Res {
 
     let response = r
         .relay
-        .handle(&reader, call(case, case.path, &with_tools(vec![])));
+        .handle(&reader, call(case, case.path, &with_tools(case, vec![])));
     assert_eq!(response.status, 200, "a reader with no tools is served");
     let response = r.relay.handle(
         &manifest(6, Role::Actor, 1000),
-        call(case, case.path, &with_tools(vec![case.client_tool.clone()])),
+        call(
+            case,
+            case.path,
+            &with_tools(case, vec![case.client_tool.clone()]),
+        ),
     );
     assert_eq!(response.status, 200, "an actor may send tools");
     Ok(())
 }
 
-/// ADR-0117: only the top-level fields an adapter knows reach the provider. State the provider
-/// holds, a stored prompt, a hosted container and anything unknown are dropped (#339).
-fn fields_the_broker_does_not_know_are_dropped(case: &Case) -> Res {
+/// ADR-0120: a request with a top-level field the adapter does not name is refused, and nothing
+/// reaches the provider. State the provider holds, a stored prompt, a hosted container and anything
+/// unknown are among them (#339).
+fn fields_the_broker_does_not_know_are_refused(case: &Case) -> Res {
     let r = rig(case)?;
     let actor = manifest(7, Role::Actor, 10_000);
-    let mut body = plain();
-    body["metadata"] = json!({ "user_id": "u" });
-    for dropped in [
+    let mut known = plain(case);
+    known["metadata"] = json!({ "user_id": "u" });
+    known["background"] = json!(false);
+    for path in [case.path, case.count_path] {
+        assert_eq!(
+            status(r.relay.handle(&actor, call(case, path, &known))),
+            200
+        );
+    }
+    for unknown in [
         "prompt",
         "previous_response_id",
         "conversation",
@@ -609,19 +652,31 @@ fn fields_the_broker_does_not_know_are_dropped(case: &Case) -> Res {
         "betas",
         "made_up",
     ] {
-        body[dropped] = json!({ "id": "x" });
-    }
-    for path in [case.path, case.count_path] {
-        assert_eq!(status(r.relay.handle(&actor, call(case, path, &body))), 200);
-    }
-    for (_, _, sent) in r.script.sent() {
-        let fields: Vec<&String> = sent.as_object().ok_or("an object")?.keys().collect();
-        for kept in ["model", "metadata"] {
-            assert!(sent.get(kept).is_some(), "{kept} was dropped: {fields:?}");
+        let mut body = known.clone();
+        body[unknown] = json!({ "id": "x" });
+        for path in [case.path, case.count_path] {
+            let response = r.relay.handle(&actor, call(case, path, &body));
+            assert_eq!(response.status, 400, "{unknown}");
+            let text = read_all(response.body)?;
+            assert!(
+                text.contains("a field the broker does not pass on"),
+                "{text}"
+            );
+            assert!(
+                !text.contains(unknown),
+                "the field is not named back: {text}"
+            );
         }
+    }
+    // Only the two known requests reached the provider, with only fields the adapter names.
+    let sent = r.script.sent();
+    assert_eq!(sent.len(), 2);
+    for (_, _, body) in sent {
+        let fields = body.as_object().ok_or("an object")?;
+        assert!(fields.contains_key("metadata"));
         assert!(
             fields
-                .iter()
+                .keys()
                 .all(|f| case.adapter.fields().contains(&f.as_str())),
             "{fields:?}"
         );
@@ -634,25 +689,30 @@ fn hosted_tools_are_removed_from_every_request(case: &Case) -> Res {
     let actor = manifest(7, Role::Actor, 10_000);
 
     let mut mixed = with_tools(
+        case,
         std::iter::once(case.client_tool.clone())
             .chain(case.hosted.iter().cloned())
             .collect(),
     );
     mixed["tool_choice"] = case.hosted_choice.clone();
     mixed["mcp_servers"] = json!([{ "type": "url", "url": "https://example.com", "name": "x" }]);
-    mixed["include"] = json!([
-        "web_search_call.action.sources",
-        "reasoning.encrypted_content"
-    ]);
+    if case.adapter.fields().contains(&"include") {
+        mixed["include"] = json!([
+            "web_search_call.action.sources",
+            "reasoning.encrypted_content"
+        ]);
+    }
     assert_eq!(
         status(r.relay.handle(&actor, call(case, case.path, &mixed))),
         200
     );
 
     // A separate request for only a hosted tool, as Claude Code's web search makes.
-    let mut alone = with_tools(vec![case.hosted[0].clone()]);
+    let mut alone = with_tools(case, vec![case.hosted[0].clone()]);
     alone["tool_choice"] = case.hosted_choice.clone();
-    alone["parallel_tool_calls"] = json!(true);
+    if case.adapter.fields().contains(&"parallel_tool_calls") {
+        alone["parallel_tool_calls"] = json!(true);
+    }
     assert_eq!(
         status(r.relay.handle(&actor, call(case, case.path, &alone))),
         200
@@ -688,7 +748,7 @@ fn hosted_tools_are_removed_from_every_request(case: &Case) -> Res {
     assert!(sent[1].2.get("parallel_tool_calls").is_none());
 
     // A choice of a tool that stays is kept.
-    let mut kept = with_tools(vec![case.client_tool.clone(), case.hosted[0].clone()]);
+    let mut kept = with_tools(case, vec![case.client_tool.clone(), case.hosted[0].clone()]);
     let name = case.client_tool["name"].clone();
     kept["tool_choice"] = json!({ "type": "tool", "name": name });
     r.relay.handle(&actor, call(case, case.path, &kept));
@@ -706,7 +766,7 @@ fn a_busy_provider_is_retried_then_answered_retryably(case: &Case) -> Res {
     r.script.answer(case.overloaded, &[], b"{}");
     r.script.fail();
     r.script.answer(200, &[], OK);
-    let response = r.relay.handle(&actor, call(case, case.path, &plain()));
+    let response = r.relay.handle(&actor, call(case, case.path, &plain(case)));
     assert_eq!(response.status, 200, "absorbed three busy answers");
     read_all(response.body)?;
     assert_eq!(
@@ -722,7 +782,7 @@ fn a_busy_provider_is_retried_then_answered_retryably(case: &Case) -> Res {
     for _ in 0..4 {
         r.script.answer(429, &[], b"{}");
     }
-    let response = r.relay.handle(&actor, call(case, case.path, &plain()));
+    let response = r.relay.handle(&actor, call(case, case.path, &plain(case)));
     assert_eq!(
         response.status, case.overloaded,
         "gives up with the harness's retryable status"
@@ -736,7 +796,7 @@ fn a_busy_provider_is_retried_then_answered_retryably(case: &Case) -> Res {
 
     // A request error is the provider's to explain, and is not retried.
     r.script.answer(400, &[], br#"{"error":"bad"}"#);
-    let response = r.relay.handle(&actor, call(case, case.path, &plain()));
+    let response = r.relay.handle(&actor, call(case, case.path, &plain(case)));
     assert_eq!(response.status, 400);
     assert_eq!(read_all(response.body)?, r#"{"error":"bad"}"#);
     assert_eq!(r.script.sent().len(), 9);
@@ -752,12 +812,12 @@ fn unknown_paths_and_methods_are_refused(case: &Case) -> Res {
         ("POST", "/v1/messagesx"),
         ("POST", "/v1/files"),
     ] {
-        let mut request = call(case, path, &plain());
+        let mut request = call(case, path, &plain(case));
         request.method = method.into();
         let response = r.relay.handle(&actor, request);
         assert_eq!(response.status, 404, "{method} {path}");
     }
-    let mut bad = call(case, case.path, &plain());
+    let mut bad = call(case, case.path, &plain(case));
     bad.body = b"not json".to_vec();
     assert_eq!(status(r.relay.handle(&actor, bad)), 400);
     assert!(r.script.sent().is_empty());
@@ -783,7 +843,7 @@ fn refusals_are_in_each_protocols_error_shape() -> Res {
             call(
                 &case,
                 case.path,
-                &with_tools(vec![case.client_tool.clone()]),
+                &with_tools(&case, vec![case.client_tool.clone()]),
             ),
         );
         let body: Value = serde_json::from_str(&read_all(response.body)?)?;
@@ -803,7 +863,7 @@ fn openai_spent_quota_is_402_not_retried() -> Res {
     );
     let response = r.relay.handle(
         &manifest(11, Role::Actor, 1000),
-        call(&case, case.path, &plain()),
+        call(&case, case.path, &plain(&case)),
     );
     assert_eq!(response.status, 402);
     assert_eq!(r.script.sent().len(), 1);
@@ -824,7 +884,7 @@ fn anthropic_client_tools_are_kept() -> Res {
     ];
     r.relay.handle(
         &manifest(12, Role::Actor, 1000),
-        call(&case, case.path, &with_tools(tools)),
+        call(&case, case.path, &with_tools(&case, tools)),
     );
     let sent = r.script.sent();
     let names: Vec<_> = sent[0].2["tools"]
@@ -845,7 +905,7 @@ fn anthropic_client_tools_are_kept() -> Res {
 fn anthropic_version_is_added_when_missing() -> Res {
     let case = anthropic();
     let r = rig(&case)?;
-    let mut request = call(&case, case.path, &plain());
+    let mut request = call(&case, case.path, &plain(&case));
     request.headers.retain(|(n, _)| n != "anthropic-version");
     r.relay.handle(&manifest(13, Role::Actor, 1000), request);
     let sent = r.script.sent();
