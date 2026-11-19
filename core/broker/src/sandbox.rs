@@ -698,6 +698,9 @@ fn connection(
             refusal(&OpenAi, status, code, message)
         }
     };
+    // The body went to the provider with the call; what it held is given back before the answer
+    // streams, which can take as long as the generation.
+    drop(body_held);
     write_response(&mut &*stream, response)
 }
 
