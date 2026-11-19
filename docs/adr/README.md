@@ -134,4 +134,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0118](0118-the-broker-confines-itself-with-landlock.md) | The broker confines itself with Landlock | Accepted; its unconfined run without Landlock superseded by [ADR-0121](0121-no-broker-runs-without-landlock.md) |
 | [0119](0119-lint-runs-on-every-pull-request.md) | Lint runs on every pull request | Accepted |
 | [0120](0120-the-model-relay-refuses-a-request-field-it-does-not-know.md) | The model relay refuses a request field it does not know | Accepted |
-| [0121](0121-no-broker-runs-without-landlock.md) | No broker runs without Landlock | Proposed |
+| [0121](0121-no-broker-runs-without-landlock.md) | No broker runs without Landlock | Accepted |

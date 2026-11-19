@@ -1,6 +1,6 @@
 # ADR-0121: No broker runs without Landlock
 
-**Status:** Proposed. Supersedes [ADR-0118](0118-the-broker-confines-itself-with-landlock.md)'s rule that a broker on a kernel without Landlock runs unconfined.
+**Status:** Accepted. Supersedes [ADR-0118](0118-the-broker-confines-itself-with-landlock.md)'s rule that a broker on a kernel without Landlock runs unconfined.
 
 ## Context
 
