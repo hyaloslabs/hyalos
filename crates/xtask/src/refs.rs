@@ -95,7 +95,11 @@ pub fn check(root: &Path) -> Result<(), String> {
     let mut count = 0;
     for page in &pages {
         let text = fs::read_to_string(page).map_err(|e| format!("{}: {e}", page.display()))?;
-        let shown = page.strip_prefix(root).unwrap_or(page).display().to_string();
+        let shown = page
+            .strip_prefix(root)
+            .unwrap_or(page)
+            .display()
+            .to_string();
         for r in refs(&text) {
             count += 1;
             let Ok(source) = fs::read_to_string(root.join(&r.file)) else {
