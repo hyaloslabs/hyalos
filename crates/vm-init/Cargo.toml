@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 # Not the workspace's lints: an init must make system calls the standard library does not wrap
 # (mount, vsock, reboot, an interface flag), so `unsafe` is allowed here, each use with its reason.
