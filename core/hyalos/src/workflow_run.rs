@@ -200,7 +200,12 @@ impl Runnable {
         // As the check derived: taint first, then any plugin that reached the step (ADR-0102).
         let made = if self.tainted(step) {
             Provenance::ModelFromTainted
-        } else if !self.plugins(step).is_empty() {
+        } else if !self.plugins(step).is_empty()
+            || self
+                .checked
+                .inputs(&step.id)
+                .is_some_and(|i| i.reads.contains(&Provenance::PluginAuthored))
+        {
             Provenance::PluginAuthored
         } else {
             Provenance::Operator
