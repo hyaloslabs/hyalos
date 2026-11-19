@@ -450,11 +450,21 @@ fn links_allowed(text: &str, forge: Option<&str>) -> bool {
             None => true,
             Some(b) => b.is_whitespace() || "(\"'=<[".contains(b),
         };
-        if !slash(*c) || !starts_link || !text[*at + 1..].starts_with(slash) {
+        if !slash(*c) || !starts_link {
             continue;
         }
         let rest = &text[*at..];
-        let host_named = rest
+        // As a browser reads it, without tabs and line breaks: `/<TAB>/host` is `//host` (#338). A
+        // host name and its slashes fit well within the prefix looked at.
+        let unbroken: String = rest
+            .chars()
+            .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+            .take(512)
+            .collect();
+        if !unbroken[1..].starts_with(slash) {
+            continue;
+        }
+        let host_named = unbroken
             .trim_start_matches(slash)
             .split(ends_host)
             .next()
@@ -744,6 +754,9 @@ mod tests {
             "<img src=\"https://github.com&#10;.exfil.example/p.png\">",
             "<img src=\"//github.com\t.exfil.example/p.png\">",
             "<img src=\"https://git\thub.com.exfil.example/p.png\">",
+            "<img src=\"/\t/exfil.example/p.png\">",
+            "<img src=\"/\n/exfil.example/p.png\">",
+            "[r](/\r\n/exfil.example/x)",
         ] {
             assert_eq!(
                 check_published(text, &[], FORGE),
