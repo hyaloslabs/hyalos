@@ -129,3 +129,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0113](0113-skills-drafted-from-successful-runs-are-tainted-and-read-only.md) | Skills drafted from successful runs are tainted and read-only | Accepted |
 | [0114](0114-a-draft-is-trusted-only-after-it-replays-from-the-signed-log.md) | A draft is trusted only after it replays from the signed log | Accepted |
 | [0115](0115-mit-licence-and-dco-sign-off.md) | MIT licence, DCO sign-off, and a secrets scan of the full history | Accepted |
+| [0116](0116-request-bodies-are-bounded-per-job-and-across-the-broker.md) | Request bodies are bounded per job and across the broker | Proposed |

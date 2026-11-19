@@ -8,11 +8,13 @@
 //! changes nothing.
 
 use std::io::{BufRead, Cursor, Read, Write};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use hyalos_types::Manifest;
 use hyalos_types::workflow::{MAX_SUBMISSION, TypedValue, read_submission};
 
+use crate::bodies::Bodies;
 use crate::egress::{self, ProxyRequest};
 use crate::forge;
 use crate::git;
@@ -49,6 +51,8 @@ pub(crate) fn answer<R: BufRead, W: Write>(
     client: &mut W,
     manifest: &Manifest,
     slot: &Submission,
+    bodies: &Bodies,
+    ended: &AtomicBool,
 ) -> Response {
     if head.target != PATH || head.method != "POST" {
         return egress::refused(404, "submit.route_refused");
@@ -66,7 +70,8 @@ pub(crate) fn answer<R: BufRead, W: Write>(
             .find(|(n, _)| n == name)
             .map(|(_, v)| v.as_str())
     };
-    let read = match git::read_body(header, reader, client, MAX_SUBMISSION) {
+    let mut held = bodies.hold();
+    let read = match git::read_body(header, reader, client, MAX_SUBMISSION, &mut held, ended) {
         Ok(body) if forge::depth(&body) > 1 => Err((400, "submit.too_deep")),
         Ok(body) => read_submission(result, &body).map_err(|code| (400, code)),
         Err((413, _)) => {
@@ -155,7 +160,16 @@ mod tests {
         body: &str,
     ) -> u16 {
         let (head, mut reader) = post(target, method, body);
-        answer(&head, &mut reader, &mut Vec::new(), manifest, slot).status
+        answer(
+            &head,
+            &mut reader,
+            &mut Vec::new(),
+            manifest,
+            slot,
+            &Bodies::default(),
+            &AtomicBool::new(false),
+        )
+        .status
     }
 
     #[test]

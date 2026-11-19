@@ -21,6 +21,7 @@ use hyalos_types::wire::ToEngine;
 use hyalos_types::{Answer, Digest, Gate, JobId, Manifest, ReasonCode};
 use sha2::{Digest as _, Sha256};
 
+use crate::bodies::{self, Bodies, Held};
 use crate::model::Response;
 
 /// The only port a CONNECT may name.
@@ -358,6 +359,7 @@ pub fn refused(status: u16, code: &str) -> Response {
 
 /// Answers one proxy request: refuses it, or connects and relays until either end closes or the job
 /// ends. Returns the response to write when the broker answers it itself.
+#[allow(clippy::too_many_arguments)]
 pub fn proxy(
     request: ProxyRequest,
     reader: &mut BufReader<&UnixStream>,
@@ -365,6 +367,7 @@ pub fn proxy(
     manifest: &Manifest,
     egress: &Egress,
     reports: &Reports,
+    bodies: &Bodies,
     ended: &Arc<AtomicBool>,
 ) -> io::Result<Option<Response>> {
     let to = match destination(&request.method, &request.target) {
@@ -413,7 +416,8 @@ pub fn proxy(
             }
         }
         Some(path) => {
-            let body = match request_body(&request.headers, reader) {
+            let mut held = bodies.hold();
+            let body = match request_body(&request.headers, reader, &mut held, ended) {
                 Ok(body) => body,
                 Err((status, code)) => return Ok(Some(refused(status, code))),
             };
@@ -479,6 +483,8 @@ fn well_formed(request: &ProxyRequest, path: &str) -> bool {
 fn request_body<R: Read>(
     headers: &[(String, String)],
     reader: &mut R,
+    held: &mut Held<'_>,
+    ended: &AtomicBool,
 ) -> Result<Vec<u8>, (u16, &'static str)> {
     let get = |n: &str| headers.iter().find(|(k, _)| k == n).map(|(_, v)| v);
     if get("transfer-encoding").is_some() {
@@ -490,14 +496,13 @@ fn request_body<R: Read>(
             .parse::<usize>()
             .map_err(|_| (400, "egress.bad_request"))?,
     };
-    if length > crate::model::MAX_BODY {
-        return Err((413, "egress.too_large"));
-    }
-    let mut body = vec![0; length];
-    reader
-        .read_exact(&mut body)
-        .map_err(|_| (400, "egress.bad_request"))?;
-    Ok(body)
+    bodies::read(reader, Some(length), crate::model::MAX_BODY, held, ended).map_err(|why| match why
+    {
+        bodies::Refused::TooLarge => (413, "egress.too_large"),
+        bodies::Refused::Busy => (503, "egress.busy"),
+        bodies::Refused::Cut => (400, "egress.bad_request"),
+        bodies::Refused::Ended => (403, "admission.ended"),
+    })
 }
 
 /// Relays both ways until both ends have closed, either has been idle too long, or the job ends.

@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use hyalos_types::{ForgeToken, Manifest};
 use serde::Deserialize;
 
+use crate::bodies::Bodies;
 use crate::content;
 use crate::egress::{Gates, ProxyRequest, Reports, inputs_digest, refused};
 use crate::forge::Forge;
@@ -77,6 +78,7 @@ pub(crate) fn answer<R: BufRead, W: Write>(
     web: Option<&str>,
     secrets: &[&str],
     gates: Gates<'_>,
+    bodies: &Bodies,
     ended: &AtomicBool,
 ) -> Response {
     let deny = |reports: &Reports, code: &'static str, inputs: &str| {
@@ -106,7 +108,8 @@ pub(crate) fn answer<R: BufRead, W: Write>(
             .find(|(n, _)| n == name)
             .map(|(_, v)| v.as_str())
     };
-    let body = match read_body(header, reader, client, MAX_REQUEST) {
+    let mut held = bodies.hold();
+    let body = match read_body(header, reader, client, MAX_REQUEST, &mut held, ended) {
         Ok(body) => body,
         Err((status, _)) => return refused(status, "forge.bad_request"),
     };
