@@ -162,7 +162,9 @@ fn steps(
         "Work like this, in the shell:\n\
          1. git clone {FORWARDER}/git/{repo}.git /tmp/work && cd /tmp/work\n\
          2. git checkout -b {branch}\n\
-         3. Make the change and commit it.\n\
+         3. Make the change and commit it. Match the style of each file you edit. In Markdown, \
+         leave a blank line before and after each paragraph, list and code block, and write \
+         commands, file paths and code as inline code, as the file does.\n\
          4. git push origin {branch}\n\
          5. Write a pull request description to /tmp/pr.md, then run:\n   \
          hyalos-pr {repo} {branch} {base} \"<a short title>\" /tmp/pr.md\n\n\
