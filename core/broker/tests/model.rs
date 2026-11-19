@@ -459,6 +459,36 @@ fn unread_usage_spends_the_budget(case: &Case) -> Res {
     );
     drop(r.relay.handle(&job, call(case, case.path, &plain())));
     assert_eq!(r.meter.spent(job.job), 555);
+
+    // A stream that stops before the event that ends it has reported only provisional usage
+    // (Anthropic's message_start says one output token), whether the provider ends it early or the
+    // harness drops it part way after reading that usage (#335).
+    let cut = case.stream.rfind("event: ").ok_or("no last event")?;
+    let short = &case.stream[..cut];
+    let job = manifest(44, Role::Actor, 666);
+    r.script.answer(
+        200,
+        &[("content-type", "text/event-stream")],
+        short.as_bytes(),
+    );
+    read_all(r.relay.handle(&job, call(case, case.path, &plain())).body)?;
+    assert_eq!(r.meter.spent(job.job), 666, "a stream that ended early");
+
+    let job = manifest(45, Role::Actor, 444);
+    r.script.answer(
+        200,
+        &[("content-type", "text/event-stream")],
+        case.stream.as_bytes(),
+    );
+    let mut body = r.relay.handle(&job, call(case, case.path, &plain())).body;
+    let mut part = vec![0; cut];
+    body.read_exact(&mut part)?;
+    drop(body);
+    assert_eq!(
+        r.meter.spent(job.job),
+        444,
+        "a stream dropped after its usage began"
+    );
     Ok(())
 }
 

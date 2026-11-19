@@ -323,7 +323,7 @@ impl Relay {
         let body: Box<dyn Read + Send> = match hold {
             Some(hold) if (200..300).contains(&r.status) => Box::new(Metered::new(
                 r.body,
-                Scanner::new(&content_type),
+                Scanner::new(&content_type, self.adapter.stream_ends()),
                 hold,
                 manifest.budget.tokens,
             )),

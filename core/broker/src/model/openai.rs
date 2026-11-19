@@ -69,6 +69,14 @@ impl Adapter for OpenAi {
         503
     }
 
+    fn stream_ends(&self) -> &'static [&'static str] {
+        &[
+            "response.completed",
+            "response.incomplete",
+            "response.failed",
+        ]
+    }
+
     fn error_body(&self, status: u16, message: &str) -> Vec<u8> {
         let kind = match status {
             402 => "insufficient_quota",
