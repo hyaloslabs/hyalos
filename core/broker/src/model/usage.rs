@@ -1,6 +1,6 @@
 //! Metering: the tokens each response reports, charged to its job.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -20,21 +20,33 @@ struct Account {
 /// Tokens spent per job, and held for calls in flight, so calls made side by side cannot together
 /// pass the budget by more than their input.
 #[derive(Debug, Default)]
-pub struct Meter(Mutex<BTreeMap<JobId, Account>>);
+pub struct Meter(Mutex<Accounts>);
+
+/// Every job's account, and the jobs that have ended. Job ids are never reused, so an ended job
+/// stays ended: a call that raced its job's end cannot open a fresh account with the whole budget
+/// (#339).
+#[derive(Debug, Default)]
+struct Accounts {
+    live: BTreeMap<JobId, Account>,
+    ended: BTreeSet<JobId>,
+}
 
 impl Meter {
     pub fn spent(&self, job: JobId) -> u64 {
-        self.lock().get(&job).map_or(0, |a| a.spent)
+        self.lock().live.get(&job).map_or(0, |a| a.spent)
     }
 
     /// Tokens held for calls in flight.
     pub fn held(&self, job: JobId) -> u64 {
-        self.lock().get(&job).map_or(0, |a| a.held)
+        self.lock().live.get(&job).map_or(0, |a| a.held)
     }
 
     pub fn charge(&self, job: JobId, tokens: u64) {
         let mut accounts = self.lock();
-        let account = accounts.entry(job).or_default();
+        if accounts.ended.contains(&job) {
+            return;
+        }
+        let account = accounts.live.entry(job).or_default();
         account.spent = account.spent.saturating_add(tokens);
     }
 
@@ -42,7 +54,11 @@ impl Meter {
     /// `Err(false)` that what is left is held by calls in flight, which will release it.
     pub(super) fn hold(self: &Arc<Self>, job: JobId, budget: u64, want: u64) -> Result<Hold, bool> {
         let mut accounts = self.lock();
-        let account = accounts.entry(job).or_default();
+        // A job that has ended has nothing left to spend.
+        if accounts.ended.contains(&job) {
+            return Err(true);
+        }
+        let account = accounts.live.entry(job).or_default();
         if account.spent >= budget {
             return Err(true);
         }
@@ -59,21 +75,23 @@ impl Meter {
         })
     }
 
-    /// Drops a job that has ended.
+    /// Drops a job that has ended, and refuses it from then on.
     pub fn forget(&self, job: JobId) {
-        self.lock().remove(&job);
+        let mut accounts = self.lock();
+        accounts.live.remove(&job);
+        accounts.ended.insert(job);
     }
 
     /// Ends a hold. A job already forgotten stays forgotten: a call that outlived its job adds
     /// nothing back.
     fn release(&self, job: JobId, amount: u64, spent: u64) {
-        if let Some(account) = self.lock().get_mut(&job) {
+        if let Some(account) = self.lock().live.get_mut(&job) {
             account.held = account.held.saturating_sub(amount);
             account.spent = account.spent.saturating_add(spent);
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<JobId, Account>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Accounts> {
         // A panic while holding the lock cannot leave a half-written count.
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -275,5 +293,26 @@ impl Read for Metered {
 impl Drop for Metered {
     fn drop(&mut self) {
         self.settle();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_call_that_races_its_jobs_end_opens_no_fresh_account() {
+        let meter = Arc::new(Meter::default());
+        let job = JobId::from_seq(9);
+        let hold = meter.hold(job, 100, 60).map_err(|_| "a live job holds");
+        assert_eq!(hold.as_ref().map(Hold::amount), Ok(60));
+        meter.forget(job);
+        // A call that passed its socket's ended check just before the end now finds nothing to
+        // spend, and recreates no account (#339).
+        assert!(matches!(meter.hold(job, 100, 60), Err(true)));
+        meter.charge(job, 10);
+        drop(hold);
+        assert_eq!((meter.spent(job), meter.held(job)), (0, 0));
+        assert!(meter.lock().live.is_empty());
     }
 }

@@ -169,17 +169,35 @@ impl PluginVersion {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IndexLocation(String);
 
+/// Whether `text` is a plain-HTTP URL on loopback: `localhost`, `127.0.0.1` or `[::1]`, an optional
+/// numeric port, then the end or a path. Anything else after the host, such as `localhost:1@host`
+/// (userinfo, which names another host), is not loopback (#339).
+pub fn loopback_http(text: &str) -> bool {
+    ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+        .iter()
+        .any(|base| {
+            let Some(rest) = text.strip_prefix(base) else {
+                return false;
+            };
+            let rest = match rest.strip_prefix(':') {
+                Some(port) => {
+                    let digits = port.bytes().take_while(u8::is_ascii_digit).count();
+                    if !(1..=5).contains(&digits) {
+                        return false;
+                    }
+                    &port[digits..]
+                }
+                None => rest,
+            };
+            rest.is_empty() || rest.starts_with('/')
+        })
+}
+
 impl IndexLocation {
     pub fn new(text: &str) -> Option<Self> {
-        let loopback = ["http://localhost", "http://127.0.0.1", "http://[::1]"]
-            .iter()
-            .any(|base| {
-                text.strip_prefix(base)
-                    .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
-            });
         let valid = (1..=MAX_INDEX_LOCATION_LEN).contains(&text.len())
             && !text.bytes().any(|b| b.is_ascii_control() || b == b' ')
-            && (text.starts_with("https://") || loopback || text.starts_with('/'));
+            && (text.starts_with("https://") || loopback_http(text) || text.starts_with('/'));
         valid.then(|| Self(text.to_string()))
     }
 
@@ -277,6 +295,12 @@ mod tests {
             "",
             "http://example.com",
             "http://localhost.evil.com",
+            // Userinfo names another host (#339).
+            "http://localhost:1@evil.example/x",
+            "http://127.0.0.1@evil.example",
+            "http://[::1]:@evil.example",
+            "http://localhost:/x",
+            "http://localhost:123456",
             "ftp://x",
             "bundle",
             "https://a b",

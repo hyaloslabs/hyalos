@@ -227,3 +227,16 @@ fn an_envelope_whose_hex_is_not_hex_is_refused() -> Res {
     }
     Ok(())
 }
+
+#[test]
+fn a_manifest_with_a_field_this_build_does_not_know_is_refused() -> Res {
+    // Every other authority document refuses unknown fields; the manifest does too (#339).
+    let json = serde_json::to_value(manifest())?;
+    let serde_json::Value::Object(mut fields) = json else {
+        return Err("a manifest is an object".into());
+    };
+    assert!(serde_json::from_value::<Manifest>(fields.clone().into()).is_ok());
+    fields.insert("grant_everything".into(), true.into());
+    assert!(serde_json::from_value::<Manifest>(fields.into()).is_err());
+    Ok(())
+}

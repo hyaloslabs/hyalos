@@ -486,9 +486,13 @@ impl Workflow {
                     if output.len() > MAX_FIELDS {
                         return Err(WorkflowError::TooMany("fields"));
                     }
+                    // What a plugin steered is the plugin's, whether it steered through a plugin's
+                    // output or its text given as an input (#339).
                     let made = if step_inputs.tainted(step.role) {
                         Provenance::ModelFromTainted
-                    } else if !used.is_empty() {
+                    } else if !used.is_empty()
+                        || step_inputs.reads.contains(&Provenance::PluginAuthored)
+                    {
                         Provenance::PluginAuthored
                     } else {
                         Provenance::Operator
@@ -912,6 +916,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(untainted.tainted("p"), Some(false));
+        // What the planner made from the skill's text is the plugin's, not the operator's (#339).
+        let next = Workflow::parse(
+            r#"{"version":1,"name":"w","inputs":{"skill":"plugin_text"},"steps":[
+                {"id":"p","role":"planner","reads":["skill"],"instructions":"","output":{"k":"bool"}},
+                {"id":"a","role":"actor","reads":["p.k"],"instructions":""}]}"#,
+        )
+        .unwrap();
+        assert!(
+            next.inputs("a")
+                .unwrap()
+                .reads
+                .contains(&Provenance::PluginAuthored)
+        );
         // The same workflow with the issue given to the actor does not install.
         let raw = Workflow::parse(
             r#"{"version":1,"name":"w","inputs":{"skill":"plugin_text","issue":"forge_issue"},"steps":[

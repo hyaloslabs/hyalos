@@ -127,15 +127,9 @@ const MAX_REDIRECT_LEN: usize = 8192;
 /// Whether a redirect may be followed to `next`: an absolute HTTPS URL, or HTTP on loopback, with no
 /// space or control character.
 fn may_redirect_to(next: &str) -> bool {
-    let loopback = ["http://localhost", "http://127.0.0.1", "http://[::1]"]
-        .iter()
-        .any(|base| {
-            next.strip_prefix(base)
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with([':', '/']))
-        });
     next.len() <= MAX_REDIRECT_LEN
         && !next.bytes().any(|b| b.is_ascii_control() || b == b' ')
-        && (next.starts_with("https://") || loopback)
+        && (next.starts_with("https://") || hyalos_types::plugin::loopback_http(next))
 }
 
 /// `scheme://authority` and the path with its query, which is `/` if there is none.
@@ -184,6 +178,8 @@ mod tests {
             "/relative",
             "http://example.com/x",
             "http://localhost.evil/x",
+            "http://localhost:1@evil.example/x",
+            "http://127.0.0.1@evil.example/",
             "file:///etc/passwd",
             "https://h/a b",
             too_long.as_str(),
