@@ -152,11 +152,15 @@ pub(super) struct Scanner {
     lost: bool,
     /// The provider reported usage at least once.
     seen: bool,
+    /// The event `type`s that end a stream, and whether one has arrived. A stream's usage before
+    /// its end is provisional: Anthropic's `message_start` reports one output token.
+    ends: &'static [&'static str],
+    ended: bool,
     usage: Usage,
 }
 
 impl Scanner {
-    pub(super) fn new(content_type: &str) -> Self {
+    pub(super) fn new(content_type: &str, ends: &'static [&'static str]) -> Self {
         Self {
             events: content_type
                 .trim()
@@ -165,6 +169,8 @@ impl Scanner {
             buf: Vec::new(),
             lost: false,
             seen: false,
+            ends,
+            ended: false,
             usage: Usage::default(),
         }
     }
@@ -201,13 +207,18 @@ impl Scanner {
 
     fn absorb(&mut self, json: &[u8]) {
         match serde_json::from_slice::<Value>(json) {
-            Ok(value) => self.seen |= self.usage.absorb(&value),
+            Ok(value) => {
+                self.seen |= self.usage.absorb(&value);
+                let kind = value.get("type").and_then(Value::as_str);
+                self.ended |= kind.is_some_and(|k| self.ends.contains(&k));
+            }
             Err(_) => self.lost = true,
         }
     }
 
     /// The tokens the body reported, or `None` if it cannot be trusted to have reported them all:
-    /// part of it could not be read, or it reported no usage at all.
+    /// part of it could not be read, it reported no usage at all, or it is a stream that stopped
+    /// before the event that ends it, whose usage is provisional.
     fn finish(mut self) -> Option<u64> {
         if self.events {
             self.line();
@@ -215,7 +226,8 @@ impl Scanner {
             let doc = std::mem::take(&mut self.buf);
             self.absorb(&doc);
         }
-        (self.seen && !self.lost).then(|| self.usage.total())
+        let complete = !self.events || self.ended;
+        (self.seen && !self.lost && complete).then(|| self.usage.total())
     }
 }
 

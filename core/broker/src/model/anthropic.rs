@@ -61,6 +61,10 @@ impl Adapter for Anthropic {
         529
     }
 
+    fn stream_ends(&self) -> &'static [&'static str] {
+        &["message_stop"]
+    }
+
     fn error_body(&self, status: u16, message: &str) -> Vec<u8> {
         let kind = match status {
             402 => "billing_error",

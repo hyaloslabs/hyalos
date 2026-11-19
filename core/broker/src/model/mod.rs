@@ -105,6 +105,9 @@ pub trait Adapter: Send + Sync {
     fn output_limit(&self) -> &'static str;
     /// The status the harness retries when the broker gives up on an overloaded provider.
     fn overloaded(&self) -> u16;
+    /// The `type`s of the stream events that end a generation. Usage seen in a stream is final only
+    /// once one of these arrives: earlier events carry provisional counts (ADR-0037).
+    fn stream_ends(&self) -> &'static [&'static str];
     /// An error body in this protocol's shape.
     fn error_body(&self, status: u16, message: &str) -> Vec<u8>;
     /// Whether a 429 body says the key's quota is spent, which no retry fixes.
