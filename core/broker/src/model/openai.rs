@@ -61,6 +61,36 @@ impl Adapter for OpenAi {
         }
     }
 
+    fn fields(&self) -> &'static [&'static str] {
+        // Not `prompt` (a template the provider stores, with its own tools), `previous_response_id`
+        // or `conversation` (state the provider holds), nor `background`, refused before this.
+        &[
+            "model",
+            "input",
+            "instructions",
+            "max_output_tokens",
+            "max_tool_calls",
+            "metadata",
+            "parallel_tool_calls",
+            "reasoning",
+            "store",
+            "stream",
+            "stream_options",
+            "temperature",
+            "top_p",
+            "top_logprobs",
+            "text",
+            "tools",
+            "tool_choice",
+            "truncation",
+            "include",
+            "service_tier",
+            "prompt_cache_key",
+            "safety_identifier",
+            "user",
+        ]
+    }
+
     fn output_limit(&self) -> &'static str {
         "max_output_tokens"
     }

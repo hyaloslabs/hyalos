@@ -297,6 +297,7 @@ fn contract(case: &Case) -> Res {
     a_spent_budget_is_402_naming_it(case)?;
     a_reader_may_send_no_tools(case)?;
     hosted_tools_are_removed_from_every_request(case)?;
+    fields_the_broker_does_not_know_are_dropped(case)?;
     a_busy_provider_is_retried_then_answered_retryably(case)?;
     unknown_paths_and_methods_are_refused(case)?;
     Ok(())
@@ -589,6 +590,42 @@ fn a_reader_may_send_no_tools(case: &Case) -> Res {
         call(case, case.path, &with_tools(vec![case.client_tool.clone()])),
     );
     assert_eq!(response.status, 200, "an actor may send tools");
+    Ok(())
+}
+
+/// ADR-0117: only the top-level fields an adapter knows reach the provider. State the provider
+/// holds, a stored prompt, a hosted container and anything unknown are dropped (#339).
+fn fields_the_broker_does_not_know_are_dropped(case: &Case) -> Res {
+    let r = rig(case)?;
+    let actor = manifest(7, Role::Actor, 10_000);
+    let mut body = plain();
+    body["metadata"] = json!({ "user_id": "u" });
+    for dropped in [
+        "prompt",
+        "previous_response_id",
+        "conversation",
+        "container",
+        "thread",
+        "betas",
+        "made_up",
+    ] {
+        body[dropped] = json!({ "id": "x" });
+    }
+    for path in [case.path, case.count_path] {
+        assert_eq!(status(r.relay.handle(&actor, call(case, path, &body))), 200);
+    }
+    for (_, _, sent) in r.script.sent() {
+        let fields: Vec<&String> = sent.as_object().ok_or("an object")?.keys().collect();
+        for kept in ["model", "metadata"] {
+            assert!(sent.get(kept).is_some(), "{kept} was dropped: {fields:?}");
+        }
+        assert!(
+            fields
+                .iter()
+                .all(|f| case.adapter.fields().contains(&f.as_str())),
+            "{fields:?}"
+        );
+    }
     Ok(())
 }
 

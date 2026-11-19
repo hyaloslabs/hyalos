@@ -75,8 +75,10 @@ pub struct Approval {
     pub method: MergeMethod,
 }
 
-/// One job's authority.
+/// One job's authority. A field this build does not know is refused, as in every other authority
+/// document (#339).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Manifest {
     /// The schema version this document is written in.
     pub version: u32,

@@ -217,6 +217,8 @@ impl Relay {
         } else {
             None
         };
+        let known = self.adapter.fields();
+        body.retain(|field, _| known.contains(&field.as_str()));
         strip_hosted(self.adapter.as_ref(), &mut body);
         let upstream = Upstream {
             target: request.target.clone(),

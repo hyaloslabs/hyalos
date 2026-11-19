@@ -53,6 +53,35 @@ impl Adapter for Anthropic {
         }
     }
 
+    fn fields(&self) -> &'static [&'static str] {
+        // Not `container` (a hosted execution environment), `mcp_servers` (a hosted connector) or
+        // `thread` (a conversation the provider holds).
+        &[
+            "model",
+            "messages",
+            "max_tokens",
+            "system",
+            "metadata",
+            "stop_sequences",
+            "stream",
+            "temperature",
+            "top_p",
+            "top_k",
+            "tools",
+            "tool_choice",
+            "thinking",
+            "service_tier",
+            "output_config",
+            "output_format",
+            "speed",
+            "inference_geo",
+            "context_management",
+            "cache_control",
+            "fallbacks",
+            "diagnostics",
+        ]
+    }
+
     fn output_limit(&self) -> &'static str {
         "max_tokens"
     }

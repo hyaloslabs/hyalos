@@ -201,22 +201,24 @@ impl Reports {
     }
 
     /// Reports this gate's `deny` for `inputs` once per job, up to [`MAX_REPORTS`].
-    pub(crate) fn deny(&self, reason: &str, inputs: Digest, ended: &AtomicBool) {
-        self.report(Answer::Deny, reason, inputs, ended);
+    pub(crate) fn deny(&self, reason: &'static str, inputs: Digest, ended: &AtomicBool) {
+        self.report(Answer::Deny, code_of(reason), inputs, ended);
     }
 
     /// Reports that this gate could not answer for `inputs`, which holds the job (ADR-0020). Counted
     /// with the denials.
-    pub(crate) fn unknown(&self, reason: &str, inputs: Digest, ended: &AtomicBool) {
-        self.report(Answer::Unknown, reason, inputs, ended);
+    pub(crate) fn unknown(&self, reason: &'static str, inputs: Digest, ended: &AtomicBool) {
+        self.report(Answer::Unknown, code_of(reason), inputs, ended);
     }
 
-    fn report(&self, answer: Answer, reason: &str, inputs: Digest, ended: &AtomicBool) {
+    /// Sends one report. A code that is not a valid [`ReasonCode`] is reported as
+    /// `gate.unavailable`, never dropped: a hold must reach the engine (#339).
+    fn report(&self, answer: Answer, code: ReasonCode, inputs: Digest, ended: &AtomicBool) {
         // A refusal made as the job ends is not reported after its end.
         if ended.load(Ordering::SeqCst) {
             return;
         }
-        let (Some(to), Some(code)) = (&self.to, ReasonCode::new(reason)) else {
+        let Some(to) = &self.to else {
             return;
         };
         let Ok(mut seen) = self.seen.lock() else {
@@ -588,6 +590,21 @@ fn pump(from: &mut impl Read, to: &mut impl Write, ended: &AtomicBool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_report_with_a_bad_code_still_reaches_the_engine() {
+        let (to, from) = std::sync::mpsc::channel();
+        let reports = Reports::new(JobId::from_seq(3), Some(to));
+        let ended = AtomicBool::new(false);
+        reports.unknown("Not A Code", inputs_digest("x"), &ended);
+        let Ok(ToEngine::Gate { answer, reason, .. }) = from.try_recv() else {
+            panic!("the hold was dropped");
+        };
+        assert_eq!(
+            (answer, reason),
+            (Answer::Unknown, ReasonCode::unavailable())
+        );
+    }
 
     /// The capability vocabulary accepts a host exactly when the gate would compare it unchanged
     /// (ADR-0085), so a manifest's hosts are the names requests are matched against.
