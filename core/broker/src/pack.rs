@@ -296,7 +296,7 @@ fn scan(kind: Kind, data: &[u8], id_len: usize, secrets: &[&str]) -> Result<(), 
                     .ok_or("content.hidden_text")?;
                 let name =
                     std::str::from_utf8(&entry[space + 1..]).map_err(|_| "content.hidden_text")?;
-                if name.chars().any(content::hides) {
+                if content::hides_text(name) {
                     return Err("content.hidden_text");
                 }
                 rest = rest.get(nul + 1 + id_len..).ok_or("content.hidden_text")?;

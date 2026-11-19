@@ -374,14 +374,14 @@ mod tests {
     #[test]
     fn the_corpus_loads_whole_and_every_item_says_what_to_expect() {
         let items = corpus().unwrap();
-        assert_eq!(items.len(), 332);
+        assert_eq!(items.len(), 336);
         assert_eq!(
             items.iter().filter(|i| i.class == Class::Attack).count(),
-            320
+            324
         );
         // hivrr's port is version 1; what Hyalos wrote since is version 2.
         let v1 = items.iter().filter(|i| i.version() == 1).count();
-        assert_eq!((v1, items.len() - v1), (310, 22));
+        assert_eq!((v1, items.len() - v1), (310, 26));
         let ids: std::collections::BTreeSet<&str> = items.iter().map(|i| i.id.as_str()).collect();
         assert_eq!(ids.len(), items.len(), "ids are unique");
         for item in &items {
