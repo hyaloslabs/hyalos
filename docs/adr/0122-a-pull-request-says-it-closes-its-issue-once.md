@@ -1,6 +1,6 @@
 # ADR-0122: A pull request says it closes its issue once
 
-**Status:** Proposed. Supersedes [ADR-0083](0083-a-fix-issue-pull-request-closes-its-issue.md)'s rule that the broker's closing line is added beside a harness line that already closes the issue.
+**Status:** Accepted. Supersedes [ADR-0083](0083-a-fix-issue-pull-request-closes-its-issue.md)'s rule that the broker's closing line is added beside a harness line that already closes the issue.
 
 ## Context
 
