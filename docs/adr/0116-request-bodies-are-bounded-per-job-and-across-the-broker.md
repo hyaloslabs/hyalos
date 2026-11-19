@@ -1,6 +1,6 @@
 # ADR-0116: Request bodies are bounded per job and across the broker
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

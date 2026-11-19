@@ -22,7 +22,7 @@ pub fn check(text: &str, secrets: &[&str]) -> Result<(), &'static str> {
     {
         return Err("content.credential");
     }
-    if text.chars().any(hides) {
+    if hides_text(text) {
         return Err("content.hidden_text");
     }
     Ok(())
@@ -390,9 +390,23 @@ fn links_allowed(text: &str, forge: Option<&str>) -> bool {
     // `rest` starts after the scheme's colon, or at the slashes of a scheme-relative link.
     let to_forge = |rest: &str| {
         let rest = rest.trim_start_matches(['/', '\\']);
-        let end = rest.find(ends_host).unwrap_or(rest.len());
-        let authority = &rest[..end];
-        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        // A browser drops tabs and line breaks anywhere in a URL, so they do not end its host:
+        // `github.com<tab>.exfil.example` is `github.com.exfil.example` (#338).
+        let mut authority = String::new();
+        let mut end = rest.len();
+        for (i, c) in rest.char_indices() {
+            if matches!(c, '\t' | '\n' | '\r') {
+                continue;
+            }
+            if ends_host(c) {
+                end = i;
+                break;
+            }
+            authority.push(c);
+        }
+        let host = authority
+            .rsplit_once('@')
+            .map_or(authority.as_str(), |(_, h)| h);
         let host = host.split(':').next().unwrap_or_default();
         let query = rest[end..]
             .split(|c: char| c.is_whitespace() || ")]>\"'<".contains(c))
@@ -474,6 +488,24 @@ fn links_allowed(text: &str, forge: Option<&str>) -> bool {
 }
 
 /// Whether `c` can hide or reorder what a reader sees.
+/// Whether `text` holds a character that hides or reorders what a reader sees, or a run of variation
+/// selectors. One selector after a character is ordinary (an emoji's U+FE0F). Two or more in a row
+/// select nothing visible and can carry a hidden byte stream, one selector per byte (#338).
+pub fn hides_text(text: &str) -> bool {
+    let mut run = 0;
+    text.chars().any(|c| {
+        run = if selects(c) { run + 1 } else { 0 };
+        hides(c) || run > 1
+    })
+}
+
+/// Whether `c` is a variation selector.
+fn selects(c: char) -> bool {
+    matches!(c,
+        '\u{180b}'..='\u{180d}' | '\u{180f}' | '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}'
+    )
+}
+
 pub fn hides(c: char) -> bool {
     matches!(c,
         // Control characters, but tab and line breaks.
@@ -484,6 +516,10 @@ pub fn hides(c: char) -> bool {
         | '\u{200b}'..='\u{200f}'
         // Line and paragraph separators, and the bidirectional embeddings and overrides.
         | '\u{2028}'..='\u{202e}'
+        // Arabic letter mark, the one bidirectional control the ranges above leave out.
+        | '\u{61c}'
+        // Musical symbol format characters, which draw nothing.
+        | '\u{1d173}'..='\u{1d17a}'
         // Word joiner, invisible operators, bidirectional isolates, deprecated format characters.
         | '\u{2060}'..='\u{206f}'
         | '\u{3164}' | '\u{feff}' | '\u{ffa0}'
@@ -541,6 +577,8 @@ mod tests {
             '\u{feff}',
             '\u{e0041}',
             '\u{e007f}',
+            '\u{61c}',
+            '\u{1d173}',
         ] {
             assert_eq!(
                 check(&format!("looks fine{c}"), &[]),
@@ -548,6 +586,27 @@ mod tests {
                 "U+{:04X}",
                 c as u32
             );
+        }
+    }
+
+    #[test]
+    fn a_run_of_variation_selectors_is_refused_and_one_after_an_emoji_is_not() {
+        // A heart with its emoji selector, and a CJK character with one ideographic selector.
+        for fine in [
+            "thanks \u{2764}\u{fe0f}",
+            "\u{845b}\u{e0100} test",
+            "done \u{2705}",
+        ] {
+            assert_eq!(check(fine, &[]), Ok(()), "{fine:?}");
+        }
+        // Bytes smuggled one selector each after a visible character (#338).
+        for hidden in [
+            "looks fine\u{fe00}\u{fe01}",
+            "a\u{e0100}\u{e0101}\u{e0102}",
+            "x\u{fe0f}\u{e01ef}",
+            "y\u{180b}\u{180c}",
+        ] {
+            assert_eq!(check(hidden, &[]), Err("content.hidden_text"), "{hidden:?}");
         }
     }
 
@@ -564,6 +623,10 @@ mod tests {
             GitHub App tokens start with ghs_ and expire after an hour. Commit 0123456789abcdef0123456789abcdef01234567.";
         assert_eq!(check_published(body, &[TOKEN, KEY], FORGE), Ok(()));
         assert_eq!(check_published("修复解析器 · café", &[], None), Ok(()));
+        // A link to the forge at the end of a line, with more text on the next.
+        let lines =
+            "See https://github.com/octo/repo/pull/3\nThanks!\n\t- https://github.com/octo/repo";
+        assert_eq!(check_published(lines, &[], FORGE), Ok(()));
     }
 
     #[test]
@@ -673,6 +736,14 @@ mod tests {
             "https://github.com@exfil.example/x",
             "DATA:text/plain,hi",
             "javascript://exfil.example/%0aalert(1)",
+            // Browsers drop tabs and line breaks inside a URL, so the host goes on past them (#338).
+            "<img src=\"https://github.com\t.exfil.example/p.png\">",
+            "<img src=\"https://github.com\n.exfil.example/p.png\">",
+            "<img src=\"https://github.com\r\n.exfil.example/p.png\">",
+            "<img src=\"https://github.com&#9;.exfil.example/p.png\">",
+            "<img src=\"https://github.com&#10;.exfil.example/p.png\">",
+            "<img src=\"//github.com\t.exfil.example/p.png\">",
+            "<img src=\"https://git\thub.com.exfil.example/p.png\">",
         ] {
             assert_eq!(
                 check_published(text, &[], FORGE),
