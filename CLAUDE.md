@@ -39,7 +39,7 @@ cargo xtask docs        # the security pages' code and test references resolve
 cargo deny check        # if cargo-deny is installed; CI's dependency audit
 ```
 
-A pull request that changes only `docs/`, `spikes/`, Markdown under `skills/` or Markdown at the root skips the build jobs and still reports its required checks (`changes` job in `ci.yml`).
+A pull request that changes only `docs/`, `spikes/`, Markdown under `skills/` or Markdown at the root skips the test, simulation, spec, audit, conformance and proof jobs and still reports its required checks (`changes` job in `ci.yml`). `lint`, which runs `cargo xtask docs`, runs on every pull request (ADR-0119).
 
 Tests that need a tool skip without it unless CI's variable is set: `HYALOS_REQUIRE_CONTAINER`, `_GIT`, `_GVISOR`, `_MICROVM`, `_SANDBOX_IMAGE`, `_CVC5`, `_MCP_CONFORMANCE`, `_LANDLOCK`. A skip is not a pass; say which ran.
 
@@ -73,7 +73,7 @@ These are pinned by tests. A change to one bumps its version (except where noted
 | `core/substrate` | Containers, gVisor, Firecracker, choosing one, attestation | 0032, 0041, 0043, 0056, 0057, 0058, 0089 |
 | `core/plugin` | The plugin runtime: the Wasmtime host, install, Sigstore verification, the trusted-root snapshot, the revocation list, update checks, the reference skill the marketplace pins (part budget 3,000) | 0006, 0007, 0086, 0087, 0089, 0090, 0093, 0094, 0097, 0098, 0099, 0101, 0102 |
 | `core/hyalos` | The binary: keys, log commands, the broker process, its channel and its confinement, doctor, GitHub App, `hyalos run`, the fix-issue workflow, MCP server and its learnings, drafting skills from runs and trusting them after replay, operator commands and merge, thin CLI, setup, the capability diff | 0018, 0021, 0022, 0026–0028, 0030, 0035, 0038, 0043, 0044, 0045, 0050, 0052, 0053, 0058, 0062, 0063, 0067–0075, 0078, 0080, 0081, 0082, 0083, 0084, 0088, 0089, 0090, 0091, 0092, 0093, 0097, 0098, 0099, 0101, 0102, 0103, 0106, 0112, 0113, 0114, 0118 |
-| `.github/workflows/ci.yml` | CI's jobs, their time budget, and the required check that gathers them | 0104, 0105, 0108 |
+| `.github/workflows/ci.yml` | CI's jobs, their time budget, and the required check that gathers them | 0104, 0105, 0108, 0119 |
 | `.github/workflows/release.yml`, `.github/scripts/release-evidence.sh`, `.github/scripts/tag-release.sh` | A release: the evidence its commit needs, the operator's tag, the static binary, the image by digest, provenance, the complete job it runs before publishing, the red-team reach it must record | 0081, 0107, 0110, 0111 |
 | `site/setup`, `.github/workflows/pages.yml` | The setup page that creates the GitHub App from a manifest, and the marketplace settings check's App page | 0084, 0096 |
 | `crates/xtask` | `layout` and `lines`; `docs`, the check that `docs/security` cites code that exists; the release gate's check on the workflows | 0017, 0111 |

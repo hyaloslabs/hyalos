@@ -118,7 +118,7 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0102](0102-composing-skills-components-and-deterministic-steps.md) | Composing skills, components and deterministic steps in a workflow | Accepted |
 | [0103](0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md) | Policy releases an issue written only by the repository's writers | Accepted |
 | [0104](0104-fault-schedules-swept-in-ci.md) | Fault schedules, swept in CI | Accepted; its rule that `simulation` is required by name superseded by [ADR-0105](0105-the-required-check-gathers-ci-s-split-jobs.md) |
-| [0105](0105-the-required-check-gathers-ci-s-split-jobs.md) | The required check gathers CI's split jobs | Accepted; its list of gathered jobs superseded by [ADR-0108](0108-the-job-state-machine-s-tla-spec-and-its-model-check.md) |
+| [0105](0105-the-required-check-gathers-ci-s-split-jobs.md) | The required check gathers CI's split jobs | Accepted; its list of gathered jobs superseded by [ADR-0108](0108-the-job-state-machine-s-tla-spec-and-its-model-check.md), its documentation-only skip of `lint` by [ADR-0119](0119-lint-runs-on-every-pull-request.md) |
 | [0106](0106-a-dependency-lost-mid-job-holds-the-task.md) | A dependency lost mid-job holds the task | Accepted |
 | [0107](0107-a-release-runs-a-complete-job-before-it-publishes.md) | A release runs a complete job before it publishes | Accepted |
 | [0108](0108-the-job-state-machine-s-tla-spec-and-its-model-check.md) | The job state machine's TLA+ spec and its model check | Accepted |
@@ -132,3 +132,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0116](0116-request-bodies-are-bounded-per-job-and-across-the-broker.md) | Request bodies are bounded per job and across the broker | Accepted |
 | [0117](0117-the-model-relay-passes-only-the-request-fields-it-knows.md) | The model relay passes only the request fields it knows | Accepted |
 | [0118](0118-the-broker-confines-itself-with-landlock.md) | The broker confines itself with Landlock | Accepted |
+| [0119](0119-lint-runs-on-every-pull-request.md) | Lint runs on every pull request | Proposed |
