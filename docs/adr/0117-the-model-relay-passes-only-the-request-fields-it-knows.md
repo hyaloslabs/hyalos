@@ -1,6 +1,6 @@
 # ADR-0117: The model relay passes only the request fields it knows
 
-**Status:** Accepted
+**Status:** Accepted. Its rule that an unknown field is dropped is superseded by [ADR-0120](0120-the-model-relay-refuses-a-request-field-it-does-not-know.md), which refuses it.
 
 ## Context
 
