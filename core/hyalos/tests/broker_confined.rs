@@ -170,5 +170,21 @@ fn the_engine_will_not_start_a_broker_that_could_read_the_config_directory() -> 
         started,
         Err(hyalos::launch::LaunchError::Confinement)
     ));
+    // The same through a link: Landlock would follow it, so the guard does too.
+    let link = d.join("store-link");
+    std::os::unix::fs::symlink(d.join("data"), &link)?;
+    let started = BrokerProcess::launch_confined(
+        Path::new(EXE),
+        &runtime,
+        &key.public(),
+        Some(&keys),
+        None,
+        Some(&link),
+        WAIT,
+    );
+    assert!(matches!(
+        started,
+        Err(hyalos::launch::LaunchError::Confinement)
+    ));
     Ok(())
 }

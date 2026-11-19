@@ -36,9 +36,14 @@ impl Grants {
             .collect()
     }
 
-    /// Whether a read grant contains `dir` or is `dir`, so the broker could read what is in it.
+    /// Whether a read grant contains `dir` or is `dir`, so the broker could read what is in it. Both
+    /// are compared as resolved, since Landlock follows a link in a rule's path.
     pub fn may_read(&self, dir: &Path) -> bool {
-        self.all_reads().iter().any(|read| dir.starts_with(read))
+        let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let dir = real(dir);
+        self.all_reads()
+            .iter()
+            .any(|read| dir.starts_with(real(read)))
     }
 }
 

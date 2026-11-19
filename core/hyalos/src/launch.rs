@@ -212,7 +212,6 @@ impl BrokerProcess {
             .into_iter()
             .chain(crate::paths::config_dir(&env).ok());
         for dir in config {
-            let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
             if grants.may_read(&dir) {
                 return Err(LaunchError::Confinement);
             }
