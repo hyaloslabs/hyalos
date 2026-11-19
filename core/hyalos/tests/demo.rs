@@ -147,7 +147,7 @@ fn act_2_a_steered_job_is_held() -> Res {
     asked.issue_number = Some(7);
     asked.await_release = true;
 
-    say("$ hyalos run --repo octo/repo --issue 7");
+    say("$ hyalos run --repo octo/repo --issue-number 7 --await-release");
     let cancel = world.root.join("cancel");
     let mut setup = world.setup(local_detect(), Duration::from_secs(10));
     setup.operator = None;
