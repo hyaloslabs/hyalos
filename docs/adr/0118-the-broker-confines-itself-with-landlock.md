@@ -1,6 +1,6 @@
 # ADR-0118: The broker confines itself with Landlock
 
-**Status:** Accepted
+**Status:** Accepted. Its rule that a broker without Landlock runs unconfined is superseded by [ADR-0121](0121-no-broker-runs-without-landlock.md), under which no broker runs.
 
 ## Context
 

@@ -131,6 +131,7 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0115](0115-mit-licence-and-dco-sign-off.md) | MIT licence, DCO sign-off, and a secrets scan of the full history | Accepted |
 | [0116](0116-request-bodies-are-bounded-per-job-and-across-the-broker.md) | Request bodies are bounded per job and across the broker | Accepted |
 | [0117](0117-the-model-relay-passes-only-the-request-fields-it-knows.md) | The model relay passes only the request fields it knows | Accepted; its drop of an unknown field superseded by [ADR-0120](0120-the-model-relay-refuses-a-request-field-it-does-not-know.md) |
-| [0118](0118-the-broker-confines-itself-with-landlock.md) | The broker confines itself with Landlock | Accepted |
+| [0118](0118-the-broker-confines-itself-with-landlock.md) | The broker confines itself with Landlock | Accepted; its unconfined run without Landlock superseded by [ADR-0121](0121-no-broker-runs-without-landlock.md) |
 | [0119](0119-lint-runs-on-every-pull-request.md) | Lint runs on every pull request | Accepted |
 | [0120](0120-the-model-relay-refuses-a-request-field-it-does-not-know.md) | The model relay refuses a request field it does not know | Accepted |
+| [0121](0121-no-broker-runs-without-landlock.md) | No broker runs without Landlock | Proposed |

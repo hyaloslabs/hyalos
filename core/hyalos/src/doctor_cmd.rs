@@ -2,7 +2,8 @@
 //!
 //! It refuses a host that is not Linux, asks every substrate driver whether it is ready for the
 //! sandbox image (for a container runtime that includes starting an init, ADR-0041), names the one a
-//! job would run on, and reminds the operator to cap spending on the provider key at the provider. It
+//! job would run on, says whether the broker can confine itself (ADR-0121), and reminds the operator
+//! to cap spending on the provider key at the provider. It
 //! reads no key and writes nothing; the init probe starts and removes one short container.
 
 use std::process::ExitCode;
@@ -94,7 +95,14 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     };
     let none = microvm.is_none();
-    let (mut text, ok) = report(HOST_OS, &detect_with(&image, microvm), &image);
+    let (mut text, mut ok) = report(HOST_OS, &detect_with(&image, microvm), &image);
+    // The broker runs only confined (ADR-0121).
+    if crate::confine::available() {
+        text.push_str("broker: confined by Landlock to its own files (ADR-0118)\n");
+    } else {
+        text.push_str(&format!("broker: no; {}\n", crate::confine::NO_LANDLOCK));
+        ok = false;
+    }
     if none {
         text.push_str(MICROVM_ADVICE);
     }

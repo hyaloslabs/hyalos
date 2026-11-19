@@ -98,6 +98,9 @@ pub enum LaunchError {
     /// The broker would be confined to directories that reach the config directory, which holds the
     /// engine's keys (ADR-0118).
     Confinement,
+    /// This kernel has no Landlock, so the broker could not confine itself, and is not started
+    /// (ADR-0121).
+    NoLandlock,
 }
 
 impl fmt::Display for LaunchError {
@@ -110,6 +113,7 @@ impl fmt::Display for LaunchError {
             LaunchError::Confinement => f.write_str(
                 "the broker would be able to read the config directory: move the runtime or data directory out of it",
             ),
+            LaunchError::NoLandlock => f.write_str(crate::confine::NO_LANDLOCK),
         }
     }
 }
@@ -199,6 +203,9 @@ impl BrokerProcess {
         plugin_store: Option<&Path>,
         wait: Duration,
     ) -> Result<Self, LaunchError> {
+        if !crate::confine::available() {
+            return Err(LaunchError::NoLandlock);
+        }
         let grants = crate::confine::Grants {
             sockets: vec![runtime_dir.to_path_buf()],
             reads: plugin_store.map(Path::to_path_buf).into_iter().collect(),
