@@ -35,6 +35,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 cargo xtask layout
 cargo xtask lines
+cargo xtask docs        # the security pages' code and test references resolve
 cargo deny check        # if cargo-deny is installed; CI's dependency audit
 ```
 
@@ -75,7 +76,7 @@ These are pinned by tests. A change to one bumps its version (except where noted
 | `.github/workflows/ci.yml` | CI's jobs, their time budget, and the required check that gathers them | 0104, 0105, 0108 |
 | `.github/workflows/release.yml`, `.github/scripts/release-evidence.sh`, `.github/scripts/tag-release.sh` | A release: the evidence its commit needs, the operator's tag, the static binary, the image by digest, provenance, the complete job it runs before publishing, the red-team reach it must record | 0081, 0107, 0110, 0111 |
 | `site/setup`, `.github/workflows/pages.yml` | The setup page that creates the GitHub App from a manifest, and the marketplace settings check's App page | 0084, 0096 |
-| `crates/xtask` | `layout` and `lines`; the release gate's check on the workflows | 0017, 0111 |
+| `crates/xtask` | `layout` and `lines`; `docs`, the check that `docs/security` cites code that exists; the release gate's check on the workflows | 0017, 0111 |
 | `crates/sim`, `crates/world` | Deterministic simulation, the simulated world, fault schedules the `sim` sweep, and the spec's invariants on every run | 0013, 0036, 0104, 0108 |
 | `spec/Job.tla`, `.github/scripts/check-spec.sh` | The job state machine's TLA+ spec, its invariants and mutants, and the model check | 0013, 0108 |
 | `crates/substrate-contract`, `crates/vm-init` | The contract every substrate passes, its generated half; the microVM's init | 0032, 0041, 0056, 0058, 0109 |

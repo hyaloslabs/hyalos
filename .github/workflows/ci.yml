@@ -77,6 +77,8 @@ jobs:
         run: cargo xtask layout
       - name: Trusted-core size (ADR-0017)
         run: cargo xtask lines
+      - name: Security pages cite code that exists (#333)
+        run: cargo xtask docs
 
   # The workspace's tests in two parts that together are the whole workspace: the `hyalos` crate, and
   # every other package (`--exclude`, so a new package lands in the second part without an edit here).

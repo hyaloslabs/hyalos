@@ -2,6 +2,7 @@
 //!
 //! * `cargo xtask layout` fails if the workspace breaks a dependency or placement rule.
 //! * `cargo xtask lines` reports the trusted-core size and fails if it passes the budget.
+//! * `cargo xtask docs` fails if a security page cites code or a test that is not there (#333).
 //!
 //! This crate is the control, so it is listed in `CODEOWNERS`. It is not trusted core and is not counted.
 
@@ -9,6 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+
+mod refs;
 
 /// The trusted-core budget from the PRD's success metrics.
 const BUDGET: usize = 30_000;
@@ -131,8 +134,9 @@ fn main() -> ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
         Some("layout") => layout(&root),
         Some("lines") => lines(&root),
+        Some("docs") => refs::check(&root),
         _ => {
-            eprintln!("usage: cargo xtask <layout|lines>");
+            eprintln!("usage: cargo xtask <layout|lines|docs>");
             return ExitCode::from(2);
         }
     };
