@@ -12,6 +12,7 @@
 - [Product requirements](docs/prd/hyalos.md): what we are building and why
 - [Architecture decisions](docs/adr/README.md): why it is shaped this way
 - [Documentation map](docs/README.md): where everything lives
+- [Threat model](docs/security/threat-model.md) and [security policy](SECURITY.md): what Hyalos defends, and how to report a vulnerability
 
 ## License
 
