@@ -305,7 +305,9 @@ fn the_engine_mints_a_token_for_the_manifest_hands_it_to_the_broker_and_revokes_
     let runtime = dir("runtime")?;
     let key = fresh_manifest_key()?;
     let mut broker = BrokerProcess::launch(Path::new(EXE), &runtime, &key.public(), WAIT)?;
-    let socket_dir = dir("job")?;
+    // Inside the runtime directory, where the confined broker may bind a socket (ADR-0118).
+    let socket_dir = runtime.join("job");
+    std::fs::create_dir_all(&socket_dir)?;
     let start = ToBroker::StartJob {
         job: m.job,
         role: m.role,

@@ -521,12 +521,13 @@ impl Run<'_> {
         let manifest = signed.to_bytes().map_err(|e| not_started(e.to_string()))?;
         if self.broker.as_ref().is_none_or(|b| !b.is_open()) {
             paths::make_private_dir(&self.runtime_dir).map_err(not_started)?;
-            let broker = BrokerProcess::launch_configured(
+            let broker = BrokerProcess::launch_confined(
                 &self.broker_exe,
                 &self.runtime_dir,
                 &self.manifest_key.public(),
                 Some(&self.provider_keys),
                 Some(self.app.forge_bases()),
+                Some(&self.plugin_store),
                 BROKER_WAIT,
             )
             .map_err(|e| not_started(format!("the broker did not start: {e}")))?;

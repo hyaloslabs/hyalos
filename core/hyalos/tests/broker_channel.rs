@@ -26,7 +26,14 @@ fn dir(name: &str) -> Res<PathBuf> {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("bc-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
+    RUNTIME.with(|r| *r.borrow_mut() = Some(dir.clone()));
     Ok(dir)
+}
+
+thread_local! {
+    /// This test's runtime directory: job sockets go there, where the confined broker may bind them
+    /// (ADR-0118). Each test runs on a thread of its own.
+    static RUNTIME: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 fn code(text: &str) -> Res<ReasonCode> {
@@ -73,7 +80,10 @@ fn start(key: &ManifestKey, m: &Manifest) -> Res<ToBroker> {
 fn job_socket(job: JobId) -> Res<String> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("hybc-{}-{}-{n}", std::process::id(), job.seq()));
+    let runtime = RUNTIME
+        .with(|r| r.borrow().clone())
+        .ok_or("dir() makes the runtime directory first")?;
+    let dir = runtime.join(format!("j{}-{n}", job.seq()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     Ok(dir.join("broker.sock").to_string_lossy().into_owned())
@@ -160,12 +170,13 @@ fn the_broker_is_started_as_this_executable_with_nothing_of_the_engines() -> Res
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))?;
     let run = d.join("run");
     std::fs::create_dir(&run)?;
+    RUNTIME.with(|r| *r.borrow_mut() = Some(run.clone()));
     let mut broker = BrokerProcess::launch(&wrapper, &run, &key.public(), WAIT)?;
     let text = std::fs::read_to_string(&seen)?;
     let mut lines = text.lines();
     let args = lines.next().unwrap_or_default();
     assert!(args.starts_with("args=broker /"), "{args}");
-    assert!(args.ends_with("/broker.sock"), "{args}");
+    assert!(args.contains("/broker.sock --sockets /"), "{args}");
     assert_eq!(lines.next(), Some("in=/dev/null"));
     assert_eq!(lines.next(), Some("out=/dev/null"));
     // Whatever else is listed is what a shell makes up for itself, not the engine's environment.
@@ -259,7 +270,13 @@ fn a_process_that_is_not_the_broker_cannot_use_the_channel() -> Res {
         },
     )?;
     let mut command = Command::new(EXE);
-    command.arg("broker").arg(&socket).env_clear();
+    // As the engine starts it: confined, with job sockets in the runtime directory (ADR-0118).
+    command
+        .arg("broker")
+        .arg(&socket)
+        .arg("--sockets")
+        .arg(&d)
+        .env_clear();
     let mut broker = BrokerProcess::start(command, listener, &key.public(), WAIT)?;
 
     // The intruder was turned away: its connection was closed, unread, and it was noted by name.
@@ -297,7 +314,13 @@ fn a_late_connection_finds_nothing_to_connect_to() -> Res {
     let listener = Listener::bind(&d)?;
     let socket = listener.path().to_path_buf();
     let mut command = Command::new(EXE);
-    command.arg("broker").arg(&socket).env_clear();
+    // As the engine starts it: confined, with job sockets in the runtime directory (ADR-0118).
+    command
+        .arg("broker")
+        .arg(&socket)
+        .arg("--sockets")
+        .arg(&d)
+        .env_clear();
     let _broker = BrokerProcess::start(command, listener, &key.public(), WAIT)?;
     assert!(UnixStream::connect(&socket).is_err());
     Ok(())

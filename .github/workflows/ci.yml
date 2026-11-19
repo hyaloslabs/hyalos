@@ -116,6 +116,7 @@ jobs:
       - name: Install Firecracker, the guest kernel and the init
         run: .github/scripts/install-firecracker.sh "$RUNNER_TEMP/microvm"
       # The git proxy's test runs the real git client and git http-backend (ADR-0046); missing git fails.
+      # The broker's confinement test needs the runner's kernel to have Landlock (ADR-0118).
       - name: Test
         run: cargo test ${{ matrix.part.packages }} --locked
         env:
@@ -123,6 +124,7 @@ jobs:
           HYALOS_REQUIRE_GVISOR: "1"
           HYALOS_REQUIRE_MICROVM: "1"
           HYALOS_REQUIRE_GIT: "1"
+          HYALOS_REQUIRE_LANDLOCK: "1"
       - name: Disk left
         if: ${{ always() }}
         run: df -h / "$GITHUB_WORKSPACE"; du -sh target 2>/dev/null || true
