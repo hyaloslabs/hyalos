@@ -1,6 +1,6 @@
 # ADR-0115: MIT licence, DCO sign-off, and a secrets scan of the full history
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

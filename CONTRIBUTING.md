@@ -62,3 +62,7 @@ By making a contribution to this project, I certify that:
   ```
 
 - Changes under `core/` (the trusted core) need code-owner review (`.github/CODEOWNERS`).
+
+## Reporting a vulnerability
+
+Do not open a public issue for a vulnerability. Follow [`SECURITY.md`](SECURITY.md).
