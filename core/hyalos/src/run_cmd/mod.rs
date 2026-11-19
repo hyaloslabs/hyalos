@@ -616,6 +616,10 @@ mod tests {
         assert!(prompt.contains("The task:\n\nfix it\n"));
         assert!(prompt.contains("git clone http://127.0.0.1:8089/git/octo/repo.git"));
         assert!(prompt.contains("hyalos-pr octo/repo hyalos/job-4 main"));
+        // The harness is asked to keep the file's own formatting (#350, #351).
+        assert!(prompt.contains("Match the style of each file you edit."));
+        assert!(prompt.contains("leave a blank line before and after each paragraph"));
+        assert!(prompt.contains("write commands, file paths and code as inline code"));
         let codex = Harness::Codex.command(prompt.clone(), &[]);
         assert_eq!(codex[0], "hyalos-forward");
         assert_eq!(codex.last(), Some(&prompt));
