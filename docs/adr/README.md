@@ -131,4 +131,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0115](0115-mit-licence-and-dco-sign-off.md) | MIT licence, DCO sign-off, and a secrets scan of the full history | Accepted |
 | [0116](0116-request-bodies-are-bounded-per-job-and-across-the-broker.md) | Request bodies are bounded per job and across the broker | Accepted |
 | [0117](0117-the-model-relay-passes-only-the-request-fields-it-knows.md) | The model relay passes only the request fields it knows | Accepted |
-| [0118](0118-the-broker-confines-itself-with-landlock.md) | The broker confines itself with Landlock | Proposed |
+| [0118](0118-the-broker-confines-itself-with-landlock.md) | The broker confines itself with Landlock | Accepted |

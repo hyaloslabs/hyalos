@@ -1,6 +1,6 @@
 # ADR-0118: The broker confines itself with Landlock
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
