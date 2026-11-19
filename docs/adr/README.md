@@ -96,7 +96,7 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0080](0080-setup-asks-the-operator-in-their-own-terminal.md) | Setup asks the operator in their own terminal | Accepted; its account of `github-app` superseded by [ADR-0084](0084-setup-creates-the-github-app-from-a-manifest.md) |
 | [0081](0081-prebuilt-releases.md) | Prebuilt releases: a static binary that names its image by digest | Accepted; its release check and pull-request check jobs superseded by [ADR-0107](0107-a-release-runs-a-complete-job-before-it-publishes.md) |
 | [0082](0082-the-starter-policy-permits-merge.md) | The starter policy permits merge | Accepted |
-| [0083](0083-a-fix-issue-pull-request-closes-its-issue.md) | A fix-issue pull request closes its issue | Accepted |
+| [0083](0083-a-fix-issue-pull-request-closes-its-issue.md) | A fix-issue pull request closes its issue | Accepted; its closing line beside the harness's own superseded by [ADR-0122](0122-a-pull-request-says-it-closes-its-issue-once.md) |
 | [0084](0084-setup-creates-the-github-app-from-a-manifest.md) | Setup creates the GitHub App from a manifest | Accepted |
 | [0085](0085-the-capability-vocabulary.md) | The capability vocabulary | Accepted; its rule that the policy's actions are exactly the vocabulary's superseded by [ADR-0103](0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md) |
 | [0086](0086-the-plugin-runtime-s-crate-and-line-budget.md) | The plugin runtime's crate and line budget | Accepted |
@@ -135,3 +135,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0119](0119-lint-runs-on-every-pull-request.md) | Lint runs on every pull request | Accepted |
 | [0120](0120-the-model-relay-refuses-a-request-field-it-does-not-know.md) | The model relay refuses a request field it does not know | Accepted |
 | [0121](0121-no-broker-runs-without-landlock.md) | No broker runs without Landlock | Accepted |
+| [0122](0122-a-pull-request-says-it-closes-its-issue-once.md) | A pull request says it closes its issue once | Proposed |

@@ -173,15 +173,37 @@ pub(crate) fn answer<R: BufRead, W: Write>(
 
 /// `body` led by a line saying it closes `issue` (ADR-0083). The line comes first, so nothing the
 /// harness wrote after it, such as a code block or a comment it never closes, can hide it from
-/// GitHub. What the harness wrote follows as it is, byte for byte. A body that also says it closes the
-/// issue gets the line all the same: a second closing line is harmless, a missing one is not.
+/// GitHub. The harness's own lines that only close the same issue are dropped, since the broker's
+/// line already does (ADR-0122); every other line follows as it is, byte for byte.
 pub fn closing(body: &str, issue: u64) -> String {
     let line = format!("Closes #{issue}");
-    if body.is_empty() {
+    let kept: String = body
+        .split_inclusive('\n')
+        .filter(|l| !closes_only(l, issue))
+        .collect();
+    let kept = kept.trim_start_matches(['\n', '\r']);
+    if kept.is_empty() {
         line
     } else {
-        format!("{line}\n\n{body}")
+        format!("{line}\n\n{kept}")
     }
+}
+
+/// GitHub's closing keywords.
+const CLOSING: &[&str] = &[
+    "close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved",
+];
+
+/// Whether `line`, trimmed, is only a closing keyword and `#issue`, with an optional colon after the
+/// keyword and full stop at the end: `Closes #12`, `fixes: #12.`. Nothing else is a duplicate.
+fn closes_only(line: &str, issue: u64) -> bool {
+    let line = line.trim();
+    let line = line.strip_suffix('.').unwrap_or(line);
+    let Some((word, number)) = line.split_once(char::is_whitespace) else {
+        return false;
+    };
+    let word = word.strip_suffix(':').unwrap_or(word).to_ascii_lowercase();
+    CLOSING.contains(&word.as_str()) && number.trim() == format!("#{issue}")
 }
 
 #[cfg(test)]
@@ -194,14 +216,42 @@ mod tests {
         for body in [
             "Clarifies the README.\n",
             "  \n",
-            "Fixes #24",
             // Text that would swallow a line after it: an unclosed code block or comment.
             "Rewords it.\n\n```\nnever closed",
             "Rewords it. <!-- never closed",
             "`fixes #24` in code",
+            // Not only a closing line for this issue: kept as written.
+            "This closes #24.",
+            "Closes #240",
+            "Closes #24 and #25",
+            "Fixes octo/repo#24",
+            "Closes #2",
         ] {
             assert_eq!(closing(body, 24), format!("Closes #24\n\n{body}"), "{body}");
         }
+    }
+
+    /// ADR-0122: the harness's own lines that only close the same issue are dropped, and the rest of
+    /// its text is kept byte for byte (#349).
+    #[test]
+    fn a_line_that_only_closes_the_same_issue_is_not_said_twice() {
+        for body in [
+            "Fixes #24",
+            "Closes #24.",
+            "  resolves: #24  \n",
+            "CLOSES #24\r\n",
+        ] {
+            assert_eq!(closing(body, 24), "Closes #24", "{body:?}");
+        }
+        // As retroboot/siteseer#35 and #34 had it: first, and last.
+        assert_eq!(
+            closing("Closes #33.\n\nAdds one line.\n", 33),
+            "Closes #33\n\nAdds one line.\n"
+        );
+        assert_eq!(
+            closing("## Summary\n- one line\r\n\nCloses #33.", 33),
+            "Closes #33\n\n## Summary\n- one line\r\n\n"
+        );
     }
 
     #[test]

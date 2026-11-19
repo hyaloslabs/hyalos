@@ -1,6 +1,6 @@
 # ADR-0083: A fix-issue pull request closes its issue
 
-**Status:** Accepted
+**Status:** Accepted. Its rule that the closing line is added beside a harness line that already closes the issue is superseded by [ADR-0122](0122-a-pull-request-says-it-closes-its-issue-once.md), which drops the harness's duplicate.
 
 ## Context
 

@@ -554,14 +554,15 @@ fn what_github_answers_is_mapped_and_never_relayed() -> Res {
 
 #[test]
 fn a_job_that_fixes_an_issue_opens_a_pull_request_that_closes_it() -> Res {
-    // ADR-0083: the manifest's issue, not the harness's text, decides what the merge closes.
+    // ADR-0083: the manifest's issue, not the harness's text, decides what the merge closes. The
+    // harness's own line closing the same issue is not said twice (ADR-0122).
     let api = Api::start()?;
     let mut fixes = manifest(10, &["open_pr"], Some("main"));
     fixes.closes = Some(24);
     let job = start(&api, &fixes, Some(TOKEN))?;
     let (status, answer) = job.open(&pull(
         "Clarify the README",
-        "Rewords the comparison.",
+        "Rewords the comparison.\n\nCloses #24.",
         "hyalos/fix-12",
         "main",
     ))?;
@@ -569,7 +570,7 @@ fn a_job_that_fixes_an_issue_opens_a_pull_request_that_closes_it() -> Res {
     let seen = api.seen();
     assert_eq!(
         seen[0].body["body"],
-        "Closes #24\n\nRewords the comparison."
+        "Closes #24\n\nRewords the comparison.\n\n"
     );
     assert!(job.denials().is_empty());
     // A tainted job's text stays under the content gate's limit, so the line always fits. An
