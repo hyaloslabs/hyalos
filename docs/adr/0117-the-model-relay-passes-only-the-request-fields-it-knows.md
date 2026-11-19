@@ -1,6 +1,6 @@
 # ADR-0117: The model relay passes only the request fields it knows
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

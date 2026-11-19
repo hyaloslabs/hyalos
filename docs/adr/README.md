@@ -130,4 +130,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0114](0114-a-draft-is-trusted-only-after-it-replays-from-the-signed-log.md) | A draft is trusted only after it replays from the signed log | Accepted |
 | [0115](0115-mit-licence-and-dco-sign-off.md) | MIT licence, DCO sign-off, and a secrets scan of the full history | Accepted |
 | [0116](0116-request-bodies-are-bounded-per-job-and-across-the-broker.md) | Request bodies are bounded per job and across the broker | Accepted |
-| [0117](0117-the-model-relay-passes-only-the-request-fields-it-knows.md) | The model relay passes only the request fields it knows | Proposed |
+| [0117](0117-the-model-relay-passes-only-the-request-fields-it-knows.md) | The model relay passes only the request fields it knows | Accepted |
