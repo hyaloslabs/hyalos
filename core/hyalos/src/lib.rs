@@ -7,6 +7,7 @@ pub mod app_manifest;
 pub mod broker_cmd;
 pub mod channel;
 pub mod clock;
+pub mod confine;
 pub mod doctor_cmd;
 pub mod draft;
 pub mod github;

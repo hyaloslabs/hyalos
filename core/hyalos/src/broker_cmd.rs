@@ -1,12 +1,13 @@
-//! `hyalos broker <socket> [<provider-keys>]`: the broker process, started by the engine (ADR-0002,
-//! ADR-0035, ADR-0038).
+//! `hyalos broker <socket> [<provider-keys>] [--sockets <dir>]... [--read <dir>]...`: the broker
+//! process, started by the engine (ADR-0002, ADR-0035, ADR-0038).
 //!
 //! It is not a command an operator runs. It reads the provider key file, if it was given one, before
 //! anything else; then it connects to the engine's socket and goes on only if the process there is
 //! its parent and the same user; it then serves the engine over that one connection, and each
 //! admitted job's sandbox on that job's socket, until the engine says stop or closes the channel.
+//! Before it serves, it confines itself to the directories the engine named (ADR-0118).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -23,21 +24,36 @@ use hyalos_types::workflow::TypedValue;
 
 use crate::channel::connect_to_engine;
 use crate::clock::SystemClock;
+use crate::confine::{self, Confined, Grants};
 use crate::keys::read_private;
 
 /// A key file is a few lines; anything larger is not one.
 const KEY_FILE_LIMIT: u64 = 16 * 1024;
 
-pub fn run(args: &[String]) -> ExitCode {
-    let (socket, keys) = match args {
-        [socket] => (socket, None),
-        [socket, keys] => (socket, Some(Path::new(keys))),
-        _ => {
-            eprintln!(
-                "hyalos broker: started by the engine with the path of its socket, not by hand"
-            );
-            return ExitCode::from(2);
+/// The broker's arguments: its socket, the provider key file if any, and what it may reach once
+/// confined. `None` for anything else.
+fn parse(args: &[String]) -> Option<(&str, Option<&Path>, Grants)> {
+    let mut grants = Grants::default();
+    let mut positional = Vec::new();
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--sockets" => grants.sockets.push(PathBuf::from(rest.next()?)),
+            "--read" => grants.reads.push(PathBuf::from(rest.next()?)),
+            _ => positional.push(arg.as_str()),
         }
+    }
+    match positional[..] {
+        [socket] => Some((socket, None, grants)),
+        [socket, keys] => Some((socket, Some(Path::new(keys)), grants)),
+        _ => None,
+    }
+}
+
+pub fn run(args: &[String]) -> ExitCode {
+    let Some((socket, keys, grants)) = parse(args) else {
+        eprintln!("hyalos broker: started by the engine with the path of its socket, not by hand");
+        return ExitCode::from(2);
     };
     let providers = match keys.map(providers).transpose() {
         Ok(providers) => providers.unwrap_or_default(),
@@ -67,6 +83,18 @@ pub fn run(args: &[String]) -> ExitCode {
     let steps = Runtime::new()
         .ok()
         .map(|runtime| Arc::new(Steps(runtime)) as Arc<dyn Plugins>);
+    // Everything read at startup is read: from here on the broker reaches only what it was granted,
+    // never the engine's keys (ADR-0118). Landlock refusing the rules stops the broker.
+    match confine::apply(&grants) {
+        Ok(Confined::Fully | Confined::Partly) => {}
+        Ok(Confined::Not) => eprintln!(
+            "hyalos broker: this kernel has no Landlock, so the broker is not confined to its own files"
+        ),
+        Err(e) => {
+            eprintln!("hyalos broker: {e}");
+            return ExitCode::from(1);
+        }
+    }
     match serve_with_plugins(
         &mut input,
         &mut output,

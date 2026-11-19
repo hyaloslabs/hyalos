@@ -95,6 +95,9 @@ pub enum LaunchError {
     Wire(WireError),
     /// The broker answered `Hello` with something other than `Ready` at this protocol version.
     Handshake,
+    /// The broker would be confined to directories that reach the config directory, which holds the
+    /// engine's keys (ADR-0118).
+    Confinement,
 }
 
 impl fmt::Display for LaunchError {
@@ -104,6 +107,9 @@ impl fmt::Display for LaunchError {
             LaunchError::Spawn(kind) => write!(f, "the broker could not be started: {kind}"),
             LaunchError::Wire(e) => write!(f, "{e}"),
             LaunchError::Handshake => f.write_str("the broker did not answer hello as it should"),
+            LaunchError::Confinement => f.write_str(
+                "the broker would be able to read the config directory: move the runtime or data directory out of it",
+            ),
         }
     }
 }
@@ -179,11 +185,48 @@ impl BrokerProcess {
         forge: Option<ForgeBases>,
         wait: Duration,
     ) -> Result<Self, LaunchError> {
+        Self::launch_confined(exe, runtime_dir, key, provider_keys, forge, None, wait)
+    }
+
+    /// As [`launch_configured`](Self::launch_configured), and lets the broker read `plugin_store`
+    /// once it has confined itself (ADR-0118). Without one, it can run no plugin.
+    pub fn launch_confined(
+        exe: &Path,
+        runtime_dir: &Path,
+        key: &ManifestPublicKey,
+        provider_keys: Option<&Path>,
+        forge: Option<ForgeBases>,
+        plugin_store: Option<&Path>,
+        wait: Duration,
+    ) -> Result<Self, LaunchError> {
+        let grants = crate::confine::Grants {
+            sockets: vec![runtime_dir.to_path_buf()],
+            reads: plugin_store.map(Path::to_path_buf).into_iter().collect(),
+        };
+        // The key file's directory is the config directory; without one, it is looked up as the
+        // engine would. Neither may be readable by the confined broker.
+        let env = |name: &str| std::env::var(name).ok();
+        let config = provider_keys
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .into_iter()
+            .chain(crate::paths::config_dir(&env).ok());
+        for dir in config {
+            if grants.may_read(&dir) {
+                return Err(LaunchError::Confinement);
+            }
+        }
         let listener = Listener::bind(runtime_dir)?;
         let mut command = Command::new(exe);
         command.arg("broker").arg(listener.path());
         if let Some(keys) = provider_keys {
             command.arg(keys);
+        }
+        for dir in &grants.sockets {
+            command.arg("--sockets").arg(dir);
+        }
+        for dir in &grants.reads {
+            command.arg("--read").arg(dir);
         }
         command
             // Nothing from the engine's environment, and no way in or out but the channel.
