@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use hyalos_types::{ForgeToken, Manifest};
 
+use crate::bodies::{self, Bodies, Held};
 use crate::content;
 use crate::egress::{Gates, ProxyRequest, inputs_digest, refused};
 use crate::model::{HttpTransport, Response, Upstream, dechunk};
@@ -283,7 +284,11 @@ pub fn no_thin(advertisement: &[u8]) -> Option<Vec<u8>> {
 
 /// The content gate on a push that the manifest's rules allow: `Err` is the answer, the reason and
 /// what the report's digest is of.
-fn content_gate(push: &Push<'_>, secrets: &[&str]) -> Result<(), (bool, &'static str, Digest)> {
+fn content_gate(
+    push: &Push<'_>,
+    secrets: &[&str],
+    ended: &AtomicBool,
+) -> Result<(), (bool, &'static str, Digest)> {
     for option in &push.options {
         if let Err(code) = content::check(option, secrets) {
             return Err((false, code, inputs_digest(option)));
@@ -291,7 +296,7 @@ fn content_gate(push: &Push<'_>, secrets: &[&str]) -> Result<(), (bool, &'static
     }
     // Object ids are 20 bytes, or 32 in a SHA-256 repository: the commands say which.
     let id_len = push.commands.first().map_or(20, |c| c.new.len() / 2);
-    match pack::check(push.pack, id_len, secrets) {
+    match pack::check_until(push.pack, id_len, secrets, &|| ended.load(Ordering::SeqCst)) {
         Ok(()) => Ok(()),
         Err(Finding::Refused(code, digest)) => Err((false, code, Digest::from_bytes(digest))),
         Err(Finding::Unchecked(code)) => Err((
@@ -356,6 +361,7 @@ pub(crate) fn answer<R: BufRead, W: Write>(
     git: &Git,
     secrets: &[&str],
     gates: Gates<'_>,
+    bodies: &Bodies,
     ended: &AtomicBool,
 ) -> Response {
     let reports = gates.manifest;
@@ -386,6 +392,8 @@ pub(crate) fn answer<R: BufRead, W: Write>(
             .find(|(n, _)| n == name)
             .map(|(_, v)| v.as_str())
     };
+    // What the body holds against the job's and the broker's limits, until the call is answered.
+    let mut held = bodies.hold();
     let body = if route.advertisement {
         Vec::new()
     } else {
@@ -393,7 +401,7 @@ pub(crate) fn answer<R: BufRead, W: Write>(
         if route.service == Service::ReceivePack && header("content-encoding").is_some() {
             return refused(415, "git.bad_request");
         }
-        let body = match read_body(header, reader, client, MAX_GIT_BODY) {
+        let body = match read_body(header, reader, client, MAX_GIT_BODY, &mut held, ended) {
             Ok(body) => body,
             Err((status, code)) => return refused(status, code),
         };
@@ -423,7 +431,7 @@ pub(crate) fn answer<R: BufRead, W: Write>(
             // One push is inflated at a time, so the broker holds at most one `MAX_INFLATED`.
             let gated = {
                 let _one = CHECKING.lock().unwrap_or_else(|p| p.into_inner());
-                content_gate(&push, &checked)
+                content_gate(&push, &checked, ended)
             };
             if let Err((unknown, code, digest)) = gated {
                 if unknown {
@@ -506,12 +514,15 @@ pub(crate) fn answer<R: BufRead, W: Write>(
 }
 
 /// Reads a git request's body, by `content-length` or chunked as git sends a large one, after
-/// answering `100 Continue` if the harness waits for it.
+/// answering `100 Continue` if the harness waits for it. The body is held in `held` as it arrives,
+/// against the job's and the broker's limits, and reading stops if `ended` is set (#336).
 pub(crate) fn read_body<'h, R: BufRead, W: Write>(
     header: impl Fn(&str) -> Option<&'h str>,
     reader: &mut R,
     client: &mut W,
     max: usize,
+    held: &mut Held<'_>,
+    ended: &AtomicBool,
 ) -> Result<Vec<u8>, (u16, &'static str)> {
     let bad = (400, "git.bad_request");
     let chunked = match (header("transfer-encoding"), header("content-length")) {
@@ -525,29 +536,22 @@ pub(crate) fn read_body<'h, R: BufRead, W: Write>(
             .and_then(|()| client.flush())
             .map_err(|_| bad)?;
     }
-    let too_large = (413, "git.too_large");
-    let mut body = Vec::new();
-    if chunked {
-        dechunk(reader)
-            .take(max as u64 + 1)
-            .read_to_end(&mut body)
-            .map_err(|_| bad)?;
-        if body.len() > max {
-            return Err(too_large);
-        }
+    let read = if chunked {
+        bodies::read(&mut dechunk(reader), None, max, held, ended)
     } else {
         let length = header("content-length")
             .map(str::parse::<usize>)
             .transpose()
             .map_err(|_| bad)?
             .unwrap_or(0);
-        if length > max {
-            return Err(too_large);
-        }
-        body.resize(length, 0);
-        reader.read_exact(&mut body).map_err(|_| bad)?;
-    }
-    Ok(body)
+        bodies::read(reader, Some(length), max, held, ended)
+    };
+    read.map_err(|why| match why {
+        bodies::Refused::TooLarge => (413, "git.too_large"),
+        bodies::Refused::Busy => (503, "git.busy"),
+        bodies::Refused::Cut => bad,
+        bodies::Refused::Ended => (403, "admission.ended"),
+    })
 }
 
 fn base64(bytes: &[u8]) -> String {
@@ -782,6 +786,8 @@ mod tests {
 
     #[test]
     fn a_body_is_read_chunked_or_by_length_after_any_continue() {
+        let bodies = Bodies::default();
+        let live = AtomicBool::new(false);
         let headers = |list: &'static [(&'static str, &'static str)]| {
             move |n: &str| list.iter().find(|(k, _)| *k == n).map(|(_, v)| *v)
         };
@@ -792,6 +798,8 @@ mod tests {
             &mut input,
             &mut client,
             MAX_GIT_BODY,
+            &mut bodies.hold(),
+            &live,
         );
         assert_eq!(body.as_deref(), Ok(&b"hello"[..]));
         assert_eq!(client, b"HTTP/1.1 100 Continue\r\n\r\n");
@@ -803,6 +811,8 @@ mod tests {
             &mut input,
             &mut client,
             MAX_GIT_BODY,
+            &mut bodies.hold(),
+            &live,
         );
         assert_eq!(body.as_deref(), Ok(&b"abc"[..]));
         assert!(client.is_empty(), "no continue was asked for");
@@ -818,6 +828,8 @@ mod tests {
                 &mut std::io::Cursor::new(Vec::new()),
                 &mut Vec::new(),
                 MAX_GIT_BODY,
+                &mut bodies.hold(),
+                &live,
             );
             assert_eq!(body, Err((400, "git.bad_request")), "{bad:?}");
         }
@@ -826,6 +838,8 @@ mod tests {
             &mut std::io::Cursor::new(Vec::new()),
             &mut Vec::new(),
             MAX_GIT_BODY,
+            &mut bodies.hold(),
+            &live,
         );
         assert_eq!(body, Err((413, "git.too_large")));
     }

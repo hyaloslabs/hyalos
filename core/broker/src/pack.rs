@@ -24,6 +24,17 @@ use crate::content;
 /// The most bytes a pack's objects may come to once inflated and resolved, deltas included.
 pub const MAX_INFLATED: usize = 256 * 1024 * 1024;
 
+/// What each object costs against `MAX_INFLATED` however small it inflates to, for what the broker
+/// keeps of it and the work of reading it. Without it, millions of empty objects cost nothing
+/// (#336).
+pub const OBJECT_COST: usize = 64;
+
+/// The most objects a pack may hold. A push of a job's own work has far fewer.
+pub const MAX_OBJECTS: u32 = 1 << 20;
+
+/// How many objects are read between looks at whether the job has ended.
+const STOP_EVERY: u32 = 1024;
+
 /// Why a pack was not passed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Finding {
@@ -46,6 +57,16 @@ enum Kind {
 /// Checks a pack whose object ids are `id_len` bytes (20 for SHA-1, 32 for SHA-256) against the
 /// credentials in `secrets`. An empty pack, as a push of no new objects may send, passes.
 pub fn check(pack: &[u8], id_len: usize, secrets: &[&str]) -> Result<(), Finding> {
+    check_until(pack, id_len, secrets, &|| false)
+}
+
+/// [`check`], giving up as unchecked once `stop` says so, as when the job ends mid-check.
+pub fn check_until(
+    pack: &[u8],
+    id_len: usize,
+    secrets: &[&str],
+    stop: &dyn Fn() -> bool,
+) -> Result<(), Finding> {
     if pack.is_empty() {
         return Ok(());
     }
@@ -60,11 +81,17 @@ pub fn check(pack: &[u8], id_len: usize, secrets: &[&str]) -> Result<(), Finding
         return Err(UNREADABLE);
     }
     let count = word(8)?;
+    if count > MAX_OBJECTS {
+        return Err(too_large());
+    }
     let mut at = 12;
     // Every object read so far, by where it starts: what an offset delta's base is found by.
     let mut objects: Vec<(usize, Kind, Vec<u8>)> = Vec::new();
     let mut budget = MAX_INFLATED;
-    for _ in 0..count {
+    for n in 0..count {
+        if n % STOP_EVERY == 0 && stop() {
+            return Err(Finding::Unchecked("content.job_ended"));
+        }
         let start = at;
         let (kind, size) = object_header(pack, &mut at)?;
         let size = usize::try_from(size).map_err(|_| too_large())?;
@@ -83,7 +110,9 @@ pub fn check(pack: &[u8], id_len: usize, secrets: &[&str]) -> Result<(), Finding
             7 => return Err(Finding::Unchecked("content.ref_delta")),
             _ => return Err(UNREADABLE),
         };
-        budget = budget.checked_sub(size).ok_or_else(too_large)?;
+        budget = budget
+            .checked_sub(size.max(OBJECT_COST))
+            .ok_or_else(too_large)?;
         let (data, used) = inflate(pack.get(at..).ok_or(UNREADABLE)?, size)?;
         at += used;
         let (kind, data) = match base {
@@ -324,6 +353,29 @@ mod tests {
         }
         out.extend([0; 20]);
         out
+    }
+
+    #[test]
+    fn a_pack_of_too_many_objects_is_refused_before_one_is_read() {
+        // A pack that says it holds more objects than any push of a job's work needs is refused
+        // before a single one is read (#336).
+        let mut many = b"PACK\0\0\0\x02".to_vec();
+        many.extend((MAX_OBJECTS + 1).to_be_bytes());
+        assert_eq!(check(&many, 20, &[]), Err(too_large()));
+        // Empty objects still pass, each charged OBJECT_COST against the budget.
+        let empty = object(3, b"");
+        assert_eq!(check(&pack(&[empty.clone(), empty]), 20, &[]), Ok(()));
+    }
+
+    #[test]
+    fn a_check_stops_unchecked_once_the_job_ends() {
+        let blob = object(3, b"fine");
+        let objects = vec![blob; 3];
+        assert_eq!(
+            check_until(&pack(&objects), 20, &[], &|| true),
+            Err(Finding::Unchecked("content.job_ended"))
+        );
+        assert_eq!(check_until(&pack(&objects), 20, &[], &|| false), Ok(()));
     }
 
     /// An offset delta `back` bytes before it.

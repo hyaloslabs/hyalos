@@ -20,6 +20,7 @@ use hyalos_types::wire::ToEngine;
 use hyalos_types::{Clock, ForgeToken, Gate, Manifest, ReasonCode, flow};
 use std::sync::mpsc::Sender;
 
+use crate::bodies::{self, Bodies};
 use crate::egress::{self, Egress, Gates, ProxyRequest, Reports};
 use crate::forge::Forge;
 use crate::git::{self, Git};
@@ -340,6 +341,7 @@ impl JobSocket {
             forge_token,
             held,
             submitted: Arc::clone(&submitted),
+            bodies: Bodies::default(),
         });
         let thread = ready.and_then(|()| {
             std::thread::Builder::new().spawn(move || {
@@ -418,6 +420,8 @@ struct Job {
     held: Held,
     /// Where its result goes when the harness submits one.
     submitted: Submission,
+    /// What its request bodies hold, against its own limit and the broker's (#336).
+    bodies: Bodies,
 }
 
 /// Where one job's gate refusals are reported.
@@ -498,6 +502,7 @@ fn connection(
         forge_token,
         held,
         submitted,
+        bodies,
     } = job;
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
@@ -552,7 +557,15 @@ fn connection(
         } else if sandboxes.clock.now() > manifest.deadline {
             egress::refused(403, "admission.expired")
         } else {
-            submit::answer(&head, &mut reader, &mut &*stream, manifest, submitted)
+            submit::answer(
+                &head,
+                &mut reader,
+                &mut &*stream,
+                manifest,
+                submitted,
+                bodies,
+                ended,
+            )
         };
         return write_response(&mut &*stream, response);
     }
@@ -570,6 +583,7 @@ fn connection(
                 manifest,
                 &sandboxes.egress,
                 &reports.egress,
+                bodies,
                 ended,
             )?
         };
@@ -598,6 +612,7 @@ fn connection(
                     manifest: &reports.manifest,
                     content: &reports.content,
                 },
+                bodies,
                 ended,
             )
         };
@@ -623,6 +638,7 @@ fn connection(
                     manifest: &reports.manifest,
                     content: &reports.content,
                 },
+                bodies,
                 ended,
             )
         };
@@ -633,7 +649,8 @@ fn connection(
         });
         return write_response(&mut &*stream, response);
     }
-    let response = match read_body(head, &mut reader) {
+    let mut body_held = bodies.hold();
+    let response = match read_body(head, &mut reader, &mut body_held, ended) {
         // A call read after the job ended never reaches a provider.
         Ok(request) if ended.load(Ordering::SeqCst) => {
             let adapter: &dyn Adapter = if request.target.starts_with("/v1/messages") {
@@ -672,7 +689,14 @@ fn connection(
             });
             response
         }
-        Err((status, message)) => refusal(&OpenAi, status, "model.bad_request", message),
+        Err((status, message)) => {
+            let code = if status == 503 {
+                "model.busy"
+            } else {
+                "model.bad_request"
+            };
+            refusal(&OpenAi, status, code, message)
+        }
     };
     write_response(&mut &*stream, response)
 }
@@ -707,7 +731,8 @@ pub fn read_request<R: BufRead>(input: &mut R) -> Result<Request, (u16, &'static
     if !head.target.starts_with('/') {
         return Err(BAD);
     }
-    read_body(head, input)
+    let bodies = Bodies::default();
+    read_body(head, input, &mut bodies.hold(), &AtomicBool::new(false))
 }
 
 const BAD: (u16, &str) = (400, "the request is not one the broker reads");
@@ -761,6 +786,8 @@ fn read_head<R: BufRead>(input: &mut R) -> Result<ProxyRequest, (u16, &'static s
 fn read_body<R: BufRead>(
     head: ProxyRequest,
     input: &mut R,
+    held: &mut bodies::Held<'_>,
+    ended: &AtomicBool,
 ) -> Result<Request, (u16, &'static str)> {
     let bad = BAD;
     let ProxyRequest {
@@ -781,13 +808,13 @@ fn read_body<R: BufRead>(
         None => 0,
         Some(v) => v.parse::<usize>().map_err(|_| bad)?,
     };
-    if length > MAX_BODY {
-        return Err((413, "the request is larger than the broker reads"));
-    }
-    let mut body = vec![0; length];
-    input
-        .read_exact(&mut body)
-        .map_err(|_| (400, "the request body was cut short"))?;
+    let body =
+        bodies::read(input, Some(length), MAX_BODY, held, ended).map_err(|why| match why {
+            bodies::Refused::TooLarge => (413, "the request is larger than the broker reads"),
+            bodies::Refused::Busy => (503, "the broker holds too much from jobs now; try again"),
+            bodies::Refused::Cut => (400, "the request body was cut short"),
+            bodies::Refused::Ended => (403, "the job has ended"),
+        })?;
     Ok(Request {
         method,
         target,
