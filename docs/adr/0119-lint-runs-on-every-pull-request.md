@@ -1,6 +1,6 @@
 # ADR-0119: Lint runs on every pull request
 
-**Status:** Proposed. Supersedes [ADR-0105](0105-the-required-check-gathers-ci-s-split-jobs.md)'s rule that a documentation-only change skips `lint`.
+**Status:** Accepted. Supersedes [ADR-0105](0105-the-required-check-gathers-ci-s-split-jobs.md)'s rule that a documentation-only change skips `lint`.
 
 ## Context
 
