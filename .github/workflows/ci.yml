@@ -45,7 +45,7 @@ jobs:
           printf 'Changed:\n%s\nNot documentation:\n%s\n' "$changed" "$others"
           if [ -n "$changed" ] && [ -z "$others" ]; then
             echo "docs_only=true" >> "$GITHUB_OUTPUT"
-            echo "Only documentation changed: the build, audit, conformance and proof jobs are skipped." >> "$GITHUB_STEP_SUMMARY"
+            echo "Only documentation changed: lint runs; the build, audit, conformance and proof jobs are skipped." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
@@ -56,10 +56,12 @@ jobs:
   # than raising the limit. A new part needs nothing else: `build, lint, test` gathers every part.
 
   # Formatting, lints and the layout checks: everything that needs no test to run.
+  # It runs on every pull request, documentation only included, since `cargo xtask docs` checks the
+  # security pages' references to code (ADR-0119).
   lint:
     name: lint
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -129,9 +131,9 @@ jobs:
         if: ${{ always() }}
         run: df -h / "$GITHUB_WORKSPACE"; du -sh target 2>/dev/null || true
 
-  # The required check (ADR-0105, ADR-0108). It passes only when lint, every part of the tests, the
-  # simulation sweep and the job spec's model check passed, or when only documentation changed and they
-  # were all skipped. Anything else, a
+  # The required check (ADR-0105, ADR-0108, ADR-0119). It passes only when lint passed, and every part
+  # of the tests, the simulation sweep and the job spec's model check passed, or only documentation
+  # changed and they were all skipped. Anything else, a
   # failure, a cancellation or a job that never ran, fails it, so splitting a job never makes it optional.
   rust:
     name: build, lint, test
@@ -143,9 +145,15 @@ jobs:
       - name: Every gathered job passed
         env:
           DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
-          RESULTS: ${{ needs.lint.result }} ${{ needs.test.result }} ${{ needs.simulation.result }} ${{ needs.spec.result }}
+          LINT: ${{ needs.lint.result }}
+          RESULTS: ${{ needs.test.result }} ${{ needs.simulation.result }} ${{ needs.spec.result }}
         run: |
-          echo "docs only: ${DOCS_ONLY:-unknown}; lint, test, simulation, spec: ${RESULTS}"
+          echo "docs only: ${DOCS_ONLY:-unknown}; lint: ${LINT}; test, simulation, spec: ${RESULTS}"
+          # Lint runs on every change, documentation only included (ADR-0119).
+          if [ "${LINT}" != "success" ]; then
+            echo "::error::lint ended '${LINT}', not 'success'"
+            exit 1
+          fi
           want=success
           if [ "${DOCS_ONLY}" = "true" ]; then want=skipped; fi
           for r in ${RESULTS}; do
