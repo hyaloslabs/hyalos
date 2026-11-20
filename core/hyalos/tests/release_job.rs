@@ -266,18 +266,25 @@ fn check(
     Ok(())
 }
 
-/// The images of the running containers labelled as Hyalos jobs.
+/// The images of the running containers labelled as Hyalos jobs, as each was named when it was
+/// created. `docker ps` drops the digest from a reference by digest (`repo@sha256:…` lists as `repo`),
+/// so the reference is read from each container's `Config.Image`, which keeps it whole.
 fn images_running() -> Res<Vec<String>> {
     let listed = Command::new("docker")
-        .args([
-            "ps",
-            "--filter",
-            "label=hyalos.job",
-            "--format",
-            "{{.Image}}",
-        ])
+        .args(["ps", "--quiet", "--filter", "label=hyalos.job"])
         .output()?;
-    Ok(String::from_utf8_lossy(&listed.stdout)
+    let ids: Vec<String> = String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let inspected = Command::new("docker")
+        .args(["inspect", "--format", "{{.Config.Image}}"])
+        .args(&ids)
+        .output()?;
+    Ok(String::from_utf8_lossy(&inspected.stdout)
         .lines()
         .map(str::to_string)
         .collect())
