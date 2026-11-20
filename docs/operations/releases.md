@@ -4,10 +4,10 @@ A release is a static `hyalos` binary for x86_64 Linux and the sandbox image it 
 
 ## Installing one
 
-You need Docker (or Podman) and `gh`, logged in to an account that can read the repository. Take the release for the version you want (here `v0.1.7`), download it, and check its SHA-256. The second line runs each step only if the one before it passed:
+You need Docker (or Podman) and `gh`. The repository is public, so any account can read it. Take the release for the version you want (here `v0.1.8`), download it, and check its SHA-256. The second line runs each step only if the one before it passed:
 
 ```
-v=v0.1.7; d=$(mktemp -d)
+v=v0.1.8; d=$(mktemp -d)
 gh release download "$v" --repo hyaloslabs/hyalos -D "$d" -p hyalos-x86_64-linux -p SHA256SUMS && (cd "$d" && sha256sum -c SHA256SUMS)
 ```
 
