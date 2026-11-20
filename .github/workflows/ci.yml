@@ -20,13 +20,17 @@ jobs:
   # Whether a pull request changes only documentation (#243): files under docs/ or spikes/, or Markdown at
   # the repository root. If it does, the jobs below are skipped, and a skipped job still reports its
   # required check. They run unless this says "true", so if this job fails, they still run. A push to main
-  # always runs everything.
+  # always runs everything. It also says which of the specialised jobs a pull request needs (ADR-0124).
   changes:
     name: what changed
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.classify.outputs.docs_only }}
+      proofs: ${{ steps.classify.outputs.proofs }}
+      sigstore: ${{ steps.classify.outputs.sigstore }}
+      sigstore_library: ${{ steps.classify.outputs.sigstore_library }}
+      mcp: ${{ steps.classify.outputs.mcp }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'pull_request'
@@ -49,6 +53,17 @@ jobs:
           else
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
+          # The specialised jobs run on a pull request only when something they build changed (ADR-0124):
+          # each pattern is the job's dependency closure, plus what every build reads. A push to main
+          # sets none of these, and an output that is not "false" runs the job.
+          every='^(Cargo\.lock|Cargo\.toml|rust-toolchain\.toml|\.cargo/|\.github/workflows/ci\.yml)'
+          touches() { grep -qE "$every|$1" <<<"$changed" && echo true || echo false; }
+          {
+            echo "proofs=$(touches '^(core/policy/|core/types/|crates/policy-proof/)')"
+            echo "sigstore=$(touches '^(core/plugin/|core/types/|crates/sigstore-testkit/)')"
+            echo "sigstore_library=$(touches '^Cargo\.lock$')"
+            echo "mcp=$(touches '^(core/|crates/mcp-conformance/)')"
+          } | tee -a "$GITHUB_OUTPUT"
 
   # The time budget (#320). Every job has a 20-minute limit and should finish in 15. The test run is
   # split in two, each on its own runner, because the whole workspace took 18 to 20 minutes in one job.
@@ -71,6 +86,11 @@ jobs:
       # The exact toolchain is pinned in rust-toolchain.toml.
       - name: Install the pinned toolchain
         run: rustup toolchain install
+      # Dependencies' builds, restored on every run and saved only from main, so a pull request cannot
+      # write what main restores (ADR-0124).
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy, warnings denied
@@ -108,6 +128,12 @@ jobs:
           persist-credentials: false
       - name: Install the pinned toolchain
         run: rustup toolchain install
+      # Dependencies' builds, restored on every run and saved only from main, so a pull request cannot
+      # write what main restores (ADR-0124).
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: ${{ matrix.part.name }}
       # The container driver's contract runs against Docker here (ADR-0032), and a missing runtime fails.
       - name: Pull the substrate contract's image
         run: docker pull ubuntu:24.04
@@ -192,6 +218,11 @@ jobs:
           persist-credentials: false
       - name: Install the pinned toolchain
         run: rustup toolchain install
+      # Dependencies' builds, restored on every run and saved only from main, so a pull request cannot
+      # write what main restores (ADR-0124).
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Sweep 10,000 fault schedules
         run: cargo run --release --locked -p hyalos-world --bin sim -- --sweep 0 10000 | tee -a "${GITHUB_STEP_SUMMARY}"
         # Named, so the step runs with pipefail and the sweep's exit status survives the tee.
@@ -230,7 +261,7 @@ jobs:
   mcp-conformance:
     name: mcp conformance
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.mcp != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -239,6 +270,11 @@ jobs:
           persist-credentials: false
       - name: Install the pinned toolchain
         run: rustup toolchain install
+      # Dependencies' builds, restored on every run and saved only from main, so a pull request cannot
+      # write what main restores (ADR-0124).
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install the pinned conformance suite
         run: npm ci --ignore-scripts --prefix crates/mcp-conformance
       - name: Run every scenario 2026-07-28 requires
@@ -251,7 +287,7 @@ jobs:
   policy-proofs:
     name: policy proofs
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.proofs != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -264,6 +300,11 @@ jobs:
           fetch-depth: 0
       - name: Install the pinned toolchain
         run: rustup toolchain install
+      # Dependencies' builds, restored on every run and saved only from main, so a pull request cannot
+      # write what main restores (ADR-0124).
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install cvc5
         run: |
           curl -fsSL -o cvc5.zip "https://github.com/cvc5/cvc5/releases/download/cvc5-${CVC5_VERSION}/cvc5-Linux-x86_64-static.zip"
@@ -294,7 +335,7 @@ jobs:
   sigstore-library:
     name: sigstore library conformance
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.sigstore_library != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -319,6 +360,12 @@ jobs:
       - name: Install its pinned toolchain
         working-directory: sigstore-rust
         run: rustup toolchain install
+      # Dependencies' builds, restored on every run and saved only from main, so a pull request cannot
+      # write what main restores (ADR-0124).
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: sigstore-rust
       - name: The library's own tests
         working-directory: sigstore-rust
         run: cargo test --locked -p sigstore-verify
@@ -338,7 +385,7 @@ jobs:
   sigstore-platforms:
     name: sigstore vectors (musl, aarch64)
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.sigstore != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -354,6 +401,11 @@ jobs:
         run: |
           rustup toolchain install
           rustup target add aarch64-unknown-linux-gnu
+      # Dependencies' builds, restored on every run and saved only from main, so a pull request cannot
+      # write what main restores (ADR-0124).
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install musl, the aarch64 cross compiler and QEMU
         run: |
           sudo apt-get update -qq
