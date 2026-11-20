@@ -148,7 +148,8 @@ pub struct UpstreamResponse {
 }
 
 /// Why a request did not reach the provider or its answer could not be read, as a short code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
 pub struct TransportError(pub &'static str);
 
 impl TransportError {
@@ -159,14 +160,6 @@ impl TransportError {
     /// trying again cannot fix it, so it is not retried (ADR-0039).
     pub const TLS_REFUSED: TransportError = TransportError("transport.tls_refused");
 }
-
-impl fmt::Display for TransportError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.0)
-    }
-}
-
-impl std::error::Error for TransportError {}
 
 /// Carries a request to the provider and returns its answer. Requests are always `POST`.
 pub trait Transport: Send + Sync {

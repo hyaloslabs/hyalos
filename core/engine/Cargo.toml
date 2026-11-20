@@ -15,6 +15,8 @@ hyalos-types = { path = "../types" }
 hyalos-log = { path = "../log" }
 hyalos-policy = { path = "../policy" }
 hyalos-substrate = { path = "../substrate" }
+# Error text (ADR-0126). A proc-macro: it writes the Display and Error impls at build time.
+thiserror = "2"
 
 [dev-dependencies]
 hyalos-sim = { path = "../../crates/sim" }

@@ -118,50 +118,31 @@ impl Head {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum LogError {
     /// SQLite or the filesystem failed.
+    #[error("event log storage error: {0}")]
     Storage(String),
     /// The log was made with a different signing key.
+    #[error("this event log was made with a different signing key")]
     WrongKey,
     /// The file uses a format this build does not know.
+    #[error("event log format version {0} is not supported by this build")]
     UnsupportedFormat(i64),
     /// A value does not fit what the log can store.
+    #[error("{0} is out of range for the event log")]
     OutOfRange(&'static str),
     /// A stored value is not what the engine wrote. Run `hyalos log verify`.
+    #[error("the event log is damaged ({0}); run `hyalos log verify`")]
     Corrupt(&'static str),
     /// `append_all` was given no events.
+    #[error("there are no events to append")]
     EmptyBatch,
     /// Another process appended since the head the caller knew (ADR-0069). Nothing was written; the
     /// caller reads what it missed with [`Log::events_after`] and asks again.
+    #[error("another process appended to the event log first")]
     Moved,
 }
-
-impl fmt::Display for LogError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LogError::Storage(e) => write!(f, "event log storage error: {e}"),
-            LogError::WrongKey => write!(f, "this event log was made with a different signing key"),
-            LogError::UnsupportedFormat(v) => {
-                write!(
-                    f,
-                    "event log format version {v} is not supported by this build"
-                )
-            }
-            LogError::OutOfRange(what) => write!(f, "{what} is out of range for the event log"),
-            LogError::EmptyBatch => write!(f, "there are no events to append"),
-            LogError::Moved => write!(f, "another process appended to the event log first"),
-            LogError::Corrupt(what) => {
-                write!(
-                    f,
-                    "the event log is damaged ({what}); run `hyalos log verify`"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for LogError {}
 
 impl From<rusqlite::Error> for LogError {
     fn from(e: rusqlite::Error) -> Self {

@@ -5,8 +5,6 @@
 //! fields, an unknown kind and an unknown schema version, so a payload the engine does not understand
 //! is an error and never a guess.
 
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -403,56 +401,38 @@ pub enum Event {
 /// replay, so a document is bounded.
 pub const MAX_POLICY_DOCUMENT: usize = 256 * 1024;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum EventError {
+    #[error("cannot encode the event: {0}")]
     Encode(String),
+    #[error("cannot decode the event: {0}")]
     Decode(String),
     /// The row's schema version is 0 or newer than this build reads (ADR-0023).
-    UnsupportedVersion {
-        found: u32,
-        current: u32,
-    },
+    #[error("{}", unsupported_version(.found, .current))]
+    UnsupportedVersion { found: u32, current: u32 },
     /// An upcast step refused the payload it was given.
+    #[error("cannot bring a `{kind}` event written at schema version {from} up to date: {reason}")]
     Upcast {
         kind: String,
         from: u32,
         reason: String,
     },
     /// The log's `kind` column and the payload's own `kind` disagree.
+    #[error("the log says this is a `{column}` event but its payload is a `{payload}` event")]
     KindMismatch {
         column: String,
         payload: &'static str,
     },
 }
 
-impl fmt::Display for EventError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            EventError::Encode(e) => write!(f, "cannot encode the event: {e}"),
-            EventError::Decode(e) => write!(f, "cannot decode the event: {e}"),
-            EventError::UnsupportedVersion { found: 0, .. } => {
-                write!(
-                    f,
-                    "event schema version 0 is not valid; versions start at 1"
-                )
-            }
-            EventError::UnsupportedVersion { found, current } => write!(
-                f,
-                "event schema version {found} was written by a newer Hyalos; this build reads up to version {current}. Upgrade Hyalos to continue this log (there is no downgrade)"
-            ),
-            EventError::Upcast { kind, from, reason } => write!(
-                f,
-                "cannot bring a `{kind}` event written at schema version {from} up to date: {reason}"
-            ),
-            EventError::KindMismatch { column, payload } => write!(
-                f,
-                "the log says this is a `{column}` event but its payload is a `{payload}` event"
-            ),
-        }
+fn unsupported_version(found: &u32, current: &u32) -> String {
+    match found {
+        0 => "event schema version 0 is not valid; versions start at 1".to_owned(),
+        _ => format!(
+            "event schema version {found} was written by a newer Hyalos; this build reads up to version {current}. Upgrade Hyalos to continue this log (there is no downgrade)"
+        ),
     }
 }
-
-impl std::error::Error for EventError {}
 
 /// The log's `kind` value of every event, in one table so [`Event::kind`] and [`Event::KINDS`] agree.
 macro_rules! kinds {

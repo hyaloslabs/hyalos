@@ -15,3 +15,5 @@ hyalos-types = { path = "../types" }
 rusqlite = { version = "0.41", features = ["bundled"] }
 ed25519-dalek = "3"
 sha2 = "0.11"
+# Error text (ADR-0126). A proc-macro: it writes the Display and Error impls at build time.
+thiserror = "2"

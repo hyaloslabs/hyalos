@@ -14,7 +14,6 @@
 //! A frame is a four-byte big-endian length, then that many bytes of JSON. The length is checked
 //! before anything is read or allocated.
 
-use std::fmt;
 use std::io::{self, Read, Write};
 
 use serde::de::{DeserializeOwned, Deserializer, Error as _};
@@ -194,40 +193,28 @@ pub enum ToEngine {
 }
 
 /// Why a frame could not be written or read. None of them carries what was in the frame.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WireError {
     /// The channel failed.
+    #[error("the channel failed: {0}")]
     Io(io::ErrorKind),
     /// The channel closed in the middle of a frame.
+    #[error("the channel closed in the middle of a message")]
     Truncated,
     /// The frame says it has no bytes.
+    #[error("a message of no bytes")]
     Empty,
     /// The frame is longer than [`MAX_FRAME`]. Nothing of it was read.
+    #[error("a message of {len} bytes is larger than the {MAX_FRAME} allowed")]
     TooLarge { len: usize },
     /// The bytes are not a message of the type expected: an unknown field or variant, a wrong type, a
     /// reason that is not a code, or not JSON.
+    #[error("the message is not a value of the expected type")]
     Malformed,
     /// A message that cannot be written because it would exceed the cap.
+    #[error("the message is too large to send")]
     Unwritable,
 }
-
-impl fmt::Display for WireError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            WireError::Io(kind) => write!(f, "the channel failed: {kind}"),
-            WireError::Truncated => f.write_str("the channel closed in the middle of a message"),
-            WireError::Empty => f.write_str("a message of no bytes"),
-            WireError::TooLarge { len } => write!(
-                f,
-                "a message of {len} bytes is larger than the {MAX_FRAME} allowed"
-            ),
-            WireError::Malformed => f.write_str("the message is not a value of the expected type"),
-            WireError::Unwritable => f.write_str("the message is too large to send"),
-        }
-    }
-}
-
-impl std::error::Error for WireError {}
 
 /// Writes one message as a frame.
 pub fn write_frame<W: Write, T: Serialize>(out: &mut W, message: &T) -> Result<(), WireError> {

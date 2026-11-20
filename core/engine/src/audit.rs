@@ -6,7 +6,6 @@
 //! snapshot carries. It reads only, and needs only the public key.
 
 use std::collections::BTreeMap;
-use std::fmt;
 use std::path::{Path, PathBuf};
 
 use hyalos_log::{Head, PublicKey, StoredEvent, VerifyError, read_verified, verify_history};
@@ -45,35 +44,21 @@ impl Audit {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AuditError {
     /// The log or an archive does not verify, or an archive is not part of this log's history.
+    #[error("{0}")]
     Verify(VerifyError),
     /// The events do not replay: the log is damaged or was written by a buggy engine.
+    #[error("the events do not replay: {0}")]
     Replay(EngineError),
     /// A snapshot's state cannot be read.
+    #[error("the snapshot at event {seq} cannot be read: {reason}")]
     Snapshot { seq: u64, reason: String },
     /// A snapshot's state is not what the events replay to.
+    #[error("the snapshot at event {seq} is not what the events replay to: {difference}")]
     Mismatch { seq: u64, difference: String },
 }
-
-impl fmt::Display for AuditError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AuditError::Verify(e) => write!(f, "{e}"),
-            AuditError::Replay(e) => write!(f, "the events do not replay: {e}"),
-            AuditError::Snapshot { seq, reason } => {
-                write!(f, "the snapshot at event {seq} cannot be read: {reason}")
-            }
-            AuditError::Mismatch { seq, difference } => write!(
-                f,
-                "the snapshot at event {seq} is not what the events replay to: {difference}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for AuditError {}
 
 /// Replays the history from event 1 through `archives` and the live log at `live`, and compares the
 /// state at each snapshot with the state the snapshot carries. It stops at the first that differs and

@@ -11,8 +11,6 @@
 //! it (ADR-0125). When the image changes, [`STATE_VERSION`] is bumped and a step is added, as for
 //! events (ADR-0023).
 
-use std::fmt;
-
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -316,31 +314,18 @@ pub struct ResolvedImage {
     pub reason: ReasonCode,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ImageError {
     /// Written by a build this one does not know: a newer one, or no version at all. Never skipped.
-    UnsupportedVersion {
-        found: u32,
-        current: u32,
-    },
+    #[error(
+        "the snapshot's state is version {found} but this Hyalos reads up to version {current}: it was written by a newer Hyalos (or is damaged). Upgrade to read it"
+    )]
+    UnsupportedVersion { found: u32, current: u32 },
+    #[error("cannot encode the state: {0}")]
     Encode(String),
+    #[error("cannot read the snapshot's state: {0}")]
     Decode(String),
 }
-
-impl fmt::Display for ImageError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ImageError::UnsupportedVersion { found, current } => write!(
-                f,
-                "the snapshot's state is version {found} but this Hyalos reads up to version {current}: it was written by a newer Hyalos (or is damaged). Upgrade to read it"
-            ),
-            ImageError::Encode(e) => write!(f, "cannot encode the state: {e}"),
-            ImageError::Decode(e) => write!(f, "cannot read the snapshot's state: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for ImageError {}
 
 impl StateImage {
     /// The bytes a snapshot stores, at [`STATE_VERSION`].

@@ -1,7 +1,6 @@
 //! What a sandbox is asked to be, and how it ended.
 
 use std::collections::BTreeMap;
-use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -130,80 +129,51 @@ pub(crate) fn image_ok(image: &str) -> bool {
 }
 
 /// Why a spec was refused.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SpecError {
     /// Empty, too long, starting with `-`, or with characters an image reference does not have.
+    #[error("the image is not a plain image reference")]
     Image,
     /// No program, or a NUL in an argument.
+    #[error("the command is empty or has a NUL")]
     Command,
     /// An environment name that is not a name, or a NUL in a value.
+    #[error("the environment variable {0:?} is not valid")]
     Env(String),
     /// Not an absolute path, or one with a character a mount option reads as syntax.
+    #[error("the broker socket must be an absolute path without ',' ':' or line breaks")]
     Socket,
     /// A zero deadline, memory or process limit.
+    #[error("the deadline and the limits must not be zero")]
     Limits,
     /// The skills directory is not an absolute path, or has a character a mount option reads as
     /// syntax.
+    #[error("the skills directory must be an absolute path without ',' ':' or line breaks")]
     Skills,
     /// The job was given skills and this driver cannot carry them into the sandbox.
+    #[error(
+        "this substrate cannot carry skills into the sandbox yet; choose a container or gVisor substrate for a job with skills"
+    )]
     SkillsUnsupported,
 }
 
-impl fmt::Display for SpecError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SpecError::Image => f.write_str("the image is not a plain image reference"),
-            SpecError::Command => f.write_str("the command is empty or has a NUL"),
-            SpecError::Env(name) => write!(f, "the environment variable {name:?} is not valid"),
-            SpecError::Socket => f.write_str(
-                "the broker socket must be an absolute path without ',' ':' or line breaks",
-            ),
-            SpecError::Limits => f.write_str("the deadline and the limits must not be zero"),
-            SpecError::Skills => f.write_str(
-                "the skills directory must be an absolute path without ',' ':' or line breaks",
-            ),
-            SpecError::SkillsUnsupported => f.write_str(
-                "this substrate cannot carry skills into the sandbox yet; choose a container or gVisor substrate for a job with skills",
-            ),
-        }
-    }
-}
-
-impl std::error::Error for SpecError {}
-
 /// The driver cannot run on this host.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not available: {0}")]
 pub struct Unavailable(pub String);
 
-impl fmt::Display for Unavailable {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "not available: {}", self.0)
-    }
-}
-
-impl std::error::Error for Unavailable {}
-
 /// A sandbox could not be started. Nothing is left running.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StartError {
+    #[error("cannot start: {0}")]
     Spec(SpecError),
+    #[error("cannot start: {0}")]
     Unavailable(Unavailable),
     /// The runtime refused: no such image, no permission, not enough resources. The message is the
     /// runtime's, for the operator.
+    #[error("cannot start: the runtime refused: {0}")]
     Refused(String),
 }
-
-impl fmt::Display for StartError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            StartError::Spec(e) => write!(f, "cannot start: {e}"),
-            StartError::Unavailable(e) => write!(f, "cannot start: {e}"),
-            StartError::Refused(e) => write!(f, "cannot start: the runtime refused: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for StartError {}
 
 /// How a sandbox ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

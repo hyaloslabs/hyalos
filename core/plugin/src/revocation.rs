@@ -11,7 +11,6 @@
 //! Errors are reason codes: nothing from the file or its bundle reaches one.
 
 use std::collections::BTreeMap;
-use std::fmt;
 
 use hyalos_types::{Digest, ReasonCode, Timestamp};
 
@@ -40,15 +39,19 @@ pub struct Revocations {
 }
 
 /// Why a list was not accepted. Each is a reason code; none carries anything from the file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum RevocationError {
     /// Not a revocation list of version 1, or larger than [`MAX_LIST`].
+    #[error("it is not a revocation list this build reads")]
     Malformed,
     /// It has no Sigstore bundle.
+    #[error("it has no Sigstore bundle")]
     Unsigned,
     /// Its bundle does not verify under the snapshot in force, for the pipeline's identity.
+    #[error("it does not verify under the trusted-root snapshot in force as the Hyalos marketplace pipeline's ({})", .0.code())]
     Unverifiable(Refusal),
     /// Its issue time is not later than the list accepted before it.
+    #[error("it is not newer than the revocation list in force")]
     NotNewer,
 }
 
@@ -63,23 +66,6 @@ impl RevocationError {
         ReasonCode::new(code).unwrap_or_else(ReasonCode::unavailable)
     }
 }
-
-impl fmt::Display for RevocationError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Malformed => f.write_str("it is not a revocation list this build reads"),
-            Self::Unsigned => f.write_str("it has no Sigstore bundle"),
-            Self::Unverifiable(refusal) => write!(
-                f,
-                "it does not verify under the trusted-root snapshot in force as the Hyalos marketplace pipeline's ({})",
-                refusal.code()
-            ),
-            Self::NotNewer => f.write_str("it is not newer than the revocation list in force"),
-        }
-    }
-}
-
-impl std::error::Error for RevocationError {}
 
 impl Revocations {
     /// `file` with its `bundle`, accepted only if the bundle verifies under `snapshot` for its

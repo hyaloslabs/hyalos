@@ -35,151 +35,61 @@ impl SeedSource for OsSeed {
 }
 
 /// Why the engine's key could not be made ready. No variant carries key material.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum KeyError {
-    Io {
-        what: String,
-        error: String,
-    },
+    #[error("cannot {what}: {error}")]
+    Io { what: String, error: String },
+    #[error("cannot get random bytes from the operating system: {0}")]
     Entropy(String),
     /// The config directory can be read or written by group or others.
-    DirAccessible {
-        path: PathBuf,
-        mode: u32,
-    },
+    #[error("{} can be used by other users (mode {:04o}), so a key kept there cannot be trusted; run chmod 700 on it", .path.display(), .mode & 0o7777)]
+    DirAccessible { path: PathBuf, mode: u32 },
     /// The config directory is owned by a user other than the one running the engine.
+    #[error("{} is owned by user id {owner}, but hyalos is running as user id {user}, so a key kept there cannot be trusted. If the directory is yours, run `chown {user} {}`; if you did not put it there, treat its contents as compromised (ADR-0022)", .path.display(), .path.display())]
     DirNotOwned {
         path: PathBuf,
         owner: u32,
         user: u32,
     },
     /// The key file is owned by a user other than the one running the engine.
+    #[error("{} is owned by user id {owner}, but hyalos is running as user id {user}, so it is not used as the engine's key. If the key is yours, run `chown {user} {}`; if you did not put it there, treat it as compromised, and if another user may have read it, treat it as leaked (ADR-0022)", .path.display(), .path.display())]
     KeyNotOwned {
         path: PathBuf,
         owner: u32,
         user: u32,
     },
     /// The key file can be read or written by group or others.
-    KeyAccessible {
-        path: PathBuf,
-        mode: u32,
-    },
+    #[error("{} can be read or written by other users (mode {:04o}); run chmod 600 on it. If another user may have read it, treat the key as leaked (ADR-0022)", .path.display(), .mode & 0o7777)]
+    KeyAccessible { path: PathBuf, mode: u32 },
     /// The key path is a symlink, a directory or something else that is not a regular file.
+    #[error("{} is a symlink or not a regular file, so it is not used as the engine's key", .0.display())]
     NotRegular(PathBuf),
     /// The file is not a Hyalos engine key.
+    #[error("{} is not an engine key file (expected one line starting {KEY_PREFIX} and 64 hexadecimal characters)", .0.display())]
     Malformed(PathBuf),
     /// A log exists and its key does not.
+    #[error("the event log {} exists but the engine key {} does not, so the engine will not start a new key beside it.\nIf you have a backup of engine.key, put it at that path with mode 0600 and run hyalos init.\nIf not, that log can no longer be extended, but it still verifies with `hyalos log verify`. To start a new log, move {} and {} aside together (keep them: they are how the old log is verified), then run hyalos init. Tasks, jobs and holds do not carry across (ADR-0022).", .log.display(), .key.display(), .log.display(), .public.display())]
     LostKey {
         key: PathBuf,
         log: PathBuf,
         public: PathBuf,
     },
     /// `engine.pub` exists with no key and no log: it belongs to an earlier log.
+    #[error("{} exists but there is no engine key and no log. It verifies an earlier log, so it is not overwritten; move it aside with that log's archive, then run hyalos init", .0.display())]
     StalePublic(PathBuf),
     /// `engine.pub` does not match `engine.key`.
-    PublicMismatch {
-        public: PathBuf,
-        key: PathBuf,
-    },
+    #[error("{} does not match the key in {}. One of them belongs to a different log; nothing was changed", .public.display(), .key.display())]
+    PublicMismatch { public: PathBuf, key: PathBuf },
     /// The key is not the one the log was made with.
-    WrongKey {
-        key: PathBuf,
-        log: PathBuf,
-    },
+    #[error("the key in {} is not the key {} was made with, so the engine will not continue that log", .key.display(), .log.display())]
+    WrongKey { key: PathBuf, log: PathBuf },
     /// A temporary file from an interrupted run is in the way.
+    #[error("{} is left from an interrupted run; check that no other hyalos is starting, then remove it", .0.display())]
     StaleTemporary(PathBuf),
     /// Another process is creating the same file.
+    #[error("{} is being created by another process; try again in a moment", .0.display())]
     Busy(PathBuf),
 }
-
-impl fmt::Display for KeyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            KeyError::Io { what, error } => write!(f, "cannot {what}: {error}"),
-            KeyError::Entropy(e) => {
-                write!(f, "cannot get random bytes from the operating system: {e}")
-            }
-            KeyError::DirAccessible { path, mode } => write!(
-                f,
-                "{} can be used by other users (mode {:04o}), so a key kept there cannot be trusted; run chmod 700 on it",
-                path.display(),
-                mode & 0o7777
-            ),
-            KeyError::DirNotOwned { path, owner, user } => write!(
-                f,
-                "{} is owned by user id {owner}, but hyalos is running as user id {user}, so a key kept there cannot be trusted. \
-                 If the directory is yours, run `chown {user} {}`; if you did not put it there, treat its contents as compromised (ADR-0022)",
-                path.display(),
-                path.display()
-            ),
-            KeyError::KeyNotOwned { path, owner, user } => write!(
-                f,
-                "{} is owned by user id {owner}, but hyalos is running as user id {user}, so it is not used as the engine's key. \
-                 If the key is yours, run `chown {user} {}`; if you did not put it there, treat it as compromised, and if another user \
-                 may have read it, treat it as leaked (ADR-0022)",
-                path.display(),
-                path.display()
-            ),
-            KeyError::KeyAccessible { path, mode } => write!(
-                f,
-                "{} can be read or written by other users (mode {:04o}); run chmod 600 on it. If another user may have read it, treat the key as leaked (ADR-0022)",
-                path.display(),
-                mode & 0o7777
-            ),
-            KeyError::NotRegular(path) => write!(
-                f,
-                "{} is a symlink or not a regular file, so it is not used as the engine's key",
-                path.display()
-            ),
-            KeyError::Malformed(path) => write!(
-                f,
-                "{} is not an engine key file (expected one line starting {KEY_PREFIX} and 64 hexadecimal characters)",
-                path.display()
-            ),
-            KeyError::LostKey { key, log, public } => write!(
-                f,
-                "the event log {} exists but the engine key {} does not, so the engine will not start a new key beside it.\n\
-                 If you have a backup of engine.key, put it at that path with mode 0600 and run hyalos init.\n\
-                 If not, that log can no longer be extended, but it still verifies with `hyalos log verify`. To start a new log, \
-                 move {} and {} aside together (keep them: they are how the old log is verified), then run hyalos init. \
-                 Tasks, jobs and holds do not carry across (ADR-0022).",
-                log.display(),
-                key.display(),
-                log.display(),
-                public.display()
-            ),
-            KeyError::StalePublic(public) => write!(
-                f,
-                "{} exists but there is no engine key and no log. It verifies an earlier log, so it is not overwritten; move it aside with that log's archive, then run hyalos init",
-                public.display()
-            ),
-            KeyError::PublicMismatch { public, key } => write!(
-                f,
-                "{} does not match the key in {}. One of them belongs to a different log; nothing was changed",
-                public.display(),
-                key.display()
-            ),
-            KeyError::WrongKey { key, log } => write!(
-                f,
-                "the key in {} is not the key {} was made with, so the engine will not continue that log",
-                key.display(),
-                log.display()
-            ),
-            KeyError::StaleTemporary(path) => write!(
-                f,
-                "{} is left from an interrupted run; check that no other hyalos is starting, then remove it",
-                path.display()
-            ),
-            KeyError::Busy(path) => write!(
-                f,
-                "{} is being created by another process; try again in a moment",
-                path.display()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for KeyError {}
 
 fn io(what: impl Into<String>, error: std::io::Error) -> KeyError {
     KeyError::Io {

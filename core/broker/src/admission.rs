@@ -6,8 +6,6 @@
 //! role of the credential used, and not past its deadline. Anything else is refused, and a refusal
 //! carries a reason and nothing from inside the document.
 
-use std::fmt;
-
 use hyalos_types::{
     Clock, JobId, Manifest, ManifestPublicKey, OpenError, ReasonCode, Role, SignedManifest,
     Timestamp,
@@ -29,52 +27,28 @@ pub trait LiveJobs {
 }
 
 /// Why a job was not admitted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Refusal {
     /// Not the engine's manifest, not a version this build knows, or not a manifest at all.
+    #[error("manifest refused: {0}")]
     Manifest(OpenError),
     /// The credential is for one job and the manifest for another.
+    #[error(
+        "manifest refused: it is for job {manifest} and the credential is for job {credential}"
+    )]
     WrongJob { manifest: JobId, credential: JobId },
     /// The job is not one the engine has started and not ended: a replayed or stale manifest.
+    #[error("manifest refused: job {0} is not a live job")]
     JobNotLive(JobId),
     /// The manifest names a different role than the credential in use.
+    #[error(
+        "manifest refused: it is for role {manifest:?} and the credential is for role {credential:?}"
+    )]
     RoleMismatch { manifest: Role, credential: Role },
     /// Past the deadline.
+    #[error("manifest refused: its deadline {} has passed (now {})", .deadline.as_millis(), .now.as_millis())]
     Expired { deadline: Timestamp, now: Timestamp },
 }
-
-impl fmt::Display for Refusal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Refusal::Manifest(e) => write!(f, "manifest refused: {e}"),
-            Refusal::WrongJob {
-                manifest,
-                credential,
-            } => write!(
-                f,
-                "manifest refused: it is for job {manifest} and the credential is for job {credential}"
-            ),
-            Refusal::JobNotLive(job) => {
-                write!(f, "manifest refused: job {job} is not a live job")
-            }
-            Refusal::RoleMismatch {
-                manifest,
-                credential,
-            } => write!(
-                f,
-                "manifest refused: it is for role {manifest:?} and the credential is for role {credential:?}"
-            ),
-            Refusal::Expired { deadline, now } => write!(
-                f,
-                "manifest refused: its deadline {} has passed (now {})",
-                deadline.as_millis(),
-                now.as_millis()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for Refusal {}
 
 impl Refusal {
     /// The short code the engine is told, which says which check failed and nothing from the

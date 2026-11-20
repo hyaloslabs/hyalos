@@ -15,7 +15,6 @@
 //! are the `StepInputs` its manifest is minted with.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
@@ -172,59 +171,68 @@ mod unique {
 }
 
 /// Why a workflow does not install. Each has a short code ([`WorkflowError::code`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WorkflowError {
+    #[error("{}: over {MAX_WORKFLOW_DOCUMENT} bytes", self.code())]
     TooLarge,
     /// Not JSON of this shape; the parser's message.
+    #[error("{}: {}", self.code(), .0)]
     Malformed(String),
+    #[error("{}: version {}; this build reads 1 to {WORKFLOW_VERSION}", self.code(), .0)]
     UnknownVersion(u32),
     /// A name that is not 1 to 32 of `a-z`, `0-9` and `_`, starting with a letter.
+    #[error("{}: {:?}", self.code(), .0)]
     BadName(String),
+    #[error("{}: a workflow has at least one step", self.code())]
     NoSteps,
+    #[error("{}: too many {}", self.code(), .0)]
     TooMany(&'static str),
+    #[error("{}: {} is named twice", self.code(), .0)]
     DuplicateName(String),
     /// A deterministic step in a version 1 document, which has no way to say what it runs.
-    RoleNotSupported {
-        step: String,
-    },
+    #[error("{}: step {step}: a deterministic step needs version 2", self.code())]
+    RoleNotSupported { step: String },
     /// A deterministic step that names no plugin to run.
-    PluginRequired {
-        step: String,
-    },
+    #[error("{}: deterministic step {step} names no plugin to run", self.code())]
+    PluginRequired { step: String },
     /// A plugin named on a reader or planner, or in a version 1 document.
-    BadPlugin {
-        step: String,
-    },
-    RawTextToDeterministic {
-        step: String,
-        input: String,
-    },
-    UnknownReference {
-        step: String,
-        reference: String,
-    },
-    ForwardReference {
-        step: String,
-        reference: String,
-    },
-    OutputRequired {
-        step: String,
-    },
-    BadField {
-        step: String,
-        field: String,
-    },
-    RawTextToActor {
-        step: String,
-        input: String,
-    },
-    RawTextToPlanner {
-        step: String,
-        input: String,
-    },
-    InstructionsTooLong {
-        step: String,
-    },
+    #[error(
+        "{}: step {step}: only a deterministic step or an actor names a plugin, in version 2",
+        self.code()
+    )]
+    BadPlugin { step: String },
+    #[error(
+        "{}: deterministic step {step} reads {input}, raw forge text; only a reader may",
+        self.code()
+    )]
+    RawTextToDeterministic { step: String, input: String },
+    #[error("{}: step {step} reads {reference}, which nothing defines", self.code())]
+    UnknownReference { step: String, reference: String },
+    #[error(
+        "{}: step {step} reads {reference}, which this step or a later one defines",
+        self.code()
+    )]
+    ForwardReference { step: String, reference: String },
+    #[error(
+        "{}: step {step} is a reader, planner or deterministic step with no output",
+        self.code()
+    )]
+    OutputRequired { step: String },
+    #[error(
+        "{}: step {step} field {field}: an integer needs min <= max, a choice 1 to \
+         {MAX_OPTIONS} distinct non-empty options of at most {MAX_OPTION} bytes",
+        self.code()
+    )]
+    BadField { step: String, field: String },
+    #[error("{}: actor step {step} reads {input}, raw forge text; only a reader may", self.code())]
+    RawTextToActor { step: String, input: String },
+    #[error(
+        "{}: planner step {step} reads {input}, raw forge text; only a reader may",
+        self.code()
+    )]
+    RawTextToPlanner { step: String, input: String },
+    #[error("{}: step {step}: over {MAX_INSTRUCTIONS} bytes", self.code())]
+    InstructionsTooLong { step: String },
 }
 
 impl WorkflowError {
@@ -251,78 +259,6 @@ impl WorkflowError {
         }
     }
 }
-
-impl fmt::Display for WorkflowError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let code = self.code();
-        match self {
-            WorkflowError::TooLarge => write!(f, "{code}: over {MAX_WORKFLOW_DOCUMENT} bytes"),
-            WorkflowError::Malformed(why) => write!(f, "{code}: {why}"),
-            WorkflowError::UnknownVersion(v) => {
-                write!(
-                    f,
-                    "{code}: version {v}; this build reads 1 to {WORKFLOW_VERSION}"
-                )
-            }
-            WorkflowError::BadName(name) => write!(f, "{code}: {name:?}"),
-            WorkflowError::NoSteps => write!(f, "{code}: a workflow has at least one step"),
-            WorkflowError::TooMany(what) => write!(f, "{code}: too many {what}"),
-            WorkflowError::DuplicateName(name) => write!(f, "{code}: {name} is named twice"),
-            WorkflowError::RoleNotSupported { step } => {
-                write!(
-                    f,
-                    "{code}: step {step}: a deterministic step needs version 2"
-                )
-            }
-            WorkflowError::PluginRequired { step } => write!(
-                f,
-                "{code}: deterministic step {step} names no plugin to run"
-            ),
-            WorkflowError::BadPlugin { step } => write!(
-                f,
-                "{code}: step {step}: only a deterministic step or an actor names a plugin, in version 2"
-            ),
-            WorkflowError::RawTextToDeterministic { step, input } => write!(
-                f,
-                "{code}: deterministic step {step} reads {input}, raw forge text; only a reader may"
-            ),
-            WorkflowError::UnknownReference { step, reference } => {
-                write!(
-                    f,
-                    "{code}: step {step} reads {reference}, which nothing defines"
-                )
-            }
-            WorkflowError::ForwardReference { step, reference } => write!(
-                f,
-                "{code}: step {step} reads {reference}, which this step or a later one defines"
-            ),
-            WorkflowError::OutputRequired { step } => {
-                write!(
-                    f,
-                    "{code}: step {step} is a reader, planner or deterministic step with no output"
-                )
-            }
-            WorkflowError::BadField { step, field } => write!(
-                f,
-                "{code}: step {step} field {field}: an integer needs min <= max, a choice 1 to \
-                 {MAX_OPTIONS} distinct non-empty options of at most {MAX_OPTION} bytes"
-            ),
-            WorkflowError::RawTextToActor { step, input } => write!(
-                f,
-                "{code}: actor step {step} reads {input}, raw forge text; only a reader may"
-            ),
-            WorkflowError::RawTextToPlanner { step, input } => write!(
-                f,
-                "{code}: planner step {step} reads {input}, raw forge text; only a reader may"
-            ),
-            WorkflowError::InstructionsTooLong { step } => {
-                write!(f, "{code}: step {step}: over {MAX_INSTRUCTIONS} bytes")
-            }
-        }
-    }
-}
-
-impl std::error::Error for WorkflowError {}
 
 /// A workflow that passed the check, and what each step reads.
 #[derive(Debug, Clone, PartialEq, Eq)]

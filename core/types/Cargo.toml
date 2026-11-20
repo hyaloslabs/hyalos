@@ -15,3 +15,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Ed25519 for the job manifest (ADR-0031). The `rand_core` feature that could generate a key is off.
 ed25519-dalek = "3"
+# Error text (ADR-0126). A proc-macro: it writes the Display and Error impls at build time.
+thiserror = "2"

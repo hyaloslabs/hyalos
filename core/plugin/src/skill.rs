@@ -8,7 +8,6 @@
 //! reason code and never names a file the skill holds.
 
 use std::collections::BTreeMap;
-use std::fmt;
 use std::fs;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
@@ -64,26 +63,41 @@ pub struct Skill {
 }
 
 /// Why a skill cannot be read or used. Names nothing the skill holds.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SkillError {
     /// The path is not a directory that can be read.
+    #[error("not a directory that can be read")]
     Unreadable,
     /// It has no `SKILL.md` at its root.
+    #[error("no {SKILL_FILE} at its root")]
     NoSkillFile,
     /// `SKILL.md` has no front matter with a `name` that is a plugin name.
+    #[error("{SKILL_FILE} has no front matter naming it in lowercase letters, digits and hyphens")]
     NoName,
     /// A file or directory name that is not plain, a link, or something that is neither a file nor a
     /// directory.
+    #[error(
+        "it holds a link, a special file, or a name that is not plain letters, digits, '.', '_' and '-'"
+    )]
     BadEntry,
     /// More files, bytes or depth than a skill may have.
+    #[error(
+        "larger than a skill may be ({MAX_FILES} files, {MAX_BYTES} bytes, {MAX_DEPTH} levels)"
+    )]
     TooLarge,
     /// `capabilities.json` is not a document this build reads.
+    #[error("{CAPABILITIES_FILE}: {0}")]
     Capabilities(CapabilityError),
     /// `mcp.json` is not a command this build runs.
+    #[error(
+        "{MCP_FILE} is not a command of printable ASCII, with at most {MCP_ARGS} arguments, naming a program by its name or an executable file of the skill by ./path"
+    )]
     Mcp,
     /// The stored files do not have the digest they were installed with, or another name.
+    #[error("its stored files are not the ones that were installed")]
     Altered,
     /// Writing to the store or a job's directory failed.
+    #[error("cannot write its files")]
     Write,
 }
 
@@ -103,37 +117,6 @@ impl SkillError {
         ReasonCode::new(code).unwrap_or_else(ReasonCode::unavailable)
     }
 }
-
-impl fmt::Display for SkillError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unreadable => write!(f, "not a directory that can be read"),
-            Self::NoSkillFile => write!(f, "no {SKILL_FILE} at its root"),
-            Self::NoName => write!(
-                f,
-                "{SKILL_FILE} has no front matter naming it in lowercase letters, digits and hyphens"
-            ),
-            Self::BadEntry => write!(
-                f,
-                "it holds a link, a special file, or a name that is not plain letters, digits, '.', '_' and '-'"
-            ),
-            Self::TooLarge => write!(
-                f,
-                "larger than a skill may be ({MAX_FILES} files, {MAX_BYTES} bytes, {MAX_DEPTH} levels)"
-            ),
-            Self::Capabilities(e) => write!(f, "{CAPABILITIES_FILE}: {e}"),
-            Self::Mcp => write!(
-                f,
-                "{MCP_FILE} is not a command of printable ASCII, with at most {MCP_ARGS} arguments, \
-                 naming a program by its name or an executable file of the skill by ./path"
-            ),
-            Self::Altered => write!(f, "its stored files are not the ones that were installed"),
-            Self::Write => write!(f, "cannot write its files"),
-        }
-    }
-}
-
-impl std::error::Error for SkillError {}
 
 impl Skill {
     /// Reads the skill in `dir`. Refuses a link anywhere, an entry that is neither a file nor a

@@ -12,5 +12,7 @@ workspace = true
 
 [dependencies]
 hyalos-types = { path = "../types" }
+# Error text (ADR-0126). A proc-macro: it writes the Display and Error impls at build time.
+thiserror = "2"
 # The microVM driver writes Firecracker's configuration as JSON (ADR-0058).
 serde_json = "1"

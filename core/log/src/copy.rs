@@ -7,7 +7,6 @@
 //! fails verification never exists under the name an operator would trust.
 
 use std::ffi::OsString;
-use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -18,37 +17,24 @@ use crate::key::PublicKey;
 use crate::store::Head;
 use crate::verify::{Verified, VerifyError, read_only, verify};
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum CopyError {
     /// There is no log at the source.
+    #[error("there is no event log at {}", .0.display())]
     SourceMissing(PathBuf),
     /// The destination, or its temporary name, already exists. Nothing is overwritten.
+    #[error(
+        "{} already exists; a copy never overwrites, so move it aside or choose another name",
+        .0.display()
+    )]
     Exists(PathBuf),
     /// The copy was made but does not verify, so it was removed. The source is untouched.
+    #[error("the copy does not verify, so it was removed and the source was not touched: {0}")]
     Verify(VerifyError),
     /// SQLite or the filesystem failed.
+    #[error("cannot copy the event log: {0}")]
     Storage(String),
 }
-
-impl fmt::Display for CopyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            CopyError::SourceMissing(p) => write!(f, "there is no event log at {}", p.display()),
-            CopyError::Exists(p) => write!(
-                f,
-                "{} already exists; a copy never overwrites, so move it aside or choose another name",
-                p.display()
-            ),
-            CopyError::Verify(e) => write!(
-                f,
-                "the copy does not verify, so it was removed and the source was not touched: {e}"
-            ),
-            CopyError::Storage(e) => write!(f, "cannot copy the event log: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for CopyError {}
 
 impl From<rusqlite::Error> for CopyError {
     fn from(e: rusqlite::Error) -> Self {

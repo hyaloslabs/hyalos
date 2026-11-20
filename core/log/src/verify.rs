@@ -54,55 +54,50 @@ impl fmt::Display for Reason {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
     /// The first event that fails, by sequence number.
+    #[error("event {seq}: {reason}")]
     Event { seq: u64, reason: Reason },
     /// The first snapshot that fails, by the sequence number of the event it stands for the end of.
+    #[error("snapshot at event {seq}: {reason}")]
     Anchor { seq: u64, reason: Reason },
     /// An archive file does not verify.
+    #[error("archive {}: {error}", .path.display())]
     Archive {
         path: PathBuf,
         error: Box<VerifyError>,
     },
     /// An archive verifies but is not the history of any snapshot in this log: it ends somewhere no
     /// snapshot stands, or with a different hash than the snapshot there.
+    #[error("{}", not_anchored(.path, .head))]
     ArchiveNotAnchored { path: PathBuf, head: Option<Head> },
     /// Every event verifies, but the log ends somewhere other than where the operator recorded.
+    #[error("{}", head_mismatch(.expected, .found))]
     HeadMismatch { expected: Head, found: Option<Head> },
     /// The file could not be opened or read as an event log.
+    #[error("cannot read the event log: {0}")]
     Storage(String),
 }
 
-impl fmt::Display for VerifyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            VerifyError::Event { seq, reason } => write!(f, "event {seq}: {reason}"),
-            VerifyError::Anchor { seq, reason } => write!(f, "snapshot at event {seq}: {reason}"),
-            VerifyError::Archive { path, error } => {
-                write!(f, "archive {}: {error}", path.display())
-            }
-            VerifyError::ArchiveNotAnchored { path, head } => match head {
-                Some(head) => write!(
-                    f,
-                    "archive {} ends at {head}, which is not where any snapshot of this log stands, so it is not part of this log's history",
-                    path.display()
-                ),
-                None => write!(f, "archive {} holds no events", path.display()),
-            },
-            VerifyError::HeadMismatch { expected, found } => match found {
-                Some(found) => write!(
-                    f,
-                    "the log ends at {found} but the expected head is {expected}: events may have been removed from the end, or this is a different log"
-                ),
-                None => write!(f, "the log is empty but the expected head is {expected}"),
-            },
-            VerifyError::Storage(e) => write!(f, "cannot read the event log: {e}"),
-        }
+fn not_anchored(path: &Path, head: &Option<Head>) -> String {
+    match head {
+        Some(head) => format!(
+            "archive {} ends at {head}, which is not where any snapshot of this log stands, so it is not part of this log's history",
+            path.display()
+        ),
+        None => format!("archive {} holds no events", path.display()),
     }
 }
 
-impl std::error::Error for VerifyError {}
+fn head_mismatch(expected: &Head, found: &Option<Head>) -> String {
+    match found {
+        Some(found) => format!(
+            "the log ends at {found} but the expected head is {expected}: events may have been removed from the end, or this is a different log"
+        ),
+        None => format!("the log is empty but the expected head is {expected}"),
+    }
+}
 
 impl From<rusqlite::Error> for VerifyError {
     fn from(e: rusqlite::Error) -> Self {
