@@ -119,7 +119,7 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0103](0103-policy-releases-an-issue-written-only-by-the-repository-s-writers.md) | Policy releases an issue written only by the repository's writers | Accepted |
 | [0104](0104-fault-schedules-swept-in-ci.md) | Fault schedules, swept in CI | Accepted; its rule that `simulation` is required by name superseded by [ADR-0105](0105-the-required-check-gathers-ci-s-split-jobs.md) |
 | [0105](0105-the-required-check-gathers-ci-s-split-jobs.md) | The required check gathers CI's split jobs | Accepted; its list of gathered jobs superseded by [ADR-0108](0108-the-job-state-machine-s-tla-spec-and-its-model-check.md), its documentation-only skip of `lint` by [ADR-0119](0119-lint-runs-on-every-pull-request.md) |
-| [0106](0106-a-dependency-lost-mid-job-holds-the-task.md) | A dependency lost mid-job holds the task | Accepted |
+| [0106](0106-a-dependency-lost-mid-job-holds-the-task.md) | A dependency lost mid-job holds the task | Accepted; its table of losses extended by [ADR-0123](0123-a-provider-out-of-credit-holds-the-task.md) |
 | [0107](0107-a-release-runs-a-complete-job-before-it-publishes.md) | A release runs a complete job before it publishes | Accepted |
 | [0108](0108-the-job-state-machine-s-tla-spec-and-its-model-check.md) | The job state machine's TLA+ spec and its model check | Accepted |
 | [0109](0109-property-based-contract-suites-at-every-boundary.md) | Property-based contract suites at every boundary | Accepted |
@@ -136,3 +136,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0120](0120-the-model-relay-refuses-a-request-field-it-does-not-know.md) | The model relay refuses a request field it does not know | Accepted |
 | [0121](0121-no-broker-runs-without-landlock.md) | No broker runs without Landlock | Accepted |
 | [0122](0122-a-pull-request-says-it-closes-its-issue-once.md) | A pull request says it closes its issue once | Accepted |
+| [0123](0123-a-provider-out-of-credit-holds-the-task.md) | A provider out of credit holds the task | Accepted |

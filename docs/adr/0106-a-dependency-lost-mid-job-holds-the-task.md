@@ -1,6 +1,6 @@
 # ADR-0106: A dependency lost mid-job holds the task
 
-**Status:** Accepted. Supersedes [ADR-0053](0053-an-interrupted-run-ends-its-job.md)'s `broker.stopped` row, and its `sandbox.failed` row for a sandbox the runtime lost.
+**Status:** Accepted. Supersedes [ADR-0053](0053-an-interrupted-run-ends-its-job.md)'s `broker.stopped` row, and its `sandbox.failed` row for a sandbox the runtime lost. Its table of lost dependencies is extended by [ADR-0123](0123-a-provider-out-of-credit-holds-the-task.md), for a provider that says the key's quota or credit is spent.
 
 ## Context
 

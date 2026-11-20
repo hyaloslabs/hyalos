@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use hyalos_types::JobId;
 use serde_json::Value;
 
-use super::MAX_BODY;
+use super::{Adapter, MAX_BODY};
 
 /// One job's account: tokens spent, as the provider reported them, and tokens held for calls still
 /// in flight.
@@ -15,6 +15,8 @@ use super::MAX_BODY;
 struct Account {
     spent: u64,
     held: u64,
+    /// The provider said, part way through a stream, that the key's quota or credit is spent (#355).
+    quota_spent: bool,
 }
 
 /// Tokens spent per job, and held for calls in flight, so calls made side by side cannot together
@@ -34,6 +36,12 @@ struct Accounts {
 impl Meter {
     pub fn spent(&self, job: JobId) -> u64 {
         self.lock().live.get(&job).map_or(0, |a| a.spent)
+    }
+
+    /// Whether the provider said, in a stream of this job's, that the key's quota is spent. Later
+    /// calls are refused as the provider's, not as a spent budget (#355, ADR-0123).
+    pub fn quota_spent(&self, job: JobId) -> bool {
+        self.lock().live.get(&job).is_some_and(|a| a.quota_spent)
     }
 
     /// Tokens held for calls in flight.
@@ -115,6 +123,13 @@ impl Hold {
         self.meter.release(self.job, self.amount, spent);
         self.amount = 0;
     }
+
+    /// Records that the provider said the key's quota is spent, for this hold's job.
+    fn quota_spent(&self) {
+        if let Some(account) = self.meter.lock().live.get_mut(&self.job) {
+            account.quota_spent = true;
+        }
+    }
 }
 
 impl Drop for Hold {
@@ -164,6 +179,9 @@ impl Usage {
 
 /// Reads usage from a response body as it passes: a JSON document, or server-sent events.
 pub(super) struct Scanner {
+    adapter: Arc<dyn Adapter>,
+    /// An event said the key's quota or credit is spent.
+    quota: bool,
     events: bool,
     buf: Vec<u8>,
     /// Some of the body was not read for usage, so what was read may be short.
@@ -178,8 +196,11 @@ pub(super) struct Scanner {
 }
 
 impl Scanner {
-    pub(super) fn new(content_type: &str, ends: &'static [&'static str]) -> Self {
+    pub(super) fn new(content_type: &str, adapter: Arc<dyn Adapter>) -> Self {
+        let ends = adapter.stream_ends();
         Self {
+            adapter,
+            quota: false,
             events: content_type
                 .trim()
                 .to_ascii_lowercase()
@@ -227,6 +248,7 @@ impl Scanner {
         match serde_json::from_slice::<Value>(json) {
             Ok(value) => {
                 self.seen |= self.usage.absorb(&value);
+                self.quota |= self.adapter.quota_event(&value);
                 let kind = value.get("type").and_then(Value::as_str);
                 self.ended |= kind.is_some_and(|k| self.ends.contains(&k));
             }
@@ -273,6 +295,10 @@ impl Metered {
 
     fn settle(&mut self) {
         if let Some((scanner, hold)) = self.scanner.take() {
+            if scanner.quota {
+                hold.quota_spent();
+            }
+            // Charged as before: a stream the provider ended on an error reported no final usage.
             hold.settle(scanner.finish().unwrap_or(self.budget));
         }
     }

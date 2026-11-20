@@ -20,7 +20,7 @@ pub use anthropic::Anthropic;
 pub use http::HttpTransport;
 pub(crate) use http::dechunk;
 pub use openai::OpenAi;
-pub use relay::{Backoff, Relay, Sleep, ThreadSleep};
+pub use relay::{Backoff, QUOTA_SPENT, Relay, Sleep, ThreadSleep};
 pub use usage::Meter;
 
 use std::fmt;
@@ -116,6 +116,11 @@ pub trait Adapter: Send + Sync {
     fn error_body(&self, status: u16, message: &str) -> Vec<u8>;
     /// Whether a 429 body says the key's quota is spent, which no retry fixes.
     fn quota_exhausted(&self, _body: &[u8]) -> bool {
+        false
+    }
+    /// Whether a stream event says the key's quota or credit is spent: the provider started
+    /// answering, then could not go on for this key (#355).
+    fn quota_event(&self, _event: &Value) -> bool {
         false
     }
 }

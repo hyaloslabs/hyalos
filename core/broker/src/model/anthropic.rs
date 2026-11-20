@@ -94,6 +94,12 @@ impl Adapter for Anthropic {
         &["message_stop"]
     }
 
+    /// An `error` event of type `billing_error`.
+    fn quota_event(&self, event: &Value) -> bool {
+        event.pointer("/type") == Some(&json!("error"))
+            && event.pointer("/error/type") == Some(&json!("billing_error"))
+    }
+
     fn error_body(&self, status: u16, message: &str) -> Vec<u8> {
         let kind = match status {
             402 => "billing_error",
