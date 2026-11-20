@@ -75,6 +75,19 @@ struct Refused {
     message: String,
 }
 
+/// The provider said the key's quota or credit is spent, before or during a generation. No retry
+/// fixes it, and the job is held as its provider lost (ADR-0123).
+fn quota_spent() -> Refused {
+    refused(
+        402,
+        QUOTA_SPENT,
+        "the model provider says this key's quota or credit is spent",
+    )
+}
+
+/// Why a call is refused once the provider says the key's quota or credit is spent.
+pub const QUOTA_SPENT: &str = "provider.quota_spent";
+
 fn refused(status: u16, code: &'static str, message: impl Into<String>) -> Refused {
     Refused {
         status,
@@ -198,6 +211,11 @@ impl Relay {
                 "refused by the job's manifest: a reader may not send tool definitions",
             ));
         }
+        // Once the provider has said, mid-stream, that the key's quota is spent, the job's calls are
+        // refused as the provider's: its budget was charged in full, but that is not why (#355).
+        if self.meter.quota_spent(manifest.job) {
+            return Err(quota_spent());
+        }
         // A generation holds the output it may produce, and asks for no more than the budget has left,
         // so calls side by side cannot all pass the budget together (ADR-0038).
         let hold = if route == Route::Generate {
@@ -290,11 +308,7 @@ impl Relay {
                         // An unreadable body is treated as a rate limit, which is retried.
                         let _ = r.body.take(MAX_ERROR_BODY).read_to_end(&mut body);
                         if self.adapter.quota_exhausted(&body) {
-                            return Err(refused(
-                                402,
-                                "provider.quota_spent",
-                                "the model provider says this key's quota is spent",
-                            ));
+                            return Err(quota_spent());
                         }
                     }
                     retry_after
@@ -336,7 +350,7 @@ impl Relay {
         let body: Box<dyn Read + Send> = match hold {
             Some(hold) if (200..300).contains(&r.status) => Box::new(Metered::new(
                 r.body,
-                Scanner::new(&content_type, self.adapter.stream_ends()),
+                Scanner::new(&content_type, Arc::clone(&self.adapter)),
                 hold,
                 manifest.budget.tokens,
             )),

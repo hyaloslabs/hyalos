@@ -444,6 +444,7 @@ struct JobReports {
 fn lost(reason: Option<&ReasonCode>) -> Option<(&'static str, &'static str)> {
     match reason.map(ReasonCode::as_str)? {
         "provider.overloaded" => Some(("model", MODEL_LOST)),
+        crate::model::QUOTA_SPENT => Some(("model", MODEL_QUOTA_SPENT)),
         "transport.unreachable" | "transport.bad_response" | "forge.upstream_status" => {
             Some(("forge", FORGE_LOST))
         }
@@ -453,6 +454,8 @@ fn lost(reason: Option<&ReasonCode>) -> Option<(&'static str, &'static str)> {
 
 /// The code a lost model provider's unknown answer carries (ADR-0106).
 pub const MODEL_LOST: &str = "model.lost";
+/// The code a model provider that says the key's quota or credit is spent carries (ADR-0123).
+pub const MODEL_QUOTA_SPENT: &str = "model.quota_spent";
 /// The code a lost forge's unknown answer carries (ADR-0106).
 pub const FORGE_LOST: &str = "forge.lost";
 

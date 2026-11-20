@@ -8,7 +8,9 @@
 //! - **the broker**: the broker process is killed with `SIGKILL`;
 //! - **the sandbox**: the harness process is killed with `SIGKILL`, so its runtime has lost it;
 //! - **the model provider**: the provider cannot be reached, and the relay gives up after its retries;
-//! - **the forge**: the stand-in GitHub goes down before the harness opens its pull request.
+//! - **the forge**: the stand-in GitHub goes down before the harness opens its pull request;
+//! - **the provider's credit**: the provider starts a stream, then says the key has no credit left
+//!   (#355, ADR-0123).
 
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
@@ -244,6 +246,73 @@ fn a_model_provider_lost_mid_job_holds_the_task() -> Res {
 }
 
 #[test]
+fn a_provider_out_of_credit_mid_stream_holds_the_task() -> Res {
+    if !have_git()? {
+        eprintln!("skipped: no git");
+        return Ok(());
+    }
+    // A provider that starts every answer, then says the key's quota is spent, as OpenAI did on bot1
+    // on 2026-11-20 (#355). Its budget is charged, but the task is held for the provider's reason.
+    let provider = TcpListener::bind("127.0.0.1:0")?;
+    let base = format!("http://127.0.0.1:{}", provider.local_addr()?.port());
+    std::thread::spawn(move || {
+        for stream in provider.incoming().flatten() {
+            let _ = out_of_credit(stream);
+        }
+    });
+    let s = Scenario::new("chaos-quota", "quota")?;
+    let keys = s.world.config.join("provider.keys");
+    std::fs::write(
+        &keys,
+        format!(
+            "openai.key = {}\nopenai.base = {base}\n",
+            s.world.provider_key
+        ),
+    )?;
+    std::fs::set_permissions(&keys, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    let (summary, said, took) = s.run(|_| Ok(()))?;
+    s.assert_held(&summary, &said, took, "model.quota_spent")?;
+    // The stream was served; the call after it was refused as the provider's, not as the budget's.
+    let answer = std::fs::read_to_string(s.out.join("attempted"))?;
+    assert!(answer.contains(" 402 "), "{answer}");
+    assert!(answer.contains("quota or credit is spent"), "{answer}");
+    assert!(!answer.contains("budget"), "{answer}");
+    Ok(())
+}
+
+/// Answers one call with a stream that starts, then fails because the key has no credit left.
+fn out_of_credit(stream: TcpStream) -> Res {
+    let mut reader = std::io::BufReader::new(stream.try_clone()?);
+    let mut length = 0usize;
+    loop {
+        let mut line = String::new();
+        if std::io::BufRead::read_line(&mut reader, &mut line)? == 0 || line == "\r\n" {
+            break;
+        }
+        if let Some((n, v)) = line.split_once(':')
+            && n.trim().eq_ignore_ascii_case("content-length")
+        {
+            length = v.trim().parse().unwrap_or(0);
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body)?;
+    let events = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"usage\":null}}\n\n",
+        "event: response.failed\n",
+        "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"insufficient_quota\",\"message\":\"You have no credits remaining.\"}}}\n\n",
+    );
+    let mut out = stream;
+    write!(
+        out,
+        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{events}",
+        events.len()
+    )?;
+    Ok(())
+}
+
+#[test]
 fn a_forge_lost_mid_job_holds_the_task() -> Res {
     if !have_git()? {
         eprintln!("skipped: no git");
@@ -290,6 +359,16 @@ fn harness_entry() -> Res {
             body,
         )?;
         std::fs::write(out.join("attempted"), status)?;
+    }
+    // The first call's stream starts and fails for want of credit; the second is the broker's answer.
+    if mode == Path::new("quota") {
+        let body = br#"{"model":"gpt-5","input":"plan the work","stream":true}"#;
+        let head =
+            "POST /v1/responses HTTP/1.1\r\nhost: localhost\r\ncontent-type: application/json\r\n";
+        let (first, _) = call(port, head, body)?;
+        std::fs::write(out.join("first"), first)?;
+        let (status, answer) = call(port, head, body)?;
+        std::fs::write(out.join("attempted"), format!("{status}\n{answer}"))?;
     }
     if mode == Path::new("pull") {
         wait_for(&out.join("go"))?;

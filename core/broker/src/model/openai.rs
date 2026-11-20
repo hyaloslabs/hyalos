@@ -126,4 +126,16 @@ impl Adapter for OpenAi {
             .iter()
             .any(|k| value.pointer(&format!("/error/{k}")) == Some(&json!("insufficient_quota")))
     }
+
+    /// An `error` event, or a `response.failed` one, whose code is `insufficient_quota`.
+    fn quota_event(&self, event: &Value) -> bool {
+        [
+            "/code",
+            "/error/code",
+            "/error/type",
+            "/response/error/code",
+        ]
+        .iter()
+        .any(|p| event.pointer(p) == Some(&json!("insufficient_quota")))
+    }
 }

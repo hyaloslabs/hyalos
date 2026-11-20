@@ -131,6 +131,8 @@ struct Case {
     json_tokens: u64,
     stream: &'static str,
     stream_tokens: u64,
+    /// A stream the provider starts, then ends because the key's quota or credit is spent.
+    out_of_credit: &'static str,
 }
 
 fn anthropic() -> Case {
@@ -165,6 +167,12 @@ fn anthropic() -> Case {
             "data: {\"type\":\"message_stop\"}\n\n",
         ),
         stream_tokens: 52,
+        out_of_credit: concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":40,\"output_tokens\":1}}}\n\n",
+            "event: error\n",
+            "data: {\"type\":\"error\",\"error\":{\"type\":\"billing_error\",\"message\":\"credit\"}}\n\n",
+        ),
     }
 }
 
@@ -198,6 +206,12 @@ fn openai() -> Case {
             "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":40,\"output_tokens\":12}}}\n\n",
         ),
         stream_tokens: 52,
+        out_of_credit: concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"usage\":null}}\n\n",
+            "event: response.failed\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"insufficient_quota\",\"message\":\"credit\"}}}\n\n",
+        ),
     }
 }
 
@@ -307,6 +321,7 @@ fn contract(case: &Case) -> Res {
     hosted_tools_are_removed_from_every_request(case)?;
     fields_the_broker_does_not_know_are_refused(case)?;
     a_busy_provider_is_retried_then_answered_retryably(case)?;
+    a_provider_out_of_credit_mid_stream_is_named_not_the_budget(case)?;
     unknown_paths_and_methods_are_refused(case)?;
     Ok(())
 }
@@ -755,6 +770,64 @@ fn hosted_tools_are_removed_from_every_request(case: &Case) -> Res {
     let sent = r.script.sent();
     let last = sent.last().ok_or("sent")?;
     assert_eq!(last.2["tool_choice"]["name"], case.client_tool["name"]);
+    Ok(())
+}
+
+/// #355, ADR-0123: a stream the provider ends because the key has no credit is charged in full, as
+/// any stream without final usage is, and the job's later calls name the provider, not the budget.
+/// Another job on the same key is not refused for it.
+fn a_provider_out_of_credit_mid_stream_is_named_not_the_budget(case: &Case) -> Res {
+    let r = rig(case)?;
+    let job = manifest(60, Role::Actor, 900);
+    r.script.answer(
+        200,
+        &[("content-type", "text/event-stream")],
+        case.out_of_credit.as_bytes(),
+    );
+    read_all(
+        r.relay
+            .handle(&job, call(case, case.path, &plain(case)))
+            .body,
+    )?;
+    assert_eq!(r.meter.spent(job.job), 900, "charged in full");
+    assert!(r.meter.quota_spent(job.job));
+    let sent = r.script.sent().len();
+    for path in [case.path, case.count_path] {
+        let response = r.relay.handle(&job, call(case, path, &plain(case)));
+        assert_eq!(response.status, 402);
+        assert_eq!(
+            response.reason.as_ref().map(|r| r.as_str()),
+            Some(hyalos_broker::model::QUOTA_SPENT)
+        );
+        let text = read_all(response.body)?;
+        assert!(text.contains("quota or credit is spent"), "{text}");
+        assert!(!text.contains("budget"), "{text}");
+    }
+    assert_eq!(
+        r.script.sent().len(),
+        sent,
+        "nothing more reached the provider"
+    );
+
+    // A stream that is cut short without saying why is still the budget's, as before.
+    let other = manifest(61, Role::Actor, 900);
+    let cut = case.stream.rfind("event: ").ok_or("no last event")?;
+    r.script.answer(
+        200,
+        &[("content-type", "text/event-stream")],
+        &case.stream.as_bytes()[..cut],
+    );
+    read_all(
+        r.relay
+            .handle(&other, call(case, case.path, &plain(case)))
+            .body,
+    )?;
+    assert!(!r.meter.quota_spent(other.job));
+    let response = r.relay.handle(&other, call(case, case.path, &plain(case)));
+    assert_eq!(
+        response.reason.as_ref().map(|r| r.as_str()),
+        Some("budget.spent")
+    );
     Ok(())
 }
 
