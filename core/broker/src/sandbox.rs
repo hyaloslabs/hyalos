@@ -59,33 +59,23 @@ pub struct Providers {
 }
 
 /// Why a key file was refused. It names a line or a provider, never what the line held.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProviderError {
     /// Not `name = value`, or a name this build does not know.
+    #[error(
+        "line {0} is not one of anthropic.key, anthropic.base, openai.key or openai.base = value"
+    )]
     Line(usize),
     /// A name given twice.
+    #[error("line {0} gives a name a second time")]
     Repeated(usize),
     /// A key that is not printable ASCII without spaces.
+    #[error("the {0} key is not a key")]
     Key(&'static str),
     /// A base given for a provider with no key.
+    #[error("{0}.base is given with no {0}.key")]
     BaseWithoutKey(&'static str),
 }
-
-impl fmt::Display for ProviderError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ProviderError::Line(n) => write!(
-                f,
-                "line {n} is not one of anthropic.key, anthropic.base, openai.key or openai.base = value"
-            ),
-            ProviderError::Repeated(n) => write!(f, "line {n} gives a name a second time"),
-            ProviderError::Key(p) => write!(f, "the {p} key is not a key"),
-            ProviderError::BaseWithoutKey(p) => write!(f, "{p}.base is given with no {p}.key"),
-        }
-    }
-}
-
-impl std::error::Error for ProviderError {}
 
 impl Providers {
     /// Reads `name = value` lines; blank lines and lines starting with `#` are skipped. The names are

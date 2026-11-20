@@ -12,28 +12,17 @@
 //!   alone. The mark also stops other processes of the same user reading its memory with `ptrace` or
 //!   `/proc/<pid>/mem`.
 
-use std::fmt;
-
 use rustix::process::{Resource, Rlimit, setrlimit};
 
 /// Why the process could not be made safe from dumps.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "cannot {what}: {error}. Without it a crash could write the signing key to disk (ADR-0030)"
+)]
 pub struct Failed {
     what: &'static str,
     error: String,
 }
-
-impl fmt::Display for Failed {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "cannot {}: {}. Without it a crash could write the signing key to disk (ADR-0030)",
-            self.what, self.error
-        )
-    }
-}
-
-impl std::error::Error for Failed {}
 
 /// Turns core dumps off for this process. Call it first, before any key is read.
 pub fn no_core_dumps() -> Result<(), Failed> {

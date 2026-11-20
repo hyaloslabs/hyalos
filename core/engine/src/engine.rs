@@ -20,73 +20,45 @@ use hyalos_types::{
 
 use crate::state::{Pruned, RuleViolation, State};
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum EngineError {
+    #[error("{0}")]
     Log(LogError),
     /// The existing log does not verify against the engine's key, so it is not loaded.
+    #[error("the event log failed verification: {0}")]
     Verify(VerifyError),
     /// A stored event could not be read back.
-    Event {
-        seq: u64,
-        error: EventError,
-    },
+    #[error("event {seq}: {error}")]
+    Event { seq: u64, error: EventError },
     /// The schema table the engine was given is inconsistent (ADR-0023).
+    #[error("the event schema table is not valid: {0}")]
     Schema(String),
     /// An event was refused because it is not legal for the current state.
+    #[error("refused: {0}")]
     Rule(RuleViolation),
     /// A stored event is not legal for the state before it. The log is damaged or was written by a
     /// buggy engine.
-    Replay {
-        seq: u64,
-        violation: RuleViolation,
-    },
+    #[error("event {seq} is not legal where it sits in the log: {violation}")]
+    Replay { seq: u64, violation: RuleViolation },
     /// The log's latest snapshot could not be used as the state to start from (ADR-0026).
+    #[error("the log's snapshot cannot be used: {0}")]
     Snapshot(String),
     /// A policy document was refused before anything was written: it is not valid Cedar, or it does
     /// not match the shipped schema (ADR-0008, ADR-0034).
+    #[error("{0}")]
     Policy(LoadError),
     /// The log was not compacted. It is as it was.
+    #[error("{0}")]
     Compact(CompactError<String>),
     /// An event was appended but could not be projected. This cannot happen, since it was checked
     /// first. The engine stops accepting events rather than continue with state it cannot trust.
+    #[error("the engine's state no longer matches its log; restart it")]
     Poisoned,
     /// A human decision needs the operator's signature, and this engine was not given the operator's
     /// key (ADR-0070). Nothing was written.
+    #[error("a human decision must be signed with the operator's key, and none was given")]
     NoOperatorKey,
 }
-
-impl fmt::Display for EngineError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            EngineError::Log(e) => write!(f, "{e}"),
-            EngineError::Verify(e) => write!(f, "the event log failed verification: {e}"),
-            EngineError::Event { seq, error } => write!(f, "event {seq}: {error}"),
-            EngineError::Schema(e) => write!(f, "the event schema table is not valid: {e}"),
-            EngineError::Rule(v) => write!(f, "refused: {v}"),
-            EngineError::Replay { seq, violation } => {
-                write!(
-                    f,
-                    "event {seq} is not legal where it sits in the log: {violation}"
-                )
-            }
-            EngineError::Snapshot(e) => write!(f, "the log's snapshot cannot be used: {e}"),
-            EngineError::Policy(e) => write!(f, "{e}"),
-            EngineError::Compact(e) => write!(f, "{e}"),
-            EngineError::NoOperatorKey => write!(
-                f,
-                "a human decision must be signed with the operator's key, and none was given"
-            ),
-            EngineError::Poisoned => {
-                write!(
-                    f,
-                    "the engine's state no longer matches its log; restart it"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for EngineError {}
 
 impl From<LogError> for EngineError {
     fn from(e: LogError) -> Self {

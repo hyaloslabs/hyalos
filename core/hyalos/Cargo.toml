@@ -20,6 +20,8 @@ hyalos-plugin = { path = "../plugin" }
 hyalos-broker = { path = "../broker" }
 getrandom = "0.4"
 zeroize = "1"
+# Error text (ADR-0126). A proc-macro: it writes the Display and Error impls at build time.
+thiserror = "2"
 rustix = { version = "1.1.6", features = ["process", "net", "termios"] }
 # The GitHub App's JWT is RS256 (ADR-0044). ring is already in the build under rustls; the `rsa`
 # crate is not used because of its unfixed timing advisory (RUSTSEC-2023-0071).

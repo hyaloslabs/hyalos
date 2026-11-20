@@ -5,7 +5,6 @@
 //! silently wrong state. Everything here is ordered (`BTreeMap`), so two replays of one log are equal.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 
 use hyalos_types::snapshot::{
     AgentImage, CancelledImage, DraftImage, HandleImage, HoldImage, InstallPolicyImage,
@@ -100,45 +99,43 @@ pub struct Resolved {
 }
 
 /// An event that is not legal for the state it would land on.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RuleViolation {
+    #[error("task {0} does not exist")]
     UnknownTask(TaskId),
+    #[error("job {0} does not exist")]
     UnknownJob(JobId),
+    #[error("hold {0} does not exist")]
     UnknownHold(HoldId),
     /// A job can only start on, and a task can only complete from, an open task.
-    TaskNotOpen {
-        task: TaskId,
-        status: TaskStatus,
-    },
+    #[error("task {task} is {status:?}, not open")]
+    TaskNotOpen { task: TaskId, status: TaskStatus },
     /// A completed task takes no more holds.
+    #[error("task {0} is already completed")]
     TaskCompleted(TaskId),
     /// A task has at most one running job, and it cannot be held or completed while one runs: end the
     /// job first (ADR-0019).
-    TaskHasRunningJob {
-        task: TaskId,
-        job: JobId,
-    },
+    #[error("task {task} still has job {job} running; end the job first")]
+    TaskHasRunningJob { task: TaskId, job: JobId },
+    #[error("job {0} is not running")]
     JobNotRunning(JobId),
+    #[error("hold {0} is not open")]
     HoldNotOpen(HoldId),
     /// Events must be applied in increasing sequence order.
-    OutOfOrder {
-        seq: u64,
-        last: u64,
-    },
+    #[error("event {seq} arrived after event {last}")]
+    OutOfOrder { seq: u64, last: u64 },
     /// A gate answered unknown, so the next events must end its job as held and open the hold for
     /// that gate and those inputs, and nothing else may come between (ADR-0020).
-    HoldRequired {
-        job: JobId,
-        next: &'static str,
-    },
+    #[error("job {job}'s gate answered unknown, so the next event must be {next}")]
+    HoldRequired { job: JobId, next: &'static str },
     /// An unknown answer must be written together with its hold, never alone (ADR-0020).
+    #[error("an unknown answer is written together with its hold, not on its own")]
     UnknownNeedsHold,
     /// This origin may not submit this kind of event (ADR-0024).
-    OriginNotAllowed {
-        kind: &'static str,
-        origin: Origin,
-    },
+    #[error("a `{kind}` event may not come from the {} (ADR-0024)", .origin.as_str())]
+    OriginNotAllowed { kind: &'static str, origin: Origin },
     /// This decider may not release a hold with these stakes (ADR-0025).
+    #[error("hold {hold} ({:?}, touching {:?}) may not be released by {by:?} (ADR-0025)", .stakes.tier, .stakes.touches)]
     ResolutionNotAuthorized {
         hold: HoldId,
         by: Resolution,
@@ -146,335 +143,176 @@ pub enum RuleViolation {
     },
     /// A hold is released through `Engine::reevaluate_hold` or `Engine::decide_hold`, which record
     /// what justifies it; a raw `hold.resolved` is refused (ADR-0025).
+    #[error(
+        "a hold is released through reevaluate_hold or decide_hold, not by submitting hold.resolved"
+    )]
     ResolveThroughTheEngineApi,
     /// A re-evaluation asked a different gate, or about different inputs, than the hold holds.
+    #[error("that answer is for a different gate or different inputs than hold {0} holds")]
     ReevaluatedAnotherRequest(HoldId),
     /// An event is stamped earlier than the one before it (ADR-0024).
-    TimeWentBackwards {
-        previous: Timestamp,
-        at: Timestamp,
-    },
+    #[error("an event stamped {} ms comes after one stamped {} ms; log time does not go backwards", .at.as_millis(), .previous.as_millis())]
+    TimeWentBackwards { previous: Timestamp, at: Timestamp },
     /// The log ends after an unknown answer, before its hold. Nothing may proceed on unknown.
+    #[error("the log ends after job {0}'s gate answered unknown, before its hold opened")]
     UnfinishedHold(JobId),
     /// Only a held task can be cancelled (ADR-0029).
-    TaskNotHeld {
-        task: TaskId,
-        status: TaskStatus,
-    },
+    #[error("task {task} is {status:?}, and only a held task can be cancelled")]
+    TaskNotHeld { task: TaskId, status: TaskStatus },
     /// This decider may not cancel a task with an open hold at these stakes (ADR-0029).
+    #[error("{by:?} may not cancel task {task}, which has a hold at {stakes:?}")]
     CancelNotAuthorized {
         task: TaskId,
         by: Resolution,
         stakes: Stakes,
     },
     /// A cancelled task takes no more holds.
+    #[error("task {0} is cancelled")]
     TaskCancelled(TaskId),
     /// This kind of event is written by an engine call that justifies it, never submitted raw.
-    ThroughTheEngineApi {
-        kind: &'static str,
-    },
+    #[error(
+        "{kind} is recorded by the engine call that justifies it (cancel_task, reevaluate_hold, approve_policy, release_handle, issue_agent or revoke_agent), not by submitting it"
+    )]
+    ThroughTheEngineApi { kind: &'static str },
     /// An archive that ends at an event the log has not reached cannot have been made from it.
-    ArchiveBeyondLog {
-        last_seq: u64,
-        log_end: u64,
-    },
+    #[error(
+        "an archive ending at event {last_seq} cannot come from a log that ends at event {log_end}"
+    )]
+    ArchiveBeyondLog { last_seq: u64, log_end: u64 },
     /// That archive was already recorded as pruned (ADR-0026).
-    AlreadyPruned {
-        last_seq: u64,
-    },
+    #[error("the archive ending at event {last_seq} is already recorded as pruned")]
+    AlreadyPruned { last_seq: u64 },
     /// No snapshot of this log stands at that event with that hash, so an archive ending there is not
     /// one this log made.
-    NotASnapshotOfThisLog {
-        last_seq: u64,
-    },
+    #[error(
+        "no snapshot of this log stands at event {last_seq} with that hash, so an archive ending there is not one it made"
+    )]
+    NotASnapshotOfThisLog { last_seq: u64 },
     /// A policy change is irreversible and touches policy, so only a human approves it (ADR-0034).
-    PolicyNeedsAHuman {
-        by: Resolution,
-    },
+    #[error(
+        "a policy change needs a human's approval; {by:?} may not approve one (ADR-0012, ADR-0034)"
+    )]
+    PolicyNeedsAHuman { by: Resolution },
     /// A policy document is bounded (ADR-0034).
-    PolicyTooLarge {
-        len: usize,
-    },
+    #[error(
+        "a policy document of {len} bytes is larger than the {MAX_POLICY_DOCUMENT} bytes allowed"
+    )]
+    PolicyTooLarge { len: usize },
     /// Raw forge text reaches an actor only by a human's decision, or by policy's when everyone who
     /// wrote it can write to the repository (ADR-0012, ADR-0063, ADR-0103).
-    HandleNeedsAHuman {
-        by: Resolution,
-    },
+    #[error(
+        "releasing a handle's text to an actor needs a human's decision, or policy's for text only the repository's writers wrote; {by:?} may not make this one (ADR-0012, ADR-0063, ADR-0103)"
+    )]
+    HandleNeedsAHuman { by: Resolution },
     /// That handle was already released to that task.
-    HandleAlreadyReleased {
-        task: TaskId,
-        handle: Digest,
-    },
+    #[error("handle {handle} is already released to task {task}")]
+    HandleAlreadyReleased { task: TaskId, handle: Digest },
     /// A merge is irreversible, so only a human approves one (ADR-0012, ADR-0071).
-    MergeNeedsAHuman {
-        by: Resolution,
-    },
+    #[error("a merge needs a human's approval; {by:?} may not approve one (ADR-0012, ADR-0071)")]
+    MergeNeedsAHuman { by: Resolution },
     /// Installing a plugin grants it capabilities, so only a human does it, or policy within the
     /// install policy the human set (ADR-0012, ADR-0089, ADR-0091).
-    PluginNeedsAHuman {
-        by: Resolution,
-    },
+    #[error(
+        "installing a plugin grants it capabilities and needs a human; {by:?} may not (ADR-0012, ADR-0089)"
+    )]
+    PluginNeedsAHuman { by: Resolution },
     /// Setting the install policy decides what installs without a human, so only a human sets it
     /// (ADR-0012, ADR-0091).
-    InstallPolicyNeedsAHuman {
-        by: Resolution,
-    },
+    #[error(
+        "the install policy decides what installs without a human, so a human sets it; {by:?} may not (ADR-0012, ADR-0091)"
+    )]
+    InstallPolicyNeedsAHuman { by: Resolution },
     /// An install policy with a ceiling outside the vocabulary, an age out of range, or too many
     /// indexes.
+    #[error(
+        "an install policy's ceiling is in the vocabulary, its ages are 1 to 3650 days, and it trusts at most 16 indexes (ADR-0091)"
+    )]
     InstallPolicyInvalid,
     /// An update was found for a plugin that is not installed from an index, or asks for a name the
     /// vocabulary does not accept (ADR-0092).
+    #[error(
+        "an update waits only for a plugin installed from an index, asking for names in the vocabulary (ADR-0092)"
+    )]
     UpdateNotForAnIndexInstall,
     /// A trusted-root snapshot no later than the one imported before it (ADR-0097).
+    #[error(
+        "a trusted-root snapshot is imported only if it is later than the one before it (ADR-0097)"
+    )]
     SnapshotNotNewer,
     /// A revocation list no later than the one imported before it (ADR-0098).
+    #[error("a revocation list is imported only if it is later than the one before it (ADR-0098)")]
     RevocationsNotNewer,
     /// A revocation recorded for a release that is not the one installed under its name, already
     /// recorded, or before any revocation list was imported (ADR-0098).
+    #[error(
+        "a revocation is recorded once, after a revocation list is imported, for the release installed under its name (ADR-0098)"
+    )]
     RevocationNotApplicable,
     /// An install of a release recorded as revoked under that name (ADR-0098).
+    #[error("a release recorded as revoked is not installed again (ADR-0098)")]
     PluginRevoked,
     /// A plugin's grant holds a name the capability vocabulary does not accept (ADR-0085).
+    #[error("a plugin's grant holds a name the capability vocabulary does not accept (ADR-0085)")]
     PluginGrantInvalid,
     /// A skill was drafted from a task that did not end in success, with a grant beyond
     /// `Grant::read_only`, or under a name already drafted or installed (ADR-0113).
+    #[error(
+        "a skill is drafted once per name, from a task whose last job succeeded, with no more than read capabilities (ADR-0113)"
+    )]
     DraftRefused,
     /// A draft was trusted that is not drafted under that name and digest, or is trusted already
     /// (ADR-0114).
+    #[error("a draft is trusted once, by the name and digest it was drafted with (ADR-0114)")]
     TrustRefused,
     /// A task holds one merge approval, made before any job runs on it.
+    #[error(
+        "task {0} already has a merge approved, or has started a job; a merge approval opens its own task"
+    )]
     MergeAlreadyApproved(TaskId),
     /// A second job on a task whose merge approval a job has already had.
+    #[error(
+        "task {0} has had its merge job; an approval is used once, so approve again in a new task"
+    )]
     MergeJobRan(TaskId),
     /// The repository or pull request number is not one an approval may name.
+    #[error("a merge approval names an owner/name repository and a pull request number")]
     MergeTargetInvalid,
     /// Issuing a credential grants a capability, so only a human does it (ADR-0012, ADR-0068).
-    AgentNeedsAHuman {
-        by: Resolution,
-    },
+    #[error(
+        "issuing an agent's credential needs a human; {by:?} may not issue one (ADR-0012, ADR-0068)"
+    )]
+    AgentNeedsAHuman { by: Resolution },
     /// Two credentials never share a secret, revoked or not, so a revoked one cannot come back.
+    #[error("that credential was already issued")]
     AgentCredentialReused,
     /// A credential that is not revoked already has that name.
+    #[error("an agent's credential named {0} is already in force; revoke it first")]
     AgentNameInUse(AgentName),
+    #[error("agent {0} does not exist")]
     UnknownAgent(AgentId),
+    #[error("agent {0} is already revoked")]
     AgentAlreadyRevoked(AgentId),
     /// A revocation is a decision, never a gate's re-evaluation.
+    #[error("a credential is revoked by a decision, not by a gate")]
     RevokeNotADecision,
     /// A human decision must carry the operator's signature (ADR-0070).
+    #[error("a human decision must carry the operator's signature")]
     HumanDecisionUnsigned,
     /// Only a human decision carries a signature.
-    SignedButNotHuman {
-        by: Resolution,
-    },
+    #[error("a decision by {by:?} carries no operator signature")]
+    SignedButNotHuman { by: Resolution },
     /// The approval names an event after the last one, or before the last decision the operator
     /// signed, so it was not signed for this place in the log.
-    ApprovalOutOfPlace {
-        after: u64,
-        since: u64,
-        last: u64,
-    },
+    #[error(
+        "the approval was signed after event {after}, which is not between the last approval ({since}) and the last event ({last})"
+    )]
+    ApprovalOutOfPlace { after: u64, since: u64, last: u64 },
     /// A job returns its values once, while it runs, and no more of them than an output has fields.
+    #[error("job {0} has already returned its values")]
     JobValuesTwice(JobId),
+    #[error("job {0} returned more values than an output has fields ({MAX_FIELDS})")]
     TooManyValues(JobId),
 }
-
-impl fmt::Display for RuleViolation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RuleViolation::UnknownTask(t) => write!(f, "task {t} does not exist"),
-            RuleViolation::UnknownJob(j) => write!(f, "job {j} does not exist"),
-            RuleViolation::UnknownHold(h) => write!(f, "hold {h} does not exist"),
-            RuleViolation::TaskNotOpen { task, status } => {
-                write!(f, "task {task} is {status:?}, not open")
-            }
-            RuleViolation::TaskCompleted(t) => write!(f, "task {t} is already completed"),
-            RuleViolation::TaskHasRunningJob { task, job } => {
-                write!(
-                    f,
-                    "task {task} still has job {job} running; end the job first"
-                )
-            }
-            RuleViolation::JobNotRunning(j) => write!(f, "job {j} is not running"),
-            RuleViolation::HoldNotOpen(h) => write!(f, "hold {h} is not open"),
-            RuleViolation::HoldRequired { job, next } => write!(
-                f,
-                "job {job}'s gate answered unknown, so the next event must be {next}"
-            ),
-            RuleViolation::UnknownNeedsHold => write!(
-                f,
-                "an unknown answer is written together with its hold, not on its own"
-            ),
-            RuleViolation::UnfinishedHold(job) => write!(
-                f,
-                "the log ends after job {job}'s gate answered unknown, before its hold opened"
-            ),
-            RuleViolation::ArchiveBeyondLog { last_seq, log_end } => write!(
-                f,
-                "an archive ending at event {last_seq} cannot come from a log that ends at event {log_end}"
-            ),
-            RuleViolation::TaskNotHeld { task, status } => {
-                write!(
-                    f,
-                    "task {task} is {status:?}, and only a held task can be cancelled"
-                )
-            }
-            RuleViolation::CancelNotAuthorized { task, by, stakes } => write!(
-                f,
-                "{by:?} may not cancel task {task}, which has a hold at {stakes:?}"
-            ),
-            RuleViolation::TaskCancelled(t) => write!(f, "task {t} is cancelled"),
-            RuleViolation::ThroughTheEngineApi { kind } => write!(
-                f,
-                "{kind} is recorded by the engine call that justifies it (cancel_task, reevaluate_hold, approve_policy, release_handle, issue_agent or revoke_agent), not by submitting it"
-            ),
-            RuleViolation::PolicyNeedsAHuman { by } => write!(
-                f,
-                "a policy change needs a human's approval; {by:?} may not approve one (ADR-0012, ADR-0034)"
-            ),
-            RuleViolation::HandleNeedsAHuman { by } => write!(
-                f,
-                "releasing a handle's text to an actor needs a human's decision, or policy's for text only the repository's writers wrote; {by:?} may not make this one (ADR-0012, ADR-0063, ADR-0103)"
-            ),
-            RuleViolation::HandleAlreadyReleased { task, handle } => {
-                write!(f, "handle {handle} is already released to task {task}")
-            }
-            RuleViolation::MergeNeedsAHuman { by } => write!(
-                f,
-                "a merge needs a human's approval; {by:?} may not approve one (ADR-0012, ADR-0071)"
-            ),
-            RuleViolation::PluginNeedsAHuman { by } => write!(
-                f,
-                "installing a plugin grants it capabilities and needs a human; {by:?} may not (ADR-0012, ADR-0089)"
-            ),
-            RuleViolation::InstallPolicyNeedsAHuman { by } => write!(
-                f,
-                "the install policy decides what installs without a human, so a human sets it; {by:?} may not (ADR-0012, ADR-0091)"
-            ),
-            RuleViolation::InstallPolicyInvalid => write!(
-                f,
-                "an install policy's ceiling is in the vocabulary, its ages are 1 to 3650 days, and it trusts at most 16 indexes (ADR-0091)"
-            ),
-            RuleViolation::UpdateNotForAnIndexInstall => write!(
-                f,
-                "an update waits only for a plugin installed from an index, asking for names in the vocabulary (ADR-0092)"
-            ),
-            RuleViolation::SnapshotNotNewer => write!(
-                f,
-                "a trusted-root snapshot is imported only if it is later than the one before it (ADR-0097)"
-            ),
-            RuleViolation::RevocationsNotNewer => write!(
-                f,
-                "a revocation list is imported only if it is later than the one before it (ADR-0098)"
-            ),
-            RuleViolation::RevocationNotApplicable => write!(
-                f,
-                "a revocation is recorded once, after a revocation list is imported, for the release installed under its name (ADR-0098)"
-            ),
-            RuleViolation::PluginRevoked => write!(
-                f,
-                "a release recorded as revoked is not installed again (ADR-0098)"
-            ),
-            RuleViolation::DraftRefused => write!(
-                f,
-                "a skill is drafted once per name, from a task whose last job succeeded, with no more than read capabilities (ADR-0113)"
-            ),
-            RuleViolation::TrustRefused => write!(
-                f,
-                "a draft is trusted once, by the name and digest it was drafted with (ADR-0114)"
-            ),
-            RuleViolation::PluginGrantInvalid => write!(
-                f,
-                "a plugin's grant holds a name the capability vocabulary does not accept (ADR-0085)"
-            ),
-            RuleViolation::MergeAlreadyApproved(task) => write!(
-                f,
-                "task {task} already has a merge approved, or has started a job; a merge approval opens its own task"
-            ),
-            RuleViolation::MergeJobRan(task) => write!(
-                f,
-                "task {task} has had its merge job; an approval is used once, so approve again in a new task"
-            ),
-            RuleViolation::MergeTargetInvalid => f.write_str(
-                "a merge approval names an owner/name repository and a pull request number",
-            ),
-            RuleViolation::AgentNeedsAHuman { by } => write!(
-                f,
-                "issuing an agent's credential needs a human; {by:?} may not issue one (ADR-0012, ADR-0068)"
-            ),
-            RuleViolation::AgentCredentialReused => {
-                write!(f, "that credential was already issued")
-            }
-            RuleViolation::AgentNameInUse(name) => write!(
-                f,
-                "an agent's credential named {name} is already in force; revoke it first"
-            ),
-            RuleViolation::UnknownAgent(a) => write!(f, "agent {a} does not exist"),
-            RuleViolation::AgentAlreadyRevoked(a) => write!(f, "agent {a} is already revoked"),
-            RuleViolation::JobValuesTwice(j) => {
-                write!(f, "job {j} has already returned its values")
-            }
-            RuleViolation::TooManyValues(j) => write!(
-                f,
-                "job {j} returned more values than an output has fields ({MAX_FIELDS})"
-            ),
-            RuleViolation::RevokeNotADecision => {
-                write!(f, "a credential is revoked by a decision, not by a gate")
-            }
-            RuleViolation::HumanDecisionUnsigned => {
-                write!(f, "a human decision must carry the operator's signature")
-            }
-            RuleViolation::SignedButNotHuman { by } => {
-                write!(f, "a decision by {by:?} carries no operator signature")
-            }
-            RuleViolation::ApprovalOutOfPlace { after, since, last } => write!(
-                f,
-                "the approval was signed after event {after}, which is not between the last \
-                 approval ({since}) and the last event ({last})"
-            ),
-            RuleViolation::PolicyTooLarge { len } => write!(
-                f,
-                "a policy document of {len} bytes is larger than the {MAX_POLICY_DOCUMENT} bytes allowed"
-            ),
-            RuleViolation::NotASnapshotOfThisLog { last_seq } => write!(
-                f,
-                "no snapshot of this log stands at event {last_seq} with that hash, so an archive ending there is not one it made"
-            ),
-            RuleViolation::AlreadyPruned { last_seq } => write!(
-                f,
-                "the archive ending at event {last_seq} is already recorded as pruned"
-            ),
-            RuleViolation::OutOfOrder { seq, last } => {
-                write!(f, "event {seq} arrived after event {last}")
-            }
-            RuleViolation::ResolutionNotAuthorized { hold, by, stakes } => write!(
-                f,
-                "hold {hold} ({:?}, touching {:?}) may not be released by {by:?} (ADR-0025)",
-                stakes.tier, stakes.touches
-            ),
-            RuleViolation::ResolveThroughTheEngineApi => write!(
-                f,
-                "a hold is released through reevaluate_hold or decide_hold, not by submitting hold.resolved"
-            ),
-            RuleViolation::ReevaluatedAnotherRequest(h) => write!(
-                f,
-                "that answer is for a different gate or different inputs than hold {h} holds"
-            ),
-            RuleViolation::OriginNotAllowed { kind, origin } => write!(
-                f,
-                "a `{kind}` event may not come from the {} (ADR-0024)",
-                origin.as_str()
-            ),
-            RuleViolation::TimeWentBackwards { previous, at } => write!(
-                f,
-                "an event stamped {} ms comes after one stamped {} ms; log time does not go backwards",
-                at.as_millis(),
-                previous.as_millis()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for RuleViolation {}
 
 /// What an unknown answer still owes: the job ending held, then the hold opening.
 #[derive(Debug, Clone, PartialEq, Eq)]

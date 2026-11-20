@@ -14,6 +14,8 @@ workspace = true
 # Pinned exactly: cedar-policy-symcc, which proves things about the baseline in CI, needs this release (ADR-0008).
 cedar-policy = { version = "=4.14.1", default-features = false }
 hyalos-types = { path = "../types" }
+# Error text (ADR-0126). A proc-macro: it writes the Display and Error impls at build time.
+thiserror = "2"
 
 [dev-dependencies]
 hyalos-sim = { path = "../../crates/sim" }

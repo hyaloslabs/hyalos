@@ -53,17 +53,22 @@ impl fmt::Debug for Snapshot {
 }
 
 /// Why a snapshot was not accepted. Each is a reason code; none carries anything from the file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SnapshotError {
     /// Not a snapshot of version 1, or larger than [`MAX_SNAPSHOT`].
+    #[error("it is not a trusted-root snapshot this build reads")]
     Malformed,
     /// It has no Sigstore bundle.
+    #[error("it has no Sigstore bundle")]
     Unsigned,
     /// Its bundle does not verify under the snapshot in force, for the pipeline's identity.
+    #[error("it does not verify under the trusted-root snapshot in force ({}): if the Hyalos marketplace pipeline signed it, Sigstore has changed beyond what that snapshot can follow, and a new Hyalos release is needed", .0.code())]
     Unverifiable(Refusal),
     /// Its issue time is not later than the snapshot in force's.
+    #[error("it is not newer than the trusted-root snapshot in force")]
     NotNewer,
     /// It holds a trusted root this build cannot use.
+    #[error("its trusted root cannot be used")]
     Unusable,
 }
 
@@ -79,26 +84,6 @@ impl SnapshotError {
         ReasonCode::new(code).unwrap_or_else(ReasonCode::unavailable)
     }
 }
-
-impl fmt::Display for SnapshotError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Malformed => f.write_str("it is not a trusted-root snapshot this build reads"),
-            Self::Unsigned => f.write_str("it has no Sigstore bundle"),
-            Self::Unverifiable(refusal) => write!(
-                f,
-                "it does not verify under the trusted-root snapshot in force ({}): if the Hyalos marketplace pipeline signed it, Sigstore has changed beyond what that snapshot can follow, and a new Hyalos release is needed",
-                refusal.code()
-            ),
-            Self::NotNewer => {
-                f.write_str("it is not newer than the trusted-root snapshot in force")
-            }
-            Self::Unusable => f.write_str("its trusted root cannot be used"),
-        }
-    }
-}
-
-impl std::error::Error for SnapshotError {}
 
 impl Snapshot {
     /// The snapshot this release embeds. Its bundle verifies under its own root for the pipeline's

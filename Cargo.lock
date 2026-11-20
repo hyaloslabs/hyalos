@@ -1117,6 +1117,7 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
+ "thiserror",
  "wat",
  "zeroize",
 ]
@@ -1133,6 +1134,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "thiserror",
  "webpki-roots",
 ]
 
@@ -1155,6 +1157,7 @@ dependencies = [
  "hyalos-substrate",
  "hyalos-types",
  "rusqlite",
+ "thiserror",
 ]
 
 [[package]]
@@ -1165,6 +1168,7 @@ dependencies = [
  "hyalos-types",
  "rusqlite",
  "sha2 0.11.1",
+ "thiserror",
 ]
 
 [[package]]
@@ -1186,6 +1190,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "sigstore-verify",
+ "thiserror",
  "wasmtime",
  "wat",
 ]
@@ -1207,6 +1212,7 @@ dependencies = [
  "cedar-policy",
  "hyalos-sim",
  "hyalos-types",
+ "thiserror",
 ]
 
 [[package]]
@@ -1271,6 +1277,7 @@ version = "0.1.7"
 dependencies = [
  "hyalos-types",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -1289,6 +1296,7 @@ dependencies = [
  "ed25519-dalek",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]

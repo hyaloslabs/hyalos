@@ -370,30 +370,18 @@ fn code(text: &str) -> ReasonCode {
 }
 
 /// Why serving ended other than by the engine closing the channel or saying stop.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
     /// A frame could not be read or written.
+    #[error("{0}")]
     Wire(WireError),
     /// The first message was not `Hello`, or `Hello` came again.
+    #[error("the engine sent messages out of order")]
     Order,
     /// The engine speaks another version of the protocol.
+    #[error("the engine speaks protocol {engine}, and this broker speaks {WIRE_VERSION}")]
     Version { engine: u32 },
 }
-
-impl fmt::Display for ServeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ServeError::Wire(e) => write!(f, "{e}"),
-            ServeError::Order => f.write_str("the engine sent messages out of order"),
-            ServeError::Version { engine } => write!(
-                f,
-                "the engine speaks protocol {engine}, and this broker speaks {WIRE_VERSION}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ServeError {}
 
 impl From<WireError> for ServeError {
     fn from(e: WireError) -> Self {

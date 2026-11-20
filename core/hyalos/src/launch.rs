@@ -5,7 +5,6 @@
 //! system's entropy and keeps it in memory ([ADR-0022](../../../docs/adr/0022-engine-keys-generation-storage-backup-and-loss.md));
 //! the broker is given only the public half, in `Hello`, over the channel that only it can reach.
 
-use std::fmt;
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
@@ -88,37 +87,28 @@ impl Drop for JobDir {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum LaunchError {
+    #[error("{0}")]
     Channel(ChannelError),
+    #[error("the broker could not be started: {0}")]
     Spawn(io::ErrorKind),
+    #[error("{0}")]
     Wire(WireError),
     /// The broker answered `Hello` with something other than `Ready` at this protocol version.
+    #[error("the broker did not answer hello as it should")]
     Handshake,
     /// The broker would be confined to directories that reach the config directory, which holds the
     /// engine's keys (ADR-0118).
+    #[error(
+        "the broker would be able to read the config directory: move the runtime or data directory out of it"
+    )]
     Confinement,
     /// This kernel has no Landlock, so the broker could not confine itself, and is not started
     /// (ADR-0121).
+    #[error("{}", crate::confine::NO_LANDLOCK)]
     NoLandlock,
 }
-
-impl fmt::Display for LaunchError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LaunchError::Channel(e) => write!(f, "{e}"),
-            LaunchError::Spawn(kind) => write!(f, "the broker could not be started: {kind}"),
-            LaunchError::Wire(e) => write!(f, "{e}"),
-            LaunchError::Handshake => f.write_str("the broker did not answer hello as it should"),
-            LaunchError::Confinement => f.write_str(
-                "the broker would be able to read the config directory: move the runtime or data directory out of it",
-            ),
-            LaunchError::NoLandlock => f.write_str(crate::confine::NO_LANDLOCK),
-        }
-    }
-}
-
-impl std::error::Error for LaunchError {}
 
 impl From<ChannelError> for LaunchError {
     fn from(e: ChannelError) -> Self {

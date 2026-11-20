@@ -3,8 +3,6 @@
 //! v1 runs jobs on Linux hosts only. On Linux every driver is asked whether it is ready for the job's
 //! image, and the one with the strongest isolation is chosen; among equals, the first asked.
 
-use std::fmt;
-
 use hyalos_types::SubstrateName;
 
 use crate::{
@@ -15,22 +13,13 @@ use crate::{
 pub const HOST_OS: &str = std::env::consts::OS;
 
 /// The host is not one v1 runs jobs on (ADR-0011).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "this host runs {os}, and Hyalos v1 starts jobs only on Linux (ADR-0011): no sandbox driver has been tested anywhere else, so no job will start. On Windows, run Hyalos inside WSL2, which counts as Linux"
+)]
 pub struct Unsupported {
     pub os: String,
 }
-
-impl fmt::Display for Unsupported {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "this host runs {}, and Hyalos v1 starts jobs only on Linux (ADR-0011): no sandbox driver has been tested anywhere else, so no job will start. On Windows, run Hyalos inside WSL2, which counts as Linux",
-            self.os
-        )
-    }
-}
-
-impl std::error::Error for Unsupported {}
 
 /// Refuses every host but Linux. WSL2 reports itself as Linux and is treated as Linux.
 pub fn check_host(os: &str) -> Result<(), Unsupported> {

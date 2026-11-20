@@ -12,6 +12,8 @@ workspace = true
 
 [dependencies]
 hyalos-types = { path = "../types" }
+# Error text (ADR-0126). A proc-macro: it writes the Display and Error impls at build time.
+thiserror = "2"
 # Model requests and responses are JSON (ADR-0016, ADR-0037); the broker reads and rewrites them.
 serde_json = "1"
 # Forge answers are parsed against closed types that refuse unknown fields (ADR-0002, ADR-0047).

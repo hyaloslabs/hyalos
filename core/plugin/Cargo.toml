@@ -15,6 +15,8 @@ workspace = true
 # world only through the host imports its capabilities grant.
 wasmtime = { version = "=50.0.2", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
 hyalos-types = { path = "../types" }
+# Error text (ADR-0126). A proc-macro: it writes the Display and Error impls at build time.
+thiserror = "2"
 # The digest that binds an install to its files (S6.2, ADR-0089).
 sha2 = "0.11"
 # A plugin index is JSON (S7.9, ADR-0090).

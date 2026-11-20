@@ -15,8 +15,6 @@
 //! approved (ADR-0012, ADR-0071). That event carries the operator's signature (ADR-0070). A merge job
 //! does nothing else, and is untainted. No other irreversible action is ever minted approved.
 
-use std::fmt;
-
 use hyalos_policy::{Action, JobFacts, PolicyRequest, TargetFacts, codes};
 use hyalos_types::capability::Field;
 use hyalos_types::{
@@ -103,37 +101,23 @@ pub mod mint_codes {
 }
 
 /// Why no manifest was minted.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MintRefusal {
     /// The policy says no to something the manifest asks for. `ask` names it, such as `push`,
     /// `use_tool:Bash` or `request_host:example.com`.
+    #[error("policy does not allow {ask} ({reason})")]
     Denied { ask: String, reason: ReasonCode },
     /// The policy could not answer: it errored, or the approved operator policy no longer validates.
     /// The request is held, not allowed, until the policy answers or is replaced.
+    #[error("policy could not answer for {ask} ({reason}); the request is held, not allowed")]
     Held { ask: String, reason: ReasonCode },
     /// The manifest is not something the engine mints, whatever the policy says.
+    #[error("no manifest is minted ({reason})")]
     Invalid { reason: ReasonCode },
     /// The manifest could not be signed.
+    #[error("the manifest could not be signed: {0}")]
     Unsignable(ManifestError),
 }
-
-impl fmt::Display for MintRefusal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MintRefusal::Denied { ask, reason } => {
-                write!(f, "policy does not allow {ask} ({reason})")
-            }
-            MintRefusal::Held { ask, reason } => write!(
-                f,
-                "policy could not answer for {ask} ({reason}); the request is held, not allowed"
-            ),
-            MintRefusal::Invalid { reason } => write!(f, "no manifest is minted ({reason})"),
-            MintRefusal::Unsignable(e) => write!(f, "the manifest could not be signed: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for MintRefusal {}
 
 /// What a manifest asks for in the repo itself. The other three actions are asked for through the
 /// manifest's tools, data flows and hosts, which name what they apply to.

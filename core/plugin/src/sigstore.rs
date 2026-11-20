@@ -20,8 +20,6 @@
 //! vectors. A refusal is a reason code only: the library's message can carry
 //! values from the bundle, which is untrusted, so it is never shown.
 
-use std::fmt;
-
 use hyalos_types::{ReasonCode, Timestamp};
 use sigstore_verify::trust_root::TrustedRoot;
 use sigstore_verify::types::Bundle;
@@ -69,30 +67,42 @@ pub struct Trust {
 }
 
 /// Why a bundle was refused. Each is a reason code; none carries anything from the bundle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Refusal {
     /// Larger than [`MAX_BUNDLE`].
+    #[error("the Sigstore bundle is too large")]
     TooLarge,
     /// Not a Sigstore bundle this library reads, or one it does not support.
+    #[error("the Sigstore bundle is not one this build reads")]
     Malformed,
     /// The trusted root cannot be used.
+    #[error("the trusted-root snapshot cannot be used")]
     Snapshot,
     /// Signed by another identity: subject, issuer, repository or ref.
+    #[error("the release was not signed by the identity this build trusts")]
     Identity,
     /// The bundle is not about this artifact.
+    #[error("the Sigstore bundle is not about this file")]
     Digest,
     /// The signature does not verify.
+    #[error("the release's signature does not verify")]
     Signature,
     /// The certificate does not chain to an authority the snapshot lists, was not valid at the
     /// signed time, or has no transparency timestamp from a log the snapshot lists.
+    #[error("the signing certificate does not verify against the trusted-root snapshot")]
     Certificate,
     /// No transparency-log entry, or one without its inclusion proof, a checkpoint that does not
     /// verify, or a log the snapshot does not list.
+    #[error(
+        "the Sigstore bundle has no transparency-log entry that verifies against the trusted-root snapshot"
+    )]
     Log,
     /// No verified signed time: none in the bundle, or one that does not verify against an
     /// authority the snapshot lists.
+    #[error("the Sigstore bundle has no signed time that verifies")]
     Time,
     /// Anything else the library refused.
+    #[error("the Sigstore bundle does not verify")]
     Refused,
 }
 
@@ -113,29 +123,6 @@ impl Refusal {
         ReasonCode::new(code).unwrap_or_else(ReasonCode::unavailable)
     }
 }
-
-impl fmt::Display for Refusal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::TooLarge => "the Sigstore bundle is too large",
-            Self::Malformed => "the Sigstore bundle is not one this build reads",
-            Self::Snapshot => "the trusted-root snapshot cannot be used",
-            Self::Identity => "the release was not signed by the identity this build trusts",
-            Self::Digest => "the Sigstore bundle is not about this file",
-            Self::Signature => "the release's signature does not verify",
-            Self::Certificate => {
-                "the signing certificate does not verify against the trusted-root snapshot"
-            }
-            Self::Log => {
-                "the Sigstore bundle has no transparency-log entry that verifies against the trusted-root snapshot"
-            }
-            Self::Time => "the Sigstore bundle has no signed time that verifies",
-            Self::Refused => "the Sigstore bundle does not verify",
-        })
-    }
-}
-
-impl std::error::Error for Refusal {}
 
 impl Trust {
     /// The snapshot this release embeds ([`crate::snapshot::Snapshot::embedded`]) and the

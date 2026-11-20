@@ -7,7 +7,6 @@
 //! the digest given. The index is read within limits, and an error names nothing it holds.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 
 use hyalos_types::{Digest, PluginName, PluginVersion, ReasonCode};
 use serde::Deserialize;
@@ -41,20 +40,26 @@ pub struct Index {
 }
 
 /// Why an index cannot be read or does not hold what was asked for.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IndexError {
     /// Larger than an index may be.
+    #[error("the index is larger than {MAX_INDEX} bytes")]
     TooLarge,
     /// Not an index document: not JSON, an unknown field, or a name, version, digest or file name
     /// that is not well formed.
+    #[error("the index is not an index document this build reads")]
     Malformed,
     /// A version of the format this build does not read.
+    #[error("the index is version {0}; this build reads version {INDEX_VERSION}")]
     Version(u32),
     /// The same version twice for one name, or the same file named twice.
+    #[error("the index lists a version or a file twice")]
     Duplicate,
     /// No plugin of that name.
+    #[error("the index has no plugin of that name")]
     NoSuchPlugin,
     /// The plugin has no such version.
+    #[error("the index has no such version of that plugin")]
     NoSuchVersion,
 }
 
@@ -71,24 +76,6 @@ impl IndexError {
         ReasonCode::new(code).unwrap_or_else(ReasonCode::unavailable)
     }
 }
-
-impl fmt::Display for IndexError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::TooLarge => write!(f, "the index is larger than {MAX_INDEX} bytes"),
-            Self::Malformed => write!(f, "the index is not an index document this build reads"),
-            Self::Version(v) => write!(
-                f,
-                "the index is version {v}; this build reads version {INDEX_VERSION}"
-            ),
-            Self::Duplicate => write!(f, "the index lists a version or a file twice"),
-            Self::NoSuchPlugin => write!(f, "the index has no plugin of that name"),
-            Self::NoSuchVersion => write!(f, "the index has no such version of that plugin"),
-        }
-    }
-}
-
-impl std::error::Error for IndexError {}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

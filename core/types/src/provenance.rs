@@ -297,19 +297,12 @@ pub struct IssueFields {
 }
 
 /// Why an issue is not one the engine takes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum IssueError {
     /// A field is over its cap, or the whole is over [`MAX_ISSUE_JSON`] as JSON.
+    #[error("the issue is larger than the engine takes")]
     TooLarge,
 }
-
-impl fmt::Display for IssueError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("the issue is larger than the engine takes")
-    }
-}
-
-impl std::error::Error for IssueError {}
 
 impl TryFrom<IssueFields> for ForgeIssue {
     type Error = IssueError;

@@ -85,6 +85,10 @@ const EXTERNAL_ALLOWED: &[(&str, &[&str])] = &[
             // signatures. Signing is deterministic (RFC 8032); keys come in as bytes, and the
             // `rand_core` feature that could generate one is off.
             "ed25519-dalek",
+            // Error text (ADR-0126). Its proc-macro writes, at build time, the Display and Error impls
+            // a hand-written match would; the crate itself holds only the small traits that code calls.
+            // Neither reads the clock, an entropy source or anything but the value being formatted.
+            "thiserror",
         ],
     ),
     (
@@ -97,6 +101,10 @@ const EXTERNAL_ALLOWED: &[(&str, &[&str])] = &[
             "ed25519-dalek",
             // SHA-256 for the hash chain.
             "sha2",
+            // Error text (ADR-0126). Its proc-macro writes, at build time, the Display and Error impls
+            // a hand-written match would; the crate itself holds only the small traits that code calls.
+            // Neither reads the clock, an entropy source or anything but the value being formatted.
+            "thiserror",
         ],
     ),
     (
@@ -108,6 +116,19 @@ const EXTERNAL_ALLOWED: &[(&str, &[&str])] = &[
             // `now`), and no code path of ours takes time or randomness from it. Its own
             // dependencies are checked by `cargo deny` and review, as for every crate here.
             "cedar-policy",
+            // Error text (ADR-0126). Its proc-macro writes, at build time, the Display and Error impls
+            // a hand-written match would; the crate itself holds only the small traits that code calls.
+            // Neither reads the clock, an entropy source or anything but the value being formatted.
+            "thiserror",
+        ],
+    ),
+    (
+        "hyalos-engine",
+        &[
+            // Error text (ADR-0126). Its proc-macro writes, at build time, the Display and Error impls
+            // a hand-written match would; the crate itself holds only the small traits that code calls.
+            // Neither reads the clock, an entropy source or anything but the value being formatted.
+            "thiserror",
         ],
     ),
 ];

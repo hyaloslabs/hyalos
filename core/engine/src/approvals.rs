@@ -9,7 +9,6 @@
 //! decisions rest on the engine's key alone.
 
 use std::collections::BTreeMap;
-use std::fmt;
 use std::path::{Path, PathBuf};
 
 use hyalos_log::{Anchor, PublicKey, StoredEvent, VerifyError, read_verified};
@@ -46,74 +45,36 @@ pub struct Unrecorded {
     pub kind: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ApprovalError {
+    #[error("the event log failed verification: {0}")]
     Verify(VerifyError),
-    Event {
-        seq: u64,
-        error: EventError,
-    },
+    #[error("event {seq}: {error}")]
+    Event { seq: u64, error: EventError },
     /// The latest snapshot could not be read.
+    #[error("the latest snapshot could not be read: {0}")]
     Snapshot(String),
     /// A human decision written at version 13 or later carries no operator signature.
-    Unsigned {
-        seq: u64,
-    },
+    #[error("event {seq} is a human decision without the operator's signature")]
+    Unsigned { seq: u64 },
     /// The log has signed decisions and no operator key was given to check them with.
-    NoOperatorKey {
-        seq: u64,
-    },
+    #[error(
+        "event {seq} is signed by the operator, and there is no operator public key to check it with"
+    )]
+    NoOperatorKey { seq: u64 },
     /// Signed by a key that is not the operator's.
-    WrongOperator {
-        seq: u64,
-    },
+    #[error("event {seq} is signed by a key that is not the operator's")]
+    WrongOperator { seq: u64 },
     /// The signature does not hold for this event in this log.
-    BadSignature {
-        seq: u64,
-    },
+    #[error("the operator's signature on event {seq} does not hold for it in this log")]
+    BadSignature { seq: u64 },
     /// The event the approval names is not the one in this log at that place, or comes before the
     /// previous signed decision or not before the decision itself.
-    WrongPlace {
-        seq: u64,
-        after: u64,
-    },
+    #[error(
+        "event {seq} was signed after event {after}, which is not that event in this log or not between the previous signed decision and this one"
+    )]
+    WrongPlace { seq: u64, after: u64 },
 }
-
-impl fmt::Display for ApprovalError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ApprovalError::Verify(e) => write!(f, "the event log failed verification: {e}"),
-            ApprovalError::Event { seq, error } => write!(f, "event {seq}: {error}"),
-            ApprovalError::Snapshot(e) => write!(f, "the latest snapshot could not be read: {e}"),
-            ApprovalError::Unsigned { seq } => write!(
-                f,
-                "event {seq} is a human decision without the operator's signature"
-            ),
-            ApprovalError::NoOperatorKey { seq } => write!(
-                f,
-                "event {seq} is signed by the operator, and there is no operator public key to \
-                 check it with"
-            ),
-            ApprovalError::WrongOperator { seq } => {
-                write!(
-                    f,
-                    "event {seq} is signed by a key that is not the operator's"
-                )
-            }
-            ApprovalError::BadSignature { seq } => write!(
-                f,
-                "the operator's signature on event {seq} does not hold for it in this log"
-            ),
-            ApprovalError::WrongPlace { seq, after } => write!(
-                f,
-                "event {seq} was signed after event {after}, which is not that event in this log \
-                 or not between the previous signed decision and this one"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ApprovalError {}
 
 /// Checks every human decision in the log at `live` and in the `archives` given, each checked against
 /// the engine's public key `engine`, in sequence order across the files. `operator` is the

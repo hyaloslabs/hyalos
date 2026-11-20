@@ -151,62 +151,36 @@ pub mod flow {
 }
 
 /// Why bytes are not a manifest this build can use.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ManifestError {
     /// Not a signed manifest envelope.
+    #[error("not a signed manifest: {0}")]
     NotAnEnvelope(String),
     /// The signed payload is not a manifest.
+    #[error("the signed payload is not a manifest: {0}")]
     NotAManifest(String),
     /// The manifest could not be written out.
+    #[error("cannot write the manifest: {0}")]
     Encode(String),
 }
 
-impl fmt::Display for ManifestError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ManifestError::NotAnEnvelope(e) => write!(f, "not a signed manifest: {e}"),
-            ManifestError::NotAManifest(e) => {
-                write!(f, "the signed payload is not a manifest: {e}")
-            }
-            ManifestError::Encode(e) => write!(f, "cannot write the manifest: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for ManifestError {}
-
 /// Why a signed manifest was not opened. Each variant is a reason to refuse the job; none says what
 /// was in the document.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum OpenError {
     /// A schema version this build does not know. Checked before anything else is read.
+    #[error("manifest version {found} is not one this build knows ({MANIFEST_VERSION})")]
     UnknownVersion { found: u32 },
     /// The signature is not the engine's over this version and payload.
+    #[error("the manifest signature is not valid")]
     BadSignature,
     /// The signature is good but the payload is not a manifest.
+    #[error("the signed payload is not a manifest")]
     Malformed,
     /// The version inside the document is not the one it was signed and sent under.
+    #[error("the manifest was sent as version {envelope} but says it is version {document}")]
     VersionMismatch { envelope: u32, document: u32 },
 }
-
-impl fmt::Display for OpenError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            OpenError::UnknownVersion { found } => write!(
-                f,
-                "manifest version {found} is not one this build knows ({MANIFEST_VERSION})"
-            ),
-            OpenError::BadSignature => f.write_str("the manifest signature is not valid"),
-            OpenError::Malformed => f.write_str("the signed payload is not a manifest"),
-            OpenError::VersionMismatch { envelope, document } => write!(
-                f,
-                "the manifest was sent as version {envelope} but says it is version {document}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for OpenError {}
 
 /// A manifest, signed. The payload is exactly the bytes that were signed.
 #[derive(Clone, PartialEq, Eq)]

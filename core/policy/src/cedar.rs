@@ -9,7 +9,6 @@
 //! Cedar's types stay inside this module. Callers hand over text (policies, entities as JSON,
 //! entity ids) and get back a [`Verdict`], so a caller cannot reach the decision without the check.
 
-use std::fmt;
 use std::str::FromStr;
 
 use cedar_policy::{
@@ -32,49 +31,27 @@ pub struct Policies {
 }
 
 /// Why policy could not be loaded.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LoadError {
     /// Not valid Cedar. The message is Cedar's.
+    #[error("not valid Cedar policy: {0}")]
     Parse(String),
     /// Operator policy may not use templates.
+    #[error("operator policy may not use templates")]
     Template,
     /// Valid Cedar that does not pass the shipped schema. A policy in this state is rejected before a
     /// human is asked to approve it (ADR-0008).
+    #[error("the policy does not match the schema: {}", .0.join("; "))]
     Invalid(Vec<String>),
     /// The shipped schema or baseline did not load. A build defect; a test keeps it from shipping.
+    #[error("the shipped policy did not load: {0}")]
     Shipped(String),
 }
 
-impl fmt::Display for LoadError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LoadError::Parse(e) => write!(f, "not valid Cedar policy: {e}"),
-            LoadError::Template => f.write_str("operator policy may not use templates"),
-            LoadError::Invalid(errors) => {
-                write!(
-                    f,
-                    "the policy does not match the schema: {}",
-                    errors.join("; ")
-                )
-            }
-            LoadError::Shipped(e) => write!(f, "the shipped policy did not load: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for LoadError {}
-
 /// Policy text that is not valid Cedar. The message is Cedar's, for the operator who wrote it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not valid Cedar policy: {0}")]
 pub struct ParseError(String);
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "not valid Cedar policy: {}", self.0)
-    }
-}
-
-impl std::error::Error for ParseError {}
 
 /// One question for the policies: may `principal` do `action` to `resource`, given these entities.
 #[derive(Debug, Clone, Copy)]
