@@ -73,6 +73,11 @@ jobs:
           persist-credentials: false
       - name: Install the pinned toolchain
         run: rustup toolchain install
+      # Dependencies' builds, restored on every run and saved only from main, so a pull request cannot
+      # write what main restores (ADR-0124).
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Base images are pinned by digest in the Containerfile, harnesses by the lockfile.
       # A job runs on the strongest substrate the host has, so the end-to-end job runs under gVisor.
       - name: Install gVisor
