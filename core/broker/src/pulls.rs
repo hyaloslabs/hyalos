@@ -224,7 +224,7 @@ mod tests {
         ] {
             assert_eq!(closing(body, 24), "Closes #24", "{body:?}");
         }
-        // As retroboot/siteseer#35 and #34 had it: first, and last.
+        // As the two pull requests in ADR-0122 had it: first, and last.
         assert_eq!(
             closing("Closes #33.\n\nAdds one line.\n", 33),
             "Closes #33\n\nAdds one line.\n"

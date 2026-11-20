@@ -4,7 +4,7 @@
 
 ## Context
 
-In the timed bot1 run (#253), the first issue to go all the way through Hyalos, retroboot/siteseer#24, was merged as pull request #28, and the issue stayed open. The pull request's body did not say `Closes #24`, so GitHub did not close the issue on the merge (#284).
+In the timed bot1 run (#253), the first issue to go all the way through Hyalos, #24 in a private test repository (its name redacted before this repository went public), was merged as pull request #28, and the issue stayed open. The pull request's body did not say `Closes #24`, so GitHub did not close the issue on the merge (#284).
 
 The harness writes the pull request's title and body. The broker checks them with the content gate ([ADR-0048](0048-opening-a-pull-request-and-the-content-gate-on-its-text.md), [ADR-0065](0065-the-content-gate-on-what-a-tainted-job-publishes.md)) and sends them as they are. Asking the harness in its prompt to write `Closes #N` would not settle it: the actor is tainted, so whether its text says so is not something to rely on.
 
