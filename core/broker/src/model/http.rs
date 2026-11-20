@@ -12,7 +12,7 @@ use std::time::Duration;
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
-use super::{Transport, TransportError, Upstream, UpstreamResponse};
+use super::{Transport, TransportError, Upstream, UpstreamResponse, header};
 
 const MAX_HEAD: usize = 16 * 1024;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -229,25 +229,16 @@ fn read_response(
                 .map(|(n, v)| (n.trim().to_ascii_lowercase(), v.trim().to_string()))
         })
         .collect();
-    let get = |name: &str| {
-        headers
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.clone())
+    let body: Box<dyn Read + Send> = if header(&headers, "transfer-encoding")
+        .is_some_and(|v| v.to_ascii_lowercase().contains("chunked"))
+    {
+        Box::new(dechunk(reader))
+    } else if let Some(length) = header(&headers, "content-length") {
+        let length = length.parse::<u64>().map_err(|_| protocol)?;
+        Box::new(reader.take(length))
+    } else {
+        Box::new(reader)
     };
-    let body: Box<dyn Read + Send> =
-        if get("transfer-encoding").is_some_and(|v| v.to_ascii_lowercase().contains("chunked")) {
-            Box::new(Chunked {
-                inner: reader,
-                left: 0,
-                done: false,
-            })
-        } else if let Some(length) = get("content-length") {
-            let length = length.parse::<u64>().map_err(|_| protocol)?;
-            Box::new(reader.take(length))
-        } else {
-            Box::new(reader)
-        };
     Ok(UpstreamResponse {
         status,
         headers,

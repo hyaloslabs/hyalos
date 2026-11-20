@@ -26,8 +26,8 @@ use crate::forge::Forge;
 use crate::git::{self, Git};
 use crate::handles::{self, Held};
 use crate::model::{
-    Adapter, Anthropic, ApiKey, HttpTransport, MAX_BODY, Meter, OpenAi, Relay, Request, Response,
-    Sleep, refusal,
+    ANTHROPIC, Adapter, ApiKey, HttpTransport, MAX_BODY, Meter, OPENAI, Relay, Request, Response,
+    Sleep, header, refusal,
 };
 use crate::pulls;
 use crate::submit::{self, Submission, Submitted};
@@ -185,7 +185,7 @@ impl Models {
     /// transport refuses (plain `http://` off this host) is refused with the transport's code.
     pub fn from_providers(providers: &Providers, sleep: Arc<dyn Sleep>) -> Self {
         let meter = Arc::new(Meter::default());
-        let relay = |provider: &Option<Provider>, adapter: Arc<dyn Adapter>| {
+        let relay = |provider: &Option<Provider>, adapter: &'static Adapter| {
             let provider = provider.as_ref().ok_or("model.no_provider")?;
             let transport = HttpTransport::new(&provider.base).map_err(|e| e.0)?;
             Ok(Relay::new(
@@ -197,8 +197,8 @@ impl Models {
             ))
         };
         Self {
-            anthropic: relay(&providers.anthropic, Arc::new(Anthropic)),
-            openai: relay(&providers.openai, Arc::new(OpenAi)),
+            anthropic: relay(&providers.anthropic, &ANTHROPIC),
+            openai: relay(&providers.openai, &OPENAI),
             meter: Arc::clone(&meter),
         }
     }
@@ -219,13 +219,13 @@ impl Models {
     /// Answers one call for the job whose admitted manifest is `manifest`.
     pub fn answer(&self, manifest: &Manifest, request: Request, clock: &dyn Clock) -> Response {
         let path = request.target.split('?').next().unwrap_or_default();
-        let (adapter, relay): (&dyn Adapter, _) = if path.starts_with("/v1/messages") {
-            (&Anthropic, &self.anthropic)
+        let (adapter, relay): (&'static Adapter, _) = if path.starts_with("/v1/messages") {
+            (&ANTHROPIC, &self.anthropic)
         } else if path.starts_with("/v1/responses") {
-            (&OpenAi, &self.openai)
+            (&OPENAI, &self.openai)
         } else {
             return refusal(
-                &OpenAi,
+                &OPENAI,
                 404,
                 "model.route_refused",
                 "the broker serves no model call at this path",
@@ -308,32 +308,14 @@ impl JobSocket {
         })();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = Arc::clone(&stop);
+        let gate =
+            |gate, too_many| Reports::for_gate(manifest.job, gate, too_many, reports.clone());
         let reports = Arc::new(JobReports {
             egress: Reports::new(manifest.job, reports.clone()),
-            manifest: Reports::for_gate(
-                manifest.job,
-                Gate::Manifest,
-                git::TOO_MANY,
-                reports.clone(),
-            ),
-            content: Reports::for_gate(
-                manifest.job,
-                Gate::Content,
-                "content.too_many_refusals",
-                reports.clone(),
-            ),
-            role: Reports::for_gate(
-                manifest.job,
-                Gate::Role,
-                "role.too_many_refusals",
-                reports.clone(),
-            ),
-            dependency: Reports::for_gate(
-                manifest.job,
-                Gate::Dependency,
-                "dependency.too_many_losses",
-                reports,
-            ),
+            manifest: gate(Gate::Manifest, git::TOO_MANY),
+            content: gate(Gate::Content, "content.too_many_refusals"),
+            role: gate(Gate::Role, "role.too_many_refusals"),
+            dependency: gate(Gate::Dependency, "dependency.too_many_losses"),
         });
         let submitted = Submission::default();
         let manifest = Arc::new(Job {
@@ -515,21 +497,30 @@ fn connection(
         Err((status, message)) => {
             return write_response(
                 &mut &*stream,
-                refusal(&OpenAi, status, "model.bad_request", message),
+                refusal(&OPENAI, status, "model.bad_request", message),
             );
         }
     };
+    // A job that has ended or passed its deadline is refused before anything else is read or sent.
+    // A model call is checked after its body is read, and against the deadline by the relay.
+    let gone = if ended.load(Ordering::SeqCst) {
+        Some("admission.ended")
+    } else if sandboxes.clock.now() > manifest.deadline {
+        Some("admission.expired")
+    } else {
+        None
+    };
     // Data may go only where the manifest's flows say (ADR-0055).
-    let live = !ended.load(Ordering::SeqCst) && sandboxes.clock.now() <= manifest.deadline;
-    if let Some(sink) = sink(&head).filter(|s| live && !manifest.data_flows.contains(*s)) {
+    if let Some(sink) = sink(&head).filter(|s| gone.is_none() && !manifest.data_flows.contains(*s))
+    {
         reports
             .manifest
             .deny(FLOW_REFUSED, egress::inputs_digest(sink), ended);
         let response = if sink == flow::MODEL {
-            let adapter: &dyn Adapter = if head.target.starts_with("/v1/messages") {
-                &Anthropic
+            let adapter: &Adapter = if head.target.starts_with("/v1/messages") {
+                &ANTHROPIC
             } else {
-                &OpenAi
+                &OPENAI
             };
             refusal(
                 adapter,
@@ -544,23 +535,17 @@ fn connection(
     }
     // Raw text the job's manifest names a released handle for (ADR-0063). It reads; it sends nothing.
     if head.method != "CONNECT" && head.target.starts_with(handles::PREFIX) {
-        let response = if ended.load(Ordering::SeqCst) {
-            egress::refused(403, "admission.ended")
-        } else if sandboxes.clock.now() > manifest.deadline {
-            egress::refused(403, "admission.expired")
-        } else {
-            handles::answer(&head, manifest, held, &reports.manifest, ended)
+        let response = match gone {
+            Some(code) => egress::refused(403, code),
+            None => handles::answer(&head, manifest, held, &reports.manifest, ended),
         };
         return write_response(&mut &*stream, response);
     }
     // The job's result, from `hyalos-submit` (ADR-0064). It goes to the engine as typed values only.
     if head.method != "CONNECT" && head.target.starts_with(submit::PREFIX) {
-        let response = if ended.load(Ordering::SeqCst) {
-            egress::refused(403, "admission.ended")
-        } else if sandboxes.clock.now() > manifest.deadline {
-            egress::refused(403, "admission.expired")
-        } else {
-            submit::answer(
+        let response = match gone {
+            Some(code) => egress::refused(403, code),
+            None => submit::answer(
                 &head,
                 &mut reader,
                 &mut &*stream,
@@ -568,18 +553,15 @@ fn connection(
                 submitted,
                 bodies,
                 ended,
-            )
+            ),
         };
         return write_response(&mut &*stream, response);
     }
     // Anything but a model call is a proxy request, for the egress gate (ADR-0042).
     if head.method == "CONNECT" || !head.target.starts_with('/') {
-        let response = if ended.load(Ordering::SeqCst) {
-            Some(egress::refused(403, "admission.ended"))
-        } else if sandboxes.clock.now() > manifest.deadline {
-            Some(egress::refused(403, "admission.expired"))
-        } else {
-            egress::proxy(
+        let response = match gone {
+            Some(code) => Some(egress::refused(403, code)),
+            None => egress::proxy(
                 head,
                 &mut reader,
                 stream,
@@ -588,7 +570,7 @@ fn connection(
                 &reports.egress,
                 bodies,
                 ended,
-            )?
+            )?,
         };
         return match response {
             Some(response) => write_response(&mut &*stream, response),
@@ -597,12 +579,9 @@ fn connection(
     }
     // A forge call: a pull request (ADR-0048).
     if head.target.starts_with(pulls::PREFIX) {
-        let response = if ended.load(Ordering::SeqCst) {
-            egress::refused(403, "admission.ended")
-        } else if sandboxes.clock.now() > manifest.deadline {
-            egress::refused(403, "admission.expired")
-        } else {
-            pulls::answer(
+        let response = match gone {
+            Some(code) => egress::refused(403, code),
+            None => pulls::answer(
                 &head,
                 &mut reader,
                 &mut &*stream,
@@ -617,19 +596,16 @@ fn connection(
                 },
                 bodies,
                 ended,
-            )
+            ),
         };
         report_lost(&response, reports, ended);
         return write_response(&mut &*stream, response);
     }
     // A git call, for the git proxy (ADR-0046).
     if head.target.starts_with(git::PREFIX) {
-        let mut response = if ended.load(Ordering::SeqCst) {
-            egress::refused(403, "admission.ended")
-        } else if sandboxes.clock.now() > manifest.deadline {
-            egress::refused(403, "admission.expired")
-        } else {
-            git::answer(
+        let mut response = match gone {
+            Some(code) => egress::refused(403, code),
+            None => git::answer(
                 &head,
                 &mut reader,
                 &mut &*stream,
@@ -643,7 +619,7 @@ fn connection(
                 },
                 bodies,
                 ended,
-            )
+            ),
         };
         report_lost(&response, reports, ended);
         response.body = Box::new(UntilEnded {
@@ -656,10 +632,10 @@ fn connection(
     let response = match read_body(head, &mut reader, &mut body_held, ended) {
         // A call read after the job ended never reaches a provider.
         Ok(request) if ended.load(Ordering::SeqCst) => {
-            let adapter: &dyn Adapter = if request.target.starts_with("/v1/messages") {
-                &Anthropic
+            let adapter: &Adapter = if request.target.starts_with("/v1/messages") {
+                &ANTHROPIC
             } else {
-                &OpenAi
+                &OPENAI
             };
             refusal(
                 adapter,
@@ -698,7 +674,7 @@ fn connection(
             } else {
                 "model.bad_request"
             };
-            refusal(&OpenAi, status, code, message)
+            refusal(&OPENAI, status, code, message)
         }
     };
     // The body went to the provider with the call; what it held is given back before the answer
@@ -801,12 +777,7 @@ fn read_body<R: BufRead>(
         target,
         headers,
     } = head;
-    let get = |n: &str| {
-        headers
-            .iter()
-            .find(|(k, _)| k == n)
-            .map(|(_, v)| v.as_str())
-    };
+    let get = |n: &str| header(&headers, n);
     if get("transfer-encoding").is_some() {
         return Err((411, "the broker reads only a body with a content-length"));
     }

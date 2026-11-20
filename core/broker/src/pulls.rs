@@ -11,7 +11,7 @@
 //! closes it before the harness's text, once that text has passed the gate (ADR-0083). The number is
 //! the run's own, not the harness's, so the merge closes the issue whatever the harness wrote.
 
-use std::io::{BufRead, Cursor, Write};
+use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use hyalos_types::{ForgeToken, Manifest};
@@ -21,8 +21,8 @@ use crate::bodies::Bodies;
 use crate::content;
 use crate::egress::{Gates, ProxyRequest, Reports, inputs_digest, refused};
 use crate::forge::Forge;
-use crate::git::{read_body, ref_allowed, well_formed_ref};
-use crate::model::Response;
+use crate::git::{self, read_body, ref_allowed, well_formed_ref};
+use crate::model::{self, Response};
 
 /// Where forge calls arrive on a job's socket.
 pub const PREFIX: &str = "/forge/";
@@ -52,15 +52,7 @@ pub fn route(method: &str, target: &str) -> Option<String> {
     let rest = target.strip_prefix(PREFIX)?.strip_prefix("repos/")?;
     let mut parts = rest.split('/');
     let (owner, name, call, end) = (parts.next()?, parts.next()?, parts.next()?, parts.next());
-    let part = |p: &str| {
-        !p.is_empty()
-            && p.len() <= 100
-            && p != "."
-            && p != ".."
-            && p.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-    };
-    (method == "POST" && call == "pulls" && end.is_none() && part(owner) && part(name))
+    (method == "POST" && call == "pulls" && end.is_none() && git::part(owner) && git::part(name))
         .then(|| format!("{owner}/{name}"))
 }
 
@@ -101,13 +93,7 @@ pub(crate) fn answer<R: BufRead, W: Write>(
     let Some(token) = token else {
         return refused(403, "forge.no_token");
     };
-    let header = |name: &str| {
-        request
-            .headers
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.as_str())
-    };
+    let header = |name: &str| model::header(&request.headers, name);
     let mut held = bodies.hold();
     let body = match read_body(header, reader, client, MAX_REQUEST, &mut held, ended) {
         Ok(body) => body,
@@ -160,12 +146,7 @@ pub(crate) fn answer<R: BufRead, W: Write>(
     match forge.open_pull(manifest, token, &pull) {
         Ok((number, url)) => {
             let answer = serde_json::json!({ "number": number, "html_url": url });
-            Response {
-                status: 201,
-                content_type: "application/json".into(),
-                body: Box::new(Cursor::new(answer.to_string().into_bytes())),
-                reason: None,
-            }
+            Response::bytes(201, "application/json", answer.to_string().into_bytes())
         }
         Err((status, code)) => refused(status, code),
     }

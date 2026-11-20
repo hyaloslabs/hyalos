@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::thread;
 
 use hyalos_broker::model::{
-    ApiKey, HttpTransport, Meter, OpenAi, Relay, Request, ThreadSleep, Transport, TransportError,
+    ApiKey, HttpTransport, Meter, OPENAI, Relay, Request, ThreadSleep, Transport, TransportError,
     Upstream,
 };
 use hyalos_types::{Budget, JobId, MANIFEST_VERSION, Manifest, Role, Timestamp};
@@ -202,7 +202,7 @@ fn request(body: &Value) -> Request {
 
 fn relay(transport: HttpTransport, meter: Arc<Meter>) -> Result<Relay, Box<dyn std::error::Error>> {
     Ok(Relay::new(
-        Arc::new(OpenAi),
+        &OPENAI,
         Arc::new(transport),
         ApiKey::new(KEY).ok_or("key")?,
         meter,

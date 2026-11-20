@@ -18,7 +18,7 @@ use hyalos_broker::Broker;
 use hyalos_broker::egress::{Egress, inputs_digest};
 use hyalos_broker::forge::Forge;
 use hyalos_broker::git::Git;
-use hyalos_broker::model::{Anthropic, ApiKey, HttpTransport, Meter, Relay, Sleep};
+use hyalos_broker::model::{ANTHROPIC, ApiKey, HttpTransport, Meter, Relay, Sleep};
 use hyalos_broker::sandbox::{Models, Sandboxes};
 use hyalos_types::wire::{ToBroker, ToEngine};
 use hyalos_types::{
@@ -193,7 +193,7 @@ fn start(api: &Api, m: &Manifest, token: Option<&str>) -> Res<Job> {
     let meter = Arc::new(Meter::default());
     // A provider the content gate must keep the key of out of outbound text; it is never called.
     let relay = Relay::new(
-        Arc::new(Anthropic),
+        &ANTHROPIC,
         Arc::new(HttpTransport::new("http://127.0.0.1:1").map_err(|e| e.0)?),
         ApiKey::new(PROVIDER_KEY).ok_or("key")?,
         meter.clone(),

@@ -4,7 +4,7 @@
 use std::cell::Cell;
 use std::collections::BTreeSet;
 
-use hyalos_broker::{Broker, Exit, ServeError, serve};
+use hyalos_broker::{Broker, Exit, ServeError, serve_with_plugins};
 use hyalos_types::wire::{ToBroker, ToEngine, WIRE_VERSION, WireError, read_frame, write_frame};
 use hyalos_types::{
     Budget, Clock, ForgeToken, JobId, MANIFEST_VERSION, Manifest, ManifestKey, ReasonCode, Role,
@@ -82,7 +82,13 @@ fn frames(messages: &[ToBroker]) -> Res<Vec<u8>> {
 fn run(messages: &[ToBroker], now: u64) -> Res<(Result<Exit, ServeError>, Vec<ToEngine>)> {
     let input = frames(messages)?;
     let mut output = Vec::new();
-    let result = serve(&mut &input[..], &mut output, &Now(Cell::new(now)));
+    let result = serve_with_plugins(
+        &mut &input[..],
+        &mut output,
+        &Now(Cell::new(now)),
+        None,
+        None,
+    );
     let mut answers = Vec::new();
     let mut rest = &output[..];
     while let Some(a) = read_frame::<_, ToEngine>(&mut rest)? {
@@ -313,12 +319,18 @@ fn a_frame_that_is_not_a_message_ends_the_channel_and_is_not_served() -> Res {
     input.extend_from_slice(&(body.len() as u32).to_be_bytes());
     input.extend_from_slice(body);
     let mut output = Vec::new();
-    let result = serve(&mut &input[..], &mut output, &Now(Cell::new(0)));
+    let result = serve_with_plugins(&mut &input[..], &mut output, &Now(Cell::new(0)), None, None);
     assert_eq!(result, Err(ServeError::Wire(WireError::Malformed)));
     // A channel cut off inside a frame is a fault, not a clean close.
     let mut cut = frames(&[hello(), ToBroker::Shutdown])?;
     cut.truncate(cut.len() - 1);
-    let result = serve(&mut &cut[..], &mut Vec::new(), &Now(Cell::new(0)));
+    let result = serve_with_plugins(
+        &mut &cut[..],
+        &mut Vec::new(),
+        &Now(Cell::new(0)),
+        None,
+        None,
+    );
     assert_eq!(result, Err(ServeError::Wire(WireError::Truncated)));
     Ok(())
 }

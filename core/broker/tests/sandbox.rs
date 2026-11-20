@@ -15,7 +15,7 @@ use std::time::Duration;
 use hyalos_broker::Broker;
 use hyalos_broker::egress::inputs_digest;
 use hyalos_broker::model::{
-    Anthropic, ApiKey, Meter, OpenAi, Relay, Request, Response, Sleep, Transport, TransportError,
+    ANTHROPIC, ApiKey, Meter, OPENAI, Relay, Request, Response, Sleep, Transport, TransportError,
     Upstream, UpstreamResponse,
 };
 use hyalos_broker::sandbox::{
@@ -127,9 +127,9 @@ fn rig(openai: bool) -> Res<Rig> {
         .pipe(Ok::<_, Box<dyn std::error::Error>>)
     };
     let models = Models::new(
-        Ok(relay(Arc::new(Anthropic))?),
+        Ok(relay(&ANTHROPIC)?),
         if openai {
-            Ok(relay(Arc::new(OpenAi))?)
+            Ok(relay(&OPENAI)?)
         } else {
             Err("model.no_provider")
         },

@@ -156,17 +156,11 @@ impl Broker {
             }
             ToBroker::ReadIssue { job, number } => {
                 let Some(manifest) = self.admitted.get(&job) else {
-                    return Ok(Some(vec![ToEngine::Refused {
-                        job,
-                        reason: code("admission.not_live"),
-                    }]));
+                    return refused(job, code("admission.not_live"));
                 };
                 if clock.now() > manifest.deadline {
                     self.end(job);
-                    return Ok(Some(vec![ToEngine::Refused {
-                        job,
-                        reason: code("admission.expired"),
-                    }]));
+                    return refused(job, code("admission.expired"));
                 }
                 // Content that fails to read or parse fails this job, never the broker (ADR-0002).
                 match self
@@ -176,19 +170,13 @@ impl Broker {
                     Ok(issue) => Ok(Some(vec![ToEngine::Issue { job, issue }])),
                     Err(reason) => {
                         self.end(job);
-                        Ok(Some(vec![ToEngine::Refused {
-                            job,
-                            reason: code(reason),
-                        }]))
+                        refused(job, code(reason))
                     }
                 }
             }
             ToBroker::HoldIssue { job, number } => {
                 let Some(manifest) = self.admitted.get(&job) else {
-                    return Ok(Some(vec![ToEngine::Refused {
-                        job,
-                        reason: code("admission.not_live"),
-                    }]));
+                    return refused(job, code("admission.not_live"));
                 };
                 let result = if clock.now() > manifest.deadline {
                     Err("admission.expired")
@@ -209,19 +197,13 @@ impl Broker {
                     }])),
                     Err(reason) => {
                         self.end(job);
-                        Ok(Some(vec![ToEngine::Refused {
-                            job,
-                            reason: code(reason),
-                        }]))
+                        refused(job, code(reason))
                     }
                 }
             }
             ToBroker::Merge { job } => {
                 let Some(manifest) = self.admitted.get(&job) else {
-                    return Ok(Some(vec![ToEngine::Refused {
-                        job,
-                        reason: code("admission.not_live"),
-                    }]));
+                    return refused(job, code("admission.not_live"));
                 };
                 let result = if clock.now() > manifest.deadline {
                     Err("admission.expired")
@@ -232,18 +214,12 @@ impl Broker {
                 self.end(job);
                 match result {
                     Ok(sha) => Ok(Some(vec![ToEngine::Merged { job, sha }])),
-                    Err(reason) => Ok(Some(vec![ToEngine::Refused {
-                        job,
-                        reason: code(reason),
-                    }])),
+                    Err(reason) => refused(job, code(reason)),
                 }
             }
             ToBroker::TakeResult { job } => {
                 let Some(manifest) = self.admitted.get(&job) else {
-                    return Ok(Some(vec![ToEngine::Refused {
-                        job,
-                        reason: code("admission.not_live"),
-                    }]));
+                    return refused(job, code("admission.not_live"));
                 };
                 let submitted = match (&manifest.result, self.sockets.get(&job)) {
                     (None, _) => Submitted::Refused("submit.not_expected"),
@@ -259,10 +235,7 @@ impl Broker {
                     Submitted::Nothing => "submit.missing",
                 };
                 self.end(job);
-                Ok(Some(vec![ToEngine::Refused {
-                    job,
-                    reason: code(reason),
-                }]))
+                refused(job, code(reason))
             }
             ToBroker::RunPlugin { job, call } => {
                 // Only for a live deterministic job, and only a call within its limits (ADR-0102).
@@ -280,16 +253,13 @@ impl Broker {
                     Ok(values) => Ok(Some(vec![ToEngine::Values { job, values }])),
                     Err(reason) => {
                         self.end(job);
-                        Ok(Some(vec![ToEngine::Refused { job, reason }]))
+                        refused(job, reason)
                     }
                 }
             }
             ToBroker::Read { job, call } => {
                 let Some(manifest) = self.admitted.get(&job) else {
-                    return Ok(Some(vec![ToEngine::Refused {
-                        job,
-                        reason: code("admission.not_live"),
-                    }]));
+                    return refused(job, code("admission.not_live"));
                 };
                 let result = match &self.sandboxes {
                     None => Err("model.no_provider"),
@@ -305,10 +275,7 @@ impl Broker {
                     Ok(values) => Ok(Some(vec![ToEngine::Values { job, values }])),
                     Err(reason) => {
                         self.end(job);
-                        Ok(Some(vec![ToEngine::Refused {
-                            job,
-                            reason: code(reason),
-                        }]))
+                        refused(job, code(reason))
                     }
                 }
             }
@@ -319,74 +286,83 @@ impl Broker {
                 socket,
                 forge_token,
             } => {
-                let refuse = |reason: ReasonCode| Ok(Some(vec![ToEngine::Refused { job, reason }]));
                 // A job is started once. The first admission stands.
                 if self.jobs.0.contains(&job) {
-                    return refuse(code("admission.already_live"));
+                    return refused(job, code("admission.already_live"));
                 }
                 let Ok(signed) = SignedManifest::from_bytes(&manifest) else {
-                    return refuse(code("manifest.malformed"));
+                    return refused(job, code("manifest.malformed"));
                 };
                 // The engine has said the job is live; admission still checks everything else.
                 self.jobs.0.insert(job);
-                match self
-                    .admission
-                    .admit(&signed, &Credential { job, role }, &self.jobs, clock)
-                {
+                match self.start(job, role, &signed, &socket, &forge_token, clock) {
                     Ok(manifest) => {
-                        // A handle the manifest names must be one this broker holds (ADR-0063).
-                        let Some(held) = handles::for_manifest(&self.held, &manifest) else {
-                            self.jobs.0.remove(&job);
-                            return refuse(code("handle.not_held"));
-                        };
-                        // A merge only with its approval, and never for a tainted job (ADR-0004,
-                        // ADR-0071). An approval with no merge is as wrong.
-                        let merging = manifest.actions.contains("merge");
-                        if merging != manifest.approval.is_some() || (merging && manifest.tainted) {
-                            self.jobs.0.remove(&job);
-                            return refuse(code("admission.merge_unapproved"));
-                        }
-                        // A result the broker could not read a submission as (ADR-0064).
-                        if manifest
-                            .result
-                            .as_ref()
-                            .is_some_and(|r| !hyalos_types::workflow::output_is_valid(r))
-                        {
-                            self.jobs.0.remove(&job);
-                            return refuse(code("admission.bad_result"));
-                        }
-                        if let Some(sandboxes) = &self.sandboxes {
-                            match JobSocket::open(
-                                Path::new(&socket),
-                                manifest.clone(),
-                                forge_token.clone(),
-                                held,
-                                sandboxes.clone(),
-                                self.reports.clone(),
-                            ) {
-                                Ok(open) => {
-                                    self.sockets.insert(job, open);
-                                }
-                                Err(_) => {
-                                    self.jobs.0.remove(&job);
-                                    return refuse(code("broker.socket_unavailable"));
-                                }
-                            }
-                        }
                         self.admitted.insert(job, manifest);
                         if let Some(token) = forge_token {
                             self.forge_tokens.insert(job, token);
                         }
                         Ok(Some(vec![ToEngine::Admitted { job }]))
                     }
-                    Err(refusal) => {
+                    Err(reason) => {
                         self.jobs.0.remove(&job);
-                        refuse(refusal.reason())
+                        refused(job, reason)
                     }
                 }
             }
         }
     }
+
+    /// Admits a job the engine has said is live, and opens its socket if this broker serves
+    /// sandboxes. Nothing is kept for a job that is refused: its socket opens last.
+    fn start(
+        &mut self,
+        job: JobId,
+        role: Role,
+        signed: &SignedManifest,
+        socket: &str,
+        forge_token: &Option<ForgeToken>,
+        clock: &dyn Clock,
+    ) -> Result<Manifest, ReasonCode> {
+        let manifest = self
+            .admission
+            .admit(signed, &Credential { job, role }, &self.jobs, clock)
+            .map_err(|refusal| refusal.reason())?;
+        // A handle the manifest names must be one this broker holds (ADR-0063).
+        let held =
+            handles::for_manifest(&self.held, &manifest).ok_or_else(|| code("handle.not_held"))?;
+        // A merge only with its approval, and never for a tainted job (ADR-0004, ADR-0071). An
+        // approval with no merge is as wrong.
+        let merging = manifest.actions.contains("merge");
+        if merging != manifest.approval.is_some() || (merging && manifest.tainted) {
+            return Err(code("admission.merge_unapproved"));
+        }
+        // A result the broker could not read a submission as (ADR-0064).
+        if manifest
+            .result
+            .as_ref()
+            .is_some_and(|r| !output_is_valid(r))
+        {
+            return Err(code("admission.bad_result"));
+        }
+        if let Some(sandboxes) = &self.sandboxes {
+            let open = JobSocket::open(
+                Path::new(socket),
+                manifest.clone(),
+                forge_token.clone(),
+                held,
+                sandboxes.clone(),
+                self.reports.clone(),
+            )
+            .map_err(|_| code("broker.socket_unavailable"))?;
+            self.sockets.insert(job, open);
+        }
+        Ok(manifest)
+    }
+}
+
+/// The engine is answered that `job`'s request is refused, and why.
+fn refused(job: JobId, reason: ReasonCode) -> Result<Option<Vec<ToEngine>>, ServeError> {
+    Ok(Some(vec![ToEngine::Refused { job, reason }]))
 }
 
 fn code(text: &str) -> ReasonCode {
@@ -434,41 +410,14 @@ pub enum Exit {
     EngineClosed,
 }
 
-/// Reads the engine's `Hello`, answers `Ready`, then serves until told to stop or the channel ends.
-pub fn serve<R: Read, W: Write + Send>(
-    input: &mut R,
-    output: &mut W,
-    clock: &dyn Clock,
-) -> Result<Exit, ServeError> {
-    serve_with(input, output, clock, None)
-}
-
-/// As [`serve_with`], and runs deterministic steps' plugins with `plugins` (ADR-0102).
-pub fn serve_with_plugins<R: Read, W: Write + Send>(
-    input: &mut R,
-    output: &mut W,
-    clock: &dyn Clock,
-    sandboxes: Option<Sandboxes>,
-    plugins: Option<Arc<dyn Plugins>>,
-) -> Result<Exit, ServeError> {
-    serve_inner(input, output, clock, sandboxes, plugins)
-}
-
 /// How often the writer looks for the end of serving.
 const WRITER_POLL: Duration = Duration::from_millis(50);
 
-/// As [`serve`], and with `sandboxes`, each admitted job's sandbox is served on its socket. Answers and
-/// the reports the sandboxes' requests give rise to are written by one writer, in the order made.
-pub fn serve_with<R: Read, W: Write + Send>(
-    input: &mut R,
-    output: &mut W,
-    clock: &dyn Clock,
-    sandboxes: Option<Sandboxes>,
-) -> Result<Exit, ServeError> {
-    serve_inner(input, output, clock, sandboxes, None)
-}
-
-fn serve_inner<R: Read, W: Write + Send>(
+/// Reads the engine's `Hello`, answers `Ready`, then serves until told to stop or the channel ends.
+/// With `sandboxes`, each admitted job's sandbox is served on its socket, and with `plugins`
+/// deterministic steps' plugins are run (ADR-0102). Answers and the reports the sandboxes' requests
+/// give rise to are written by one writer, in the order made.
+pub fn serve_with_plugins<R: Read, W: Write + Send>(
     input: &mut R,
     output: &mut W,
     clock: &dyn Clock,

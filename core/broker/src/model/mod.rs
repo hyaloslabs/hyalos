@@ -16,10 +16,10 @@ mod openai;
 mod relay;
 mod usage;
 
-pub use anthropic::Anthropic;
+pub use anthropic::ANTHROPIC;
 pub use http::HttpTransport;
 pub(crate) use http::dechunk;
-pub use openai::OpenAi;
+pub use openai::OPENAI;
 pub use relay::{Backoff, QUOTA_SPENT, Relay, Sleep, ThreadSleep};
 pub use usage::Meter;
 
@@ -83,45 +83,53 @@ pub enum Route {
     CountTokens,
 }
 
-/// What differs between the protocols the broker speaks.
-pub trait Adapter: Send + Sync {
-    /// The call a path is (without its query string), or `None` if the broker does not serve it.
-    fn route(&self, path: &str) -> Option<Route>;
+/// What differs between the protocols the broker speaks: [`ANTHROPIC`] and [`OPENAI`].
+pub struct Adapter {
+    /// The path of a generation (without its query string). The broker serves no path but this and
+    /// `count_tokens`.
+    pub generate: &'static str,
+    /// The path of counting a request's tokens, which spends none.
+    pub count_tokens: &'static str,
     /// The header that carries the key, and what goes before the key in it.
-    fn credential_header(&self) -> (&'static str, &'static str);
+    pub credential_header: (&'static str, &'static str),
     /// Request headers from the harness that are passed on, lowercase. Every other one is dropped,
     /// the placeholder key with them.
-    fn passthrough(&self) -> &'static [&'static str];
+    pub passthrough: &'static [&'static str],
     /// Headers added when the harness did not send them.
-    fn defaults(&self) -> &'static [(&'static str, &'static str)] {
-        &[]
-    }
+    pub defaults: &'static [(&'static str, &'static str)],
     /// Whether the harness runs a tool defined this way. Anything else is run by the provider, or is
     /// unknown, and is removed.
-    fn harness_runs(&self, tool: &Value) -> bool;
+    pub harness_runs: fn(&Value) -> bool,
     /// Removes request fields that only make sense with a provider-hosted tool.
-    fn scrub(&self, _body: &mut Map<String, Value>) {}
+    pub scrub: fn(&mut Map<String, Value>),
     /// The top-level request fields passed on. A request with any other field is refused (ADR-0120):
     /// a field the broker does not know may name state the provider holds or work it runs where no
     /// gate or meter sees it.
-    fn fields(&self) -> &'static [&'static str];
+    pub fields: &'static [&'static str],
     /// The request field that caps a generation's output tokens.
-    fn output_limit(&self) -> &'static str;
+    pub output_limit: &'static str,
     /// The status the harness retries when the broker gives up on an overloaded provider.
-    fn overloaded(&self) -> u16;
+    pub overloaded: u16,
     /// The `type`s of the stream events that end a generation. Usage seen in a stream is final only
     /// once one of these arrives: earlier events carry provisional counts (ADR-0037).
-    fn stream_ends(&self) -> &'static [&'static str];
+    pub stream_ends: &'static [&'static str],
     /// An error body in this protocol's shape.
-    fn error_body(&self, status: u16, message: &str) -> Vec<u8>;
+    pub error_body: fn(u16, &str) -> Vec<u8>,
     /// Whether a 429 body says the key's quota is spent, which no retry fixes.
-    fn quota_exhausted(&self, _body: &[u8]) -> bool {
-        false
-    }
+    pub quota_exhausted: fn(&[u8]) -> bool,
     /// Whether a stream event says the key's quota or credit is spent: the provider started
     /// answering, then could not go on for this key (#355).
-    fn quota_event(&self, _event: &Value) -> bool {
-        false
+    pub quota_event: fn(&Value) -> bool,
+}
+
+impl Adapter {
+    /// The call a path is (without its query string), or `None` if the broker does not serve it.
+    pub fn route(&self, path: &str) -> Option<Route> {
+        if path == self.generate {
+            Some(Route::Generate)
+        } else {
+            (path == self.count_tokens).then_some(Route::CountTokens)
+        }
     }
 }
 
@@ -166,16 +174,18 @@ pub trait Transport: Send + Sync {
 }
 
 /// The broker's own answer in a protocol's error shape. `code` is a reason code.
-pub fn refusal(adapter: &dyn Adapter, status: u16, code: &str, message: &str) -> Response {
+pub fn refusal(adapter: &Adapter, status: u16, code: &str, message: &str) -> Response {
     Response {
-        status,
-        content_type: "application/json".into(),
-        body: Box::new(std::io::Cursor::new(adapter.error_body(status, message))),
         reason: ReasonCode::new(code),
+        ..Response::bytes(
+            status,
+            "application/json",
+            (adapter.error_body)(status, message),
+        )
     }
 }
 
-fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+pub(crate) fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
     headers
         .iter()
         .find(|(n, _)| n.eq_ignore_ascii_case(name))

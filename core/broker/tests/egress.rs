@@ -17,7 +17,7 @@ use hyalos_broker::egress::{
 };
 use hyalos_broker::model::Meter;
 use hyalos_broker::sandbox::{Models, Sandboxes};
-use hyalos_broker::{Broker, serve_with};
+use hyalos_broker::{Broker, serve_with_plugins};
 use hyalos_types::wire::{ToBroker, ToEngine, WIRE_VERSION, read_frame, write_frame};
 use hyalos_types::{
     Answer, Budget, Clock, Gate, JobId, MANIFEST_VERSION, Manifest, ManifestKey, Role, Timestamp,
@@ -556,7 +556,8 @@ fn a_refusal_reaches_the_engine_unasked_over_the_channel() -> Res {
     let shared = sandboxes(Egress::public(), clock.clone());
     let serving = std::thread::spawn(move || {
         let (mut input, mut output) = (&broker_end, &broker_end);
-        serve_with(&mut input, &mut output, clock.as_ref(), Some(shared)).map_err(|e| e.to_string())
+        serve_with_plugins(&mut input, &mut output, clock.as_ref(), Some(shared), None)
+            .map_err(|e| e.to_string())
     });
     let mut to_broker = &engine;
     write_frame(

@@ -128,13 +128,7 @@ impl Forge {
             401 | 403 => return Err("forge.upstream_refused"),
             _ => return Err("forge.upstream_status"),
         }
-        let mut answer = Vec::new();
-        response
-            .body
-            .take(MAX_RESPONSE as u64 + 1)
-            .read_to_end(&mut answer)
-            .map_err(|_| "forge.unreadable")?;
-        Ok(answer)
+        read_capped(response.body, MAX_RESPONSE).map_err(|_| "forge.unreadable")
     }
 
     /// Each writer's permission on `repo`: the author's, and every other writer's once each.
@@ -181,33 +175,44 @@ impl Forge {
         if !valid {
             return Permission::Unknown;
         }
-        let request = Upstream {
-            target: format!("/repos/{repo}/collaborators/{login}/permission"),
-            headers: vec![
-                ("authorization".into(), format!("Bearer {}", token.expose())),
-                ("accept".into(), "application/vnd.github+json".into()),
-                ("x-github-api-version".into(), "2022-11-28".into()),
-                ("user-agent".into(), "hyalos".into()),
-            ],
-            body: Vec::new(),
-        };
-        let Ok(response) = transport.request("GET", &request) else {
+        let target = format!("/repos/{repo}/collaborators/{login}/permission");
+        let Ok(response) = transport.request("GET", &rest(token, target, None)) else {
             return Permission::Unknown;
         };
         if response.status != 200 {
             return Permission::Unknown;
         }
-        let mut answer = Vec::new();
-        if response
-            .body
-            .take(MAX_PERMISSION_ANSWER as u64 + 1)
-            .read_to_end(&mut answer)
-            .is_err()
-        {
-            return Permission::Unknown;
+        match read_capped(response.body, MAX_PERMISSION_ANSWER) {
+            Ok(answer) => parse_permission(&answer),
+            Err(_) => Permission::Unknown,
         }
-        parse_permission(&answer)
     }
+}
+
+/// A call to GitHub's REST API with `token`. A body is JSON.
+fn rest(token: &ForgeToken, target: String, body: Option<Vec<u8>>) -> Upstream {
+    let mut headers = vec![
+        ("authorization".into(), format!("Bearer {}", token.expose())),
+        ("accept".into(), "application/vnd.github+json".into()),
+        ("x-github-api-version".into(), "2022-11-28".into()),
+    ];
+    if body.is_some() {
+        headers.push(("content-type".into(), "application/json".into()));
+    }
+    headers.push(("user-agent".into(), "hyalos".into()));
+    Upstream {
+        target,
+        headers,
+        body: body.unwrap_or_default(),
+    }
+}
+
+/// Reads at most one byte more of an answer than `max`, so that a parser that holds it to `max`
+/// sees it is too large.
+fn read_capped(body: impl Read, max: usize) -> std::io::Result<Vec<u8>> {
+    let mut answer = Vec::new();
+    body.take(max as u64 + 1).read_to_end(&mut answer)?;
+    Ok(answer)
 }
 
 /// Reads the role from GitHub's answer to a permission question; unknown if it cannot.
@@ -250,17 +255,8 @@ impl Forge {
             // Nobody but the job's own branch writes to its head.
             "maintainer_can_modify": false,
         });
-        let request = Upstream {
-            target: format!("/repos/{}/pulls", manifest.repo),
-            headers: vec![
-                ("authorization".into(), format!("Bearer {}", token.expose())),
-                ("accept".into(), "application/vnd.github+json".into()),
-                ("x-github-api-version".into(), "2022-11-28".into()),
-                ("content-type".into(), "application/json".into()),
-                ("user-agent".into(), "hyalos".into()),
-            ],
-            body: serde_json::to_vec(&body).map_err(|_| (400, "forge.bad_request"))?,
-        };
+        let body = serde_json::to_vec(&body).map_err(|_| (400, "forge.bad_request"))?;
+        let request = rest(token, format!("/repos/{}/pulls", manifest.repo), Some(body));
         let response = transport
             .request("POST", &request)
             .map_err(|e| (502, e.0))?;
@@ -272,12 +268,8 @@ impl Forge {
             422 => return Err((422, "forge.pull_rejected")),
             _ => return Err((502, "forge.upstream_status")),
         }
-        let mut answer = Vec::new();
-        response
-            .body
-            .take(MAX_RESPONSE as u64 + 1)
-            .read_to_end(&mut answer)
-            .map_err(|_| (502, "forge.unreadable"))?;
+        let answer =
+            read_capped(response.body, MAX_RESPONSE).map_err(|_| (502, "forge.unreadable"))?;
         let created: serde_json::Value =
             serde_json::from_slice(&answer).map_err(|_| (502, "forge.malformed"))?;
         let number = created["number"].as_u64();
@@ -318,17 +310,9 @@ impl Forge {
             "sha": approval.head_sha.as_str(),
             "merge_method": approval.method.as_str(),
         });
-        let request = Upstream {
-            target: format!("/repos/{}/pulls/{}/merge", manifest.repo, approval.pr),
-            headers: vec![
-                ("authorization".into(), format!("Bearer {}", token.expose())),
-                ("accept".into(), "application/vnd.github+json".into()),
-                ("x-github-api-version".into(), "2022-11-28".into()),
-                ("content-type".into(), "application/json".into()),
-                ("user-agent".into(), "hyalos".into()),
-            ],
-            body: serde_json::to_vec(&body).map_err(|_| "forge.bad_request")?,
-        };
+        let body = serde_json::to_vec(&body).map_err(|_| "forge.bad_request")?;
+        let target = format!("/repos/{}/pulls/{}/merge", manifest.repo, approval.pr);
+        let request = rest(token, target, Some(body));
         // Only an error before anything was sent means GitHub did not merge; after that it may have.
         let response = transport.request("PUT", &request).map_err(|e| match e.0 {
             "transport.unreachable" | "transport.tls_refused" | "transport.bad_request" => e.0,
@@ -347,12 +331,8 @@ impl Forge {
         }
         // GitHub has answered 200: it has merged. An answer that cannot be read confirms nothing,
         // so the operator is told to look rather than that nothing happened.
-        let mut answer = Vec::new();
-        response
-            .body
-            .take(MAX_MERGE_ANSWER as u64 + 1)
-            .read_to_end(&mut answer)
-            .map_err(|_| "merge.unconfirmed")?;
+        let answer =
+            read_capped(response.body, MAX_MERGE_ANSWER).map_err(|_| "merge.unconfirmed")?;
         parse_merged(&answer).map_err(|code| match code {
             "merge.not_merged" => code,
             _ => "merge.unconfirmed",
@@ -515,13 +495,13 @@ struct Issue {
     title: String,
     body: String,
     author: Option<Actor>,
-    labels: Labels,
+    labels: Page<Label>,
     // Asked for with the issue (ADR-0103). Left out by an older answer, they leave its writers
     // unknown, so the issue is not released by policy.
     #[serde(default, rename = "userContentEdits")]
-    user_content_edits: Option<Edits>,
+    user_content_edits: Option<Page<Edit>>,
     #[serde(default, rename = "timelineItems")]
-    timeline_items: Option<Renames>,
+    timeline_items: Option<Page<Rename>>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -532,11 +512,12 @@ struct Actor {
     login: String,
 }
 
+/// A connection's nodes, and how many there are in all.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct Edits {
+struct Page<T> {
     total_count: u64,
-    nodes: Vec<Edit>,
+    nodes: Vec<T>,
 }
 
 #[derive(Deserialize)]
@@ -546,24 +527,10 @@ struct Edit {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct Renames {
-    total_count: u64,
-    nodes: Vec<Rename>,
-}
-
-#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Rename {
     #[serde(default)]
     actor: Option<Actor>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct Labels {
-    total_count: u64,
-    nodes: Vec<Label>,
 }
 
 #[derive(Deserialize)]

@@ -1125,6 +1125,7 @@ dependencies = [
 name = "hyalos-broker"
 version = "0.1.7"
 dependencies = [
+ "base64",
  "ed25519-dalek",
  "hyalos-types",
  "miniz_oxide",

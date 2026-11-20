@@ -99,7 +99,7 @@ fn refused(status: u16, code: &'static str, message: impl Into<String>) -> Refus
 /// Serves model calls for admitted jobs through one adapter, one transport and one key.
 #[derive(Clone)]
 pub struct Relay {
-    adapter: Arc<dyn Adapter>,
+    adapter: &'static Adapter,
     transport: Arc<dyn Transport>,
     key: ApiKey,
     meter: Arc<Meter>,
@@ -114,7 +114,7 @@ impl Relay {
     }
 
     pub fn new(
-        adapter: Arc<dyn Adapter>,
+        adapter: &'static Adapter,
         transport: Arc<dyn Transport>,
         key: ApiKey,
         meter: Arc<Meter>,
@@ -139,7 +139,7 @@ impl Relay {
     /// 403, 404, 413 or 400 in the protocol's error shape, never a 429 (ADR-0016).
     pub fn handle(&self, manifest: &Manifest, request: Request) -> Response {
         self.serve(manifest, &request)
-            .unwrap_or_else(|r| refusal(self.adapter.as_ref(), r.status, r.code, &r.message))
+            .unwrap_or_else(|r| refusal(self.adapter, r.status, r.code, &r.message))
     }
 
     fn serve(&self, manifest: &Manifest, request: &Request) -> Result<Response, Refused> {
@@ -193,7 +193,7 @@ impl Relay {
         }
         // Only fields the adapter names, or that the relay handles itself, are served (ADR-0120). The
         // field is not named back: it is the sandbox's text.
-        let known = self.adapter.fields();
+        let known = self.adapter.fields;
         if body.keys().any(|field| {
             !known.contains(&field.as_str()) && !RELAY_HANDLES.contains(&field.as_str())
         }) {
@@ -220,7 +220,7 @@ impl Relay {
         // so calls side by side cannot all pass the budget together (ADR-0038).
         let hold = if route == Route::Generate {
             let budget = manifest.budget.tokens;
-            let field = self.adapter.output_limit();
+            let field = self.adapter.output_limit;
             let asked = body.get(field).and_then(Value::as_u64);
             let want = asked.unwrap_or(DEFAULT_HOLD);
             let hold = Arc::clone(&self.meter)
@@ -235,7 +235,7 @@ impl Relay {
                     } else {
                         // Calls in flight hold the rest and will release what they do not use.
                         refused(
-                            self.adapter.overloaded(),
+                            self.adapter.overloaded,
                             "budget.held",
                             "the rest of this job's budget is held by calls in flight; try again",
                         )
@@ -248,7 +248,7 @@ impl Relay {
         } else {
             None
         };
-        strip_hosted(self.adapter.as_ref(), &mut body);
+        strip_hosted(self.adapter, &mut body);
         let upstream = Upstream {
             target: request.target.clone(),
             headers: self.headers(request)?,
@@ -259,7 +259,7 @@ impl Relay {
     }
 
     fn headers(&self, request: &Request) -> Result<Vec<(String, String)>, Refused> {
-        let pass = self.adapter.passthrough();
+        let pass = self.adapter.passthrough;
         let mut out: Vec<(String, String)> = request
             .headers
             .iter()
@@ -276,12 +276,12 @@ impl Relay {
                 "a request header has a control character",
             ));
         }
-        for (name, value) in self.adapter.defaults() {
+        for (name, value) in self.adapter.defaults {
             if header(&out, name).is_none() {
                 out.push(((*name).into(), (*value).into()));
             }
         }
-        let (name, prefix) = self.adapter.credential_header();
+        let (name, prefix) = self.adapter.credential_header;
         out.push((name.into(), format!("{prefix}{}", self.key.expose())));
         out.push(("content-type".into(), "application/json".into()));
         Ok(out)
@@ -307,7 +307,7 @@ impl Relay {
                         let mut body = Vec::new();
                         // An unreadable body is treated as a rate limit, which is retried.
                         let _ = r.body.take(MAX_ERROR_BODY).read_to_end(&mut body);
-                        if self.adapter.quota_exhausted(&body) {
+                        if (self.adapter.quota_exhausted)(&body) {
                             return Err(quota_spent());
                         }
                     }
@@ -333,7 +333,7 @@ impl Relay {
             };
             if attempt >= self.backoff.attempts {
                 return Err(refused(
-                    self.adapter.overloaded(),
+                    self.adapter.overloaded,
                     "provider.overloaded",
                     "the model provider is busy or unreachable; try again",
                 ));
@@ -350,7 +350,7 @@ impl Relay {
         let body: Box<dyn Read + Send> = match hold {
             Some(hold) if (200..300).contains(&r.status) => Box::new(Metered::new(
                 r.body,
-                Scanner::new(&content_type, Arc::clone(&self.adapter)),
+                Scanner::new(&content_type, self.adapter),
                 hold,
                 manifest.budget.tokens,
             )),
@@ -380,13 +380,13 @@ fn declares_tools(body: &Map<String, Value>) -> bool {
 
 /// Removes every tool the provider would run, and whatever would make the request invalid without
 /// them, so the request stays one the provider accepts (ADR-0016, ADR-0004).
-fn strip_hosted(adapter: &dyn Adapter, body: &mut Map<String, Value>) {
+fn strip_hosted(adapter: &Adapter, body: &mut Map<String, Value>) {
     body.remove("mcp_servers");
     let mut removed: Vec<String> = Vec::new();
     let mut left = 0;
     if let Some(Value::Array(tools)) = body.get_mut("tools") {
         tools.retain(|tool| {
-            let keep = adapter.harness_runs(tool);
+            let keep = (adapter.harness_runs)(tool);
             if !keep {
                 removed.extend(
                     ["type", "name"]
@@ -419,5 +419,5 @@ fn strip_hosted(adapter: &dyn Adapter, body: &mut Map<String, Value>) {
             body.remove("tool_choice");
         }
     }
-    adapter.scrub(body);
+    (adapter.scrub)(body);
 }
