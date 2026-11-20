@@ -136,4 +136,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0120](0120-the-model-relay-refuses-a-request-field-it-does-not-know.md) | The model relay refuses a request field it does not know | Accepted |
 | [0121](0121-no-broker-runs-without-landlock.md) | No broker runs without Landlock | Accepted |
 | [0122](0122-a-pull-request-says-it-closes-its-issue-once.md) | A pull request says it closes its issue once | Accepted |
-| [0123](0123-a-provider-out-of-credit-holds-the-task.md) | A provider out of credit holds the task | Proposed |
+| [0123](0123-a-provider-out-of-credit-holds-the-task.md) | A provider out of credit holds the task | Accepted |

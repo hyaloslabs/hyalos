@@ -1,6 +1,6 @@
 # ADR-0123: A provider out of credit holds the task
 
-**Status:** Proposed. Extends [ADR-0106](0106-a-dependency-lost-mid-job-holds-the-task.md)'s table of lost dependencies with a model provider that says the key's quota or credit is spent.
+**Status:** Accepted. Extends [ADR-0106](0106-a-dependency-lost-mid-job-holds-the-task.md)'s table of lost dependencies with a model provider that says the key's quota or credit is spent.
 
 ## Context
 
