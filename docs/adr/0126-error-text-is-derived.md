@@ -1,6 +1,6 @@
 # ADR-0126: Error text is derived
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
