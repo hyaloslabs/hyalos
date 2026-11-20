@@ -6,12 +6,12 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use hyalos_types::Origin;
+use hyalos_types::{Origin, Timestamp};
 use rusqlite::{Connection, OpenFlags};
 
 use crate::format::{self, Fields, Hash};
 use crate::key::PublicKey;
-use crate::store::Head;
+use crate::store::{Head, StoredEvent};
 
 /// Why one event failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,10 +130,7 @@ pub fn verify(
     key: &PublicKey,
     expect_head: Option<Head>,
 ) -> Result<Verified, VerifyError> {
-    let conn = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
+    let conn = read_only(path)?;
     verify_connection(&conn, key, expect_head)
 }
 
@@ -237,6 +234,83 @@ fn verify_anchors(conn: &Connection, key: &PublicKey) -> Result<Vec<Head>, Verif
     Ok(anchors)
 }
 
+/// Opens the database at `path` read-only, as every check from the outside does.
+pub(crate) fn read_only(path: &Path) -> Result<Connection, rusqlite::Error> {
+    Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+}
+
+/// Reads one row selected as `seq, at, origin, kind, schema_version, payload, prev_hash, hash,
+/// signature` and checks it, in this order: every column is readable, it is event `expected_seq`, it
+/// is chained to `prev`, its stored hash is the hash of its contents, and `key` signed that hash.
+/// What fails comes back with the row's sequence number, 0 if that is unreadable. [`verify`] and a
+/// writer catching up (`Log::events_after`) check events with it.
+pub(crate) fn next_event(
+    row: &rusqlite::Row<'_>,
+    expected_seq: u64,
+    prev: &Hash,
+    key: &PublicKey,
+) -> Result<StoredEvent, (u64, Reason)> {
+    let seq = row
+        .get::<_, i64>(0)
+        .ok()
+        .and_then(|s| u64::try_from(s).ok())
+        .unwrap_or(0);
+    let bad = |reason| (seq, reason);
+    let malformed = |column| move |_| bad(Reason::Malformed(column));
+
+    let at: i64 = row.get(1).map_err(malformed("at"))?;
+    let origin_text: String = row.get(2).map_err(malformed("origin"))?;
+    let kind: String = row.get(3).map_err(malformed("kind"))?;
+    let schema_version: u32 = row.get(4).map_err(malformed("schema_version"))?;
+    let payload: Vec<u8> = row.get(5).map_err(malformed("payload"))?;
+    let stored_prev: Vec<u8> = row.get(6).map_err(malformed("prev_hash"))?;
+    let stored_hash: Vec<u8> = row.get(7).map_err(malformed("hash"))?;
+    let signature: Vec<u8> = row.get(8).map_err(malformed("signature"))?;
+
+    let origin = Origin::parse(&origin_text).ok_or_else(|| bad(Reason::Malformed("origin")))?;
+    let at_millis = u64::try_from(at).map_err(|_| bad(Reason::Malformed("at")))?;
+    let stored_prev =
+        Hash::try_from(stored_prev.as_slice()).map_err(|_| bad(Reason::Malformed("prev_hash")))?;
+    let stored_hash =
+        Hash::try_from(stored_hash.as_slice()).map_err(|_| bad(Reason::Malformed("hash")))?;
+
+    if seq != expected_seq {
+        return Err(bad(Reason::OutOfSequence {
+            expected: expected_seq,
+        }));
+    }
+    if stored_prev != *prev {
+        return Err(bad(Reason::ChainBroken));
+    }
+    let recomputed = format::event_hash(&Fields {
+        seq,
+        at_millis,
+        origin,
+        kind: &kind,
+        schema_version,
+        payload: &payload,
+        prev_hash: &stored_prev,
+    });
+    if recomputed != stored_hash {
+        return Err(bad(Reason::HashMismatch));
+    }
+    if !key.verify(&stored_hash, &signature) {
+        return Err(bad(Reason::BadSignature));
+    }
+    Ok(StoredEvent {
+        seq,
+        at: Timestamp::from_millis(at_millis),
+        origin,
+        kind,
+        schema_version,
+        payload,
+        hash: stored_hash,
+    })
+}
+
 pub(crate) fn verify_detailed(
     conn: &Connection,
     key: &PublicKey,
@@ -257,57 +331,12 @@ pub(crate) fn verify_detailed(
     };
     let mut expected_seq = starts_at;
     while let Some(row) = rows.next()? {
-        let seq = row
-            .get::<_, i64>(0)
-            .ok()
-            .and_then(|s| u64::try_from(s).ok())
-            .unwrap_or(0);
-        let bad = |reason| VerifyError::Event { seq, reason };
-        let malformed = |column| move |_| bad(Reason::Malformed(column));
-
-        let at: i64 = row.get(1).map_err(malformed("at"))?;
-        let origin_text: String = row.get(2).map_err(malformed("origin"))?;
-        let kind: String = row.get(3).map_err(malformed("kind"))?;
-        let schema_version: u32 = row.get(4).map_err(malformed("schema_version"))?;
-        let payload: Vec<u8> = row.get(5).map_err(malformed("payload"))?;
-        let stored_prev: Vec<u8> = row.get(6).map_err(malformed("prev_hash"))?;
-        let stored_hash: Vec<u8> = row.get(7).map_err(malformed("hash"))?;
-        let signature: Vec<u8> = row.get(8).map_err(malformed("signature"))?;
-
-        let origin = Origin::parse(&origin_text).ok_or_else(|| bad(Reason::Malformed("origin")))?;
-        let at_millis = u64::try_from(at).map_err(|_| bad(Reason::Malformed("at")))?;
-        let stored_prev = Hash::try_from(stored_prev.as_slice())
-            .map_err(|_| bad(Reason::Malformed("prev_hash")))?;
-        let stored_hash =
-            Hash::try_from(stored_hash.as_slice()).map_err(|_| bad(Reason::Malformed("hash")))?;
-
-        if seq != expected_seq {
-            return Err(bad(Reason::OutOfSequence {
-                expected: expected_seq,
-            }));
-        }
-        if stored_prev != prev {
-            return Err(bad(Reason::ChainBroken));
-        }
-        let recomputed = format::event_hash(&Fields {
-            seq,
-            at_millis,
-            origin,
-            kind: &kind,
-            schema_version,
-            payload: &payload,
-            prev_hash: &stored_prev,
-        });
-        if recomputed != stored_hash {
-            return Err(bad(Reason::HashMismatch));
-        }
-        if !key.verify(&stored_hash, &signature) {
-            return Err(bad(Reason::BadSignature));
-        }
-        prev = stored_hash;
+        let event = next_event(row, expected_seq, &prev, key)
+            .map_err(|(seq, reason)| VerifyError::Event { seq, reason })?;
+        prev = event.hash;
         head = Some(Head {
-            seq,
-            hash: stored_hash,
+            seq: event.seq,
+            hash: event.hash,
         });
         expected_seq += 1;
     }
@@ -348,10 +377,7 @@ pub struct Contents {
 /// returned is what was checked and not what is at the path a moment later. It needs only the public
 /// key, so an auditor can use it.
 pub fn read_verified(path: &Path, key: &PublicKey) -> Result<Contents, VerifyError> {
-    let conn = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
+    let conn = read_only(path)?;
     // One read transaction covers the check and the reads, so a writer in between cannot show the
     // reads something the check did not see.
     let tx = conn.unchecked_transaction()?;
@@ -394,12 +420,7 @@ pub fn verify_history(
     key: &PublicKey,
     expect_head: Option<Head>,
 ) -> Result<History, VerifyError> {
-    let open = |path: &Path| {
-        Connection::open_with_flags(
-            path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-    };
+    let open = read_only;
     let detail = verify_detailed(&open(live)?, key, expect_head)?;
 
     let mut covered: Vec<(u64, u64)> = Vec::new();

@@ -47,66 +47,18 @@ pub const SCHEMA_VERSION: u32 = 24;
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
-        Upcast {
-            kind: "hold.opened",
-            from: 1,
-            step: hold_opened_v1,
-        },
-        Upcast {
-            kind: "hold.resolved",
-            from: 1,
-            step: hold_resolved_v1,
-        },
-        Upcast {
-            kind: "job.started",
-            from: 5,
-            step: job_started_v5,
-        },
-        Upcast {
-            kind: "job.started",
-            from: 6,
-            step: job_started_v6,
-        },
-        Upcast {
-            kind: "job.ended",
-            from: 7,
-            step: job_ended_v7,
-        },
-        Upcast {
-            kind: "job.started",
-            from: 8,
-            step: job_started_v8,
-        },
-        Upcast {
-            kind: "hold.resolved",
-            from: 12,
-            step: decision_v12,
-        },
-        Upcast {
-            kind: "task.cancelled",
-            from: 12,
-            step: decision_v12,
-        },
-        Upcast {
-            kind: "policy.approved",
-            from: 12,
-            step: decision_v12,
-        },
-        Upcast {
-            kind: "handle.released",
-            from: 12,
-            step: decision_v12,
-        },
-        Upcast {
-            kind: "agent.issued",
-            from: 12,
-            step: decision_v12,
-        },
-        Upcast {
-            kind: "agent.revoked",
-            from: 12,
-            step: decision_v12,
-        },
+        Upcast::new("hold.opened", 1, hold_opened_v1),
+        Upcast::new("hold.resolved", 1, hold_resolved_v1),
+        Upcast::new("job.started", 5, job_started_v5),
+        Upcast::new("job.started", 6, job_started_v6),
+        Upcast::new("job.ended", 7, job_ended_v7),
+        Upcast::new("job.started", 8, job_started_v8),
+        Upcast::new("hold.resolved", 12, decision_v12),
+        Upcast::new("task.cancelled", 12, decision_v12),
+        Upcast::new("policy.approved", 12, decision_v12),
+        Upcast::new("handle.released", 12, decision_v12),
+        Upcast::new("agent.issued", 12, decision_v12),
+        Upcast::new("agent.revoked", 12, decision_v12),
     ],
 };
 
@@ -502,6 +454,50 @@ impl fmt::Display for EventError {
 
 impl std::error::Error for EventError {}
 
+/// The log's `kind` value of every event, in one table so [`Event::kind`] and [`Event::KINDS`] agree.
+macro_rules! kinds {
+    ($($variant:ident => $kind:literal,)*) => {
+        impl Event {
+            /// The value for the log's `kind` column.
+            pub fn kind(&self) -> &'static str {
+                match self {
+                    $(Event::$variant { .. } => $kind,)*
+                }
+            }
+
+            /// Every `kind` value, for checking tables and test coverage.
+            pub const KINDS: [&'static str; 24] = [$($kind,)*];
+        }
+    };
+}
+
+kinds! {
+    TaskCreated => "task.created",
+    TaskCompleted => "task.completed",
+    JobStarted => "job.started",
+    JobEnded => "job.ended",
+    GateAnswered => "gate.answered",
+    HoldOpened => "hold.opened",
+    HoldResolved => "hold.resolved",
+    ArchivePruned => "archive.pruned",
+    TaskCancelled => "task.cancelled",
+    HoldRefused => "hold.refused",
+    PolicyApproved => "policy.approved",
+    HandleReleased => "handle.released",
+    AgentIssued => "agent.issued",
+    AgentRevoked => "agent.revoked",
+    MergeApproved => "merge.approved",
+    PluginInstalled => "plugin.installed",
+    PluginPolicySet => "plugin.policy_set",
+    PluginUpdatePending => "plugin.update_pending",
+    PluginSnapshotImported => "plugin.snapshot_imported",
+    PluginRevocationsImported => "plugin.revocations_imported",
+    PluginRevoked => "plugin.revoked",
+    JobValues => "job.values",
+    SkillDrafted => "skill.drafted",
+    SkillTrusted => "skill.trusted",
+}
+
 impl Event {
     /// Whether `origin` may submit this event (ADR-0024). The broker may report only what a gate
     /// answered, since it evaluates gates per request (ADR-0009). Everything else is the engine's: it
@@ -591,68 +587,10 @@ impl Event {
         self.clone().with_signed(Signed::None).encode()
     }
 
-    /// The value for the log's `kind` column.
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Event::TaskCreated { .. } => "task.created",
-            Event::TaskCompleted { .. } => "task.completed",
-            Event::JobStarted { .. } => "job.started",
-            Event::JobEnded { .. } => "job.ended",
-            Event::GateAnswered { .. } => "gate.answered",
-            Event::HoldOpened { .. } => "hold.opened",
-            Event::HoldResolved { .. } => "hold.resolved",
-            Event::ArchivePruned { .. } => "archive.pruned",
-            Event::TaskCancelled { .. } => "task.cancelled",
-            Event::HoldRefused { .. } => "hold.refused",
-            Event::PolicyApproved { .. } => "policy.approved",
-            Event::HandleReleased { .. } => "handle.released",
-            Event::AgentIssued { .. } => "agent.issued",
-            Event::AgentRevoked { .. } => "agent.revoked",
-            Event::MergeApproved { .. } => "merge.approved",
-            Event::PluginInstalled { .. } => "plugin.installed",
-            Event::PluginPolicySet { .. } => "plugin.policy_set",
-            Event::PluginUpdatePending { .. } => "plugin.update_pending",
-            Event::PluginSnapshotImported { .. } => "plugin.snapshot_imported",
-            Event::PluginRevocationsImported { .. } => "plugin.revocations_imported",
-            Event::PluginRevoked { .. } => "plugin.revoked",
-            Event::JobValues { .. } => "job.values",
-            Event::SkillDrafted { .. } => "skill.drafted",
-            Event::SkillTrusted { .. } => "skill.trusted",
-        }
-    }
-
     /// The bytes stored in the log's `payload` column.
     pub fn encode(&self) -> Result<Vec<u8>, EventError> {
         serde_json::to_vec(self).map_err(|e| EventError::Encode(e.to_string()))
     }
-
-    /// Every `kind` value, for checking tables and test coverage.
-    pub const KINDS: [&'static str; 24] = [
-        "task.created",
-        "task.completed",
-        "job.started",
-        "job.ended",
-        "gate.answered",
-        "hold.opened",
-        "hold.resolved",
-        "archive.pruned",
-        "task.cancelled",
-        "hold.refused",
-        "policy.approved",
-        "handle.released",
-        "agent.issued",
-        "agent.revoked",
-        "merge.approved",
-        "plugin.installed",
-        "plugin.policy_set",
-        "plugin.update_pending",
-        "plugin.snapshot_imported",
-        "plugin.revocations_imported",
-        "plugin.revoked",
-        "job.values",
-        "skill.drafted",
-        "skill.trusted",
-    ];
 
     /// Reads an event back from a log row's `kind`, `schema_version` and `payload`, as this build's
     /// [`SCHEMA`] understands it.

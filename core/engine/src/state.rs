@@ -926,23 +926,11 @@ impl State {
                 _ => Err(RuleViolation::TrustRefused),
             },
             Event::TaskCompleted { task } => {
-                let status = self.task(*task)?.status();
-                if status != TaskStatus::Open {
-                    return Err(RuleViolation::TaskNotOpen {
-                        task: *task,
-                        status,
-                    });
-                }
+                self.task_is_open(*task)?;
                 self.no_running_job(*task)
             }
             Event::JobStarted { task, .. } => {
-                let status = self.task(*task)?.status();
-                if status != TaskStatus::Open {
-                    return Err(RuleViolation::TaskNotOpen {
-                        task: *task,
-                        status,
-                    });
-                }
+                self.task_is_open(*task)?;
                 // A merge's approval is used by one job, whatever became of it (ADR-0071).
                 if self.merge_of(*task).is_some() && self.jobs.values().any(|j| j.task == *task) {
                     return Err(RuleViolation::MergeJobRan(*task));
@@ -950,29 +938,16 @@ impl State {
                 // One running job per task. Concurrent jobs would need their own decision (ADR-0019).
                 self.no_running_job(*task)
             }
-            Event::GateAnswered { job, .. } => match self.jobs.get(job) {
-                None => Err(RuleViolation::UnknownJob(*job)),
-                Some(j) if !j.is_running() => Err(RuleViolation::JobNotRunning(*job)),
-                Some(_) => Ok(()),
-            },
-            Event::JobEnded { job, .. } => match self.jobs.get(job) {
-                None => Err(RuleViolation::UnknownJob(*job)),
-                Some(j) if !j.is_running() => Err(RuleViolation::JobNotRunning(*job)),
-                Some(_) => Ok(()),
-            },
-            Event::JobValues { job, values } => match self.jobs.get(job) {
-                None => Err(RuleViolation::UnknownJob(*job)),
-                Some(j) if !j.is_running() => Err(RuleViolation::JobNotRunning(*job)),
-                Some(j) if j.values.is_some() => Err(RuleViolation::JobValuesTwice(*job)),
-                Some(_) if values.len() > MAX_FIELDS => Err(RuleViolation::TooManyValues(*job)),
-                Some(_) => Ok(()),
+            Event::GateAnswered { job, .. } | Event::JobEnded { job, .. } => {
+                self.running_job(*job).map(drop)
+            }
+            Event::JobValues { job, values } => match self.running_job(*job)? {
+                j if j.values.is_some() => Err(RuleViolation::JobValuesTwice(*job)),
+                _ if values.len() > MAX_FIELDS => Err(RuleViolation::TooManyValues(*job)),
+                _ => Ok(()),
             },
             Event::HoldOpened { task, .. } => {
-                match self.task(*task)?.status() {
-                    TaskStatus::Completed => return Err(RuleViolation::TaskCompleted(*task)),
-                    TaskStatus::Cancelled => return Err(RuleViolation::TaskCancelled(*task)),
-                    TaskStatus::Open | TaskStatus::Held => {}
-                }
+                self.task_is_unfinished(*task)?;
                 self.no_running_job(*task)
             }
             Event::HoldRefused { hold, .. } => {
@@ -1042,11 +1017,7 @@ impl State {
                 writers,
                 ..
             } => {
-                match self.task(*task)?.status() {
-                    TaskStatus::Completed => return Err(RuleViolation::TaskCompleted(*task)),
-                    TaskStatus::Cancelled => return Err(RuleViolation::TaskCancelled(*task)),
-                    TaskStatus::Open | TaskStatus::Held => {}
-                }
+                self.task_is_unfinished(*task)?;
                 // The authority table of a hold (ADR-0025): text only the repository's writers wrote
                 // is routine, which policy may release; any other is irreversible, a human's alone
                 // (ADR-0103). No other decider releases either.
@@ -1070,13 +1041,7 @@ impl State {
             Event::MergeApproved {
                 task, repo, pr, by, ..
             } => {
-                let status = self.task(*task)?.status();
-                if status != TaskStatus::Open {
-                    return Err(RuleViolation::TaskNotOpen {
-                        task: *task,
-                        status,
-                    });
-                }
+                self.task_is_open(*task)?;
                 // The authority table (ADR-0025) at the irreversible tier: a human only.
                 if !Stakes::irreversible().may_be_resolved_by(*by) {
                     return Err(RuleViolation::MergeNeedsAHuman { by: *by });
@@ -1109,9 +1074,7 @@ impl State {
                 // The authority table (ADR-0025) for an irreversible capability grant: a human only,
                 // or policy where the human's install policy already covers it (ADR-0091). Never a
                 // verifier (ADR-0012).
-                let human = Stakes::irreversible()
-                    .touching(Sensitive::CapabilityGrant)
-                    .may_be_resolved_by(*by);
+                let human = may_grant_capabilities(*by);
                 let within_policy = *by == Resolution::Policy
                     && self
                         .install_policy
@@ -1164,10 +1127,7 @@ impl State {
                 Ok(())
             }
             Event::PluginPolicySet { policy, by, .. } => {
-                if !Stakes::irreversible()
-                    .touching(Sensitive::CapabilityGrant)
-                    .may_be_resolved_by(*by)
-                {
+                if !may_grant_capabilities(*by) {
                     return Err(RuleViolation::InstallPolicyNeedsAHuman { by: *by });
                 }
                 if !policy.is_valid() {
@@ -1182,10 +1142,7 @@ impl State {
                 ..
             } => {
                 // The authority table (ADR-0025) for an irreversible capability grant: a human only.
-                if !Stakes::irreversible()
-                    .touching(Sensitive::CapabilityGrant)
-                    .may_be_resolved_by(*by)
-                {
+                if !may_grant_capabilities(*by) {
                     return Err(RuleViolation::AgentNeedsAHuman { by: *by });
                 }
                 if self.agents.values().any(|a| a.credential == *credential) {
@@ -1229,6 +1186,33 @@ impl State {
                 }
                 Ok(())
             }
+        }
+    }
+
+    /// The task exists and is open: not held, completed or cancelled.
+    fn task_is_open(&self, task: TaskId) -> Result<(), RuleViolation> {
+        let status = self.task(task)?.status();
+        if status != TaskStatus::Open {
+            return Err(RuleViolation::TaskNotOpen { task, status });
+        }
+        Ok(())
+    }
+
+    /// The task exists and is neither completed nor cancelled.
+    fn task_is_unfinished(&self, task: TaskId) -> Result<(), RuleViolation> {
+        match self.task(task)?.status() {
+            TaskStatus::Completed => Err(RuleViolation::TaskCompleted(task)),
+            TaskStatus::Cancelled => Err(RuleViolation::TaskCancelled(task)),
+            TaskStatus::Open | TaskStatus::Held => Ok(()),
+        }
+    }
+
+    /// The job exists and is running.
+    fn running_job(&self, job: JobId) -> Result<&Job, RuleViolation> {
+        match self.jobs.get(&job) {
+            None => Err(RuleViolation::UnknownJob(job)),
+            Some(j) if !j.is_running() => Err(RuleViolation::JobNotRunning(job)),
+            Some(j) => Ok(j),
         }
     }
 
@@ -2391,6 +2375,13 @@ impl State {
         }
         out
     }
+}
+
+/// The authority table (ADR-0025) for an irreversible capability grant: whether `by` may decide one.
+fn may_grant_capabilities(by: Resolution) -> bool {
+    Stakes::irreversible()
+        .touching(Sensitive::CapabilityGrant)
+        .may_be_resolved_by(by)
 }
 
 /// The reason a job from before version 7 of the image is read with.

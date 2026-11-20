@@ -11,6 +11,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::format::{self, Fields, Hash};
 use crate::key::LogKey;
+use crate::verify::{Reason, next_event};
 
 /// The layout of a log that has never been compacted. A new log is written at this version, so a build
 /// from before compaction can still read it.
@@ -391,55 +392,27 @@ impl Log {
         let mut prev = after.map_or_else(|| format::genesis_hash(key.as_bytes()), |h| h.hash);
         let mut events = Vec::new();
         while let Some(row) = rows.next()? {
-            let seq = u64::try_from(row.get::<_, i64>(0)?)
-                .map_err(|_| LogError::Corrupt("sequence number"))?;
-            let at =
-                u64::try_from(row.get::<_, i64>(1)?).map_err(|_| LogError::Corrupt("timestamp"))?;
-            let origin =
-                Origin::parse(&row.get::<_, String>(2)?).ok_or(LogError::Corrupt("origin"))?;
-            let kind: String = row.get(3)?;
-            let schema_version: u32 = row.get(4)?;
-            let payload: Vec<u8> = row.get(5)?;
-            let hash_of = |bytes: Vec<u8>| {
-                Hash::try_from(bytes.as_slice()).map_err(|_| LogError::Corrupt("hash length"))
-            };
-            let stored_prev = hash_of(row.get(6)?)?;
-            let stored_hash = hash_of(row.get(7)?)?;
-            let signature: Vec<u8> = row.get(8)?;
-            if seq != head.map_or(1, |h| h.seq + 1) {
-                return Err(LogError::Corrupt(
-                    "events missing since the head this process knew",
-                ));
-            }
-            if stored_prev != prev {
-                return Err(LogError::Corrupt("hash chain"));
-            }
-            let recomputed = format::event_hash(&Fields {
-                seq,
-                at_millis: at,
-                origin,
-                kind: &kind,
-                schema_version,
-                payload: &payload,
-                prev_hash: &stored_prev,
-            });
-            if recomputed != stored_hash || !key.verify(&stored_hash, &signature) {
-                return Err(LogError::Corrupt("event hash or signature"));
-            }
-            prev = stored_hash;
+            let expected = head.map_or(1, |h| h.seq + 1);
+            let event = next_event(row, expected, &prev, &key).map_err(|(seq, reason)| {
+                LogError::Corrupt(match (seq, reason) {
+                    (0, _) => "sequence number",
+                    (_, Reason::Malformed("at")) => "timestamp",
+                    (_, Reason::Malformed("origin")) => "origin",
+                    (_, Reason::Malformed("prev_hash" | "hash")) => "hash length",
+                    (_, Reason::Malformed(column)) => column,
+                    (_, Reason::OutOfSequence { .. }) => {
+                        "events missing since the head this process knew"
+                    }
+                    (_, Reason::ChainBroken) => "hash chain",
+                    _ => "event hash or signature",
+                })
+            })?;
+            prev = event.hash;
             head = Some(Head {
-                seq,
-                hash: stored_hash,
+                seq: event.seq,
+                hash: event.hash,
             });
-            events.push(StoredEvent {
-                seq,
-                at: Timestamp::from_millis(at),
-                origin,
-                kind,
-                schema_version,
-                payload,
-                hash: stored_hash,
-            });
+            events.push(event);
         }
         Ok((events, head))
     }

@@ -20,6 +20,13 @@ pub struct Upcast {
     pub step: UpcastFn,
 }
 
+impl Upcast {
+    /// The step that reads `kind` at version `from`.
+    pub const fn new(kind: &'static str, from: u32, step: UpcastFn) -> Self {
+        Self { kind, from, step }
+    }
+}
+
 /// The current event schema version and the steps from every older one.
 pub struct Schema {
     pub current: u32,

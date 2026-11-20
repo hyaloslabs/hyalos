@@ -12,11 +12,11 @@ use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 
 use crate::key::PublicKey;
 use crate::store::Head;
-use crate::verify::{Verified, VerifyError, verify};
+use crate::verify::{Verified, VerifyError, read_only, verify};
 
 #[derive(Debug)]
 pub enum CopyError {
@@ -85,10 +85,7 @@ pub fn copy_verified(
     if !exists(src) {
         return Err(CopyError::SourceMissing(src.to_path_buf()));
     }
-    let source = Connection::open_with_flags(
-        src,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
+    let source = read_only(src)?;
     source.busy_timeout(std::time::Duration::from_secs(5))?;
     copy_connection(&source, dst, key, expect_head)
 }
