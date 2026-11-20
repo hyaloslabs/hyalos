@@ -53,11 +53,16 @@ pub fn check_published(
             .iter()
             .any(|s| s.len() >= MIN_SECRET && view.contains(s))
     };
-    if views(text).iter().any(|v| held(v) || issued_key(v)) {
+    let decoded = entities_decoded(text);
+    if [text, &decoded]
+        .iter()
+        .flat_map(|t| views(t))
+        .any(|v| held(&v) || key_shape(&v))
+    {
         return Err("content.encoded_credential");
     }
     // Markdown and HTML both decode character references, so `&#47;&#47;host` is a link too.
-    if !links_allowed(text, forge) || !links_allowed(&entities_decoded(text), forge) {
+    if !links_allowed(text, forge) || !links_allowed(&decoded, forge) {
         return Err("content.link");
     }
     Ok(())
@@ -468,7 +473,7 @@ fn links_allowed(text: &str, forge: Option<&str>) -> bool {
             .trim_start_matches(slash)
             .split(ends_host)
             .next()
-            .is_some_and(|host| host.contains('.'));
+            .is_some_and(|host| host.contains('.') || host.starts_with('['));
         // A `// comment` is not a link.
         if host_named && !to_forge(rest) {
             return false;
@@ -701,7 +706,17 @@ mod tests {
         let pct: String = held.bytes().map(|b| format!("%{b:02X}")).collect();
         let reversed: String = held.chars().rev().collect();
         let split = "hel d-c red ent ial -01 23";
-        for text in [b64, &hex, &pct, &reversed, split] {
+        let b64_entity = b64.replacen('a', "&#97;", 1);
+        let split_entity = split.replacen('h', "&#104;", 1);
+        for text in [
+            b64,
+            &hex,
+            &pct,
+            &reversed,
+            split,
+            &b64_entity,
+            &split_entity,
+        ] {
             assert_eq!(
                 check_published(&format!("ref {text}"), &[held], FORGE),
                 Err("content.encoded_credential"),
@@ -713,6 +728,15 @@ mod tests {
         let hex: String = key.bytes().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
             check_published(&hex, &[], FORGE),
+            Err("content.encoded_credential")
+        );
+        let hex_entity = hex.replacen('7', "&#55;", 1);
+        assert_eq!(
+            check_published(&hex_entity, &[], FORGE),
+            Err("content.encoded_credential")
+        );
+        assert_eq!(
+            check_published("API_TOKEN&#61;abcdef1234", &[], FORGE),
             Err("content.encoded_credential")
         );
     }
@@ -757,6 +781,8 @@ mod tests {
             "<img src=\"/\t/exfil.example/p.png\">",
             "<img src=\"/\n/exfil.example/p.png\">",
             "[r](/\r\n/exfil.example/x)",
+            "<img src=\"//[2001:4860:4860::8888]/p.png\">",
+            "[r](//[2001:db8::1]:443/x)",
         ] {
             assert_eq!(
                 check_published(text, &[], FORGE),
