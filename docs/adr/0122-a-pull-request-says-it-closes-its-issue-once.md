@@ -6,7 +6,7 @@
 
 [ADR-0083](0083-a-fix-issue-pull-request-closes-its-issue.md) has the broker put `Closes #N` first in a fix-issue pull request's body, "even when the harness's body already says it closes `#N`". The reason was to avoid a parser: deciding whether text closes an issue as GitHub would is easy to get wrong, and a wrong yes would leave the issue open.
 
-Both harnesses write the line themselves. On bot1 on 2026-11-19, Codex's retroboot/siteseer#34 and Claude Code's #35 each said `Closes #33` twice (#349). GitHub does not mind, but the operator reviews every such pull request, and the repetition reads as a mistake.
+Both harnesses write the line themselves. On bot1 on 2026-11-19, Codex's #34 and Claude Code's #35, in a private test repository (its name redacted before this repository went public), each said `Closes #33` twice (#349). GitHub does not mind, but the operator reviews every such pull request, and the repetition reads as a mistake.
 
 ## Decision
 
