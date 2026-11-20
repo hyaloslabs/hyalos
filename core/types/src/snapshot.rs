@@ -414,51 +414,38 @@ impl StateImage {
         let object = value
             .as_object_mut()
             .ok_or_else(|| ImageError::Decode("the state is not an object".into()))?;
-        // 3 -> 4: no operator policy had been approved.
-        if version < 4 {
-            object.insert("policy".into(), Value::Null);
-        }
-        // 4 -> 5: no handle had been released.
-        if version < 5 {
-            object.insert("handles".into(), Value::Array(Vec::new()));
-        }
-        // 5 -> 6: no agent's credential had been issued.
-        if version < 6 {
-            object.insert("agents".into(), Value::Array(Vec::new()));
-        }
-        // 7 -> 8: no decision had been signed by the operator.
-        if version < 8 {
-            object.insert("last_approval".into(), Value::Null);
-            object.insert("signed_since".into(), Value::Null);
-        }
-        // 8 -> 9: no merge had been approved.
-        if version < 9 {
-            object.insert("merges".into(), Value::Array(Vec::new()));
-        }
-        // 9 -> 10: no plugin had been installed. 10 -> 11 changes nothing stored.
-        if version < 10 {
-            object.insert("plugins".into(), Value::Array(Vec::new()));
-        }
-        // 11 -> 12: no install policy had been set.
-        if version < 12 {
-            object.insert("install_policy".into(), Value::Null);
-        }
-        // 12 -> 13: no update was waiting.
-        if version < 13 {
-            object.insert("pending_updates".into(), Value::Array(Vec::new()));
-        }
-        // 13 -> 14: no trusted-root snapshot had been imported.
-        if version < 14 {
-            object.insert("trusted_root".into(), Value::Null);
-        }
-        // 14 -> 15: no revocation list had been imported, so nothing installed was revoked.
-        if version < 15 {
-            object.insert("revocations".into(), Value::Null);
-            object.insert("revoked_plugins".into(), Value::Array(Vec::new()));
-        }
-        // 15 -> 16: no skill had been drafted.
-        if version < 16 {
-            object.insert("drafts".into(), Value::Array(Vec::new()));
+        // What each version added, from the first version that kept it, and what an older one reads
+        // as: in order, so the object is built as it always was.
+        let added = [
+            // 3 -> 4: no operator policy had been approved.
+            (4, "policy", Value::Null),
+            // 4 -> 5: no handle had been released.
+            (5, "handles", Value::Array(Vec::new())),
+            // 5 -> 6: no agent's credential had been issued.
+            (6, "agents", Value::Array(Vec::new())),
+            // 7 -> 8: no decision had been signed by the operator.
+            (8, "last_approval", Value::Null),
+            (8, "signed_since", Value::Null),
+            // 8 -> 9: no merge had been approved.
+            (9, "merges", Value::Array(Vec::new())),
+            // 9 -> 10: no plugin had been installed. 10 -> 11 changes nothing stored.
+            (10, "plugins", Value::Array(Vec::new())),
+            // 11 -> 12: no install policy had been set.
+            (12, "install_policy", Value::Null),
+            // 12 -> 13: no update was waiting.
+            (13, "pending_updates", Value::Array(Vec::new())),
+            // 13 -> 14: no trusted-root snapshot had been imported.
+            (14, "trusted_root", Value::Null),
+            // 14 -> 15: no revocation list had been imported, so nothing installed was revoked.
+            (15, "revocations", Value::Null),
+            (15, "revoked_plugins", Value::Array(Vec::new())),
+            // 15 -> 16: no skill had been drafted.
+            (16, "drafts", Value::Array(Vec::new())),
+        ];
+        for (since, field, empty) in added {
+            if version < since {
+                object.insert(field.into(), empty);
+            }
         }
         // 16 -> 17: no draft had been trusted.
         if let Some(Value::Array(drafts)) = object.get_mut("drafts") {

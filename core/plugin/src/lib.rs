@@ -67,62 +67,44 @@ pub mod codes {
         ReasonCode::new(text).unwrap_or_else(ReasonCode::unavailable)
     }
 
-    /// The bytes are not a WASM component this runtime can compile.
-    pub fn invalid() -> ReasonCode {
-        code("plugin.invalid")
+    /// Each code as a function of its own, so a caller names it and the text is written once.
+    macro_rules! codes {
+        ($($(#[$doc:meta])* $name:ident => $text:literal,)*) => {
+            $(
+                $(#[$doc])*
+                pub fn $name() -> ReasonCode {
+                    code($text)
+                }
+            )*
+        };
     }
 
-    /// The component imports something its grant does not link: an interface for a capability it
-    /// was not granted, or anything outside `hyalos:capability`.
-    pub fn undeclared_import() -> ReasonCode {
-        code("plugin.undeclared_import")
-    }
-
-    /// An import has the right name but not the interface's type.
-    pub fn bad_import() -> ReasonCode {
-        code("plugin.bad_import")
-    }
-
-    /// The component does not export `hyalos:plugin/run` with its type.
-    pub fn no_entry() -> ReasonCode {
-        code("plugin.no_entry")
-    }
-
-    /// The plugin used up its fuel.
-    pub fn out_of_fuel() -> ReasonCode {
-        code("plugin.out_of_fuel")
-    }
-
-    /// The plugin trapped, or the runtime failed it.
-    pub fn trapped() -> ReasonCode {
-        code("plugin.trapped")
-    }
-
-    /// The runtime could not be set up.
-    pub fn runtime() -> ReasonCode {
-        code("plugin.runtime")
-    }
-
-    /// The plugin called a capability with a name its grant does not hold. The plugin gets this
-    /// code back as the call's error; the host is not called.
-    pub fn not_granted() -> ReasonCode {
-        code("capability.not_granted")
-    }
-
-    /// The plugin has no `component.wasm` for a deterministic step to run (ADR-0102).
-    pub fn no_component() -> ReasonCode {
-        code("plugin.no_component")
-    }
-
-    /// The plugin's run answered with its error, which is plugin-authored and never shown.
-    pub fn failed() -> ReasonCode {
-        code("plugin.failed")
-    }
-
-    /// The plugin made more than [`CALLS`](crate::CALLS) host calls in one run. The host is not
-    /// called.
-    pub fn too_many_calls() -> ReasonCode {
-        code("plugin.too_many_calls")
+    codes! {
+        /// The bytes are not a WASM component this runtime can compile.
+        invalid => "plugin.invalid",
+        /// The component imports something its grant does not link: an interface for a capability it
+        /// was not granted, or anything outside `hyalos:capability`.
+        undeclared_import => "plugin.undeclared_import",
+        /// An import has the right name but not the interface's type.
+        bad_import => "plugin.bad_import",
+        /// The component does not export `hyalos:plugin/run` with its type.
+        no_entry => "plugin.no_entry",
+        /// The plugin used up its fuel.
+        out_of_fuel => "plugin.out_of_fuel",
+        /// The plugin trapped, or the runtime failed it.
+        trapped => "plugin.trapped",
+        /// The runtime could not be set up.
+        runtime => "plugin.runtime",
+        /// The plugin called a capability with a name its grant does not hold. The plugin gets this
+        /// code back as the call's error; the host is not called.
+        not_granted => "capability.not_granted",
+        /// The plugin has no `component.wasm` for a deterministic step to run (ADR-0102).
+        no_component => "plugin.no_component",
+        /// The plugin's run answered with its error, which is plugin-authored and never shown.
+        failed => "plugin.failed",
+        /// The plugin made more than [`CALLS`](crate::CALLS) host calls in one run. The host is not
+        /// called.
+        too_many_calls => "plugin.too_many_calls",
     }
 }
 
