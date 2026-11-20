@@ -138,4 +138,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0122](0122-a-pull-request-says-it-closes-its-issue-once.md) | A pull request says it closes its issue once | Accepted |
 | [0123](0123-a-provider-out-of-credit-holds-the-task.md) | A provider out of credit holds the task | Accepted |
 | [0124](0124-ci-caches-builds-and-runs-specialised-jobs-by-path.md) | CI caches builds and runs specialised jobs by path | Accepted |
-| [0125](0125-the-state-holds-the-snapshot-s-record-types.md) | The state holds the snapshot's record types | Proposed |
+| [0125](0125-the-state-holds-the-snapshot-s-record-types.md) | The state holds the snapshot's record types | Accepted |

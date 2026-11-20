@@ -1,6 +1,6 @@
 # ADR-0125: The state holds the snapshot's record types
 
-**Status:** Proposed. Supersedes [ADR-0026](0026-compacting-the-log-by-signed-snapshot.md)'s rule that the engine's conversion names every field, for the plain records only.
+**Status:** Accepted. Supersedes [ADR-0026](0026-compacting-the-log-by-signed-snapshot.md)'s rule that the engine's conversion names every field, for the plain records only.
 
 ## Context
 
