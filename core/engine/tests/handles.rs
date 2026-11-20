@@ -335,3 +335,34 @@ fn policy_releases_an_issue_only_writers_wrote_and_only_when_the_operator_permit
     );
     Ok(())
 }
+
+/// #361: a handle policy released (ADR-0103) is a state the engine may hold, so its invariants accept
+/// it, and a snapshot that holds one reloads. Before, compaction wrote a snapshot the engine then
+/// refused to open ("handle … was released by Policy").
+#[test]
+fn a_handle_policy_released_survives_compaction_and_reload() -> Res {
+    use hyalos_types::{Permission, Writers};
+    let (mut e, t, d) = engine("policy-compact")?;
+    let maintainers = Writers {
+        author: Permission::Admin,
+        editors: vec![Permission::Write],
+    };
+    let permits =
+        format!("{POLICY}\npermit (principal, action == Action::\"release_issue\", resource);");
+    e.approve_policy(at(3), &permits, Decider::Human, code("policy.approved"))?;
+    e.release_issue_by_policy(at(4), t, handle(7), "o/r", 1_000, maintainers)
+        .map_err(|c| c.as_str().to_string())?;
+    assert_eq!(e.state().handles()[0].by, Resolution::Policy);
+    assert_eq!(e.state().invariant_violations(), Vec::<String>::new());
+
+    let before = e.state().clone();
+    e.compact(at(10), &d.join("archive.db"))?;
+    drop(e);
+    let reopened = Engine::open(&d.join("events.db"), key())?
+        .with_operator(hyalos_types::OperatorKey::from_seed(&[0x0e; 32]));
+    assert_eq!(reopened.state().handles(), before.handles());
+    let mut reopened = reopened;
+    let job = start(&mut reopened, t, 11)?;
+    mint(&reopened, &manifest(job, &[handle(7)]))?;
+    Ok(())
+}
