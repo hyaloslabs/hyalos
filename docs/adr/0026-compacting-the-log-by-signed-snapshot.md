@@ -1,6 +1,6 @@
 # ADR-0026: Compacting the log by signed snapshot
 
-**Status:** Accepted
+**Status:** Accepted; its rule that the engine names every field is superseded for the plain records by [ADR-0125](0125-the-state-holds-the-snapshot-s-record-types.md)
 
 ## Context
 

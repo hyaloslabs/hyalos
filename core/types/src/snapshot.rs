@@ -4,9 +4,12 @@
 //! without reading them; this is the layout of those bytes. Like events they are typed values,
 //! digests and references, never secrets, and decoding refuses unknown fields and unknown versions.
 //!
-//! The image mirrors the engine's state field for field. It is a separate type so the engine's state
-//! can change shape without its stored form changing silently: when the image changes, [`STATE_VERSION`]
-//! is bumped and a step is added, as for events (ADR-0023).
+//! The image mirrors the engine's tasks, jobs, holds and agents field for field, in types of its own
+//! so the engine's can change shape without the stored form changing silently. The engine's plain
+//! records (the policy, handles, merges, plugins and the like) are these types themselves, so a change
+//! to one of them changes the stored form directly; the engine's pinned image of every one catches
+//! it (ADR-0125). When the image changes, [`STATE_VERSION`] is bumped and a step is added, as for
+//! events (ADR-0023).
 
 use std::fmt;
 
@@ -15,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     AgentId, AgentName, CommitSha, Digest, Gate, Grant, HoldId, HoldReason, IndexLocation,
     InstallPolicy, JobId, JobOutcome, MergeMethod, PluginName, PluginSource, PluginVersion,
-    ReasonCode, Resolution, Stakes, TaskId, TypedValue, Value,
+    ReasonCode, Resolution, Stakes, TaskId, Timestamp, TypedValue, Value,
 };
 
 /// The layout [`StateImage`] is written in today.
@@ -90,7 +93,7 @@ pub struct StateImage {
 pub struct DraftImage {
     /// The sequence number of the event that recorded it.
     pub seq: u64,
-    pub at: u64,
+    pub at: Timestamp,
     pub name: PluginName,
     pub digest: Digest,
     pub task: TaskId,
@@ -100,15 +103,15 @@ pub struct DraftImage {
 }
 
 /// The latest `plugin.revocations_imported` event.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RevocationListImage {
     /// The sequence number of the event that imported it.
     pub seq: u64,
-    pub at: u64,
+    pub at: Timestamp,
     pub digest: Digest,
     /// Its issue time, in milliseconds.
-    pub signed_at: u64,
+    pub signed_at: Timestamp,
 }
 
 /// A `plugin.revoked` event for the release installed under its name.
@@ -117,22 +120,22 @@ pub struct RevocationListImage {
 pub struct RevokedPluginImage {
     /// The sequence number of the event that recorded it.
     pub seq: u64,
-    pub at: u64,
+    pub at: Timestamp,
     pub name: PluginName,
     pub digest: Digest,
     pub reason: ReasonCode,
 }
 
 /// The latest `plugin.snapshot_imported` event.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrustedRootImage {
     /// The sequence number of the event that imported it.
     pub seq: u64,
-    pub at: u64,
+    pub at: Timestamp,
     pub digest: Digest,
     /// Its issue time, in milliseconds.
-    pub signed_at: u64,
+    pub signed_at: Timestamp,
 }
 
 /// The latest `plugin.update_pending` event for one name, not yet installed.
@@ -141,7 +144,7 @@ pub struct TrustedRootImage {
 pub struct PendingUpdateImage {
     /// The sequence number of the event that found it.
     pub seq: u64,
-    pub at: u64,
+    pub at: Timestamp,
     pub name: PluginName,
     pub version: PluginVersion,
     pub digest: Digest,
@@ -155,7 +158,7 @@ pub struct PendingUpdateImage {
 pub struct InstallPolicyImage {
     /// The sequence number of the event that set it.
     pub seq: u64,
-    pub at: u64,
+    pub at: Timestamp,
     pub policy: InstallPolicy,
     pub by: Resolution,
     pub reason: ReasonCode,
@@ -168,7 +171,7 @@ pub struct InstallPolicyImage {
 pub struct PluginImage {
     /// The sequence number of the event that installed it.
     pub seq: u64,
-    pub at: u64,
+    pub at: Timestamp,
     pub name: PluginName,
     pub digest: Digest,
     pub grant: Grant,
@@ -183,7 +186,7 @@ pub struct PluginImage {
 pub struct MergeImage {
     /// The sequence number of the event that approved it.
     pub seq: u64,
-    pub at: u64,
+    pub at: Timestamp,
     pub task: TaskId,
     pub repo: String,
     pub pr: u64,
@@ -221,7 +224,7 @@ pub struct RevokedImage {
 pub struct HandleImage {
     /// The sequence number of the event that released it.
     pub seq: u64,
-    pub at: u64,
+    pub at: Timestamp,
     pub task: TaskId,
     pub handle: Digest,
     pub by: Resolution,
@@ -234,7 +237,7 @@ pub struct HandleImage {
 pub struct PolicyImage {
     /// The sequence number of the event that approved it.
     pub seq: u64,
-    pub at: u64,
+    pub at: Timestamp,
     pub by: Resolution,
     pub reason: ReasonCode,
     pub document: String,
@@ -246,7 +249,7 @@ pub struct PolicyImage {
 pub struct PrunedImage {
     /// The sequence number of the event that recorded it.
     pub seq: u64,
-    pub at: u64,
+    pub at: Timestamp,
     /// The last event the archive held, and its hash.
     pub last_seq: u64,
     pub last_hash: Digest,
@@ -589,20 +592,20 @@ mod tests {
             }],
             pruned: vec![PrunedImage {
                 seq: 11,
-                at: 4_500,
+                at: Timestamp::from_millis(4_500),
                 last_seq: 8,
                 last_hash: d(9),
             }],
             policy: Some(PolicyImage {
                 seq: 12,
-                at: 4_600,
+                at: Timestamp::from_millis(4_600),
                 by: Resolution::Human,
                 reason: ReasonCode::unavailable(),
                 document: "permit (principal, action, resource);".into(),
             }),
             handles: vec![HandleImage {
                 seq: 13,
-                at: 4_700,
+                at: Timestamp::from_millis(4_700),
                 task: TaskId::from_seq(1),
                 handle: d(4),
                 by: Resolution::Human,

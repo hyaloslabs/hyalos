@@ -304,7 +304,7 @@ fn a_snapshot_over_a_wrong_state_is_named_with_its_first_differing_field() -> Re
             |i| {
                 i.pruned.push(hyalos_types::snapshot::PrunedImage {
                     seq: 9,
-                    at: 1,
+                    at: hyalos_types::Timestamp::from_millis(1),
                     last_seq: 1,
                     last_hash: d(1),
                 })

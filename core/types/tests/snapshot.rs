@@ -14,11 +14,15 @@ use hyalos_types::snapshot::{
 use hyalos_types::{
     AgentId, AgentName, CommitSha, Digest, Gate, Grant, HoldId, HoldReason, IndexLocation,
     InstallPolicy, JobId, JobOutcome, MergeMethod, PluginName, PluginSource, PluginVersion,
-    ReasonCode, Resolution, Sensitive, Stakes, TaskId, TypedValue,
+    ReasonCode, Resolution, Sensitive, Stakes, TaskId, Timestamp, TypedValue,
 };
 
 fn d(byte: u8) -> Digest {
     Digest::from_bytes([byte; 32])
+}
+
+fn ms(millis: u64) -> Timestamp {
+    Timestamp::from_millis(millis)
 }
 
 /// A state with every field set, so a field that is dropped or renamed changes the bytes.
@@ -65,7 +69,7 @@ fn everything(
     if handles {
         image.handles.push(HandleImage {
             seq: 21,
-            at: 5_600,
+            at: ms(5_600),
             task: TaskId::from_seq(1),
             handle: d(9),
             by: Resolution::Human,
@@ -75,7 +79,7 @@ fn everything(
     if policy {
         image.policy = Some(PolicyImage {
             seq: 19,
-            at: 5_200,
+            at: ms(5_200),
             by: Resolution::Human,
             reason: ReasonCode::unavailable(),
             document: "permit (principal, action, resource);".into(),
@@ -189,13 +193,13 @@ fn golden_pruned() -> Vec<PrunedImage> {
     vec![
         PrunedImage {
             seq: 10,
-            at: 4_100,
+            at: ms(4_100),
             last_seq: 3,
             last_hash: d(5),
         },
         PrunedImage {
             seq: 18,
-            at: 4_800,
+            at: ms(4_800),
             last_seq: 9,
             last_hash: d(6),
         },
@@ -210,7 +214,7 @@ fn v9_image() -> StateImage {
     image.signed_since = Some(19);
     image.merges.push(MergeImage {
         seq: 24,
-        at: 6_000,
+        at: ms(6_000),
         task: TaskId::from_seq(20),
         repo: "octo/repo".into(),
         pr: 42,
@@ -228,13 +232,13 @@ fn golden() -> Vec<(u32, String, StateImage)> {
     let pruned = vec![
         PrunedImage {
             seq: 10,
-            at: 4_100,
+            at: ms(4_100),
             last_seq: 3,
             last_hash: d(5),
         },
         PrunedImage {
             seq: 18,
-            at: 4_800,
+            at: ms(4_800),
             last_seq: 9,
             last_hash: d(6),
         },
@@ -321,7 +325,7 @@ fn v16_image() -> StateImage {
         let mut image = v15_image();
         image.drafts.push(DraftImage {
             seq: 32,
-            at: 6_800,
+            at: ms(6_800),
             name: PluginName::new("draft-8").unwrap_or_else(|| unreachable!()),
             digest: d(17),
             task: TaskId::from_seq(8),
@@ -337,13 +341,13 @@ fn v15_image() -> StateImage {
         let mut image = v14_image();
         image.revocations = Some(RevocationListImage {
             seq: 30,
-            at: 6_600,
+            at: ms(6_600),
             digest: d(16),
-            signed_at: 1_794_882_145_000,
+            signed_at: ms(1_794_882_145_000),
         });
         image.revoked_plugins.push(RevokedPluginImage {
             seq: 31,
-            at: 6_700,
+            at: ms(6_700),
             name: PluginName::new("pdf-tools").unwrap_or_else(|| unreachable!()),
             digest: d(12),
             reason: ReasonCode::new("malware.exfiltration").unwrap_or_else(|| unreachable!()),
@@ -356,9 +360,9 @@ fn v14_image() -> StateImage {
     let mut image = v13_image();
     image.trusted_root = Some(TrustedRootImage {
         seq: 29,
-        at: 6_500,
+        at: ms(6_500),
         digest: d(15),
-        signed_at: 1_794_878_463_000,
+        signed_at: ms(1_794_878_463_000),
     });
     image
 }
@@ -368,7 +372,7 @@ fn v13_image() -> StateImage {
         let mut image = v12_image();
         image.pending_updates.push(PendingUpdateImage {
             seq: 28,
-            at: 6_400,
+            at: ms(6_400),
             name: PluginName::new("lint").unwrap_or_else(|| unreachable!()),
             version: PluginVersion::new("2.0.0").unwrap_or_else(|| unreachable!()),
             digest: d(14),
@@ -388,7 +392,7 @@ fn v12_image() -> StateImage {
         let mut image = v11_image();
         image.install_policy = Some(InstallPolicyImage {
             seq: 27,
-            at: 6_300,
+            at: ms(6_300),
             policy: InstallPolicy {
                 ceiling: Grant {
                     egress_hosts: ["docs.rs".to_string()].into(),
@@ -412,7 +416,7 @@ fn v11_image() -> StateImage {
         let mut image = v10_image();
         image.plugins.push(PluginImage {
             seq: 26,
-            at: 6_200,
+            at: ms(6_200),
             name: PluginName::new("lint").unwrap_or_else(|| unreachable!()),
             digest: d(13),
             grant: Grant::none(),
@@ -433,7 +437,7 @@ fn v10_image() -> StateImage {
         let mut image = v9_image();
         image.plugins.push(PluginImage {
             seq: 25,
-            at: 6_100,
+            at: ms(6_100),
             name: PluginName::new("pdf-tools").unwrap_or_else(|| unreachable!()),
             digest: d(12),
             grant: Grant {
