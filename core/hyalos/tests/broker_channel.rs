@@ -104,7 +104,8 @@ fn alive(pid: u32) -> bool {
 fn the_engine_launches_the_broker_which_admits_only_its_manifests() -> Res {
     let d = dir("admit")?;
     let key = fresh_manifest_key()?;
-    let mut broker = BrokerProcess::launch(Path::new(EXE), &d, &key.public(), WAIT)?;
+    let mut broker =
+        BrokerProcess::launch_confined(Path::new(EXE), &d, &key.public(), None, None, None, WAIT)?;
     assert!(broker.is_open());
 
     let good = manifest(5, in_an_hour());
@@ -171,7 +172,8 @@ fn the_broker_is_started_as_this_executable_with_nothing_of_the_engines() -> Res
     let run = d.join("run");
     std::fs::create_dir(&run)?;
     RUNTIME.with(|r| *r.borrow_mut() = Some(run.clone()));
-    let mut broker = BrokerProcess::launch(&wrapper, &run, &key.public(), WAIT)?;
+    let mut broker =
+        BrokerProcess::launch_confined(&wrapper, &run, &key.public(), None, None, None, WAIT)?;
     let text = std::fs::read_to_string(&seen)?;
     let mut lines = text.lines();
     let args = lines.next().unwrap_or_default();
@@ -205,7 +207,8 @@ fn the_broker_is_started_as_this_executable_with_nothing_of_the_engines() -> Res
 fn the_socket_and_its_directory_are_gone_once_the_broker_has_connected() -> Res {
     let d = dir("gone")?;
     let key = fresh_manifest_key()?;
-    let _broker = BrokerProcess::launch(Path::new(EXE), &d, &key.public(), WAIT)?;
+    let _broker =
+        BrokerProcess::launch_confined(Path::new(EXE), &d, &key.public(), None, None, None, WAIT)?;
     assert_eq!(
         std::fs::read_dir(&d)?.count(),
         0,
@@ -218,7 +221,8 @@ fn the_socket_and_its_directory_are_gone_once_the_broker_has_connected() -> Res 
 fn dropping_the_handle_stops_the_broker_and_so_does_the_engine_dying() -> Res {
     let d = dir("stop")?;
     let key = fresh_manifest_key()?;
-    let broker = BrokerProcess::launch(Path::new(EXE), &d, &key.public(), WAIT)?;
+    let broker =
+        BrokerProcess::launch_confined(Path::new(EXE), &d, &key.public(), None, None, None, WAIT)?;
     let pid = broker.pid();
     assert!(alive(pid));
     drop(broker);
@@ -234,7 +238,13 @@ fn a_broker_that_never_connects_is_stopped_and_reported() -> Res {
     let mut command = Command::new("sleep");
     command.arg("30");
     let started = std::time::Instant::now();
-    let result = BrokerProcess::start(command, listener, &key.public(), Duration::from_millis(300));
+    let result = BrokerProcess::start_with(
+        command,
+        listener,
+        &key.public(),
+        None,
+        Duration::from_millis(300),
+    );
     assert!(matches!(
         result,
         Err(LaunchError::Channel(ChannelError::Timeout))
@@ -242,7 +252,8 @@ fn a_broker_that_never_connects_is_stopped_and_reported() -> Res {
     assert!(started.elapsed() < Duration::from_secs(10));
     // And one that exits at once is said to have exited, not waited for.
     let listener = Listener::bind(&d)?;
-    let result = BrokerProcess::start(Command::new("true"), listener, &key.public(), WAIT);
+    let result =
+        BrokerProcess::start_with(Command::new("true"), listener, &key.public(), None, WAIT);
     assert!(matches!(
         result,
         Err(LaunchError::Channel(ChannelError::ChildExited(Some(0))))
@@ -277,7 +288,7 @@ fn a_process_that_is_not_the_broker_cannot_use_the_channel() -> Res {
         .arg("--sockets")
         .arg(&d)
         .env_clear();
-    let mut broker = BrokerProcess::start(command, listener, &key.public(), WAIT)?;
+    let mut broker = BrokerProcess::start_with(command, listener, &key.public(), None, WAIT)?;
 
     // The intruder was turned away: its connection was closed, unread, and it was noted by name.
     let mut buf = [0u8; 16];
@@ -321,7 +332,7 @@ fn a_late_connection_finds_nothing_to_connect_to() -> Res {
         .arg("--sockets")
         .arg(&d)
         .env_clear();
-    let _broker = BrokerProcess::start(command, listener, &key.public(), WAIT)?;
+    let _broker = BrokerProcess::start_with(command, listener, &key.public(), None, WAIT)?;
     assert!(UnixStream::connect(&socket).is_err());
     Ok(())
 }
@@ -464,7 +475,7 @@ fn with_a_double(mode: &str, name: &str) -> Res<(BrokerProcess, hyalos_types::Ma
         .stderr(std::process::Stdio::null());
     let public = key.public();
     Ok((
-        BrokerProcess::start(command, listener, &public, WAIT)?,
+        BrokerProcess::start_with(command, listener, &public, None, WAIT)?,
         public,
     ))
 }
@@ -519,7 +530,7 @@ fn a_broker_that_speaks_another_protocol_is_not_used() -> Res {
         .env("HYALOS_DOUBLE", "wrong_version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    let result = BrokerProcess::start(command, listener, &key.public(), WAIT);
+    let result = BrokerProcess::start_with(command, listener, &key.public(), None, WAIT);
     assert!(matches!(result, Err(LaunchError::Handshake)), "{result:?}");
     Ok(())
 }
@@ -528,7 +539,8 @@ fn a_broker_that_speaks_another_protocol_is_not_used() -> Res {
 fn a_quiet_broker_is_waited_for_and_one_that_ends_is_reported_closed() -> Res {
     let d = dir("poll")?;
     let key = fresh_manifest_key()?;
-    let mut broker = BrokerProcess::launch(Path::new(EXE), &d, &key.public(), WAIT)?;
+    let mut broker =
+        BrokerProcess::launch_confined(Path::new(EXE), &d, &key.public(), None, None, None, WAIT)?;
     // Silence is not an error: the channel stays open, as a job's quiet minutes need (ADR-0050).
     assert_eq!(broker.poll(Duration::from_millis(200))?, Incoming::Nothing);
     assert!(broker.is_open());

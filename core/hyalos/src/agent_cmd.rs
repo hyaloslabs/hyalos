@@ -16,7 +16,7 @@ use crate::clock::SystemClock;
 use crate::mcp_cmd::{CREDENTIAL_VAR, EngineLog};
 use crate::operator;
 use crate::passphrase;
-use crate::paths::{self, Env};
+use crate::paths::Env;
 
 /// What every credential starts with, so one found somewhere is recognised.
 pub const CREDENTIAL_PREFIX: &str = "hyalos-agent-";
@@ -34,17 +34,10 @@ const USAGE: &str = "usage: hyalos agent issue <name> [--reason <code>] [--passp
 
 pub fn run(args: &[String]) -> ExitCode {
     let env = |name: &str| std::env::var(name).ok();
-    match run_with(args, &env) {
-        Ok(Output { out, note }) => {
-            print!("{}", out.as_str());
-            eprint!("{note}");
-            ExitCode::SUCCESS
-        }
-        Err((code, message)) => {
-            eprintln!("hyalos: {message}");
-            ExitCode::from(code)
-        }
-    }
+    crate::operator_cmd::exit(run_with(args, &env), |Output { out, note }| {
+        print!("{}", out.as_str());
+        eprint!("{note}");
+    })
 }
 
 /// What the command prints: `out` on stdout (the credential alone, for `issue`), `note` on stderr.
@@ -118,10 +111,7 @@ pub fn run_with(args: &[String], env: Env<'_>) -> Result<Output, (u8, String)> {
             })
         }
         [list] if list == "list" => {
-            let log = EngineLog {
-                log: paths::log_file(env).map_err(failed)?,
-                public_key: paths::engine_public_key(env).map_err(failed)?,
-            };
+            let log = EngineLog::from_env(env).map_err(failed)?;
             let state = log.read().map_err(failed)?;
             if state.agents().is_empty() {
                 return Ok(Output {

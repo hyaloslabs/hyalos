@@ -172,10 +172,13 @@ fn the_broker_is_in_its_own_process_group() -> Res {
     let runtime = dir("pgrp")?.join("r");
     hyalos::paths::make_private_dir(&runtime)?;
     let key = hyalos::launch::fresh_manifest_key()?;
-    let broker = hyalos::launch::BrokerProcess::launch(
+    let broker = hyalos::launch::BrokerProcess::launch_confined(
         Path::new(common::EXE),
         &runtime,
         &key.public(),
+        None,
+        None,
+        None,
         Duration::from_secs(20),
     )?;
     let pid = rustix::process::Pid::from_raw(i32::try_from(broker.pid())?).ok_or("pid")?;

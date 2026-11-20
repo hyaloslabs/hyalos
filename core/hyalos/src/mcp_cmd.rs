@@ -24,7 +24,7 @@ use std::sync::Arc;
 use hyalos_engine::{Hold, Learnings, Lesson, State, TaskStatus, read_state};
 use hyalos_log::PublicKey;
 use hyalos_types::provenance::Provenance;
-use hyalos_types::{Answer, Gate, HoldId, HoldReason, JobOutcome, Resolution, Tier};
+use hyalos_types::{Answer, HoldId, HoldReason, JobOutcome, Resolution};
 use serde_json::{Map, Value, json};
 
 use crate::agent_cmd::credential_digest;
@@ -126,10 +126,7 @@ pub fn run(args: &[String]) -> ExitCode {
 /// The log the tools read and the launcher `start_job` starts runners with, from the environment as
 /// every command finds them. The server and the commands of `tools_cmd` share it.
 pub fn setup(env: crate::paths::Env<'_>) -> Result<(EngineLog, Launcher), String> {
-    let log = EngineLog {
-        log: paths::log_file(env)?,
-        public_key: paths::engine_public_key(env)?,
-    };
+    let log = EngineLog::from_env(env)?;
     let launcher = Launcher {
         runs: Runs::from_env(env)?,
         exe: std::env::current_exe().map_err(|e| format!("cannot find this executable: {e}"))?,
@@ -172,10 +169,27 @@ pub struct EngineLog {
 }
 
 impl EngineLog {
+    /// The log and the engine's public key where the engine keeps them.
+    pub fn from_env(env: crate::paths::Env<'_>) -> Result<Self, String> {
+        Ok(Self {
+            log: paths::log_file(env)?,
+            public_key: paths::engine_public_key(env)?,
+        })
+    }
+
     /// The state the log replays to, checked against the engine's public key.
     pub fn read(&self) -> Result<State, String> {
         read_state(&self.log, &self.key()?)
             .map_err(|e| format!("the event log does not check out: {e}"))
+    }
+
+    /// As [`read`](Self::read), or `None` while there is no log yet.
+    pub fn read_if_any(&self) -> Result<Option<State>, String> {
+        if self.log.exists() {
+            self.read().map(Some)
+        } else {
+            Ok(None)
+        }
     }
 
     /// The state and the learnings in the log, from one read checked against the engine's public key
@@ -623,7 +637,7 @@ impl EngineTools {
         let mut provenance = learning.provenance;
         let mut out = match &learning.lesson {
             Lesson::JobEnded { outcome, reason } => {
-                json!({"lesson": "job_ended", "outcome": job_status(Some(*outcome)), "reason": reason.as_str()})
+                json!({"lesson": "job_ended", "outcome": outcome, "reason": reason.as_str()})
             }
             Lesson::GateAnswered {
                 gate,
@@ -631,7 +645,7 @@ impl EngineTools {
                 reason,
             } => json!({
                 "lesson": "gate_answered",
-                "gate": gate_name(*gate),
+                "gate": gate,
                 "answer": if *answer == Answer::Deny { "deny" } else { "unknown" },
                 "reason": reason.as_str(),
             }),
@@ -668,7 +682,7 @@ impl EngineTools {
             .iter()
             .map(|s| json!({"seq": s.seq, "hash": s.hash.to_string(), "origin": s.origin.as_str()}))
             .collect();
-        out["provenance"] = provenance_name(provenance).into();
+        out["provenance"] = json!(provenance);
         out["untrusted"] = (provenance != Provenance::Operator).into();
         out["count"] = learning.count.into();
         out["first_at_ms"] = learning.first_at.as_millis().into();
@@ -800,13 +814,10 @@ fn approval(id: HoldId, hold: &Hold) -> Value {
     json!({
         "hold": id.seq(),
         "task": hold.task.seq(),
-        "gate": gate_name(hold.gate),
-        "reason": match hold.reason {
-            HoldReason::Unknown => "unknown",
-            HoldReason::TimedOut => "timed_out",
-        },
+        "gate": hold.gate,
+        "reason": hold.reason,
         "inputs": hold.inputs.to_string(),
-        "tier": tier_name(hold.stakes.tier),
+        "tier": hold.stakes.tier,
         "touches": hold.stakes.touches.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
         "may_decide": deciders(hold),
         "opened_at_ms": hold.opened_at.as_millis(),
@@ -823,11 +834,11 @@ fn approval_text(id: HoldId, hold: &Hold) -> String {
     };
     let touches: Vec<_> = hold.stakes.touches.iter().map(|s| s.as_str()).collect();
     let stakes = if touches.is_empty() {
-        tier_name(hold.stakes.tier).to_string()
+        serde_name(hold.stakes.tier)
     } else {
         format!(
             "{}, touching {}",
-            tier_name(hold.stakes.tier),
+            serde_name(hold.stakes.tier),
             touches.join(", ")
         )
     };
@@ -835,7 +846,7 @@ fn approval_text(id: HoldId, hold: &Hold) -> String {
         "Hold {hold_id} on task {task}: the {gate} gate {why}, so its job stopped. Stakes: {stakes}. Who may release it: {deciders}. Opened {opened}.\n  To release it: hyalos approve {hold_id}\n  To cancel the task instead: hyalos cancel {task}",
         hold_id = id.seq(),
         task = hold.task.seq(),
-        gate = gate_name(hold.gate),
+        gate = serde_name(hold.gate),
         deciders = deciders(hold).join(", "),
         opened = mcp::rfc3339(hold.opened_at.as_millis()),
     )
@@ -934,21 +945,13 @@ fn decider(by: Resolution) -> &'static str {
     }
 }
 
-fn gate_name(gate: Gate) -> &'static str {
-    match gate {
-        Gate::Egress => "egress",
-        Gate::Content => "content",
-        Gate::Role => "role",
-        Gate::Manifest => "manifest",
-        Gate::Dependency => "dependency",
-    }
-}
-
-fn tier_name(tier: Tier) -> &'static str {
-    match tier {
-        Tier::Routine => "routine",
-        Tier::Escalated => "escalated",
-        Tier::Irreversible => "irreversible",
+/// The name a unit variant has in the log, which is the name the agent is shown: a gate, a tier, how
+/// a job ended.
+fn serde_name(value: impl serde::Serialize) -> String {
+    match serde_json::to_value(value) {
+        Ok(Value::String(name)) => name,
+        // Only a unit variant is ever named, and each serializes to a string.
+        _ => "unknown".into(),
     }
 }
 
@@ -1093,7 +1096,7 @@ fn task_view(view: &RunView, open: &[(HoldId, Hold)]) -> TaskView {
             (TaskState::Completed(called), message)
         }
         Phase::Ended { outcome, reason } => {
-            let outcome = job_status(Some(*outcome));
+            let outcome = serde_name(outcome);
             let mut called =
                 Called::structured(json!({"task": task, "outcome": outcome, "reason": reason}));
             called.is_error = true;
@@ -1119,7 +1122,7 @@ fn task_view(view: &RunView, open: &[(HoldId, Hold)]) -> TaskView {
 /// workflow's author wrote), so no text from the forge or a model is in it; but the model that chose
 /// them read the issue, so they are marked as untrusted data (ADR-0005, ADR-0010).
 fn succeeded(task: u64, result: &Map<String, Value>, provenance: Provenance) -> Called {
-    let name = provenance_name(provenance);
+    let name = serde_name(provenance);
     let untrusted = provenance != Provenance::Operator;
     let value = json!({
         "task": task,
@@ -1134,18 +1137,9 @@ fn succeeded(task: u64, result: &Map<String, Value>, provenance: Provenance) -> 
     Called::untrusted(
         value,
         &format!("Task {task} succeeded. Its result is below."),
-        name,
+        &name,
         &Value::Object(result.clone()),
     )
-}
-
-fn provenance_name(provenance: Provenance) -> &'static str {
-    match provenance {
-        Provenance::Operator => "operator",
-        Provenance::ForgeAuthored => "forge_authored",
-        Provenance::PluginAuthored => "plugin_authored",
-        Provenance::ModelFromTainted => "model_from_tainted",
-    }
 }
 
 fn task_status(status: TaskStatus) -> &'static str {
@@ -1157,14 +1151,9 @@ fn task_status(status: TaskStatus) -> &'static str {
     }
 }
 
-fn job_status(outcome: Option<JobOutcome>) -> &'static str {
-    match outcome {
-        None => "running",
-        Some(JobOutcome::Succeeded) => "succeeded",
-        Some(JobOutcome::Failed) => "failed",
-        Some(JobOutcome::DeadlineExceeded) => "deadline_exceeded",
-        Some(JobOutcome::Held) => "held",
-    }
+/// How a job ended, as the log names it, or `running`.
+fn job_status(outcome: Option<JobOutcome>) -> Value {
+    outcome.map_or_else(|| "running".into(), |outcome| json!(outcome))
 }
 
 #[cfg(test)]

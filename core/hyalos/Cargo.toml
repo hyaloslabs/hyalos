@@ -29,6 +29,8 @@ rustls-pki-types = { version = "1.15.1", features = ["std"] }
 # The GitHub API's requests and answers are JSON, and so is a run's stored request (ADR-0069).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The JWT's base64url (ADR-0044), the version the plugin runtime already uses, so nothing is added.
+base64 = "0.23"
 # Ctrl-C and SIGTERM during `hyalos run` are taken on a thread of their own, so the run can still end
 # the job and revoke its token (ADR-0053). The workspace forbids unsafe code; this wraps sigaction.
 signal-hook = { version = "0.3.18", default-features = false, features = ["iterator"] }

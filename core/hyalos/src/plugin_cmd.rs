@@ -99,16 +99,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("install" | "list" | "pack" | "policy" | "snapshot" | "update") => manage(args, &env),
         _ => run_with(args),
     };
-    match result {
-        Ok(text) => {
-            print!("{text}");
-            ExitCode::SUCCESS
-        }
-        Err((code, message)) => {
-            eprintln!("hyalos: {message}");
-            ExitCode::from(code)
-        }
-    }
+    crate::operator_cmd::finish(result)
 }
 
 /// The command's output, or its exit code and message: 1 if a document cannot be read, 2 for usage.
@@ -162,10 +153,7 @@ pub fn manage_with(
         Some(passphrase) => operator::engine_with(env, passphrase),
         None => operator::engine(env, source_of_passphrase),
     };
-    let log = EngineLog {
-        log: paths::log_file(env).map_err(failed)?,
-        public_key: paths::engine_public_key(env).map_err(failed)?,
-    };
+    let log = EngineLog::from_env(env).map_err(failed)?;
     match args.as_slice() {
         [install, rest @ ..] if install == "install" => {
             let (mut grant, mut reason, mut index, mut version, mut target) =
@@ -200,11 +188,7 @@ pub fn manage_with(
             let reason = ReasonCode::new(reason)
                 .ok_or_else(|| usage("a reason is a short code, such as plugin.installed"))?;
             // Everything that can be checked without the passphrase is checked first.
-            let state = if log.log.exists() {
-                Some(log.read().map_err(failed)?)
-            } else {
-                None
-            };
+            let state = log.read_if_any().map_err(failed)?;
             let mut notes = String::new();
             let (skill, source) = match index {
                 None if version.is_some() => {
@@ -250,11 +234,7 @@ pub fn manage_with(
             };
             // What the list in force revokes is never installed (ADR-0098), from an index or a
             // directory. The state is read again: the location may just have brought a newer list.
-            let state = if log.log.exists() {
-                Some(log.read().map_err(failed)?)
-            } else {
-                None
-            };
+            let state = log.read_if_any().map_err(failed)?;
             let list = plugin_trust::revocations_in_force(env, state.as_ref())
                 .map_err(|e| failed(format!("{notes}{e}")))?;
             plugin_trust::refuse_revoked(list.as_ref(), &skill.digest())
@@ -306,22 +286,16 @@ pub fn manage_with(
                 plugin_trust::revocations_in_force(env, Some(engine.state())).map_err(failed)?;
             plugin_trust::refuse_revoked(list.as_ref(), &skill.digest())
                 .map_err(|e| failed(format!("{}: {e}", skill.name)))?;
-            let store = paths::plugin_store(env).map_err(failed)?;
-            paths::make_private_dir(&store).map_err(failed)?;
-            let digest = Store::new(store)
-                .put(&skill)
-                .map_err(|e| failed(format!("cannot keep the skill: {e}")))?;
-            let head = engine
-                .install_plugin(
-                    SystemClock.now(),
-                    skill.name.clone(),
-                    digest,
-                    skill.asks.clone(),
-                    source,
-                    decider,
-                    reason,
-                )
-                .map_err(|e| failed(e.to_string()))?;
+            let head = keep_and_install(
+                env,
+                &mut engine,
+                skill.name.clone(),
+                &skill,
+                source,
+                decider,
+                reason,
+            )
+            .map_err(failed)?;
             let how = if by_policy {
                 "within your install policy"
             } else {
@@ -334,11 +308,10 @@ pub fn manage_with(
             Ok(out)
         }
         [policy, show] if policy == "policy" && show == "show" => {
-            let set = if log.log.exists() {
-                log.read().map_err(failed)?.install_policy().cloned()
-            } else {
-                None
-            };
+            let set = log
+                .read_if_any()
+                .map_err(failed)?
+                .and_then(|state| state.install_policy().cloned());
             Ok(match set {
                 None => "no install policy is set: every install is your decision\n".into(),
                 Some(set) => format!(
@@ -400,15 +373,15 @@ pub fn manage_with(
                     "a policy trusts at most {MAX_POLICY_INDEXES} indexes"
                 )));
             }
-            let old = if log.log.exists() {
-                log.read()
-                    .map_err(failed)?
-                    .install_policy()
-                    .map(|p| p.policy.ceiling.clone())
-                    .unwrap_or_default()
-            } else {
-                Grant::none()
-            };
+            let old = log
+                .read_if_any()
+                .map_err(failed)?
+                .map_or_else(Grant::none, |state| {
+                    state
+                        .install_policy()
+                        .map(|p| p.policy.ceiling.clone())
+                        .unwrap_or_default()
+                });
             let mut out = format!(
                 "the ceiling, against the policy in force:\n{}{}",
                 render(&old.diff(&new.ceiling)),
@@ -618,11 +591,7 @@ pub fn manage_with(
             Ok(out)
         }
         [snapshot, show] if snapshot == "snapshot" && show == "show" => {
-            let state = if log.log.exists() {
-                Some(log.read().map_err(failed)?)
-            } else {
-                None
-            };
+            let state = log.read_if_any().map_err(failed)?;
             let current = plugin_trust::in_force(env, state.as_ref(), &base().map_err(failed)?)
                 .map_err(failed)?;
             let imported = state
@@ -777,6 +746,34 @@ fn check_updates(env: Env<'_>, log: &EngineLog, base: &Snapshot) -> (String, boo
     (out, clean)
 }
 
+/// Keeps `skill` in the plugin store, under its digest, then records it installed as `name`.
+fn keep_and_install(
+    env: Env<'_>,
+    engine: &mut hyalos_engine::Engine,
+    name: PluginName,
+    skill: &Skill,
+    source: PluginSource,
+    decider: Decider,
+    reason: ReasonCode,
+) -> Result<hyalos_log::Head, String> {
+    let store = paths::plugin_store(env)?;
+    paths::make_private_dir(&store)?;
+    let digest = Store::new(store)
+        .put(skill)
+        .map_err(|e| format!("cannot keep the skill: {e}"))?;
+    engine
+        .install_plugin(
+            SystemClock.now(),
+            name,
+            digest,
+            skill.asks.clone(),
+            source,
+            decider,
+            reason,
+        )
+        .map_err(|e| e.to_string())
+}
+
 fn update_one(
     env: Env<'_>,
     engine: &mut hyalos_engine::Engine,
@@ -805,22 +802,15 @@ fn update_one(
         .install_policy()
         .is_some_and(|p| p.policy.covers(&source, &skill.asks));
     if covered {
-        let store = paths::plugin_store(env)?;
-        paths::make_private_dir(&store)?;
-        Store::new(store)
-            .put(&skill)
-            .map_err(|e| format!("cannot keep the skill: {e}"))?;
-        let head = engine
-            .install_plugin(
-                SystemClock.now(),
-                name.clone(),
-                digest,
-                skill.asks.clone(),
-                source,
-                Decider::Policy,
-                ReasonCode::new("plugin.updated").unwrap_or_else(ReasonCode::unavailable),
-            )
-            .map_err(|e| e.to_string())?;
+        let head = keep_and_install(
+            env,
+            engine,
+            name.clone(),
+            &skill,
+            source,
+            Decider::Policy,
+            ReasonCode::new("plugin.updated").unwrap_or_else(ReasonCode::unavailable),
+        )?;
         return Ok(format!(
             "updated to version {version} at event {}, within your install policy",
             head.seq

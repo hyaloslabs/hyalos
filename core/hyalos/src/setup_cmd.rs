@@ -12,6 +12,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::doctor_cmd::{DEFAULT_IMAGE, RELEASE_IMAGE};
@@ -30,8 +31,9 @@ const USAGE: &str = "usage: hyalos setup [--next] [--image <image>] [--json]
   The others are yours, in a terminal of your own: each asks for what it needs there, writes it and
   checks it, and is safe to run again. walk takes every step still missing, in order";
 
-/// Who takes a step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Who takes a step. Its JSON name is [`Who::name`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Who {
     /// Setup the driving agent may do from a shell: nothing secret, nothing decided.
     Agent,
@@ -48,8 +50,8 @@ impl Who {
     }
 }
 
-/// One step towards a first job.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One step towards a first job, and in [`json`] each field by its name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Step {
     pub id: &'static str,
     pub done: bool,
@@ -196,10 +198,7 @@ pub fn steps(env: Env<'_>, substrate: Result<String, String>) -> Result<Vec<Step
 pub(crate) fn log_state(
     env: Env<'_>,
 ) -> Result<Option<Result<hyalos_engine::State, String>>, String> {
-    let log = EngineLog {
-        log: paths::log_file(env)?,
-        public_key: paths::engine_public_key(env)?,
-    };
+    let log = EngineLog::from_env(env)?;
     Ok(match std::fs::symlink_metadata(&log.log) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => Some(Err(format!(
@@ -326,15 +325,7 @@ pub fn json(config: &Path, steps: &[Step]) -> Value {
         "config_dir": config.display().to_string(),
         "done": steps.iter().filter(|s| s.done).count(),
         "total": steps.len(),
-        "steps": steps.iter().map(|s| json!({
-            "id": s.id,
-            "done": s.done,
-            "who": s.who.name(),
-            "detail": s.detail,
-            "action": s.action,
-            "commands": s.commands,
-            "doc": s.doc,
-        })).collect::<Vec<_>>(),
+        "steps": steps,
     })
 }
 

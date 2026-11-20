@@ -76,10 +76,6 @@ impl Interrupt {
                 .then_some(CANCELLED)
         })
     }
-
-    pub fn is_set(&self) -> bool {
-        self.signal().is_some()
-    }
 }
 
 /// The name of `SIGINT` or `SIGTERM`; `None` for anything else.
@@ -107,7 +103,7 @@ mod tests {
     #[test]
     fn none_is_never_set() {
         let interrupt = Interrupt::none();
-        assert!(!interrupt.is_set());
+        assert!(interrupt.signal().is_none());
         assert_eq!(interrupt.signal(), None);
         assert_eq!(name(SIGINT), Some("SIGINT"));
         assert_eq!(name(SIGTERM), Some("SIGTERM"));
