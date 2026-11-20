@@ -2243,7 +2243,9 @@ impl State {
                     h.handle, h.task
                 ));
             }
-            if h.by != Resolution::Human {
+            // A human releases a handle, or policy does for text only writers wrote (ADR-0103):
+            // check_rules holds that to the writers before the event is written (#361).
+            if !matches!(h.by, Resolution::Human | Resolution::Policy) {
                 out.push(format!("handle {} was released by {:?}", h.handle, h.by));
             }
             if self.handles[..i]
