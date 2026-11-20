@@ -39,7 +39,7 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0023](0023-event-schema-versions-and-upcasting.md) | Event schema versions and upcasting | Accepted |
 | [0024](0024-event-origins-and-time-order.md) | Event origins and time order | Accepted |
 | [0025](0025-releasing-a-hold-stakes-authority-and-evidence.md) | Releasing a hold: stakes, authority and evidence | Accepted |
-| [0026](0026-compacting-the-log-by-signed-snapshot.md) | Compacting the log by signed snapshot | Accepted |
+| [0026](0026-compacting-the-log-by-signed-snapshot.md) | Compacting the log by signed snapshot | Accepted; its rule that the engine names every field superseded for the plain records by [ADR-0125](0125-the-state-holds-the-snapshot-s-record-types.md) |
 | [0027](0027-recording-the-pruning-of-an-archive.md) | Recording the pruning of an archive | Accepted |
 | [0028](0028-auditing-snapshots-against-their-archives.md) | Auditing snapshots against their archives | Accepted |
 | [0029](0029-cancelling-a-held-task-and-recording-a-refusal.md) | Cancelling a held task, and recording a refusal | Accepted |
@@ -138,3 +138,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0122](0122-a-pull-request-says-it-closes-its-issue-once.md) | A pull request says it closes its issue once | Accepted |
 | [0123](0123-a-provider-out-of-credit-holds-the-task.md) | A provider out of credit holds the task | Accepted |
 | [0124](0124-ci-caches-builds-and-runs-specialised-jobs-by-path.md) | CI caches builds and runs specialised jobs by path | Accepted |
+| [0125](0125-the-state-holds-the-snapshot-s-record-types.md) | The state holds the snapshot's record types | Proposed |

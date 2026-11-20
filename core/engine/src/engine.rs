@@ -185,12 +185,7 @@ pub fn pruned_archives(
     if let Some(anchor) = &contents.anchor {
         let image = StateImage::decode(anchor.state_version, &anchor.state)
             .map_err(|e| EngineError::Snapshot(e.to_string()))?;
-        out.extend(image.pruned.into_iter().map(|p| Pruned {
-            seq: p.seq,
-            at: Timestamp::from_millis(p.at),
-            last_seq: p.last_seq,
-            last_hash: p.last_hash,
-        }));
+        out.extend(image.pruned);
     }
     for e in contents
         .events

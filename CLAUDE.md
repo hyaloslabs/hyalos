@@ -65,10 +65,10 @@ These are pinned by tests. A change to one bumps its version (except where noted
 
 | Code | What | ADRs |
 | --- | --- | --- |
-| `core/types` | Events, schema, manifest, capabilities, wire, provenance, prompts, workflows, results, plugin grants, approvals, merges | 0019, 0023, 0024, 0031, 0035, 0043, 0045, 0047, 0057, 0059, 0060, 0063, 0064, 0066, 0068, 0070, 0071, 0079, 0083, 0085, 0088, 0089, 0090, 0091, 0092, 0097, 0098, 0102, 0103, 0106, 0113, 0114 |
+| `core/types` | Events, schema, manifest, capabilities, wire, provenance, prompts, workflows, results, plugin grants, approvals, merges | 0019, 0023, 0024, 0031, 0035, 0043, 0045, 0047, 0057, 0059, 0060, 0063, 0064, 0066, 0068, 0070, 0071, 0079, 0083, 0085, 0088, 0089, 0090, 0091, 0092, 0097, 0098, 0102, 0103, 0106, 0113, 0114, 0125 |
 | `core/log` | The signed SQLite log, compaction, pruning, backup | 0018, 0021, 0026, 0027, 0028 |
 | `core/policy` | Cedar, the shipped baseline and schema, gates | 0008, 0009, 0020, 0033, 0085, 0103 |
-| `core/engine` | State, holds, cancels, compaction and audit, the policy store, minting, handles, agents, several writers, learnings, drafts | 0013, 0024, 0025, 0026, 0027, 0028, 0029, 0031, 0034, 0047, 0055, 0063, 0066, 0068, 0069, 0070, 0071, 0083, 0085, 0089, 0091, 0092, 0097, 0098, 0103, 0112, 0113, 0114 |
+| `core/engine` | State, holds, cancels, compaction and audit, the policy store, minting, handles, agents, several writers, learnings, drafts | 0013, 0024, 0025, 0026, 0027, 0028, 0029, 0031, 0034, 0047, 0055, 0063, 0066, 0068, 0069, 0070, 0071, 0083, 0085, 0089, 0091, 0092, 0097, 0098, 0103, 0112, 0113, 0114, 0125 |
 | `core/broker` | Channel, model relay and TLS, egress, git proxy, forge, content gates, readers, handles, results, merge, request-body limits | 0035, 0037, 0038, 0039, 0042, 0046, 0047, 0048, 0051, 0054, 0055, 0061, 0063, 0064, 0065, 0071, 0079, 0083, 0085, 0102, 0103, 0106, 0116, 0117, 0120, 0122, 0123 |
 | `core/substrate` | Containers, gVisor, Firecracker, choosing one, attestation | 0032, 0041, 0043, 0056, 0057, 0058, 0089 |
 | `core/plugin` | The plugin runtime: the Wasmtime host, install, Sigstore verification, the trusted-root snapshot, the revocation list, update checks, the reference skill the marketplace pins (part budget 3,000) | 0006, 0007, 0086, 0087, 0089, 0090, 0093, 0094, 0097, 0098, 0099, 0101, 0102 |

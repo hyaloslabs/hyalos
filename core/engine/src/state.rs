@@ -15,10 +15,9 @@ use hyalos_types::snapshot::{
 };
 use hyalos_types::workflow::MAX_FIELDS;
 use hyalos_types::{
-    AgentId, AgentName, Answer, CommitSha, Digest, Event, Gate, Grant, HoldId, HoldReason,
-    IndexLocation, InstallPolicy, JobId, JobOutcome, MAX_POLICY_DOCUMENT, MergeMethod, Origin,
-    PluginName, PluginSource, PluginVersion, ReasonCode, Resolution, SIGNED_SINCE, Sensitive,
-    Signed, Stakes, TaskId, Timestamp, TypedValue, Writers,
+    AgentId, AgentName, Answer, Digest, Event, Gate, Grant, HoldId, HoldReason, JobId, JobOutcome,
+    MAX_POLICY_DOCUMENT, Origin, PluginName, PluginSource, ReasonCode, Resolution, SIGNED_SINCE,
+    Sensitive, Signed, Stakes, TaskId, Timestamp, TypedValue, Writers,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -521,132 +520,43 @@ pub struct State {
     last_at: Option<Timestamp>,
 }
 
+// The plain records the state keeps are the snapshot's own types, so the image is a copy of them
+// (ADR-0125). A field added to one changes the snapshot's bytes; `tests/image_records.rs` pins them.
+
 /// The operator policy in force: the document from the latest `policy.approved` event (ADR-0034).
 /// Before any, there is none, and only the shipped baseline applies.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PolicyApproval {
-    /// The event that approved it.
-    pub seq: u64,
-    pub at: Timestamp,
-    pub by: Resolution,
-    pub reason: ReasonCode,
-    pub document: String,
-}
+pub type PolicyApproval = PolicyImage;
 
 /// A handle a human released to a task's jobs (ADR-0063).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReleasedHandle {
-    /// The event that released it.
-    pub seq: u64,
-    pub at: Timestamp,
-    pub task: TaskId,
-    pub handle: Digest,
-    pub by: Resolution,
-    pub reason: ReasonCode,
-}
+pub type ReleasedHandle = HandleImage;
 
 /// A merge a human approved for a task (ADR-0071): pull request `pr` of `repo` by `method`, only while
 /// its head is `head`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ApprovedMerge {
-    /// The event that approved it.
-    pub seq: u64,
-    pub at: Timestamp,
-    pub task: TaskId,
-    pub repo: String,
-    pub pr: u64,
-    pub head: CommitSha,
-    pub method: MergeMethod,
-    pub by: Resolution,
-    pub reason: ReasonCode,
-}
+pub type ApprovedMerge = MergeImage;
 
 /// The latest install of one plugin (ADR-0089): the files with SHA-256 `digest` in the plugin store,
 /// and the capabilities a human granted them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InstalledPlugin {
-    /// The event that installed it.
-    pub seq: u64,
-    pub at: Timestamp,
-    pub digest: Digest,
-    pub grant: Grant,
-    pub source: PluginSource,
-    pub by: Resolution,
-    pub reason: ReasonCode,
-}
+pub type InstalledPlugin = PluginImage;
 
 /// A skill Hyalos drafted from task `task` (ADR-0113): the files with SHA-256 `digest` in the plugin
-/// store, tainted, and held to `grant`, which is never more than `Grant::read_only`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Draft {
-    /// The event that drafted it.
-    pub seq: u64,
-    pub at: Timestamp,
-    pub digest: Digest,
-    pub task: TaskId,
-    pub grant: Grant,
-    /// The `skill.trusted` event that trusted it after replay, if one did (ADR-0114). Until then it
-    /// is tainted.
-    pub trusted: Option<u64>,
-}
+/// store, tainted until `trusted` (ADR-0114), and held to `grant`, which is never more than
+/// `Grant::read_only`.
+pub type Draft = DraftImage;
 
 /// An update a check found beyond the install policy, waiting for the operator (ADR-0092).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingUpdate {
-    /// The event that found it.
-    pub seq: u64,
-    pub at: Timestamp,
-    pub version: PluginVersion,
-    pub digest: Digest,
-    pub asks: Grant,
-    pub location: IndexLocation,
-}
+pub type PendingUpdate = PendingUpdateImage;
 
 /// The trusted-root snapshot imported last (ADR-0097).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ImportedSnapshot {
-    /// The event that imported it.
-    pub seq: u64,
-    pub at: Timestamp,
-    /// The digest of the snapshot file.
-    pub digest: Digest,
-    /// Its issue time: the earliest signed time its bundle proves.
-    pub signed_at: Timestamp,
-}
+pub type ImportedSnapshot = TrustedRootImage;
 
 /// The revocation list imported last (ADR-0098).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ImportedRevocations {
-    /// The event that imported it.
-    pub seq: u64,
-    pub at: Timestamp,
-    /// The digest of the list file.
-    pub digest: Digest,
-    /// Its issue time: the earliest signed time its bundle proves.
-    pub signed_at: Timestamp,
-}
+pub type ImportedRevocations = RevocationListImage;
 
 /// The release installed under a name, revoked (ADR-0098). It is disabled: no job is given it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RevokedPlugin {
-    /// The event that recorded it.
-    pub seq: u64,
-    pub at: Timestamp,
-    /// The installed release's digest.
-    pub digest: Digest,
-    pub reason: ReasonCode,
-}
+pub type RevokedPlugin = RevokedPluginImage;
 
 /// The install policy the operator set last (ADR-0091).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SetInstallPolicy {
-    /// The event that set it.
-    pub seq: u64,
-    pub at: Timestamp,
-    pub policy: InstallPolicy,
-    pub by: Resolution,
-    pub reason: ReasonCode,
-}
+pub type SetInstallPolicy = InstallPolicyImage;
 
 /// A credential a human issued to a driving agent (ADR-0068). The MCP server admits a caller who
 /// presents a secret whose SHA-256 is `credential`, until it is revoked.
@@ -668,15 +578,7 @@ pub struct Revoked {
 }
 
 /// An archive that was deleted from the machine, as the log recorded it (ADR-0026).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Pruned {
-    /// The event that recorded it.
-    pub seq: u64,
-    pub at: Timestamp,
-    /// The last event the archive held, and its hash.
-    pub last_seq: u64,
-    pub last_hash: Digest,
-}
+pub type Pruned = PrunedImage;
 
 impl State {
     pub fn tasks(&self) -> &BTreeMap<TaskId, Task> {
@@ -1279,6 +1181,7 @@ impl State {
                     Draft {
                         seq,
                         at,
+                        name: name.clone(),
                         digest: *digest,
                         task: *task,
                         grant: grant.clone(),
@@ -1473,6 +1376,7 @@ impl State {
                     InstalledPlugin {
                         seq,
                         at,
+                        name: name.clone(),
                         digest: *digest,
                         grant: grant.clone(),
                         source: source.clone(),
@@ -1493,6 +1397,7 @@ impl State {
                     PendingUpdate {
                         seq,
                         at,
+                        name: name.clone(),
                         version: version.clone(),
                         digest: *digest,
                         asks: asks.clone(),
@@ -1526,6 +1431,7 @@ impl State {
                     RevokedPlugin {
                         seq,
                         at,
+                        name: name.clone(),
                         digest: *digest,
                         reason: reason.clone(),
                     },
@@ -1599,7 +1505,8 @@ impl State {
     /// its hold, since a snapshot in the middle of that transaction could not be resumed.
     ///
     /// Every field is named on purpose: adding one to [`State`], [`Task`], [`Job`], [`Hold`] or
-    /// [`Resolved`] stops compiling here until the image carries it.
+    /// [`Resolved`] stops compiling here until the image carries it. The plain records are the image's
+    /// own types and are copied whole (ADR-0125).
     pub fn to_image(&self) -> Result<StateImage, JobId> {
         let State {
             tasks,
@@ -1631,137 +1538,14 @@ impl State {
             last_at: last_at.map(Timestamp::as_millis),
             last_approval: *last_approval,
             signed_since: *signed_since,
-            trusted_root: trusted_root.map(|t| TrustedRootImage {
-                seq: t.seq,
-                at: t.at.as_millis(),
-                digest: t.digest,
-                signed_at: t.signed_at.as_millis(),
-            }),
-            revocations: revocations.map(|r| RevocationListImage {
-                seq: r.seq,
-                at: r.at.as_millis(),
-                digest: r.digest,
-                signed_at: r.signed_at.as_millis(),
-            }),
-            drafts: drafts
-                .iter()
-                .map(|(name, d)| DraftImage {
-                    seq: d.seq,
-                    at: d.at.as_millis(),
-                    name: name.clone(),
-                    digest: d.digest,
-                    task: d.task,
-                    grant: d.grant.clone(),
-                    trusted: d.trusted,
-                })
-                .collect(),
-            revoked_plugins: revoked_plugins
-                .iter()
-                .map(|(name, r)| {
-                    let RevokedPlugin {
-                        seq,
-                        at,
-                        digest,
-                        reason,
-                    } = r;
-                    RevokedPluginImage {
-                        seq: *seq,
-                        at: at.as_millis(),
-                        name: name.clone(),
-                        digest: *digest,
-                        reason: reason.clone(),
-                    }
-                })
-                .collect(),
-            pending_updates: pending_updates
-                .iter()
-                .map(|(name, u)| {
-                    let PendingUpdate {
-                        seq,
-                        at,
-                        version,
-                        digest,
-                        asks,
-                        location,
-                    } = u;
-                    PendingUpdateImage {
-                        seq: *seq,
-                        at: at.as_millis(),
-                        name: name.clone(),
-                        version: version.clone(),
-                        digest: *digest,
-                        asks: asks.clone(),
-                        location: location.clone(),
-                    }
-                })
-                .collect(),
-            install_policy: install_policy.as_ref().map(|p| {
-                let SetInstallPolicy {
-                    seq,
-                    at,
-                    policy,
-                    by,
-                    reason,
-                } = p;
-                InstallPolicyImage {
-                    seq: *seq,
-                    at: at.as_millis(),
-                    policy: policy.clone(),
-                    by: *by,
-                    reason: reason.clone(),
-                }
-            }),
-            plugins: plugins
-                .iter()
-                .map(|(name, p)| {
-                    let InstalledPlugin {
-                        seq,
-                        at,
-                        digest,
-                        grant,
-                        source,
-                        by,
-                        reason,
-                    } = p;
-                    PluginImage {
-                        seq: *seq,
-                        at: at.as_millis(),
-                        name: name.clone(),
-                        digest: *digest,
-                        grant: grant.clone(),
-                        source: source.clone(),
-                        by: *by,
-                        reason: reason.clone(),
-                    }
-                })
-                .collect(),
-            merges: merges
-                .iter()
-                .map(|m| {
-                    let ApprovedMerge {
-                        seq,
-                        at,
-                        task,
-                        repo,
-                        pr,
-                        head,
-                        method,
-                        by,
-                        reason,
-                    } = m;
-                    MergeImage {
-                        seq: *seq,
-                        at: at.as_millis(),
-                        task: *task,
-                        repo: repo.clone(),
-                        pr: *pr,
-                        head: head.clone(),
-                        method: *method,
-                        by: *by,
-                        reason: reason.clone(),
-                    }
-                })
-                .collect(),
+            trusted_root: *trusted_root,
+            revocations: *revocations,
+            drafts: drafts.values().cloned().collect(),
+            revoked_plugins: revoked_plugins.values().cloned().collect(),
+            pending_updates: pending_updates.values().cloned().collect(),
+            install_policy: install_policy.clone(),
+            plugins: plugins.values().cloned().collect(),
+            merges: merges.clone(),
             tasks: tasks
                 .iter()
                 .map(|(id, t)| {
@@ -1843,60 +1627,9 @@ impl State {
                     }
                 })
                 .collect(),
-            pruned: pruned
-                .iter()
-                .map(|p| {
-                    let Pruned {
-                        seq,
-                        at,
-                        last_seq,
-                        last_hash,
-                    } = p;
-                    PrunedImage {
-                        seq: *seq,
-                        at: at.as_millis(),
-                        last_seq: *last_seq,
-                        last_hash: *last_hash,
-                    }
-                })
-                .collect(),
-            policy: policy.as_ref().map(|p| {
-                let PolicyApproval {
-                    seq,
-                    at,
-                    by,
-                    reason,
-                    document,
-                } = p;
-                PolicyImage {
-                    seq: *seq,
-                    at: at.as_millis(),
-                    by: *by,
-                    reason: reason.clone(),
-                    document: document.clone(),
-                }
-            }),
-            handles: handles
-                .iter()
-                .map(|h| {
-                    let ReleasedHandle {
-                        seq,
-                        at,
-                        task,
-                        handle,
-                        by,
-                        reason,
-                    } = h;
-                    HandleImage {
-                        seq: *seq,
-                        at: at.as_millis(),
-                        task: *task,
-                        handle: *handle,
-                        by: *by,
-                        reason: reason.clone(),
-                    }
-                })
-                .collect(),
+            pruned: pruned.clone(),
+            policy: policy.clone(),
+            handles: handles.clone(),
             agents: agents
                 .iter()
                 .map(|(id, a)| {
@@ -1951,104 +1684,36 @@ impl State {
             revoked_plugins,
             drafts,
         } = image;
-        let mut drafted = BTreeMap::new();
-        for d in drafts {
-            let draft = Draft {
-                seq: d.seq,
-                at: Timestamp::from_millis(d.at),
-                digest: d.digest,
-                task: d.task,
-                grant: d.grant,
-                trusted: d.trusted,
-            };
-            if drafted.insert(d.name.clone(), draft).is_some() {
-                return Err(format!("draft {} is in the snapshot twice", d.name));
-            }
-        }
-        let mut revoked_by_name = BTreeMap::new();
-        for r in revoked_plugins {
-            let revoked = RevokedPlugin {
-                seq: r.seq,
-                at: Timestamp::from_millis(r.at),
-                digest: r.digest,
-                reason: r.reason,
-            };
-            if revoked_by_name.insert(r.name.clone(), revoked).is_some() {
-                return Err(format!(
-                    "revoked plugin {} is in the snapshot twice",
-                    r.name
-                ));
-            }
-        }
-        let mut waiting = BTreeMap::new();
-        for u in pending_updates {
-            let update = PendingUpdate {
-                seq: u.seq,
-                at: Timestamp::from_millis(u.at),
-                version: u.version,
-                digest: u.digest,
-                asks: u.asks,
-                location: u.location,
-            };
-            if waiting.insert(u.name.clone(), update).is_some() {
-                return Err(format!("an update for {} is in the snapshot twice", u.name));
-            }
-        }
-        let mut by_name = BTreeMap::new();
-        for p in plugins {
-            let installed = InstalledPlugin {
-                seq: p.seq,
-                at: Timestamp::from_millis(p.at),
-                digest: p.digest,
-                grant: p.grant,
-                source: p.source,
-                by: p.by,
-                reason: p.reason,
-            };
-            if by_name.insert(p.name.clone(), installed).is_some() {
-                return Err(format!("plugin {} is in the snapshot twice", p.name));
-            }
-        }
         let mut state = State {
-            drafts: drafted,
-            plugins: by_name,
-            pending_updates: waiting,
-            trusted_root: trusted_root.map(|t| ImportedSnapshot {
-                seq: t.seq,
-                at: Timestamp::from_millis(t.at),
-                digest: t.digest,
-                signed_at: Timestamp::from_millis(t.signed_at),
-            }),
-            revocations: revocations.map(|r| ImportedRevocations {
-                seq: r.seq,
-                at: Timestamp::from_millis(r.at),
-                digest: r.digest,
-                signed_at: Timestamp::from_millis(r.signed_at),
-            }),
-            revoked_plugins: revoked_by_name,
-            install_policy: install_policy.map(|p| SetInstallPolicy {
-                seq: p.seq,
-                at: Timestamp::from_millis(p.at),
-                policy: p.policy,
-                by: p.by,
-                reason: p.reason,
-            }),
+            drafts: keyed(
+                drafts,
+                |d| &d.name,
+                |n| format!("draft {n} is in the snapshot twice"),
+            )?,
+            plugins: keyed(
+                plugins,
+                |p| &p.name,
+                |n| format!("plugin {n} is in the snapshot twice"),
+            )?,
+            pending_updates: keyed(
+                pending_updates,
+                |u| &u.name,
+                |n| format!("an update for {n} is in the snapshot twice"),
+            )?,
+            revoked_plugins: keyed(
+                revoked_plugins,
+                |r| &r.name,
+                |n| format!("revoked plugin {n} is in the snapshot twice"),
+            )?,
+            trusted_root,
+            revocations,
+            install_policy,
+            merges,
+            pruned,
+            policy,
+            handles,
             last_approval,
             signed_since,
-            merges: merges
-                .into_iter()
-                .map(|m| ApprovedMerge {
-                    seq: m.seq,
-                    at: Timestamp::from_millis(m.at),
-                    task: m.task,
-                    repo: m.repo,
-                    pr: m.pr,
-                    head: m.head,
-                    method: m.method,
-                    by: m.by,
-                    reason: m.reason,
-                })
-                .collect(),
             last_seq,
             last_at: last_at.map(Timestamp::from_millis),
             ..State::default()
@@ -2102,32 +1767,6 @@ impl State {
                 return Err(format!("hold {} appears twice", h.id));
             }
         }
-        for p in pruned {
-            state.pruned.push(Pruned {
-                seq: p.seq,
-                at: Timestamp::from_millis(p.at),
-                last_seq: p.last_seq,
-                last_hash: p.last_hash,
-            });
-        }
-        state.policy = policy.map(|p| PolicyApproval {
-            seq: p.seq,
-            at: Timestamp::from_millis(p.at),
-            by: p.by,
-            reason: p.reason,
-            document: p.document,
-        });
-        state.handles = handles
-            .into_iter()
-            .map(|h| ReleasedHandle {
-                seq: h.seq,
-                at: Timestamp::from_millis(h.at),
-                task: h.task,
-                handle: h.handle,
-                by: h.by,
-                reason: h.reason,
-            })
-            .collect();
         for a in agents {
             let agent = Agent {
                 at: Timestamp::from_millis(a.at),
@@ -2389,4 +2028,22 @@ fn may_grant_capabilities(by: Resolution) -> bool {
 /// The reason a job from before version 7 of the image is read with.
 fn legacy_reason() -> ReasonCode {
     ReasonCode::new("legacy.unrecorded").unwrap_or_else(ReasonCode::unavailable)
+}
+
+/// A snapshot's list of records by plugin name, as the state keeps it. A name twice is refused with
+/// `twice`'s message: the image was written from a map, so it cannot be honest.
+fn keyed<T>(
+    records: Vec<T>,
+    name: impl Fn(&T) -> &PluginName,
+    twice: impl Fn(&PluginName) -> String,
+) -> Result<BTreeMap<PluginName, T>, String> {
+    let mut by_name = BTreeMap::new();
+    for record in records {
+        let key = name(&record).clone();
+        if by_name.contains_key(&key) {
+            return Err(twice(&key));
+        }
+        by_name.insert(key, record);
+    }
+    Ok(by_name)
 }
