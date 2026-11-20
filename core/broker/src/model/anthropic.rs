@@ -2,11 +2,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Adapter, Route};
-
-/// The Anthropic Messages protocol, as Claude Code and the Claude Agent SDK speak it.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Anthropic;
+use super::Adapter;
 
 /// Anthropic-defined tools that the client runs, by exact versioned type. Server tools (web search,
 /// web fetch, code execution and its `bash_code_execution_*`, MCP toolsets) and any type not listed
@@ -24,94 +20,74 @@ const CLIENT_TYPES: &[&str] = &[
     "memory_20250818",
 ];
 
-impl Adapter for Anthropic {
-    fn route(&self, path: &str) -> Option<Route> {
-        match path {
-            "/v1/messages" => Some(Route::Generate),
-            "/v1/messages/count_tokens" => Some(Route::CountTokens),
-            _ => None,
-        }
-    }
+/// The Anthropic Messages protocol, as Claude Code and the Claude Agent SDK speak it.
+pub static ANTHROPIC: Adapter = Adapter {
+    generate: "/v1/messages",
+    count_tokens: "/v1/messages/count_tokens",
+    credential_header: ("x-api-key", ""),
+    passthrough: &["accept", "anthropic-version", "anthropic-beta"],
+    defaults: &[("anthropic-version", "2023-06-01")],
+    harness_runs,
+    scrub: |_| {},
+    // Not `container` (a hosted execution environment), `mcp_servers` (a hosted connector) or
+    // `thread` (a conversation the provider holds).
+    fields: &[
+        "model",
+        "messages",
+        "max_tokens",
+        "system",
+        "metadata",
+        "stop_sequences",
+        "stream",
+        "temperature",
+        "top_p",
+        "top_k",
+        "tools",
+        "tool_choice",
+        "thinking",
+        "service_tier",
+        "output_config",
+        "output_format",
+        "speed",
+        "inference_geo",
+        "context_management",
+        "cache_control",
+        "fallbacks",
+        "diagnostics",
+    ],
+    output_limit: "max_tokens",
+    overloaded: 529,
+    stream_ends: &["message_stop"],
+    error_body,
+    quota_exhausted: |_| false,
+    quota_event,
+};
 
-    fn credential_header(&self) -> (&'static str, &'static str) {
-        ("x-api-key", "")
+fn harness_runs(tool: &Value) -> bool {
+    match tool.get("type") {
+        None => true,
+        Some(Value::String(t)) => t == "custom" || CLIENT_TYPES.contains(&t.as_str()),
+        Some(_) => false,
     }
+}
 
-    fn passthrough(&self) -> &'static [&'static str] {
-        &["accept", "anthropic-version", "anthropic-beta"]
-    }
+/// An `error` event of type `billing_error`.
+fn quota_event(event: &Value) -> bool {
+    event.pointer("/type") == Some(&json!("error"))
+        && event.pointer("/error/type") == Some(&json!("billing_error"))
+}
 
-    fn defaults(&self) -> &'static [(&'static str, &'static str)] {
-        &[("anthropic-version", "2023-06-01")]
-    }
-
-    fn harness_runs(&self, tool: &Value) -> bool {
-        match tool.get("type") {
-            None => true,
-            Some(Value::String(t)) => t == "custom" || CLIENT_TYPES.contains(&t.as_str()),
-            Some(_) => false,
-        }
-    }
-
-    fn fields(&self) -> &'static [&'static str] {
-        // Not `container` (a hosted execution environment), `mcp_servers` (a hosted connector) or
-        // `thread` (a conversation the provider holds).
-        &[
-            "model",
-            "messages",
-            "max_tokens",
-            "system",
-            "metadata",
-            "stop_sequences",
-            "stream",
-            "temperature",
-            "top_p",
-            "top_k",
-            "tools",
-            "tool_choice",
-            "thinking",
-            "service_tier",
-            "output_config",
-            "output_format",
-            "speed",
-            "inference_geo",
-            "context_management",
-            "cache_control",
-            "fallbacks",
-            "diagnostics",
-        ]
-    }
-
-    fn output_limit(&self) -> &'static str {
-        "max_tokens"
-    }
-
-    fn overloaded(&self) -> u16 {
-        529
-    }
-
-    fn stream_ends(&self) -> &'static [&'static str] {
-        &["message_stop"]
-    }
-
-    /// An `error` event of type `billing_error`.
-    fn quota_event(&self, event: &Value) -> bool {
-        event.pointer("/type") == Some(&json!("error"))
-            && event.pointer("/error/type") == Some(&json!("billing_error"))
-    }
-
-    fn error_body(&self, status: u16, message: &str) -> Vec<u8> {
-        let kind = match status {
-            402 => "billing_error",
-            403 => "permission_error",
-            404 => "not_found_error",
-            413 => "request_too_large",
-            529 => "overloaded_error",
-            500..=599 => "api_error",
-            _ => "invalid_request_error",
-        };
-        json!({ "type": "error", "error": { "type": kind, "message": message } })
-            .to_string()
-            .into_bytes()
-    }
+fn error_body(status: u16, message: &str) -> Vec<u8> {
+    let kind = match status {
+        402 => "billing_error",
+        403 => "permission_error",
+        404 => "not_found_error",
+        413 => "request_too_large",
+        529 => "overloaded_error",
+        500..=599 => "api_error",
+        _ => "invalid_request_error",
+    };
+    json!({ "type": "error", "error": { "type": kind, "message": message } })
+        .to_string()
+        .into_bytes()
 }

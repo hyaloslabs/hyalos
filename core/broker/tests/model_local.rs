@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::thread;
 
 use hyalos_broker::model::{
-    ApiKey, HttpTransport, Meter, OpenAi, Relay, Request, ThreadSleep, Transport, TransportError,
+    ApiKey, HttpTransport, Meter, OPENAI, Relay, Request, ThreadSleep, Transport, TransportError,
 };
 use hyalos_types::{Budget, JobId, MANIFEST_VERSION, Manifest, Role, Timestamp};
 use serde_json::{Value, json};
@@ -138,7 +138,7 @@ fn a_local_openai_compatible_server_works_through_the_openai_adapter() -> Res {
 
     let meter = Arc::new(Meter::default());
     let relay = Relay::new(
-        Arc::new(OpenAi),
+        &OPENAI,
         Arc::new(HttpTransport::new(&base)?),
         ApiKey::new(KEY).ok_or("key")?,
         meter.clone(),
@@ -251,7 +251,7 @@ fn an_unreachable_server_is_answered_retryably() -> Res {
     // Bind and drop, so nothing listens on the port.
     let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
     let relay = Relay::new(
-        Arc::new(OpenAi),
+        &OPENAI,
         Arc::new(HttpTransport::new(&format!("http://127.0.0.1:{port}"))?),
         ApiKey::new(KEY).ok_or("key")?,
         Arc::new(Meter::default()),

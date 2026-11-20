@@ -49,15 +49,6 @@ impl Meter {
         self.lock().live.get(&job).map_or(0, |a| a.held)
     }
 
-    pub fn charge(&self, job: JobId, tokens: u64) {
-        let mut accounts = self.lock();
-        if accounts.ended.contains(&job) {
-            return;
-        }
-        let account = accounts.live.entry(job).or_default();
-        account.spent = account.spent.saturating_add(tokens);
-    }
-
     /// Holds up to `want` tokens of what is left of `budget`. `Err(true)` means the budget is spent;
     /// `Err(false)` that what is left is held by calls in flight, which will release it.
     pub(super) fn hold(self: &Arc<Self>, job: JobId, budget: u64, want: u64) -> Result<Hold, bool> {
@@ -179,7 +170,7 @@ impl Usage {
 
 /// Reads usage from a response body as it passes: a JSON document, or server-sent events.
 pub(super) struct Scanner {
-    adapter: Arc<dyn Adapter>,
+    adapter: &'static Adapter,
     /// An event said the key's quota or credit is spent.
     quota: bool,
     events: bool,
@@ -188,16 +179,14 @@ pub(super) struct Scanner {
     lost: bool,
     /// The provider reported usage at least once.
     seen: bool,
-    /// The event `type`s that end a stream, and whether one has arrived. A stream's usage before
-    /// its end is provisional: Anthropic's `message_start` reports one output token.
-    ends: &'static [&'static str],
+    /// Whether an event that ends the stream (the adapter's `stream_ends`) has arrived. A stream's
+    /// usage before its end is provisional: Anthropic's `message_start` reports one output token.
     ended: bool,
     usage: Usage,
 }
 
 impl Scanner {
-    pub(super) fn new(content_type: &str, adapter: Arc<dyn Adapter>) -> Self {
-        let ends = adapter.stream_ends();
+    pub(super) fn new(content_type: &str, adapter: &'static Adapter) -> Self {
         Self {
             adapter,
             quota: false,
@@ -208,7 +197,6 @@ impl Scanner {
             buf: Vec::new(),
             lost: false,
             seen: false,
-            ends,
             ended: false,
             usage: Usage::default(),
         }
@@ -248,9 +236,9 @@ impl Scanner {
         match serde_json::from_slice::<Value>(json) {
             Ok(value) => {
                 self.seen |= self.usage.absorb(&value);
-                self.quota |= self.adapter.quota_event(&value);
+                self.quota |= (self.adapter.quota_event)(&value);
                 let kind = value.get("type").and_then(Value::as_str);
-                self.ended |= kind.is_some_and(|k| self.ends.contains(&k));
+                self.ended |= kind.is_some_and(|k| self.adapter.stream_ends.contains(&k));
             }
             Err(_) => self.lost = true,
         }
@@ -336,8 +324,9 @@ mod tests {
         // A call that passed its socket's ended check just before the end now finds nothing to
         // spend, and recreates no account (#339).
         assert!(matches!(meter.hold(job, 100, 60), Err(true)));
-        meter.charge(job, 10);
-        drop(hold);
+        if let Ok(hold) = hold {
+            hold.settle(10);
+        }
         assert_eq!((meter.spent(job), meter.held(job)), (0, 0));
         assert!(meter.lock().live.is_empty());
     }

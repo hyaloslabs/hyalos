@@ -13,7 +13,7 @@ use std::time::Duration;
 use hyalos_broker::Broker;
 use hyalos_broker::forge::Forge;
 use hyalos_broker::model::{
-    Anthropic, ApiKey, Meter, OpenAi, Relay, Sleep, Transport, TransportError, Upstream,
+    ANTHROPIC, ApiKey, Meter, OPENAI, Relay, Sleep, Transport, TransportError, Upstream,
     UpstreamResponse,
 };
 use hyalos_broker::sandbox::{Models, Sandboxes};
@@ -216,11 +216,7 @@ fn rig() -> Res<Rig> {
             Arc::new(NoWait),
         )
     };
-    let models = Models::new(
-        Ok(relay(Arc::new(Anthropic))),
-        Ok(relay(Arc::new(OpenAi))),
-        meter.clone(),
-    );
+    let models = Models::new(Ok(relay(&ANTHROPIC)), Ok(relay(&OPENAI)), meter.clone());
     let base = forge()?;
     let clock = Shared(AtomicU64::new(100));
     let broker = Broker::with_sandboxes(

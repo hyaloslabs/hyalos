@@ -9,7 +9,6 @@
 //! decision named, whatever the forge says now.
 
 use std::collections::BTreeMap;
-use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -70,12 +69,7 @@ pub(crate) fn answer(
         .get(&handle)
         .filter(|_| manifest.handles.contains(&handle))
     {
-        Some(bytes) => Response {
-            status: 200,
-            content_type: "application/json".into(),
-            body: Box::new(Cursor::new(bytes.to_vec())),
-            reason: None,
-        },
+        Some(bytes) => Response::bytes(200, "application/json", bytes.to_vec()),
         None => {
             reports.deny(NOT_RELEASED, egress::inputs_digest(asked), ended);
             egress::refused(403, NOT_RELEASED)

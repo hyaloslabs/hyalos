@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hyalos_broker::model::{
-    Adapter, Anthropic, ApiKey, Meter, OpenAi, Relay, Request, Sleep, Transport, TransportError,
+    ANTHROPIC, Adapter, ApiKey, Meter, OPENAI, Relay, Request, Sleep, Transport, TransportError,
     Upstream, UpstreamResponse,
 };
 use hyalos_types::{Budget, JobId, MANIFEST_VERSION, Manifest, Role, Timestamp};
@@ -112,7 +112,7 @@ impl Waits {
 
 /// What the contract needs to know about one protocol.
 struct Case {
-    adapter: Arc<dyn Adapter>,
+    adapter: &'static Adapter,
     /// The generation path the harness uses, with a query string.
     path: &'static str,
     count_path: &'static str,
@@ -137,7 +137,7 @@ struct Case {
 
 fn anthropic() -> Case {
     Case {
-        adapter: Arc::new(Anthropic),
+        adapter: &ANTHROPIC,
         path: "/v1/messages?beta=true",
         count_path: "/v1/messages/count_tokens?beta=true",
         credential: ("x-api-key", KEY.into()),
@@ -178,7 +178,7 @@ fn anthropic() -> Case {
 
 fn openai() -> Case {
     Case {
-        adapter: Arc::new(OpenAi),
+        adapter: &OPENAI,
         path: "/v1/responses?trace=0",
         count_path: "/v1/responses/input_tokens",
         credential: ("authorization", format!("Bearer {KEY}")),
@@ -249,7 +249,7 @@ fn rig(case: &Case) -> Result<Rig, Box<dyn std::error::Error>> {
     let meter = Arc::new(Meter::default());
     let waits = Arc::new(Waits::default());
     let relay = Relay::new(
-        Arc::clone(&case.adapter),
+        case.adapter,
         script.clone(),
         ApiKey::new(KEY).ok_or("key")?,
         meter.clone(),
@@ -281,8 +281,8 @@ fn call(case: &Case, path: &str, body: &Value) -> Request {
 /// A small request in `case`'s protocol, with only fields it names (ADR-0120).
 fn plain(case: &Case) -> Value {
     let mut body = json!({ "model": "m", "stream": false });
-    body[case.adapter.output_limit()] = json!(64);
-    if case.adapter.fields().contains(&"messages") {
+    body[case.adapter.output_limit] = json!(64);
+    if case.adapter.fields.contains(&"messages") {
         body["messages"] = json!([]);
     } else {
         body["input"] = json!("hello");
@@ -421,7 +421,7 @@ fn usage_is_metered_per_job(case: &Case) -> Res {
 /// side by side cannot all pass it; one that finds the rest held is told to try again, not refused.
 fn calls_in_flight_hold_their_output(case: &Case) -> Res {
     let r = rig(case)?;
-    let field = case.adapter.output_limit();
+    let field = case.adapter.output_limit;
     let job = manifest(60, Role::Actor, 100);
     let mut asks = plain(case);
     asks[field] = json!(70);
@@ -692,7 +692,7 @@ fn fields_the_broker_does_not_know_are_refused(case: &Case) -> Res {
         assert!(
             fields
                 .keys()
-                .all(|f| case.adapter.fields().contains(&f.as_str())),
+                .all(|f| case.adapter.fields.contains(&f.as_str())),
             "{fields:?}"
         );
     }
@@ -711,7 +711,7 @@ fn hosted_tools_are_removed_from_every_request(case: &Case) -> Res {
     );
     mixed["tool_choice"] = case.hosted_choice.clone();
     mixed["mcp_servers"] = json!([{ "type": "url", "url": "https://example.com", "name": "x" }]);
-    if case.adapter.fields().contains(&"include") {
+    if case.adapter.fields.contains(&"include") {
         mixed["include"] = json!([
             "web_search_call.action.sources",
             "reasoning.encrypted_content"
@@ -725,7 +725,7 @@ fn hosted_tools_are_removed_from_every_request(case: &Case) -> Res {
     // A separate request for only a hosted tool, as Claude Code's web search makes.
     let mut alone = with_tools(case, vec![case.hosted[0].clone()]);
     alone["tool_choice"] = case.hosted_choice.clone();
-    if case.adapter.fields().contains(&"parallel_tool_calls") {
+    if case.adapter.fields.contains(&"parallel_tool_calls") {
         alone["parallel_tool_calls"] = json!(true);
     }
     assert_eq!(

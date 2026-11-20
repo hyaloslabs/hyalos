@@ -26,10 +26,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use hyalos_types::{Attestation, SubstrateName};
 
-use crate::spec::OUTPUT_LIMIT;
 use crate::{
     Ending, Isolation, Outcome, Sandbox, SandboxSpec, StartError, StopHandle, Substrate,
-    Unavailable,
+    Unavailable, first_line, keep, runtime_answered, watch,
 };
 
 /// The vsock ports, guest to host. They must match `crates/vm-init`.
@@ -218,33 +217,23 @@ impl MicroVmSubstrate {
         let bytes = tree_size(&root);
         let mib = bytes / (1024 * 1024) * 13 / 10 + 64;
         let partial = build.join("disk.ext4");
+        self.mkfs(&["-L", "hyalos"], &root, &partial, &format!("{mib}M"))?;
+        std::fs::rename(&partial, disk).map_err(|e| format!("{}: {e}", disk.display()))
+    }
+
+    /// Writes the tree at `root` as an ext4 disk of `size` at `disk`, owned by root inside, with
+    /// `extra` options to mke2fs.
+    fn mkfs(&self, extra: &[&str], root: &Path, disk: &Path, size: &str) -> Result<(), String> {
         let mke2fs = find_mke2fs().ok_or("mke2fs is not installed (e2fsprogs)")?;
-        let root_arg = root.to_string_lossy().into_owned();
-        let partial_arg = partial.to_string_lossy().into_owned();
-        let size = format!("{mib}M");
-        let out = self
-            .run(
-                &mke2fs,
-                &[
-                    "-q",
-                    "-F",
-                    "-t",
-                    "ext4",
-                    "-L",
-                    "hyalos",
-                    "-E",
-                    "root_owner=0:0",
-                    "-d",
-                    &root_arg,
-                    &partial_arg,
-                    &size,
-                ],
-            )
-            .map_err(|e| e.0)?;
+        let (root, disk) = (root.to_string_lossy(), disk.to_string_lossy());
+        let mut args = vec!["-q", "-F", "-t", "ext4"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&["-E", "root_owner=0:0", "-d", &root, &disk, size]);
+        let out = self.run(&mke2fs, &args).map_err(|e| e.0)?;
         if !out.status.success() {
             return Err(format!("mke2fs: {}", first_line(&out.stderr)));
         }
-        std::fs::rename(&partial, disk).map_err(|e| format!("{}: {e}", disk.display()))
+        Ok(())
     }
 
     /// Streams the container's filesystem into `root`, without the device nodes.
@@ -412,32 +401,8 @@ impl MicroVmSubstrate {
             }
             std::fs::copy(&self.config.init, root.join(INIT_IN_GUEST))
                 .map_err(|e| format!("copy the init: {e}"))?;
-            let mke2fs = find_mke2fs().ok_or("mke2fs is not installed (e2fsprogs)")?;
             let partial = build.join("disk.ext4");
-            let (r, p) = (
-                root.to_string_lossy().into_owned(),
-                partial.to_string_lossy().into_owned(),
-            );
-            let out = self
-                .run(
-                    &mke2fs,
-                    &[
-                        "-q",
-                        "-F",
-                        "-t",
-                        "ext4",
-                        "-E",
-                        "root_owner=0:0",
-                        "-d",
-                        &r,
-                        &p,
-                        "16M",
-                    ],
-                )
-                .map_err(|e| e.0)?;
-            if !out.status.success() {
-                return Err(format!("mke2fs: {}", first_line(&out.stderr)));
-            }
+            self.mkfs(&[], &root, &partial, "16M")?;
             std::fs::rename(&partial, &disk).map_err(|e| e.to_string())
         })();
         let _ = std::fs::remove_dir_all(&build);
@@ -512,24 +477,14 @@ fn accept(listener: &UnixListener, done: &AtomicBool) -> Option<UnixStream> {
     }
 }
 
-/// Reads one output stream from the guest to its end, keeping the first [`OUTPUT_LIMIT`] bytes.
+/// Reads one output stream from the guest to its end, keeping the first [`crate::OUTPUT_LIMIT`]
+/// bytes.
 fn accept_and_drain(listener: UnixListener, done: Arc<AtomicBool>) -> JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
         let Some(mut stream) = accept(&listener, &done) else {
             return Vec::new();
         };
-        let mut kept = Vec::new();
-        let mut buffer = [0u8; 8192];
-        loop {
-            match stream.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let room = OUTPUT_LIMIT.saturating_sub(kept.len());
-                    kept.extend_from_slice(&buffer[..n.min(room)]);
-                }
-            }
-        }
-        kept
+        keep(&mut stream)
     })
 }
 
@@ -590,15 +545,6 @@ fn unique() -> String {
         nanos,
         COUNT.fetch_add(1, Ordering::SeqCst)
     )
-}
-
-fn first_line(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("no message")
-        .to_string()
 }
 
 fn find_mke2fs() -> Option<PathBuf> {
@@ -692,15 +638,7 @@ impl Substrate for MicroVmSubstrate {
             std::fs::create_dir_all(dir)
                 .map_err(|e| Unavailable(format!("{}: {e}", dir.display())))?;
         }
-        let out = self.runtime_out(&["version"])?;
-        if !out.status.success() {
-            return Err(Unavailable(format!(
-                "{} did not answer: {}",
-                self.runtime,
-                first_line(&out.stderr)
-            )));
-        }
-        Ok(())
+        runtime_answered(&self.runtime, &self.runtime_out(&["version"])?)
     }
 
     fn ready(&self, image: &str) -> Result<(), Unavailable> {
@@ -799,28 +737,15 @@ impl Sandbox for MicroVmSandbox {
         if let Some(done) = &self.outcome {
             return done.clone();
         }
-        let mut deadline_hit = false;
-        let mut lost = false;
-        loop {
-            match self.child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) => {}
-                Err(_) => {
-                    lost = true;
-                    break;
-                }
-            }
-            if self.stop_asked.is_stopped() {
-                self.stopped = true;
-            }
-            if !deadline_hit && !self.stopped && Instant::now() >= self.deadline_at {
-                deadline_hit = true;
-            }
-            if self.stopped || deadline_hit {
-                let _ = self.child.kill();
-            }
-            std::thread::sleep(POLL);
-        }
+        let (deadline_hit, lost) = watch(
+            &mut self.child,
+            &mut self.stopped,
+            &self.stop_asked,
+            self.deadline_at,
+            |child| {
+                let _ = child.kill();
+            },
+        );
         let _ = self.child.wait();
         let side = self.finish();
         let ending = if self.stopped {

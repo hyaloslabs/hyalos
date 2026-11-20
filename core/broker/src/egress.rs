@@ -9,7 +9,7 @@
 //! the broker sees neither the content nor any credential in it.
 
 use std::collections::BTreeSet;
-use std::io::{self, BufReader, Cursor, Read, Write};
+use std::io::{self, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -349,13 +349,23 @@ pub fn listed(manifest: &Manifest, host: &str) -> bool {
 
 /// A refusal the broker writes itself, as plain text naming its code.
 pub fn refused(status: u16, code: &str) -> Response {
+    let text = format!("the broker refused this request: {code}\n");
     Response {
-        status,
-        content_type: "text/plain".into(),
-        body: Box::new(Cursor::new(
-            format!("the broker refused this request: {code}\n").into_bytes(),
-        )),
         reason: ReasonCode::new(code),
+        ..Response::bytes(status, "text/plain", text.into_bytes())
+    }
+}
+
+impl Response {
+    /// An answer the broker writes itself, of `bytes`, with no reason. A refusal sets its reason on
+    /// this one.
+    pub(crate) fn bytes(status: u16, content_type: &str, bytes: Vec<u8>) -> Self {
+        Self {
+            status,
+            content_type: content_type.into(),
+            body: Box::new(std::io::Cursor::new(bytes)),
+            reason: None,
+        }
     }
 }
 
@@ -488,7 +498,7 @@ fn request_body<R: Read>(
     held: &mut Held<'_>,
     ended: &AtomicBool,
 ) -> Result<Vec<u8>, (u16, &'static str)> {
-    let get = |n: &str| headers.iter().find(|(k, _)| k == n).map(|(_, v)| v);
+    let get = |n: &str| crate::model::header(headers, n);
     if get("transfer-encoding").is_some() {
         return Err((411, "egress.chunked_request"));
     }

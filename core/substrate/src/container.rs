@@ -22,17 +22,15 @@ use std::time::{Duration, Instant};
 
 use hyalos_types::{Attestation, SubstrateName};
 
-use crate::spec::{BROKER_SOCKET_IN_SANDBOX, OUTPUT_LIMIT, SKILLS_IN_SANDBOX};
+use crate::spec::{BROKER_SOCKET_IN_SANDBOX, SKILLS_IN_SANDBOX};
 use crate::{
     Ending, Isolation, Outcome, Sandbox, SandboxSpec, StartError, StopHandle, Substrate,
-    Unavailable,
+    Unavailable, first_line, keep, runtime_answered, watch,
 };
 
 /// The user the sandbox runs as: `nobody`, which owns nothing on the host.
 const SANDBOX_USER: &str = "65534:65534";
 
-/// How often a waiting driver looks at the clock and the process.
-const POLL: Duration = Duration::from_millis(10);
 /// How long a sandbox that was killed may take to end before it is killed again.
 const KILL_AGAIN: Duration = Duration::from_secs(1);
 
@@ -42,6 +40,29 @@ const LABEL: &str = "hyalos.job";
 /// The label on the readiness probe (ADR-0043). It is not a job's sandbox, so `existing` never
 /// lists it.
 const PROBE_LABEL: &str = "hyalos.probe";
+
+/// What every container the driver starts runs under, a job's sandbox and the readiness probe alike.
+const CONFINED: &[&str] = &[
+    // A minimal init is PID 1 (ADR-0041): it reaps orphaned processes, which would otherwise count
+    // against the process limit, and passes signals on to the program.
+    "--init",
+    // No network of any kind, not even a filtered one.
+    "--network",
+    "none",
+    "--read-only",
+    "--user",
+    SANDBOX_USER,
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    // The image is run as asked, never pulled during a job, and its output is not kept by the
+    // runtime.
+    "--pull",
+    "never",
+    "--log-driver",
+    "none",
+];
 
 /// The runtimes the engine looks for, in order of preference.
 const RUNTIMES: [&str; 2] = ["podman", "docker"];
@@ -150,27 +171,8 @@ impl ContainerSubstrate {
         };
         let mut probe = vec!["run", "--rm"];
         probe.extend_from_slice(self.runtime_option());
-        probe.extend_from_slice(&[
-            "--init",
-            "--network",
-            "none",
-            "--read-only",
-            "--user",
-            SANDBOX_USER,
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--pull",
-            "never",
-            "--log-driver",
-            "none",
-            "--label",
-            PROBE_LABEL,
-            "--entrypoint",
-            entrypoint,
-            image,
-        ]);
+        probe.extend_from_slice(CONFINED);
+        probe.extend_from_slice(&["--label", PROBE_LABEL, "--entrypoint", entrypoint, image]);
         probe.extend_from_slice(args);
         let out = self.run(&probe)?;
         if !out.status.success() {
@@ -215,15 +217,6 @@ fn is_gvisor_kernel(release: &str) -> bool {
     release.ends_with("-gvisor")
 }
 
-fn first_line(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes)
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("no message")
-        .to_string()
-}
-
 impl Substrate for ContainerSubstrate {
     fn name(&self) -> &'static str {
         if self.gvisor { "gvisor" } else { "container" }
@@ -263,16 +256,7 @@ impl Substrate for ContainerSubstrate {
     }
 
     fn available(&self) -> Result<(), Unavailable> {
-        let out = self.run(&["version"])?;
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err(Unavailable(format!(
-                "{} did not answer: {}",
-                self.runtime,
-                first_line(&out.stderr)
-            )))
-        }
+        runtime_answered(&self.runtime, &self.run(&["version"])?)
     }
 
     fn start(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, StartError> {
@@ -295,23 +279,11 @@ impl Substrate for ContainerSubstrate {
             .arg("create")
             .args(self.runtime_option())
             .args(["--label", &format!("{LABEL}={}", spec.job)])
-            // A minimal init is PID 1 (ADR-0041): it reaps orphaned processes, which would
-            // otherwise count against the process limit, and passes signals on to the program.
-            .arg("--init")
-            // No network of any kind, not even a filtered one.
-            .args(["--network", "none"])
-            .arg("--read-only")
+            .args(CONFINED)
             .args(["--tmpfs", "/tmp:rw,noexec,nosuid,size=64m"])
-            .args(["--user", SANDBOX_USER])
-            .args(["--cap-drop", "ALL"])
-            .args(["--security-opt", "no-new-privileges"])
             .args(["--memory", &spec.memory_bytes.to_string()])
             .args(["--memory-swap", &spec.memory_bytes.to_string()])
             .args(["--pids-limit", &host_tasks.to_string()])
-            // The image is run as asked, never pulled during a job, and its output is not kept by
-            // the runtime.
-            .args(["--pull", "never"])
-            .args(["--log-driver", "none"])
             .arg("--mount")
             .arg(format!(
                 "type=bind,src={},dst={BROKER_SOCKET_IN_SANDBOX}",
@@ -401,22 +373,10 @@ impl Substrate for ContainerSubstrate {
     }
 }
 
-/// Reads a stream to its end, keeping the first [`OUTPUT_LIMIT`] bytes.
+/// Reads a stream to its end on a thread of its own, keeping the first [`crate::OUTPUT_LIMIT`]
+/// bytes.
 fn drain<R: Read + Send + 'static>(mut stream: R) -> JoinHandle<Vec<u8>> {
-    std::thread::spawn(move || {
-        let mut kept = Vec::new();
-        let mut buffer = [0u8; 8192];
-        loop {
-            match stream.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let room = OUTPUT_LIMIT.saturating_sub(kept.len());
-                    kept.extend_from_slice(&buffer[..n.min(room)]);
-                }
-            }
-        }
-        kept
-    })
+    std::thread::spawn(move || keep(&mut stream))
 }
 
 struct ContainerSandbox {
@@ -464,33 +424,22 @@ impl Sandbox for ContainerSandbox {
         if let Some(done) = &self.outcome {
             return done.clone();
         }
-        let mut deadline_hit = false;
-        let mut lost = false;
         // When the sandbox was last killed. A kill sent while the runtime is still starting the
         // container can be lost, so a sandbox that should be ending is killed again each second.
         let mut killed: Option<Instant> = None;
-        loop {
-            match self.child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) => {}
-                Err(_) => {
-                    lost = true;
-                    break;
+        let (driver, id) = (&self.driver, &self.id);
+        let (deadline_hit, lost) = watch(
+            &mut self.child,
+            &mut self.stopped,
+            &self.stop_asked,
+            self.deadline_at,
+            |_| {
+                if killed.is_none_or(|at| at.elapsed() >= KILL_AGAIN) {
+                    let _ = driver.run(&["kill", id]);
+                    killed = Some(Instant::now());
                 }
-            }
-            if self.stop_asked.is_stopped() {
-                self.stopped = true;
-            }
-            if !deadline_hit && !self.stopped && Instant::now() >= self.deadline_at {
-                deadline_hit = true;
-            }
-            let ending = self.stopped || deadline_hit;
-            if ending && killed.is_none_or(|at| at.elapsed() >= KILL_AGAIN) {
-                self.kill();
-                killed = Some(Instant::now());
-            }
-            std::thread::sleep(POLL);
-        }
+            },
+        );
         let code = self.exit_code();
         let _ = self.child.kill();
         let _ = self.child.wait();

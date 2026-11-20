@@ -6,8 +6,11 @@
 //!
 //! Layout rule (ADR-0017): this crate depends only on hyalos-types.
 
+use std::io::Read;
+use std::process::{Child, Output};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use hyalos_types::{Attestation, SubstrateName};
 
@@ -101,4 +104,76 @@ impl StopHandle {
     pub fn is_stopped(&self) -> bool {
         self.0.load(Ordering::SeqCst)
     }
+}
+
+/// How often a waiting driver looks at the clock and the process.
+const POLL: Duration = Duration::from_millis(10);
+
+/// Waits for a sandbox's `child` to exit, for [`Sandbox::wait`]. A stop asked through `stop_asked`
+/// sets `stopped`. Once the sandbox is stopped, or `deadline_at` has passed, `kill` is called on
+/// every poll until the child exits. The answer is whether the deadline was hit, and whether the
+/// child was lost (its state could not be read).
+pub(crate) fn watch(
+    child: &mut Child,
+    stopped: &mut bool,
+    stop_asked: &StopHandle,
+    deadline_at: Instant,
+    mut kill: impl FnMut(&mut Child),
+) -> (bool, bool) {
+    let mut deadline_hit = false;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return (deadline_hit, false),
+            Ok(None) => {}
+            Err(_) => return (deadline_hit, true),
+        }
+        if stop_asked.is_stopped() {
+            *stopped = true;
+        }
+        if !deadline_hit && !*stopped && Instant::now() >= deadline_at {
+            deadline_hit = true;
+        }
+        if *stopped || deadline_hit {
+            kill(child);
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
+/// Reads a stream to its end, keeping the first [`OUTPUT_LIMIT`] bytes.
+pub(crate) fn keep(stream: &mut impl Read) -> Vec<u8> {
+    let mut kept = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let room = OUTPUT_LIMIT.saturating_sub(kept.len());
+                kept.extend_from_slice(&buffer[..n.min(room)]);
+            }
+        }
+    }
+    kept
+}
+
+/// Whether a container runtime answered `version`, as `out`.
+pub(crate) fn runtime_answered(runtime: &str, out: &Output) -> Result<(), Unavailable> {
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(Unavailable(format!(
+            "{runtime} did not answer: {}",
+            first_line(&out.stderr)
+        )))
+    }
+}
+
+/// The first line of a command's output that is not blank, for an error.
+pub(crate) fn first_line(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("no message")
+        .to_string()
 }

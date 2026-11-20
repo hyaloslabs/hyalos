@@ -7,7 +7,7 @@
 //! `TakeResult`. A job gets one submission: an invalid one fails the job, and any after the first
 //! changes nothing.
 
-use std::io::{BufRead, Cursor, Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -18,7 +18,7 @@ use crate::bodies::Bodies;
 use crate::egress::{self, ProxyRequest};
 use crate::forge;
 use crate::git;
-use crate::model::Response;
+use crate::model::{self, Response};
 
 /// Where a result is submitted on a job's socket.
 pub const PATH: &str = "/hyalos/submit";
@@ -64,12 +64,7 @@ pub(crate) fn answer<R: BufRead, W: Write>(
     if *slot.lock().unwrap_or_else(PoisonError::into_inner) != Submitted::Nothing {
         return already();
     }
-    let header = |name: &str| {
-        head.headers
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.as_str())
-    };
+    let header = |name: &str| model::header(&head.headers, name);
     let mut held = bodies.hold();
     let read = match git::read_body(header, reader, client, MAX_SUBMISSION, &mut held, ended) {
         Ok(body) if forge::depth(&body) > 1 => Err((400, "submit.too_deep")),
@@ -93,12 +88,7 @@ pub(crate) fn answer<R: BufRead, W: Write>(
     match read {
         Ok(values) => {
             *submitted = Submitted::Accepted(values);
-            Response {
-                status: 200,
-                content_type: "application/json".into(),
-                body: Box::new(Cursor::new(b"{\"accepted\":true}\n".to_vec())),
-                reason: None,
-            }
+            Response::bytes(200, "application/json", b"{\"accepted\":true}\n".to_vec())
         }
         Err((status, code)) => {
             *submitted = Submitted::Refused(code);
@@ -111,6 +101,7 @@ pub(crate) fn answer<R: BufRead, W: Write>(
 mod tests {
     use super::*;
     use hyalos_types::workflow::Field;
+    use std::io::Cursor;
 
     fn manifest(result: bool) -> Manifest {
         Manifest {

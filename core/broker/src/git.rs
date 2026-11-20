@@ -20,8 +20,9 @@ use hyalos_types::{ForgeToken, Manifest};
 use crate::bodies::{self, Bodies, Held};
 use crate::content;
 use crate::egress::{Gates, ProxyRequest, inputs_digest, refused};
-use crate::model::{HttpTransport, Response, Upstream, dechunk};
+use crate::model::{self, HttpTransport, Response, Upstream, dechunk};
 use crate::pack::{self, Finding};
+use base64::Engine as _;
 use hyalos_types::Digest;
 use sha2::{Digest as _, Sha256};
 
@@ -107,6 +108,16 @@ pub struct Route {
     pub advertisement: bool,
 }
 
+/// Whether `p` may be a repository's owner or name: what the forge allows, and never `.` or `..`.
+pub(crate) fn part(p: &str) -> bool {
+    !p.is_empty()
+        && p.len() <= 100
+        && p != "."
+        && p != ".."
+        && p.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+}
+
 /// Reads a git request's method and target. `None` is not a request the broker serves.
 pub fn route(method: &str, target: &str) -> Option<Route> {
     let rest = target.strip_prefix(PREFIX)?;
@@ -114,14 +125,6 @@ pub fn route(method: &str, target: &str) -> Option<Route> {
     let mut parts = path.splitn(3, '/');
     let (owner, name, call) = (parts.next()?, parts.next()?, parts.next()?);
     let name = name.strip_suffix(".git").unwrap_or(name);
-    let part = |p: &str| {
-        !p.is_empty()
-            && p.len() <= 100
-            && p != "."
-            && p != ".."
-            && p.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
-    };
     if !part(owner) || !part(name) {
         return None;
     }
@@ -163,12 +166,6 @@ pub struct Push<'a> {
     /// Sent only when the push asked for `push-options`; the forge reads them.
     pub options: Vec<&'a str>,
     pub pack: &'a [u8],
-}
-
-/// Reads the ref updates at the start of a push's body: pkt-lines up to the first flush. `Err` is the
-/// reason the push is refused.
-pub fn commands(body: &[u8]) -> Result<Vec<Command>, &'static str> {
-    read_push(body).map(|push| push.commands)
 }
 
 /// One pkt-line at `at`: `Some` with its contents, or `None` for a flush. `at` moves past it.
@@ -385,13 +382,7 @@ pub(crate) fn answer<R: BufRead, W: Write>(
         Ok(transport) => transport,
         Err(code) => return refused(502, code),
     };
-    let header = |name: &str| {
-        request
-            .headers
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.as_str())
-    };
+    let header = |name: &str| model::header(&request.headers, name);
     // What the body holds against the job's and the broker's limits, until the call is answered.
     let mut held = bodies.hold();
     let body = if route.advertisement {
@@ -490,23 +481,17 @@ pub(crate) fn answer<R: BufRead, W: Write>(
                 .filter(|_| r.status == 200 && advertisement.len() <= MAX_GIT_BODY)
                 .and_then(|_| no_thin(&advertisement));
             match changed {
-                Some(changed) => Response {
-                    status: 200,
-                    content_type: "application/x-git-receive-pack-advertisement".into(),
-                    body: Box::new(std::io::Cursor::new(changed)),
-                    reason: None,
-                },
+                Some(changed) => {
+                    Response::bytes(200, "application/x-git-receive-pack-advertisement", changed)
+                }
                 None => refused(502, "git.bad_advertisement"),
             }
         }
         Ok(r) => Response {
             status: r.status,
-            content_type: r
-                .headers
-                .iter()
-                .find(|(n, _)| n == "content-type")
-                .map(|(_, v)| v.clone())
-                .unwrap_or_else(|| "application/octet-stream".into()),
+            content_type: model::header(&r.headers, "content-type")
+                .unwrap_or("application/octet-stream")
+                .into(),
             body: r.body,
             reason: None,
         },
@@ -555,22 +540,7 @@ pub(crate) fn read_body<'h, R: BufRead, W: Write>(
 }
 
 fn base64(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = chunk
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, b)| n | (u32::from(*b) << (16 - 8 * i)));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(char::from(TABLE[(n >> (18 - 6 * i)) as usize & 63]));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 #[cfg(test)]
@@ -657,11 +627,11 @@ mod tests {
             )),
             pkt(&format!("{a} {} refs/heads/hyalos/y\n", "0".repeat(40))),
         );
-        let read = commands(body.as_bytes()).unwrap();
+        let read = read_push(body.as_bytes()).map(|p| p.commands).unwrap();
         assert_eq!(read.len(), 2);
         assert_eq!(read[0].refname, "refs/heads/hyalos/x");
         assert!(!read[0].deletes() && read[1].deletes());
-        assert_eq!(commands(b"0000").unwrap(), vec![]);
+        assert_eq!(read_push(b"0000").map(|p| p.commands).unwrap(), vec![]);
         for bad in [
             "".to_string(),
             "00".to_string(),
@@ -673,10 +643,14 @@ mod tests {
             pkt(&format!("{a} {} refs/heads/x\n", "b".repeat(64))) + "0000",
             pkt(&format!("{} {b} refs/heads/x\n", "A".repeat(40))) + "0000",
         ] {
-            assert_eq!(commands(bad.as_bytes()), Err("git.bad_request"), "{bad:?}");
+            assert_eq!(
+                read_push(bad.as_bytes()).map(|p| p.commands),
+                Err("git.bad_request"),
+                "{bad:?}"
+            );
         }
         assert_eq!(
-            commands(pkt("push-cert\0report-status\n").as_bytes()),
+            read_push(pkt("push-cert\0report-status\n").as_bytes()).map(|p| p.commands),
             Err("git.push_cert")
         );
     }

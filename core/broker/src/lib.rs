@@ -18,4 +18,4 @@ mod serve;
 pub mod submit;
 
 pub use admission::{Admission, Credential, LiveJobs, Refusal};
-pub use serve::{Broker, Exit, Plugins, ServeError, serve, serve_with, serve_with_plugins};
+pub use serve::{Broker, Exit, Plugins, ServeError, serve_with_plugins};
