@@ -17,6 +17,12 @@ Never include a real secret. If a report needs one, use a key made for the purpo
 
 We aim to acknowledge a report within three working days, and to agree a fix and disclosure date with you. Once a fix is released, we credit reporters who want credit.
 
+## Review status
+
+**Hyalos has not had an independent security review.** It has one maintainer, and the review planned before the first public release has not happened. Treat the controls below as designed and tested, not audited.
+
+What has been checked, by the maintainer and by automated means: the [threat model](docs/security/threat-model.md), whose every control names its code and its test; a red-team corpus whose reach is recorded per release and may not grow; a TLA+ model check of the job state machine; simulated jobs under thousands of fault schedules; property-based contract suites; and symbolic proofs of the policy baseline. If you can review any part of the trusted core, [reviewing the core](docs/security/reviewing-the-core.md) says where to start.
+
 ## Supported versions
 
 Hyalos is before 1.0. Only the latest release gets security fixes.

@@ -1,18 +1,16 @@
-# The secrets scan's configuration (ADR-0115). It uses gitleaks' default rules. The only exceptions
-# are the keys below. Each was made for the tests alone and protects nothing.
-# Run it over the full history with: gitleaks git --log-opts="--all" --redact .
-# A new exception is a reviewed change here, and it must say why the key is harmless.
-
+# gitleaks (https://github.com/gitleaks/gitleaks): its default rules, minus three keys made for the
+# tests alone. Each is no real credential:
+# - github-app-test.pem is no App's key (ADR-0044);
+# - the two leaf.key files belong to a localhost certificate issued by "Hyalos test CA (not trusted
+#   anywhere)".
+# Add a path here only for a key made for a test, with the reason; never for a real one.
 [extend]
 useDefault = true
 
-[[allowlists]]
-description = "Test-only keys that protect nothing"
+[allowlist]
+description = "keys made for the tests alone"
 paths = [
-    # An RSA key made for the GitHub App tests. It is no App's key (ADR-0044).
-    '''^core/hyalos/tests/fixtures/github-app-test\.pem$''',
-    # The key of a leaf certificate for localhost, issued by a test CA that is trusted nowhere (ADR-0039).
-    '''^core/broker/tests/fixtures/tls/leaf\.key$''',
-    # The key of a leaf certificate for allowed.hyalos.test. Its authority's key was discarded.
-    '''^crates/sandbox-tools/tests/fixtures/tls/leaf\.key$''',
+  '''^core/hyalos/tests/fixtures/github-app-test\.pem$''',
+  '''^core/broker/tests/fixtures/tls/leaf\.key$''',
+  '''^crates/sandbox-tools/tests/fixtures/tls/leaf\.key$''',
 ]

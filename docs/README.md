@@ -11,7 +11,7 @@ Each kind of information has exactly one home ([ADR-0014](adr/0014-tracker-holds
 | Throwaway rigs behind a spike's evidence | [`../spikes/`](../spikes/) | Not product code; delete when the real component makes it redundant |
 | Operator procedures (setup, backup, recovery) | [`operations/`](operations/) | Steps an operator follows; the reasons live in the ADRs they link |
 | Reference docs (CLI, manifest schema, WIT) | `reference/` (later) | Generated from types, manifests and ADRs, not hand-written |
-| Threat model, data flows | [`security/`](security/), and [`SECURITY.md`](../SECURITY.md) at the root | Each control names its code and its test |
+| Threat model, data flows, a guide to reviewing the trusted core | [`security/`](security/), and [`SECURITY.md`](../SECURITY.md) at the root | Each control names its code and its test |
 
 ## Where to put new things
 
