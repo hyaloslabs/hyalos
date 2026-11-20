@@ -436,7 +436,9 @@ impl StateImage {
             }
         }
         // 16 -> 17: no draft had been trusted.
-        if let Some(Value::Array(drafts)) = object.get_mut("drafts") {
+        if version < 17
+            && let Some(Value::Array(drafts)) = object.get_mut("drafts")
+        {
             for draft in drafts {
                 if let Some(draft) = draft.as_object_mut() {
                     draft.insert("trusted".into(), Value::Null);

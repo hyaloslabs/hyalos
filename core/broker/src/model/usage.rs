@@ -228,7 +228,10 @@ impl Scanner {
     fn line(&mut self) {
         let line = std::mem::take(&mut self.buf);
         if let Some(data) = line.strip_prefix(b"data:") {
-            self.absorb(data);
+            // OpenAI-compatible streams may terminate with `data: [DONE]` after the final event (#371).
+            if data.trim_ascii() != b"[DONE]" {
+                self.absorb(data);
+            }
         }
     }
 
@@ -329,5 +332,22 @@ mod tests {
         }
         assert_eq!((meter.spent(job), meter.held(job)), (0, 0));
         assert!(meter.lock().live.is_empty());
+    }
+
+    #[test]
+    fn a_stream_ending_with_done_sentinel_keeps_its_reported_usage() {
+        let mut scanner = Scanner::new("text/event-stream", &crate::model::OPENAI);
+        scanner.feed(
+            b"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\n\
+              data: [DONE]\n\n",
+        );
+        assert_eq!(scanner.finish(), Some(15));
+        // A [DONE] sentinel without a real end event still fails closed (#371).
+        let mut incomplete = Scanner::new("text/event-stream", &crate::model::OPENAI);
+        incomplete.feed(
+            b"data: {\"type\":\"response.in_progress\",\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}\n\n\
+              data: [DONE]\n\n",
+        );
+        assert_eq!(incomplete.finish(), None);
     }
 }
