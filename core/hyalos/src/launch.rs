@@ -156,44 +156,11 @@ pub struct BrokerProcess {
 }
 
 impl BrokerProcess {
-    /// Starts `exe` as the broker, with `runtime_dir` for its socket and no provider keys.
-    pub fn launch(
-        exe: &Path,
-        runtime_dir: &Path,
-        key: &ManifestPublicKey,
-        wait: Duration,
-    ) -> Result<Self, LaunchError> {
-        Self::launch_configured(exe, runtime_dir, key, None, None, wait)
-    }
-
-    /// Starts `exe` as the broker, which reads the provider key file at `provider_keys` itself, so
-    /// the keys never pass through the engine (ADR-0038). The path is not a secret; the file is the
-    /// operator's alone.
-    pub fn launch_with(
-        exe: &Path,
-        runtime_dir: &Path,
-        key: &ManifestPublicKey,
-        provider_keys: Option<&Path>,
-        wait: Duration,
-    ) -> Result<Self, LaunchError> {
-        Self::launch_configured(exe, runtime_dir, key, provider_keys, None, wait)
-    }
-
-    /// As [`launch_with`](Self::launch_with), and tells the broker in `Hello` where the forge is
-    /// (ADR-0050); `None` is github.com.
-    pub fn launch_configured(
-        exe: &Path,
-        runtime_dir: &Path,
-        key: &ManifestPublicKey,
-        provider_keys: Option<&Path>,
-        forge: Option<ForgeBases>,
-        wait: Duration,
-    ) -> Result<Self, LaunchError> {
-        Self::launch_confined(exe, runtime_dir, key, provider_keys, forge, None, wait)
-    }
-
-    /// As [`launch_configured`](Self::launch_configured), and lets the broker read `plugin_store`
-    /// once it has confined itself (ADR-0118). Without one, it can run no plugin.
+    /// Starts `exe` as the broker, with `runtime_dir` for its socket. The broker reads the provider
+    /// key file at `provider_keys` itself, so the keys never pass through the engine (ADR-0038); the
+    /// path is not a secret, the file is the operator's alone. `forge` tells the broker in `Hello`
+    /// where the forge is (ADR-0050); `None` is github.com. The broker may read `plugin_store` once it
+    /// has confined itself (ADR-0118); without one, it can run no plugin.
     pub fn launch_confined(
         exe: &Path,
         runtime_dir: &Path,
@@ -247,33 +214,10 @@ impl BrokerProcess {
         Self::start_with(command, listener, key, forge, wait)
     }
 
-    /// Starts this very executable as the broker, with the provider key file at `provider_keys` and
-    /// the forge at `forge`.
-    pub fn launch_self(
-        runtime_dir: &Path,
-        key: &ManifestPublicKey,
-        provider_keys: Option<&Path>,
-        forge: Option<ForgeBases>,
-        wait: Duration,
-    ) -> Result<Self, LaunchError> {
-        let exe = std::env::current_exe().map_err(|e| LaunchError::Spawn(e.kind()))?;
-        Self::launch_configured(&exe, runtime_dir, key, provider_keys, forge, wait)
-    }
-
-    /// Runs `command` as the broker, accepts its connection on `listener` and says hello. Anything
-    /// that is not the process it started is turned away. [`launch`](Self::launch) builds the command
-    /// with an empty environment and no standard streams; this is split from it so a test can stand in
-    /// for the broker.
-    pub fn start(
-        command: Command,
-        listener: Listener,
-        key: &ManifestPublicKey,
-        wait: Duration,
-    ) -> Result<Self, LaunchError> {
-        Self::start_with(command, listener, key, None, wait)
-    }
-
-    /// As [`start`](Self::start), naming the forge in `Hello`.
+    /// Runs `command` as the broker, accepts its connection on `listener` and says hello, naming the
+    /// forge. Anything that is not the process it started is turned away.
+    /// [`launch_confined`](Self::launch_confined) builds the command with an empty environment and no
+    /// standard streams; this is split from it so a test can stand in for the broker.
     pub fn start_with(
         mut command: Command,
         mut listener: Listener,

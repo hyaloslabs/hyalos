@@ -387,6 +387,13 @@ impl Stamps {
         self.0 = self.0.max(SystemClock.now());
         self.0
     }
+
+    /// Records `event` as the engine's own, stamped now.
+    fn record(&mut self, engine: &mut Engine, event: Event) -> Result<hyalos_log::Head, String> {
+        engine
+            .submit(self.now(), Origin::Engine, event)
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// One of the [`why`] codes. A test checks every one is a valid code.

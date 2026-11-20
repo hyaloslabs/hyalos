@@ -116,13 +116,7 @@ pub fn parse(args: &[String]) -> Result<MergeRequest, String> {
 pub fn run(args: &[String]) -> ExitCode {
     let env = |name: &str| std::env::var(name).ok();
     let mut out = std::io::stdout();
-    match merge_with(args, &env, &mut out) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err((code, message)) => {
-            eprintln!("hyalos: {message}");
-            ExitCode::from(code)
-        }
-    }
+    crate::operator_cmd::exit(merge_with(args, &env, &mut out), |()| {})
 }
 
 /// `hyalos merge`, writing what happens to `out`.
@@ -341,12 +335,13 @@ fn attempt(
     *token = Some(minted.token.clone());
     let not_started = |text: String| Failure::new(why::BROKER_NOT_STARTED, text);
     paths::make_private_dir(runtime_dir).map_err(not_started)?;
-    let mut broker = BrokerProcess::launch_configured(
+    let mut broker = BrokerProcess::launch_confined(
         broker_exe,
         runtime_dir,
         &key.public(),
         None,
         Some(app.forge_bases()),
+        None,
         BROKER_WAIT,
     )
     .map_err(|e| not_started(format!("the broker did not start: {e}")))?;

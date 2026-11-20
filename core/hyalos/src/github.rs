@@ -576,18 +576,8 @@ fn split_api(api: &str) -> Result<(&str, &str), MintError> {
 
 /// RFC 4648 base64url without padding, as JWTs use.
 fn base64url(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = chunk
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
-        for i in 0..=chunk.len() {
-            out.push(char::from(ALPHABET[(n >> (18 - 6 * i) & 63) as usize]));
-        }
-    }
-    out
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// `YYYY-MM-DDTHH:MM:SSZ`, the form GitHub gives expiry times in, as a timestamp.
@@ -754,6 +744,33 @@ mod tests {
         assert_eq!(base64url(b"fo"), "Zm8");
         assert_eq!(base64url(b"foo"), "Zm9v");
         assert_eq!(base64url(&[0xfb, 0xff]), "-_8");
+        // The same as the encoder written out by hand that it replaced, at every length up to a
+        // few blocks and over every byte value.
+        fn by_hand(bytes: &[u8]) -> String {
+            const ALPHABET: &[u8; 64] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut out = String::new();
+            for chunk in bytes.chunks(3) {
+                let n = chunk
+                    .iter()
+                    .enumerate()
+                    .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+                for i in 0..=chunk.len() {
+                    out.push(char::from(ALPHABET[(n >> (18 - 6 * i) & 63) as usize]));
+                }
+            }
+            out
+        }
+        let bytes: Vec<u8> = (0..=255u8).chain((0..=255u8).rev()).collect();
+        for len in 0..bytes.len() {
+            for start in [0, 1, 2, 85, 170, 255]
+                .into_iter()
+                .filter(|s| s + len <= bytes.len())
+            {
+                let slice = &bytes[start..start + len];
+                assert_eq!(base64url(slice), by_hand(slice), "{slice:?}");
+            }
+        }
         assert_eq!(
             parse_time("1970-01-01T00:00:00Z"),
             Some(Timestamp::from_millis(0))

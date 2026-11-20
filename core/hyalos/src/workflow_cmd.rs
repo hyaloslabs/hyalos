@@ -16,16 +16,7 @@ const USAGE: &str = "usage: hyalos workflow check <file>
   step names the plugin it runs. It prints the plugins whose grants bound each step. It writes nothing";
 
 pub fn run(args: &[String]) -> ExitCode {
-    match run_with(args) {
-        Ok(text) => {
-            print!("{text}");
-            ExitCode::SUCCESS
-        }
-        Err((code, message)) => {
-            eprintln!("hyalos: {message}");
-            ExitCode::from(code)
-        }
-    }
+    crate::operator_cmd::finish(run_with(args))
 }
 
 /// The command's output, or its exit code and message: 1 if the workflow does not install, 2 for

@@ -39,10 +39,12 @@ const RELEASE_USAGE: &str = "usage: hyalos release <task> [--reason <code>] [--p
   issue on the forge first: the command reads it again and refuses if it is not what the run holds.
   --reason is a short code (default handle.operator_released)";
 
-fn finish(result: Result<String, (u8, String)>) -> ExitCode {
+/// A command's exit: on success `done` prints what it made; on failure the message goes to stderr
+/// and the command exits with its code.
+pub(crate) fn exit<T>(result: Result<T, (u8, String)>, done: impl FnOnce(T)) -> ExitCode {
     match result {
-        Ok(text) => {
-            print!("{text}");
+        Ok(made) => {
+            done(made);
             ExitCode::SUCCESS
         }
         Err((code, message)) => {
@@ -50,6 +52,11 @@ fn finish(result: Result<String, (u8, String)>) -> ExitCode {
             ExitCode::from(code)
         }
     }
+}
+
+/// As [`exit`], printing the command's text to stdout.
+pub(crate) fn finish(result: Result<String, (u8, String)>) -> ExitCode {
+    exit(result, |text| print!("{text}"))
 }
 
 fn env() -> impl Fn(&str) -> Option<String> {

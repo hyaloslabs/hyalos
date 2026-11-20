@@ -33,16 +33,7 @@ const USAGE: &str = "usage: hyalos policy check <file>
 
 pub fn run(args: &[String]) -> ExitCode {
     let env = |name: &str| std::env::var(name).ok();
-    match run_with(args, &env) {
-        Ok(text) => {
-            print!("{text}");
-            ExitCode::SUCCESS
-        }
-        Err((code, message)) => {
-            eprintln!("hyalos: {message}");
-            ExitCode::from(code)
-        }
-    }
+    crate::operator_cmd::finish(run_with(args, &env))
 }
 
 /// The command's output, or its exit code and message.

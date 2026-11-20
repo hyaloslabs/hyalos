@@ -63,9 +63,7 @@ pub(super) fn close_lost(
         );
         summary = Some(ended.with(out, JobOutcome::Failed, lost, Ok(()), None)?);
     }
-    let head = engine
-        .submit(clock.now(), Origin::Engine, Event::TaskCompleted { task })
-        .map_err(|e| e.to_string())?;
+    let head = clock.record(&mut engine, Event::TaskCompleted { task })?;
     let _ = writeln!(out, "task {}: completed (event {})", task.seq(), head.seq);
     let _ = std::fs::remove_file(runs_dir.join(format!("task-{}.held", task.seq())));
     Ok(summary)

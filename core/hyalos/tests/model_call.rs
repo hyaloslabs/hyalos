@@ -164,11 +164,13 @@ fn no_provider_key_reaches_the_sandbox() -> Res {
     std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o777))?;
 
     let manifest_key = fresh_manifest_key()?;
-    let mut broker = BrokerProcess::launch_with(
+    let mut broker = BrokerProcess::launch_confined(
         Path::new(EXE),
         &run,
         &manifest_key.public(),
         Some(&keys),
+        None,
+        None,
         WAIT,
     )?;
     let job_dir = JobDir::create(&run)?;

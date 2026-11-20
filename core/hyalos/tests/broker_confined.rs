@@ -112,8 +112,15 @@ fn a_broker_process_cannot_open_engine_key_or_github_app_pem() -> Res {
         }
         // Without Landlock no broker starts at all (ADR-0121), so none can read the keys.
         let d = dir("no-landlock")?;
-        let started =
-            BrokerProcess::launch(Path::new(EXE), &d, &fresh_manifest_key()?.public(), WAIT);
+        let started = BrokerProcess::launch_confined(
+            Path::new(EXE),
+            &d,
+            &fresh_manifest_key()?.public(),
+            None,
+            None,
+            None,
+            WAIT,
+        );
         assert!(matches!(
             started,
             Err(hyalos::launch::LaunchError::NoLandlock)

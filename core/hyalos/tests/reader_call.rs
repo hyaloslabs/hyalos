@@ -124,8 +124,15 @@ fn the_engine_gets_typed_values_from_a_reader_in_the_real_broker() -> Res {
     let run = root.join("run");
     std::fs::create_dir(&run)?;
     let key = fresh_manifest_key()?;
-    let mut broker =
-        BrokerProcess::launch_with(Path::new(EXE), &run, &key.public(), Some(&keys), WAIT)?;
+    let mut broker = BrokerProcess::launch_confined(
+        Path::new(EXE),
+        &run,
+        &key.public(),
+        Some(&keys),
+        None,
+        None,
+        WAIT,
+    )?;
     let call = ReaderCall {
         protocol: Protocol::OpenAi,
         model: "gpt-test".into(),

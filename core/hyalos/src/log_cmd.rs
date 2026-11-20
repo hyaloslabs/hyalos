@@ -229,15 +229,25 @@ fn check(options: &Options) -> Result<Done, String> {
 /// only after the log says so. It never deletes anything that does not check out, and never the log
 /// itself. Like `compact` it signs, so it needs the engine's key and the engine stopped.
 fn prune(args: &[String]) -> ExitCode {
+    signing(args, parse_prune, run_prune)
+}
+
+/// Parses a command that signs, runs it and prints what it did a line at a time: 2 for usage, 1 if
+/// it failed.
+fn signing<O>(
+    args: &[String],
+    parse: fn(&[String], Env<'_>) -> Result<O, String>,
+    run: fn(&O) -> Result<Vec<String>, String>,
+) -> ExitCode {
     let env = |name: &str| std::env::var(name).ok();
-    let options = match parse_prune(args, &env) {
+    let options = match parse(args, &env) {
         Ok(o) => o,
         Err(message) => {
             eprintln!("hyalos: {message}\n{USAGE}");
             return ExitCode::from(2);
         }
     };
-    match run_prune(&options) {
+    match run(&options) {
         Ok(lines) => {
             for line in lines {
                 println!("{line}");
@@ -249,6 +259,23 @@ fn prune(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The log at `db` and the engine's key at `key_file`, each where the engine keeps it unless given.
+fn db_and_key(
+    db: Option<PathBuf>,
+    key_file: Option<PathBuf>,
+    env: Env<'_>,
+) -> Result<(PathBuf, PathBuf), String> {
+    let db = match db {
+        Some(db) => db,
+        None => paths::log_file(env)?,
+    };
+    let key_file = match key_file {
+        Some(path) => path,
+        None => paths::config_dir(env)?.join(paths::ENGINE_KEY_FILE),
+    };
+    Ok((db, key_file))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -287,14 +314,7 @@ fn parse_prune(args: &[String], env: Env<'_>) -> Result<PruneOptions, String> {
                 .into(),
         );
     }
-    let db = match db {
-        Some(db) => db,
-        None => paths::log_file(env)?,
-    };
-    let key_file = match key_file {
-        Some(path) => path,
-        None => paths::config_dir(env)?.join(paths::ENGINE_KEY_FILE),
-    };
+    let (db, key_file) = db_and_key(db, key_file, env)?;
     Ok(PruneOptions {
         db,
         key_file,
@@ -412,26 +432,7 @@ fn run_audit(options: &Options) -> ExitCode {
 /// `hyalos log compact`: archive every event and leave a snapshot. It needs the engine's own key, since
 /// it signs the snapshot, and the engine stopped, since it is the log's only writer.
 fn compact(args: &[String]) -> ExitCode {
-    let env = |name: &str| std::env::var(name).ok();
-    let options = match parse_compact(args, &env) {
-        Ok(o) => o,
-        Err(message) => {
-            eprintln!("hyalos: {message}\n{USAGE}");
-            return ExitCode::from(2);
-        }
-    };
-    match run_compact(&options) {
-        Ok(lines) => {
-            for line in lines {
-                println!("{line}");
-            }
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("FAILED: {e}");
-            ExitCode::FAILURE
-        }
-    }
+    signing(args, parse_compact, run_compact)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -458,14 +459,7 @@ fn parse_compact(args: &[String], env: Env<'_>) -> Result<CompactOptions, String
             other => return Err(format!("unexpected argument {other}")),
         }
     }
-    let db = match db {
-        Some(db) => db,
-        None => paths::log_file(env)?,
-    };
-    let key_file = match key_file {
-        Some(path) => path,
-        None => paths::config_dir(env)?.join(paths::ENGINE_KEY_FILE),
-    };
+    let (db, key_file) = db_and_key(db, key_file, env)?;
     // Beside the log it came from, so a backup of the data directory carries its archives.
     let archive_dir = archive_dir.unwrap_or_else(|| {
         db.parent()

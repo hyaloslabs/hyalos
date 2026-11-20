@@ -11,7 +11,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
@@ -334,12 +334,11 @@ impl<'a> Setup<'a> {
     /// The App created from the setup page: GitHub hands back a one-time code, the operator types it
     /// here, and its exchange gives the App's id and key, checked before anything is written.
     fn app_from_setup_page(&mut self, config: &Path, current: &str) -> Result<String, String> {
-        self.ask
-            .say("Hyalos works on GitHub as an App of your own, installed on the repositories");
-        self.ask
-            .say("its jobs work on. The setup page asks GitHub to create it with the permissions");
-        self.ask
-            .say("Hyalos needs: Contents, Issues and Pull requests, read and write; no webhook.");
+        self.ask.say(
+            "Hyalos works on GitHub as an App of your own, installed on the repositories\n\
+             its jobs work on. The setup page asks GitHub to create it with the permissions\n\
+             Hyalos needs: Contents, Issues and Pull requests, read and write; no webhook.",
+        );
         let owner = self
             .ask
             .answer("GitHub account to own it, your user name or an organization's: ")?;
@@ -433,18 +432,14 @@ impl<'a> Setup<'a> {
         );
         self.ask
             .link("  1. open ", "github.com/settings/apps/new", &url);
-        self.ask
-            .say("     (a click fills in 2 and 3, where your terminal follows links)");
-        self.ask
-            .say("     for an organization: github.com/organizations/<org>/settings/apps/new");
-        self.ask
-            .say("  2. name hyalos-<you>, homepage https://github.com, Webhook: clear Active");
-        self.ask
-            .say("  3. Contents, Issues and Pull requests: Read and write; nothing else");
-        self.ask
-            .say("  4. Create GitHub App, note its App ID, then Generate a private key");
-        self.ask
-            .say("  5. Install App, on the repository the jobs will work on");
+        self.ask.say(concat!(
+            "     (a click fills in 2 and 3, where your terminal follows links)\n",
+            "     for an organization: github.com/organizations/<org>/settings/apps/new\n",
+            "  2. name hyalos-<you>, homepage https://github.com, Webhook: clear Active\n",
+            "  3. Contents, Issues and Pull requests: Read and write; nothing else\n",
+            "  4. Create GitHub App, note its App ID, then Generate a private key\n",
+            "  5. Install App, on the repository the jobs will work on",
+        ));
         Ok(())
     }
 
@@ -714,11 +709,7 @@ fn reason(code: &str) -> Result<ReasonCode, String> {
 /// The config directory, made owner-only if it is not there yet, and refused if others can reach it.
 fn private_dir(config: &Path) -> Result<(), String> {
     if !config.exists() {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(config)
-            .map_err(|e| format!("cannot make {}: {e}", config.display()))?;
+        paths::make_private_dir(config)?;
     }
     keys::private_dir(config).map_err(|e| e.to_string())
 }

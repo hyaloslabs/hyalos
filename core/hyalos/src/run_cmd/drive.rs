@@ -131,15 +131,12 @@ fn drive(
     let mut engine = engine;
     let (task, deadline) = match resume {
         None => {
-            let created = engine
-                .submit(
-                    clock.now(),
-                    Origin::Engine,
-                    Event::TaskCreated {
-                        request: request_digest(request),
-                    },
-                )
-                .map_err(|e| e.to_string())?;
+            let created = clock.record(
+                &mut engine,
+                Event::TaskCreated {
+                    request: request_digest(request),
+                },
+            )?;
             let task = TaskId::from_seq(created.seq);
             if let Some(on_task) = on_task
                 && let Some(cancel) = on_task(task)?
@@ -234,19 +231,15 @@ impl Run<'_> {
         substrate: SubstrateName,
         attestation: Attestation,
     ) -> Result<JobId, String> {
-        let started = self
-            .engine
-            .submit(
-                self.clock.now(),
-                Origin::Engine,
-                Event::JobStarted {
-                    task: self.task,
-                    substrate,
-                    credentials: CredentialTier::BrokerHeld,
-                    attestation,
-                },
-            )
-            .map_err(|e| e.to_string())?;
+        let started = self.clock.record(
+            &mut self.engine,
+            Event::JobStarted {
+                task: self.task,
+                substrate,
+                credentials: CredentialTier::BrokerHeld,
+                attestation,
+            },
+        )?;
         Ok(JobId::from_seq(started.seq))
     }
 
@@ -313,8 +306,8 @@ impl Run<'_> {
                     task,
                     grant: Grant::read_only(),
                 };
-                let head = self.engine.submit(self.clock.now(), Origin::Engine, event);
-                head.map(|head| (name, head)).map_err(|e| e.to_string())
+                let head = self.clock.record(&mut self.engine, event);
+                head.map(|head| (name, head))
             });
         let (name, head) = match drafted {
             Ok(drafted) => drafted,
@@ -336,8 +329,7 @@ impl Run<'_> {
                     name: name.clone(),
                     digest,
                 };
-                let head = self.engine.submit(self.clock.now(), Origin::Engine, event);
-                head.map_err(|e| e.to_string())
+                self.clock.record(&mut self.engine, event)
             });
         let _ = match trusted {
             Ok(head) => writeln!(
@@ -355,11 +347,9 @@ impl Run<'_> {
     /// Records that the run is over (`task.completed`), however its last job ended.
     fn complete(&mut self, out: &mut dyn Write) {
         let task = self.task;
-        let recorded = self.engine.submit(
-            self.clock.now(),
-            Origin::Engine,
-            Event::TaskCompleted { task },
-        );
+        let recorded = self
+            .clock
+            .record(&mut self.engine, Event::TaskCompleted { task });
         let _ = match recorded {
             Ok(head) => writeln!(out, "task {}: completed (event {})", task.seq(), head.seq),
             Err(e) => writeln!(
