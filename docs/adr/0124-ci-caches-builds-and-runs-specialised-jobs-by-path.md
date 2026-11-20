@@ -1,6 +1,6 @@
 # ADR-0124: CI caches builds and runs specialised jobs by path
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
