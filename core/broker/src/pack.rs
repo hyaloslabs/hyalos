@@ -32,9 +32,6 @@ pub const OBJECT_COST: usize = 64;
 /// The most objects a pack may hold. A push of a job's own work has far fewer.
 pub const MAX_OBJECTS: u32 = 1 << 20;
 
-/// How many objects are read between looks at whether the job has ended.
-const STOP_EVERY: u32 = 1024;
-
 /// Why a pack was not passed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Finding {
@@ -88,8 +85,8 @@ pub fn check_until(
     // Every object read so far, by where it starts: what an offset delta's base is found by.
     let mut objects: Vec<(usize, Kind, Vec<u8>)> = Vec::new();
     let mut budget = MAX_INFLATED;
-    for n in 0..count {
-        if n % STOP_EVERY == 0 && stop() {
+    for _ in 0..count {
+        if stop() {
             return Err(Finding::Unchecked("content.job_ended"));
         }
         let start = at;
@@ -375,6 +372,17 @@ mod tests {
             check_until(&pack(&objects), 20, &[], &|| true),
             Err(Finding::Unchecked("content.job_ended"))
         );
+        // Stopping after the first object stops before the second, not after 1,024 (#371).
+        let calls = std::cell::Cell::new(0);
+        assert_eq!(
+            check_until(&pack(&objects), 20, &[], &|| {
+                let n = calls.get();
+                calls.set(n + 1);
+                n >= 1
+            }),
+            Err(Finding::Unchecked("content.job_ended"))
+        );
+        assert_eq!(calls.get(), 2);
         assert_eq!(check_until(&pack(&objects), 20, &[], &|| false), Ok(()));
     }
 
