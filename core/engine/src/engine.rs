@@ -1074,6 +1074,27 @@ impl Engine {
         )
     }
 
+    /// Records that the signed index at `location`, with digest `digest`, issued at `signed_at`, was
+    /// accepted (ADR-0128). The caller has verified it under the trusted-root snapshot in force; the
+    /// engine refuses one no later than the last accepted at that location.
+    pub fn accept_index(
+        &mut self,
+        at: Timestamp,
+        location: hyalos_types::IndexLocation,
+        digest: Digest,
+        signed_at: Timestamp,
+    ) -> Result<Head, EngineError> {
+        self.submit_checked(
+            at,
+            Origin::Engine,
+            Event::PluginIndexAccepted {
+                location,
+                digest,
+                signed_at,
+            },
+        )
+    }
+
     /// Records that the release installed as `name`, with digest `digest`, is revoked for `reason`, as
     /// the revocation list imported says (ADR-0098). From then on no job is given it. The engine
     /// refuses it for any other release than the one installed, twice, or before a list was imported.

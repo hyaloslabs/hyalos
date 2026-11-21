@@ -313,6 +313,12 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
             digest: d(5),
             signed_at: at(1),
         },
+        "plugin.index_accepted" => Event::PluginIndexAccepted {
+            location: hyalos_types::IndexLocation::new("https://plugins.example/v1")
+                .ok_or("location")?,
+            digest: d(6),
+            signed_at: at(1),
+        },
         "plugin.revoked" => {
             e.install_plugin(
                 at(1),

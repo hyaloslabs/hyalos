@@ -14,9 +14,9 @@ use crate::{
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 25;
+pub const SCHEMA_VERSION: u32 = 26;
 
-/// What this build reads: version 25, and versions 1 to 24 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// What this build reads: version 26, and versions 1 to 25 upcast to it (ADR-0023, ADR-0025, ADR-0027,
 /// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069,
 /// ADR-0070, ADR-0071, ADR-0089, ADR-0106, ADR-0127).
 ///
@@ -43,7 +43,8 @@ pub const SCHEMA_VERSION: u32 = 25;
 /// and `hold.opened` may name, and changed no payload. Version 23 added `skill.drafted` (ADR-0113)
 /// and changed no payload. Version 24 added `skill.trusted` (ADR-0114) and changed no payload.
 /// Version 25 added `signed_at` to an index plugin's source in `plugin.installed` (ADR-0127); an
-/// earlier event has none and reads as it was.
+/// earlier event has none and reads as it was. Version 26 added `plugin.index_accepted` (ADR-0128)
+/// and changed no payload.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
@@ -362,6 +363,16 @@ pub enum Event {
         digest: Digest,
         signed_at: Timestamp,
     },
+    /// The signed index at `location` was accepted (ADR-0128): the file with digest `digest`, signed
+    /// by the marketplace pipeline and verified against the trusted-root snapshot in force, issued at
+    /// `signed_at`. An update from that location is refused an older index from then on. It is not a
+    /// decision; the engine refuses one no later than the last accepted there.
+    #[serde(rename = "plugin.index_accepted")]
+    PluginIndexAccepted {
+        location: IndexLocation,
+        digest: Digest,
+        signed_at: Timestamp,
+    },
     /// The installed release of plugin `name`, with digest `digest`, is revoked for `reason`, as the
     /// revocation list in force says (ADR-0098). It is disabled: no job is given it until a release
     /// that is not revoked is installed under the name. Not an operator's decision: the maintainers
@@ -448,7 +459,7 @@ macro_rules! kinds {
             }
 
             /// Every `kind` value, for checking tables and test coverage.
-            pub const KINDS: [&'static str; 24] = [$($kind,)*];
+            pub const KINDS: [&'static str; 25] = [$($kind,)*];
         }
     };
 }
@@ -474,6 +485,7 @@ kinds! {
     PluginUpdatePending => "plugin.update_pending",
     PluginSnapshotImported => "plugin.snapshot_imported",
     PluginRevocationsImported => "plugin.revocations_imported",
+    PluginIndexAccepted => "plugin.index_accepted",
     PluginRevoked => "plugin.revoked",
     JobValues => "job.values",
     SkillDrafted => "skill.drafted",
@@ -507,6 +519,7 @@ impl Event {
             | Event::PluginUpdatePending { .. }
             | Event::PluginSnapshotImported { .. }
             | Event::PluginRevocationsImported { .. }
+            | Event::PluginIndexAccepted { .. }
             | Event::PluginRevoked { .. }
             | Event::JobValues { .. }
             | Event::SkillDrafted { .. }
@@ -840,6 +853,17 @@ mod tests {
                 },
                 format!(
                     r#"{{"kind":"plugin.revocations_imported","digest":"{}","signed_at":1794882145000}}"#,
+                    h(9)
+                ),
+            ),
+            (
+                Event::PluginIndexAccepted {
+                    location: IndexLocation::new("https://plugins.example/v1").unwrap(),
+                    digest: d(9),
+                    signed_at: Timestamp::from_millis(1_794_950_000_000),
+                },
+                format!(
+                    r#"{{"kind":"plugin.index_accepted","location":"https://plugins.example/v1","digest":"{}","signed_at":1794950000000}}"#,
                     h(9)
                 ),
             ),

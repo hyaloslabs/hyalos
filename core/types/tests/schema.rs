@@ -764,6 +764,26 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             signed: Signed::None,
         },
     ));
+
+    // Version 26 added `plugin.index_accepted` (ADR-0128) and changed no payload.
+    let at_25: Vec<_> = all.iter().filter(|g| g.0 == 25).cloned().collect();
+    for (_, kind, json, event) in at_25 {
+        all.push((26, kind, json, event));
+    }
+    all.push((
+        26,
+        "plugin.index_accepted",
+        format!(
+            r#"{{"kind":"plugin.index_accepted","location":"https://plugins.example/v1","digest":"{}","signed_at":1794950000000}}"#,
+            hex(16)
+        ),
+        Event::PluginIndexAccepted {
+            location: hyalos_types::IndexLocation::new("https://plugins.example/v1")
+                .ok_or("location")?,
+            digest: d(16),
+            signed_at: hyalos_types::Timestamp::from_millis(1_794_950_000_000),
+        },
+    ));
     Ok(all)
 }
 
@@ -784,6 +804,7 @@ fn introduced(kind: &str) -> u32 {
         "plugin.revocations_imported" | "plugin.revoked" => 20,
         "skill.drafted" => 23,
         "skill.trusted" => 24,
+        "plugin.index_accepted" => 26,
         _ => 1,
     }
 }

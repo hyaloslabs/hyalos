@@ -34,6 +34,8 @@ use common::{
 struct Release {
     sigstore: TestSigstore,
     base: Snapshot,
+    /// The second the last index was signed at: each is strictly later, as the pipeline's are.
+    index_at: std::sync::atomic::AtomicU64,
 }
 
 impl Release {
@@ -50,12 +52,28 @@ impl Release {
             PIPELINE,
             hyalos_types::Timestamp::from_millis(day_ago),
         )?;
-        Ok(Self { sigstore, base })
+        Ok(Self {
+            sigstore,
+            base,
+            index_at: std::sync::atomic::AtomicU64::new(0),
+        })
     }
 
-    /// Writes `<file>.sigstore.json` beside the archive `dir/<file>`, as the pipeline would, and an
-    /// empty revocation list signed beside an archive if `dir` has none, as every release carries
-    /// one.
+    /// Signs `dir/index.json` as the pipeline, strictly later than the last index this release
+    /// signed (ADR-0128).
+    fn sign_index(&self, dir: &Path) -> Res {
+        use std::sync::atomic::Ordering;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+        let at = now.max(self.index_at.load(Ordering::SeqCst) + 1);
+        self.index_at.store(at, Ordering::SeqCst);
+        self.sign_at(dir, hyalos_plugin::index::INDEX_FILE, at)
+    }
+
+    /// Writes `<file>.sigstore.json` beside the archive `dir/<file>`, as the pipeline would, with
+    /// an empty revocation list signed beside an archive if `dir` has none, and the index there
+    /// signed again, as every release carries both.
     fn sign(&self, dir: &Path, file: &str) -> Res {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -65,7 +83,9 @@ impl Release {
 
     fn sign_at(&self, dir: &Path, file: &str, at: u64) -> Res {
         let list = hyalos_plugin::revocation::FILE;
-        if file != list && file != hyalos_plugin::snapshot::FILE && !dir.join(list).exists() {
+        let index = hyalos_plugin::index::INDEX_FILE;
+        let archive = ![list, hyalos_plugin::snapshot::FILE, index].contains(&file);
+        if archive && !dir.join(list).exists() {
             std::fs::write(
                 dir.join(list),
                 r#"{"kind":"hyalos.revocation_list","revoked":[],"version":1}"#,
@@ -83,6 +103,9 @@ impl Release {
             .sign_at(&std::fs::read(dir.join(file))?, signer, at)
             .map_err(|e| e.to_string())?;
         std::fs::write(dir.join(format!("{file}.sigstore.json")), bundle)?;
+        if archive && dir.join(index).exists() {
+            self.sign_index(dir)?;
+        }
         Ok(())
     }
 
@@ -142,6 +165,15 @@ fn skill(root: &Path, asks: Option<&str>) -> Res<PathBuf> {
         }
     }
     Ok(dir)
+}
+
+/// The log without `plugin.index_accepted`: a genuine newer index is recorded even when the
+/// release it names is refused, and these tests ask that nothing else was.
+fn but_indexes(events: Vec<Event>) -> Vec<Event> {
+    events
+        .into_iter()
+        .filter(|e| !matches!(e, Event::PluginIndexAccepted { .. }))
+        .collect()
 }
 
 fn installs(world: &World) -> Res<Vec<Event>> {
@@ -865,6 +897,7 @@ fn within_the_operators_install_policy_a_skill_installs_without_them() -> Res {
             ("2.0.0", &wide, "pdf-2.0.0.skill"),
         ]),
     )?;
+    release.sign_index(&bundle)?;
     let at = bundle.to_string_lossy().into_owned();
     let ceiling = world.root.join("ceiling.json");
     std::fs::write(&ceiling, r#"{"version":1,"egress_hosts":["docs.rs"]}"#)?;
@@ -929,7 +962,7 @@ fn within_the_operators_install_policy_a_skill_installs_without_them() -> Res {
     // one is not, so nothing installs by policy.
     let out = world.cli(&narrow_install)?;
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("(sigstore."));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("(index.unverifiable)"));
     assert!(installs(&world)?.is_empty());
 
     // Within it, from a release the pipeline signed: no passphrase, recorded as policy's.
@@ -1065,6 +1098,7 @@ fn going_back_within_the_policy_takes_the_operators_signature() -> Res {
         ("1.1.0", d11.as_str(), f11.as_str()),
     );
     std::fs::write(bundle.join("index.json"), index(&[r9, r10, r11]))?;
+    release.sign_index(&bundle)?;
     let install = |version: &'static str, grant: bool| -> Vec<String> {
         let mut args: Vec<String> = ["plugin", "install", "--index", &at, "pdf-tools"]
             .map(String::from)
@@ -1142,12 +1176,14 @@ fn going_back_within_the_policy_takes_the_operators_signature() -> Res {
     // An update is now checked against the release rolled back to: older is refused...
     let r8 = ("0.8.0", d8.as_str(), f8.as_str());
     std::fs::write(bundle.join("index.json"), index(&[r9, r10, r11, r8]))?;
-    let events = world.events()?;
+    release.sign_index(&bundle)?;
+    let events = but_indexes(world.events()?);
     let said = refused(release.cli(&world, &["plugin", "update"]), 1)?;
     assert!(said.contains("(plugin.not_newer)"), "{said}");
-    assert_eq!(world.events()?, events);
+    assert_eq!(but_indexes(world.events()?), events);
     // ...and the newer release installs by policy again.
     std::fs::write(bundle.join("index.json"), index(&[r9, r10, r11]))?;
+    release.sign_index(&bundle)?;
     let said = release
         .cli(&world, &["plugin", "update"])
         .map_err(|e| e.1)?;
@@ -1190,6 +1226,7 @@ fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_ru
             .map(|(v, d, a)| (v.as_str(), d.as_str(), a.as_str()))
             .collect();
         std::fs::write(bundle.join("index.json"), index(&entries))?;
+        release.sign_index(&bundle)?;
         Ok(())
     };
     let update = || release.cli(&world, &["plugin", "update"]).map_err(|e| e.1);
@@ -1214,11 +1251,11 @@ fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_ru
     write_index(&published)?;
     // The binary checks the same index and refuses the release, which the pipeline did not sign:
     // a failed check, and nothing written.
-    let before = world.events()?.len();
+    let before = but_indexes(world.events()?).len();
     let out = world.cli(&["plugin", "update"])?;
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("(sigstore."));
-    assert_eq!(world.events()?.len(), before);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("(index.unverifiable)"));
+    assert_eq!(but_indexes(world.events()?).len(), before);
     let said = update()?;
     assert!(
         said.contains("updated to version 1.1.0") && said.contains("within your install policy"),
@@ -1238,7 +1275,7 @@ fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_ru
 
     // Reordering the index to put the older signed 1.0.0 last is refused as a rollback, even if
     // the index relabels it as a higher version; the installed 1.1.0 keeps running.
-    let before = world.events()?.len();
+    let before = but_indexes(world.events()?).len();
     let reordered = vec![
         (
             "1.1.0".to_string(),
@@ -1253,7 +1290,7 @@ fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_ru
         matches!(&rollback, Err((1, msg)) if msg.contains("(plugin.not_newer)")),
         "{rollback:?}"
     );
-    assert_eq!(world.events()?.len(), before);
+    assert_eq!(but_indexes(world.events()?).len(), before);
     assert_eq!(installed(&world)?, (next.clone(), Resolution::Policy));
 
     // A signed skill that declares its version in SKILL.md is refused if the index claims another.
@@ -1316,9 +1353,9 @@ fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_ru
 
     // An index that cannot be read is a failed check, and changes nothing.
     std::fs::remove_file(bundle.join("index.json"))?;
-    let before = world.events()?.len();
+    let before = but_indexes(world.events()?).len();
     refused(release.cli(&world, &["plugin", "update"]), 1)?;
-    assert_eq!(world.events()?.len(), before);
+    assert_eq!(but_indexes(world.events()?).len(), before);
     for args in [
         &["plugin", "update", "--every", "0"][..],
         &["plugin", "update", "--every", "169"],
@@ -1353,6 +1390,159 @@ fn imports(world: &World) -> Res<usize> {
         .iter()
         .filter(|e| matches!(e, Event::PluginSnapshotImported { .. }))
         .count())
+}
+
+/// An index location with a policy over it and release 1.0.0 published, for the signed-index tests.
+fn signed_index_world(name: &str) -> Res<(World, Release, PathBuf, PathBuf, String)> {
+    let world = World::new(name, None)?;
+    let release = Release::new()?;
+    let wide = r#"{"version":1,"egress_hosts":["docs.rs"]}"#;
+    let src = skill(&world.root, Some(wide))?;
+    let bundle = world.root.join("bundle");
+    std::fs::create_dir(&bundle)?;
+    let at = bundle.to_string_lossy().into_owned();
+    let ceiling = world.root.join("ceiling.json");
+    std::fs::write(&ceiling, wide)?;
+    ok_cli(world.signed(&[
+        "plugin",
+        "policy",
+        "set",
+        "--ceiling",
+        &ceiling.to_string_lossy(),
+        "--index",
+        &at,
+    ])?)?;
+    Ok((world, release, src, bundle, at))
+}
+
+#[test]
+fn a_mirror_cannot_relabel_replay_or_strip_a_signed_index() -> Res {
+    let (world, release, src, bundle, at) = signed_index_world("plugin-index")?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let one = pack(&world, &src, &bundle, "pdf-1.skill")?;
+    release.sign_at(&bundle, "pdf-1.skill", now - 3600)?;
+    std::fs::write(
+        bundle.join("index.json"),
+        index(&[("1.0.0", &one, "pdf-1.skill")]),
+    )?;
+    release.sign_index(&bundle)?;
+    release
+        .cli(&world, &["plugin", "install", "--index", &at, "pdf-tools"])
+        .map_err(|e| e.1)?;
+    let old_index = std::fs::read(bundle.join("index.json"))?;
+    let old_bundle = std::fs::read(bundle.join("index.json.sigstore.json"))?;
+
+    // A newer signed index is accepted, and its release installs by policy.
+    std::fs::write(
+        src.join("SKILL.md"),
+        "---\nname: pdf-tools\nversion: 1.1.0\n---\nVersion 1.1\n",
+    )?;
+    let two = pack(&world, &src, &bundle, "pdf-2.skill")?;
+    release.sign_at(&bundle, "pdf-2.skill", now - 1800)?;
+    let current = index(&[
+        ("1.0.0", &one, "pdf-1.skill"),
+        ("1.1.0", &two, "pdf-2.skill"),
+    ]);
+    std::fs::write(bundle.join("index.json"), &current)?;
+    release.sign_index(&bundle)?;
+    let said = release
+        .cli(&world, &["plugin", "update"])
+        .map_err(|e| e.1)?;
+    assert!(said.contains("updated to version 1.1.0"), "{said}");
+    let new_bundle = std::fs::read(bundle.join("index.json.sigstore.json"))?;
+    let before = world.events()?.len();
+
+    // The older index, with its own valid signature, is a replay.
+    std::fs::write(bundle.join("index.json"), &old_index)?;
+    std::fs::write(bundle.join("index.json.sigstore.json"), &old_bundle)?;
+    let said = refused(release.cli(&world, &["plugin", "update"]), 1)?;
+    assert!(said.contains("(index.not_newer)"), "{said}");
+
+    // A release relabelled in the index no longer matches the signature.
+    std::fs::write(
+        bundle.join("index.json"),
+        current.replace("\"1.1.0\"", "\"9.9.9\""),
+    )?;
+    std::fs::write(bundle.join("index.json.sigstore.json"), &new_bundle)?;
+    let said = refused(release.cli(&world, &["plugin", "update"]), 1)?;
+    assert!(said.contains("(index.unverifiable)"), "{said}");
+    assert!(!said.contains("9.9.9"), "{said}");
+
+    // An index stripped of its signature is not trusted for an update.
+    std::fs::write(bundle.join("index.json"), &current)?;
+    std::fs::remove_file(bundle.join("index.json.sigstore.json"))?;
+    let said = refused(release.cli(&world, &["plugin", "update"]), 1)?;
+    assert!(said.contains("(index.unsigned)"), "{said}");
+
+    // Another file the pipeline signed, served as the index, is refused and raises no floor.
+    std::fs::copy(
+        bundle.join(hyalos_plugin::revocation::FILE),
+        bundle.join("index.json"),
+    )?;
+    std::fs::copy(
+        bundle.join(hyalos_plugin::revocation::BUNDLE),
+        bundle.join("index.json.sigstore.json"),
+    )?;
+    let said = refused(release.cli(&world, &["plugin", "update"]), 1)?;
+    assert!(said.contains("(index.malformed)"), "{said}");
+    assert_eq!(world.events()?.len(), before, "nothing was recorded");
+
+    // So the genuine index still works once the mirror is gone.
+    std::fs::write(bundle.join("index.json"), &current)?;
+    std::fs::write(bundle.join("index.json.sigstore.json"), &new_bundle)?;
+    let said = release
+        .cli(&world, &["plugin", "update"])
+        .map_err(|e| e.1)?;
+    assert!(said.contains("up to date at version 1.1.0"), "{said}");
+    Ok(())
+}
+
+#[test]
+fn a_frozen_or_unsigned_index_is_the_operators_to_install_from_and_never_policys() -> Res {
+    let (world, release, src, bundle, at) = signed_index_world("plugin-frozen")?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let one = pack(&world, &src, &bundle, "pdf-1.skill")?;
+    release.sign_at(&bundle, "pdf-1.skill", now - 3600)?;
+    std::fs::write(
+        bundle.join("index.json"),
+        index(&[("1.0.0", &one, "pdf-1.skill")]),
+    )?;
+    // Signed 31 days ago: past the limit, so it may be frozen.
+    release.sign_at(&bundle, "index.json", now - 31 * 86_400)?;
+    let asked = ["plugin", "install", "--index", &at, "pdf-tools"];
+    let said = refused(release.cli(&world, &asked), 1)?;
+    assert!(said.contains("(index.too_old)"), "{said}");
+    assert_eq!(installs(&world)?.len(), 0, "policy did not install it");
+    let install = ["plugin", "install", "--index", &at, "pdf-tools", "--grant"];
+    // The operator is told before the passphrase decides anything.
+    let said = refused(release.cli(&world, &install), 1)?;
+    assert!(said.contains("the version below is unverified"), "{said}");
+    assert!(said.contains("passphrase"), "{said}");
+    assert_eq!(installs(&world)?.len(), 0, "nor without the passphrase");
+
+    // The operator may, and signs it; the version is reported as unverified.
+    let said = release.signed(&world, &install).map_err(|e| e.1)?;
+    assert!(said.contains("the version below is unverified"), "{said}");
+    assert!(said.contains("signed by you"), "{said}");
+    assert!(
+        !world
+            .events()?
+            .iter()
+            .any(|e| matches!(e, Event::PluginIndexAccepted { .. })),
+        "a frozen index is not recorded as accepted"
+    );
+    let said = refused(release.cli(&world, &["plugin", "update"]), 1)?;
+    assert!(said.contains("(index.too_old)"), "{said}");
+
+    // A signature that does not verify is refused for the operator too.
+    std::fs::write(bundle.join("index.json"), b"{\"version\":1,\"plugins\":{}}")?;
+    let said = refused(release.signed(&world, &install), 1)?;
+    assert!(said.contains("(index.unverifiable)"), "{said}");
+    Ok(())
 }
 
 #[test]
@@ -1505,6 +1695,7 @@ fn an_install_imports_a_newer_snapshot_its_index_location_carries() -> Res {
         [
             "plugin.snapshot_imported",
             "plugin.revocations_imported",
+            "plugin.index_accepted",
             "plugin.installed"
         ]
     );

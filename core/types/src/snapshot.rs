@@ -38,8 +38,9 @@ use crate::{
 /// revoked (ADR-0098); earlier images have neither. Version 16 added the skills Hyalos drafted
 /// (ADR-0113); earlier images have none. Version 17 added when each draft was trusted (ADR-0114);
 /// an earlier draft reads as not trusted. Version 18 added when an index plugin's release was signed
-/// (ADR-0127); an earlier plugin reads as having no signed time.
-pub const STATE_VERSION: u32 = 18;
+/// (ADR-0127); an earlier plugin reads as having no signed time. Version 19 added the signed index
+/// accepted last at each location (ADR-0128); earlier images have none.
+pub const STATE_VERSION: u32 = 19;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +85,21 @@ pub struct StateImage {
     pub revoked_plugins: Vec<RevokedPluginImage>,
     /// Each skill Hyalos drafted from a run that succeeded, by name (ADR-0113).
     pub drafts: Vec<DraftImage>,
+    /// The signed index accepted last at each location, by location (ADR-0128).
+    pub accepted_indexes: Vec<AcceptedIndexImage>,
+}
+
+/// The latest `plugin.index_accepted` event for its location.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptedIndexImage {
+    /// The sequence number of the event that accepted it.
+    pub seq: u64,
+    pub at: Timestamp,
+    pub location: IndexLocation,
+    pub digest: Digest,
+    /// Its issue time, in milliseconds.
+    pub signed_at: Timestamp,
 }
 
 /// A `skill.drafted` event.
@@ -430,6 +446,8 @@ impl StateImage {
             (15, "revoked_plugins", Value::Array(Vec::new())),
             // 15 -> 16: no skill had been drafted.
             (16, "drafts", Value::Array(Vec::new())),
+            // 18 -> 19: no signed index had been accepted.
+            (19, "accepted_indexes", Value::Array(Vec::new())),
         ];
         for (since, field, empty) in added {
             if version < since {
@@ -636,6 +654,7 @@ mod tests {
             revocations: None,
             revoked_plugins: Vec::new(),
             drafts: Vec::new(),
+            accepted_indexes: Vec::new(),
         }
     }
 

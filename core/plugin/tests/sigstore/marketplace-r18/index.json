@@ -1,0 +1,13 @@
+{
+ "plugins": {
+  "hello": [
+   {
+    "artifact": "hello-0.1.0.skill",
+    "bundle": "hello-0.1.0.skill.sigstore.json",
+    "digest": "2592409b94b9e1db2b7aedb9cf6e203dc1ff641881be8b932417518647c7d80b",
+    "version": "0.1.0"
+   }
+  ]
+ },
+ "version": 1
+}
