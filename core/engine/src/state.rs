@@ -829,14 +829,10 @@ impl State {
                 // Over a release with a signed time, policy needs a strictly later one: a source
                 // with none is not known to be newer (ADR-0127).
                 if !human
-                    && let Some(PluginSource::Index {
-                        signed_at: Some(prev),
-                        ..
-                    }) = self.plugins.get(name).map(|p| &p.source)
-                    && !matches!(
-                        source,
-                        PluginSource::Index { signed_at: Some(next), .. } if next > prev
-                    )
+                    && self
+                        .plugins
+                        .get(name)
+                        .is_some_and(|p| !source.policy_may_replace(&p.source))
                 {
                     return Err(RuleViolation::PluginNotNewer);
                 }

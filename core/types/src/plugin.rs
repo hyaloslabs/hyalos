@@ -92,6 +92,23 @@ pub enum PluginSource {
     },
 }
 
+impl PluginSource {
+    /// Whether policy may put a release from this source in place of one from `installed`: over a
+    /// release with a signed time, only one proven strictly later (ADR-0127). A human may go older.
+    pub fn policy_may_replace(&self, installed: &PluginSource) -> bool {
+        match installed {
+            PluginSource::Index {
+                signed_at: Some(prev),
+                ..
+            } => matches!(
+                self,
+                PluginSource::Index { signed_at: Some(next), .. } if next > prev
+            ),
+            _ => true,
+        }
+    }
+}
+
 /// How old a trusted-root snapshot may be, by default, before installs are refused (ADR-0007).
 pub const DEFAULT_MAX_SNAPSHOT_AGE_DAYS: u32 = 90;
 /// How old an install bundle's revocation list may be, by default (ADR-0007).
