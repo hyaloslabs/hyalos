@@ -8,13 +8,18 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use hyalos_types::{Digest, PluginName, PluginVersion, ReasonCode};
+use hyalos_types::{Digest, PluginName, PluginVersion, ReasonCode, Timestamp};
 use serde::Deserialize;
 
-use crate::skill::plain;
+use crate::sigstore::{Refusal, Trust};
+use crate::skill::{digest_of, plain};
 
 /// The index's file name, at the source's root.
 pub const INDEX_FILE: &str = "index.json";
+/// Its Sigstore bundle's file name, beside it (ADR-0128).
+pub const INDEX_BUNDLE: &str = "index.json.sigstore.json";
+/// The oldest signed index an update accepts, in days. The pipeline re-signs at least weekly.
+pub const MAX_INDEX_AGE_DAYS: u64 = 30;
 /// The version of the index format this build reads.
 pub const INDEX_VERSION: u32 = 1;
 /// The most bytes an index may hold.
@@ -75,6 +80,85 @@ impl IndexError {
         };
         ReasonCode::new(code).unwrap_or_else(ReasonCode::unavailable)
     }
+}
+
+/// Why an index cannot be relied on as the pipeline's current one (ADR-0128). Nothing from the file
+/// or its bundle reaches one.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SignedIndexError {
+    /// There is no bundle beside it.
+    #[error("the index is not signed")]
+    Unsigned,
+    /// Its bundle does not verify for the pipeline under the trusted-root snapshot in force.
+    #[error("the index's signature does not verify: {0}")]
+    Unverifiable(Refusal),
+    /// Older than the index accepted last at this location, or another file signed at the same time.
+    #[error("the index is older than the one accepted last from this location")]
+    NotNewer,
+    /// Signed more than [`MAX_INDEX_AGE_DAYS`] ago, so it may be frozen.
+    #[error("the index was signed more than {MAX_INDEX_AGE_DAYS} days ago, so it may be frozen")]
+    TooOld,
+}
+
+impl SignedIndexError {
+    pub fn code(&self) -> ReasonCode {
+        let code = match self {
+            Self::Unsigned => "index.unsigned",
+            Self::Unverifiable(_) => "index.unverifiable",
+            Self::NotNewer => "index.not_newer",
+            Self::TooOld => "index.too_old",
+        };
+        ReasonCode::new(code).unwrap_or_else(ReasonCode::unavailable)
+    }
+}
+
+/// An index whose signature, order and age were checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignedIndex {
+    pub digest: Digest,
+    pub signed_at: Timestamp,
+    /// Later than the index accepted last at this location, so it is to be recorded.
+    pub is_new: bool,
+}
+
+/// Checks `file` as the pipeline's current index: `bundle` verifies under `trust`, it is no older
+/// than `last` (the digest and signed time accepted last at this location), and it was signed within
+/// [`MAX_INDEX_AGE_DAYS`] of `now`. The same file again is accepted and is not new.
+pub fn verify_signed(
+    trust: &Trust,
+    file: &[u8],
+    bundle: Option<&[u8]>,
+    last: Option<(Digest, Timestamp)>,
+    now: Timestamp,
+) -> Result<SignedIndex, SignedIndexError> {
+    let bundle = bundle.ok_or(SignedIndexError::Unsigned)?;
+    let signed_at = trust
+        .verify_signed(file, bundle)
+        .map_err(SignedIndexError::Unverifiable)?;
+    let digest = digest_of(file);
+    check_order_and_age(digest, signed_at, last, now)
+}
+
+fn check_order_and_age(
+    digest: Digest,
+    signed_at: Timestamp,
+    last: Option<(Digest, Timestamp)>,
+    now: Timestamp,
+) -> Result<SignedIndex, SignedIndexError> {
+    if let Some((last_digest, last_at)) = last
+        && (signed_at < last_at || (signed_at == last_at && digest != last_digest))
+    {
+        return Err(SignedIndexError::NotNewer);
+    }
+    const DAY_MS: u64 = 86_400_000;
+    if now.as_millis().saturating_sub(signed_at.as_millis()) > MAX_INDEX_AGE_DAYS * DAY_MS {
+        return Err(SignedIndexError::TooOld);
+    }
+    Ok(SignedIndex {
+        digest,
+        signed_at,
+        is_new: last.is_none_or(|(_, last_at)| signed_at > last_at),
+    })
 }
 
 #[derive(Deserialize)]
@@ -224,6 +308,45 @@ mod tests {
             index.resolve(&name("lint"), None),
             Err(IndexError::NoSuchPlugin)
         );
+    }
+
+    #[test]
+    fn an_index_is_refused_if_older_than_the_last_or_too_old() {
+        const DAY: u64 = 86_400_000;
+        let (a, b) = (Digest::from_bytes([1; 32]), Digest::from_bytes([2; 32]));
+        let at = Timestamp::from_millis;
+        let now = at(100 * DAY);
+        // The first one, and a later one, are new; the same one again is accepted and is not.
+        assert!(
+            check_order_and_age(a, at(99 * DAY), None, now)
+                .unwrap()
+                .is_new
+        );
+        let last = Some((a, at(90 * DAY)));
+        assert!(
+            check_order_and_age(b, at(91 * DAY), last, now)
+                .unwrap()
+                .is_new
+        );
+        assert!(
+            !check_order_and_age(a, at(90 * DAY), last, now)
+                .unwrap()
+                .is_new
+        );
+        // Frozen on an older file, or another file at the same signed time.
+        for (digest, when) in [(b, at(89 * DAY)), (b, at(90 * DAY))] {
+            assert_eq!(
+                check_order_and_age(digest, when, last, now),
+                Err(SignedIndexError::NotNewer)
+            );
+        }
+        // Exactly the limit is accepted, and a moment past it is not.
+        assert!(check_order_and_age(a, at(70 * DAY), None, now).is_ok());
+        assert_eq!(
+            check_order_and_age(a, at(70 * DAY - 1), None, now),
+            Err(SignedIndexError::TooOld)
+        );
+        assert_eq!(SignedIndexError::TooOld.code().as_str(), "index.too_old");
     }
 
     #[test]

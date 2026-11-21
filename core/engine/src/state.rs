@@ -7,10 +7,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hyalos_types::snapshot::{
-    AgentImage, CancelledImage, DraftImage, HandleImage, HoldImage, InstallPolicyImage,
-    JobEndImage, JobImage, MergeImage, PendingUpdateImage, PluginImage, PolicyImage, PrunedImage,
-    ResolvedImage, RevocationListImage, RevokedImage, RevokedPluginImage, StateImage, TaskImage,
-    TrustedRootImage,
+    AcceptedIndexImage, AgentImage, CancelledImage, DraftImage, HandleImage, HoldImage,
+    InstallPolicyImage, JobEndImage, JobImage, MergeImage, PendingUpdateImage, PluginImage,
+    PolicyImage, PrunedImage, ResolvedImage, RevocationListImage, RevokedImage, RevokedPluginImage,
+    StateImage, TaskImage, TrustedRootImage,
 };
 use hyalos_types::workflow::MAX_FIELDS;
 use hyalos_types::{
@@ -242,6 +242,11 @@ pub enum RuleViolation {
     /// A revocation list no later than the one imported before it (ADR-0098).
     #[error("a revocation list is imported only if it is later than the one before it (ADR-0098)")]
     RevocationsNotNewer,
+    /// A signed index no later than the one accepted before it at its location (ADR-0128).
+    #[error(
+        "a signed index is accepted only if it is later than the last at its location (ADR-0128)"
+    )]
+    IndexNotNewer,
     /// A revocation recorded for a release that is not the one installed under its name, already
     /// recorded, or before any revocation list was imported (ADR-0098).
     #[error(
@@ -348,6 +353,8 @@ pub struct State {
     trusted_root: Option<ImportedSnapshot>,
     /// The revocation list imported last, if one was (ADR-0098).
     revocations: Option<ImportedRevocations>,
+    /// The signed index accepted last at each location (ADR-0128).
+    accepted_indexes: BTreeMap<hyalos_types::IndexLocation, AcceptedIndexImage>,
     /// The installed plugins whose release is revoked, by name (ADR-0098).
     revoked_plugins: BTreeMap<PluginName, RevokedPlugin>,
     /// The skills Hyalos drafted from runs that succeeded, by name (ADR-0113).
@@ -457,6 +464,14 @@ impl State {
     /// The trusted-root snapshot imported last, if one was (ADR-0097).
     pub fn trusted_root(&self) -> Option<&ImportedSnapshot> {
         self.trusted_root.as_ref()
+    }
+
+    /// The revocation list imported last, if one was (ADR-0098).
+    pub fn accepted_index(
+        &self,
+        location: &hyalos_types::IndexLocation,
+    ) -> Option<&AcceptedIndexImage> {
+        self.accepted_indexes.get(location)
     }
 
     /// The revocation list imported last, if one was (ADR-0098).
@@ -869,6 +884,20 @@ impl State {
                 }
                 Ok(())
             }
+            Event::PluginIndexAccepted {
+                location,
+                signed_at,
+                ..
+            } => {
+                if self
+                    .accepted_indexes
+                    .get(location)
+                    .is_some_and(|last| *signed_at <= last.signed_at)
+                {
+                    return Err(RuleViolation::IndexNotNewer);
+                }
+                Ok(())
+            }
             Event::PluginRevoked { name, digest, .. } => {
                 let installed = self.plugins.get(name).is_some_and(|p| p.digest == *digest);
                 if self.revocations.is_none()
@@ -1272,6 +1301,22 @@ impl State {
                     signed_at: *signed_at,
                 });
             }
+            Event::PluginIndexAccepted {
+                location,
+                digest,
+                signed_at,
+            } => {
+                self.accepted_indexes.insert(
+                    location.clone(),
+                    AcceptedIndexImage {
+                        seq,
+                        at,
+                        location: location.clone(),
+                        digest: *digest,
+                        signed_at: *signed_at,
+                    },
+                );
+            }
             Event::PluginRevoked {
                 name,
                 digest,
@@ -1375,6 +1420,7 @@ impl State {
             revocations,
             revoked_plugins,
             drafts,
+            accepted_indexes,
             pending,
             last_approval,
             signed_since,
@@ -1391,6 +1437,7 @@ impl State {
             signed_since: *signed_since,
             trusted_root: *trusted_root,
             revocations: *revocations,
+            accepted_indexes: accepted_indexes.values().cloned().collect(),
             drafts: drafts.values().cloned().collect(),
             revoked_plugins: revoked_plugins.values().cloned().collect(),
             pending_updates: pending_updates.values().cloned().collect(),
@@ -1534,8 +1581,14 @@ impl State {
             revocations,
             revoked_plugins,
             drafts,
+            accepted_indexes,
         } = image;
         let mut state = State {
+            accepted_indexes: keyed(
+                accepted_indexes,
+                |a| &a.location,
+                |l| format!("the index at {l} is in the snapshot twice"),
+            )?,
             drafts: keyed(
                 drafts,
                 |d| &d.name,
@@ -1881,13 +1934,13 @@ fn legacy_reason() -> ReasonCode {
     ReasonCode::new("legacy.unrecorded").unwrap_or_else(ReasonCode::unavailable)
 }
 
-/// A snapshot's list of records by plugin name, as the state keeps it. A name twice is refused with
-/// `twice`'s message: the image was written from a map, so it cannot be honest.
-fn keyed<T>(
+/// A snapshot's list of records by name or location, as the state keeps it. A key twice is refused
+/// with `twice`'s message: the image was written from a map, so it cannot be honest.
+fn keyed<K: Ord + Clone, T>(
     records: Vec<T>,
-    name: impl Fn(&T) -> &PluginName,
-    twice: impl Fn(&PluginName) -> String,
-) -> Result<BTreeMap<PluginName, T>, String> {
+    name: impl Fn(&T) -> &K,
+    twice: impl Fn(&K) -> String,
+) -> Result<BTreeMap<K, T>, String> {
     let mut by_name = BTreeMap::new();
     for record in records {
         let key = name(&record).clone();

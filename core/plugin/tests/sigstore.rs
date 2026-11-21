@@ -368,3 +368,30 @@ fn the_marketplaces_first_release_verifies_against_the_pinned_trust() -> Res {
     );
     Ok(())
 }
+
+/// The first index the marketplace's pipeline signed, in release `r18` (ADR-0128), as published.
+const R18_INDEX: &[u8] = include_bytes!("sigstore/marketplace-r18/index.json");
+const R18_INDEX_BUNDLE: &[u8] = include_bytes!("sigstore/marketplace-r18/index.json.sigstore.json");
+
+#[test]
+fn the_marketplaces_signed_index_verifies_and_cannot_be_relabelled() -> Res {
+    use hyalos_plugin::index::{SignedIndexError, verify_signed};
+    let trust = Trust::pinned()?;
+    let signed_at = trust.verify_signed(R18_INDEX, R18_INDEX_BUNDLE)?;
+    let checked = verify_signed(&trust, R18_INDEX, Some(R18_INDEX_BUNDLE), None, signed_at)?;
+    assert!(checked.is_new);
+    let text = std::str::from_utf8(R18_INDEX)?;
+    let relabelled = text.replace(r#""version": "0.1.0""#, r#""version": "9.9.9""#);
+    assert_ne!(relabelled, text);
+    assert_eq!(
+        verify_signed(
+            &trust,
+            relabelled.as_bytes(),
+            Some(R18_INDEX_BUNDLE),
+            None,
+            signed_at
+        ),
+        Err(SignedIndexError::Unverifiable(Refusal::Digest))
+    );
+    Ok(())
+}

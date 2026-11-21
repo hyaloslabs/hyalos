@@ -22,7 +22,9 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use hyalos_engine::Decider;
-use hyalos_plugin::index::{INDEX_FILE, Index, MAX_INDEX};
+use hyalos_plugin::index::{
+    INDEX_BUNDLE, INDEX_FILE, Index, MAX_INDEX, SignedIndex, SignedIndexError, verify_signed,
+};
 use hyalos_plugin::revocation::RevocationError;
 use hyalos_plugin::sigstore::{MAX_BUNDLE, Trust};
 use hyalos_plugin::skill::{MAX_ARCHIVE, Skill, Store, digest_of};
@@ -191,6 +193,8 @@ pub fn manage_with(
             // Everything that can be checked without the passphrase is checked first.
             let state = log.read_if_any().map_err(failed)?;
             let mut notes = String::new();
+            // The index, once it is proven the pipeline's current one (ADR-0128).
+            let mut signed_index: Option<(IndexLocation, SignedIndex)> = None;
             let (skill, source) = match index {
                 None if version.is_some() => {
                     return Err(usage("--version picks a version from --index"));
@@ -230,7 +234,29 @@ pub fn manage_with(
                     )
                     .map_err(|e| failed(format!("{notes}{e}")))?;
                     let trust = trust_of(&snapshot).map_err(failed)?;
-                    from_index(location, &name, version.as_ref(), &trust).map_err(failed)?
+                    let (bytes, bundle) = fetch_index(&location).map_err(failed)?;
+                    let last = state
+                        .accepted_index(&location)
+                        .map(|a| (a.digest, a.signed_at));
+                    // A signature that fails is refused. An index merely unsigned, older or too old
+                    // is the operator's to install from, and never policy's (ADR-0128).
+                    match verify_signed(
+                        &trust,
+                        &bytes,
+                        bundle.as_deref(),
+                        last,
+                        SystemClock.now(),
+                    ) {
+                        Ok(checked) => signed_index = Some((location.clone(), checked)),
+                        Err(e @ SignedIndexError::Unverifiable(_)) => {
+                            return Err(failed(format!("{notes}{location}: {e} ({})", e.code())));
+                        }
+                        Err(e) => notes.push_str(&format!(
+                            "the version below is unverified, so only you can install it: {e} ({})\n",
+                            e.code()
+                        )),
+                    }
+                    from_index(&bytes, location, &name, version.as_ref(), &trust).map_err(failed)?
                 }
             };
             // What the list in force revokes is never installed (ADR-0098), from an index or a
@@ -251,13 +277,14 @@ pub fn manage_with(
                 .unwrap_or_default();
             // Within the install policy the operator signed, it installs without them (ADR-0091).
             // A release not proven later than the one installed is theirs to sign (ADR-0127).
-            let by_policy = state.as_ref().is_some_and(|s| {
-                s.install_policy()
-                    .is_some_and(|p| p.policy.covers(&source, &skill.asks))
-                    && s.plugins()
-                        .get(&skill.name)
-                        .is_none_or(|p| source.policy_may_replace(&p.source))
-            });
+            let by_policy = signed_index.is_some()
+                && state.as_ref().is_some_and(|s| {
+                    s.install_policy()
+                        .is_some_and(|p| p.policy.covers(&source, &skill.asks))
+                        && s.plugins()
+                            .get(&skill.name)
+                            .is_none_or(|p| source.policy_may_replace(&p.source))
+                });
             let diff = held.diff(&skill.asks);
             // The command an MCP server runs in each job given it, printable ASCII (ADR-0101).
             let mcp = skill.mcp.as_ref().map_or(String::new(), |m| {
@@ -291,6 +318,11 @@ pub fn manage_with(
                 plugin_trust::revocations_in_force(env, Some(engine.state())).map_err(failed)?;
             plugin_trust::refuse_revoked(list.as_ref(), &skill.digest())
                 .map_err(|e| failed(format!("{}: {e}", skill.name)))?;
+            if let Some((at, checked)) = signed_index.filter(|(_, c)| c.is_new) {
+                engine
+                    .accept_index(SystemClock.now(), at, checked.digest, checked.signed_at)
+                    .map_err(|e| failed(e.to_string()))?;
+            }
             let head = keep_and_install(
                 env,
                 &mut engine,
@@ -798,7 +830,26 @@ fn update_one(
     location: IndexLocation,
     trust: &Trust,
 ) -> Result<String, String> {
-    let (skill, source) = from_index(location.clone(), name, None, trust)?;
+    // An update by policy trusts only the pipeline's current index (ADR-0128): signed, no older than
+    // the last accepted from this location, and not frozen.
+    let (index, bundle) = fetch_index(&location)?;
+    let last = engine
+        .state()
+        .accepted_index(&location)
+        .map(|a| (a.digest, a.signed_at));
+    let checked = verify_signed(trust, &index, bundle.as_deref(), last, SystemClock.now())
+        .map_err(|e| format!("{location}: {e} ({})", e.code()))?;
+    if checked.is_new {
+        engine
+            .accept_index(
+                SystemClock.now(),
+                location.clone(),
+                checked.digest,
+                checked.signed_at,
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    let (skill, source) = from_index(&index, location.clone(), name, None, trust)?;
     let PluginSource::Index {
         version, signed_at, ..
     } = &source
@@ -877,18 +928,26 @@ fn location(text: &str) -> Option<IndexLocation> {
     IndexLocation::new(dir.to_str()?)
 }
 
-/// Resolves `name` in the index at `location`, fetches its archive, and reads it only once it has
-/// the digest the index gave (ADR-0090) and its Sigstore bundle verifies against `trust` (ADR-0093).
-/// A release with no bundle, or one that does not verify, is refused.
+/// The index at `location`, with its Sigstore bundle if it has one.
+fn fetch_index(location: &IndexLocation) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
+    let index = plugin_source::fetch(location, INDEX_FILE, MAX_INDEX)?;
+    let bundle = plugin_source::fetch_optional(location, INDEX_BUNDLE, MAX_BUNDLE)?;
+    Ok((index, bundle))
+}
+
+/// Resolves `name` in `index`, the bytes read from `location` and already checked by the caller, so
+/// that what was checked is what is used. Fetches the archive, and reads it only once it has the
+/// digest the index gave (ADR-0090) and its Sigstore bundle verifies against `trust` (ADR-0093). A
+/// release with no bundle, or one that does not verify, is refused.
 fn from_index(
+    index: &[u8],
     location: IndexLocation,
     name: &PluginName,
     version: Option<&PluginVersion>,
     trust: &Trust,
 ) -> Result<(Skill, PluginSource), String> {
     let at = location.as_str();
-    let index = plugin_source::fetch(&location, INDEX_FILE, MAX_INDEX)?;
-    let index = Index::parse(&index).map_err(|e| format!("{at}: {e} ({})", e.code()))?;
+    let index = Index::parse(index).map_err(|e| format!("{at}: {e} ({})", e.code()))?;
     let entry = index
         .resolve(name, version)
         .map_err(|e| format!("{at}: {e} ({})", e.code()))?;
