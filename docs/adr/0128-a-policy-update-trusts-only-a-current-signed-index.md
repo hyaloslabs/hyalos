@@ -1,6 +1,6 @@
 # ADR-0128: A policy update trusts only a current signed index
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

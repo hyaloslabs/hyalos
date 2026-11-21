@@ -141,4 +141,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0125](0125-the-state-holds-the-snapshot-s-record-types.md) | The state holds the snapshot's record types | Accepted |
 | [0126](0126-error-text-is-derived.md) | Error text is derived | Accepted |
 | [0127](0127-a-plugin-update-is-never-older-than-the-release-it-replaces.md) | A plugin update is never older than the release it replaces | Accepted |
-| [0128](0128-a-policy-update-trusts-only-a-current-signed-index.md) | A policy update trusts only a current signed index | Proposed |
+| [0128](0128-a-policy-update-trusts-only-a-current-signed-index.md) | A policy update trusts only a current signed index | Accepted |
