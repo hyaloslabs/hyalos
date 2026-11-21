@@ -51,10 +51,13 @@ fn a_list_the_pipeline_signed_revokes_what_it_lists() -> Res {
     assert_eq!(accepted.reason(&Digest::from_bytes([2; 32])), None);
     assert_eq!(accepted.digest(), hyalos_plugin::skill::digest_of(&file));
     // The same list again, or one issued before, cannot replace it: a rollback could un-revoke.
+    // Signed at the same second as the first: signing at the clock could land on the next second,
+    // which really is newer. The log's time is 30 seconds before the time signed at.
+    let same_second = accepted.signed_at().as_millis() / 1000 + 30;
     let again = Revocations::verify(
         &snapshot,
         &file,
-        &sigstore.sign(&file, AS_PIPELINE)?,
+        &sigstore.sign_at(&file, AS_PIPELINE, same_second)?,
         Some(accepted.signed_at()),
     );
     assert_eq!(again.unwrap_err(), RevocationError::NotNewer);

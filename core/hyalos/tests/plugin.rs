@@ -1537,7 +1537,10 @@ fn an_install_imports_a_newer_snapshot_its_index_location_carries() -> Res {
 }
 
 /// Writes a revocation list revoking `entries` (digest, reason) into `dir`, signed as the pipeline.
+/// Writes and signs a revocation list. A signed time is in whole seconds and a list must be later
+/// than the one in force, so this waits until any list signed before it is strictly older.
 fn put_revocations(dir: &Path, entries: &[(&str, &str)], signer: &Release) -> Res {
+    std::thread::sleep(Duration::from_millis(1100));
     std::fs::create_dir_all(dir)?;
     let revoked: Vec<String> = entries
         .iter()
@@ -1636,8 +1639,6 @@ fn a_revoked_release_is_disabled_and_never_installed_while_an_older_list_cannot_
 
     // A later list revokes the newer release too: an install from the index, or of the same files
     // from a directory, is refused.
-    // A signed time is in whole seconds, and a list must be later than the one in force.
-    std::thread::sleep(Duration::from_millis(1100));
     put_revocations(
         &lists,
         &[(&old, "malware.exfiltration"), (&new, "malware.miner")],
@@ -1711,8 +1712,6 @@ fn a_revoked_release_is_disabled_and_never_installed_while_an_older_list_cannot_
         1,
     )?;
     assert!(said.contains("revocations.unreadable"), "{said}");
-    // A signed time is in whole seconds, and a list must be later than the one in force.
-    std::thread::sleep(Duration::from_millis(1100));
     put_revocations(
         &lists,
         &[(&old, "malware.exfiltration"), (&new, "malware.miner")],
