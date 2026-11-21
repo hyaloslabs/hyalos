@@ -140,4 +140,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0124](0124-ci-caches-builds-and-runs-specialised-jobs-by-path.md) | CI caches builds and runs specialised jobs by path | Accepted |
 | [0125](0125-the-state-holds-the-snapshot-s-record-types.md) | The state holds the snapshot's record types | Accepted |
 | [0126](0126-error-text-is-derived.md) | Error text is derived | Accepted |
-| [0127](0127-a-plugin-update-is-never-older-than-the-release-it-replaces.md) | A plugin update is never older than the release it replaces | Proposed |
+| [0127](0127-a-plugin-update-is-never-older-than-the-release-it-replaces.md) | A plugin update is never older than the release it replaces | Accepted |
