@@ -1,6 +1,6 @@
 # ADR-0127: A plugin update is never older than the release it replaces
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
