@@ -195,6 +195,8 @@ pub fn manage_with(
             let mut notes = String::new();
             // The index, once it is proven the pipeline's current one (ADR-0128).
             let mut signed_index: Option<(IndexLocation, SignedIndex)> = None;
+            // Said before the passphrase is asked for, so the operator signs knowing it.
+            let mut unverified = String::new();
             let (skill, source) = match index {
                 None if version.is_some() => {
                     return Err(usage("--version picks a version from --index"));
@@ -240,21 +242,22 @@ pub fn manage_with(
                         .map(|a| (a.digest, a.signed_at));
                     // A signature that fails is refused. An index merely unsigned, older or too old
                     // is the operator's to install from, and never policy's (ADR-0128).
-                    match verify_signed(
-                        &trust,
-                        &bytes,
-                        bundle.as_deref(),
-                        last,
-                        SystemClock.now(),
-                    ) {
+                    match verify_signed(&trust, &bytes, bundle.as_deref(), last, SystemClock.now())
+                    {
                         Ok(checked) => signed_index = Some((location.clone(), checked)),
-                        Err(e @ SignedIndexError::Unverifiable(_)) => {
+                        Err(
+                            e @ (SignedIndexError::Unverifiable(_) | SignedIndexError::NotAnIndex),
+                        ) => {
                             return Err(failed(format!("{notes}{location}: {e} ({})", e.code())));
                         }
-                        Err(e) => notes.push_str(&format!(
-                            "the version below is unverified, so only you can install it: {e} ({})\n",
-                            e.code()
-                        )),
+                        Err(e) => {
+                            let line = format!(
+                                "the version below is unverified, so only you can install it: {e} ({})\n",
+                                e.code()
+                            );
+                            notes.push_str(&line);
+                            unverified = line;
+                        }
                     }
                     from_index(&bytes, location, &name, version.as_ref(), &trust).map_err(failed)?
                 }
@@ -311,7 +314,11 @@ pub fn manage_with(
             let (mut engine, decider) = if by_policy {
                 (policy_cmd::open(env).map_err(failed)?, Decider::Policy)
             } else {
-                (unlock().map_err(failed)?, Decider::Human)
+                eprint!("{unverified}");
+                (
+                    unlock().map_err(|e| failed(format!("{unverified}{e}")))?,
+                    Decider::Human,
+                )
             };
             // Again against the engine about to write it: a list may have been imported since.
             let list =

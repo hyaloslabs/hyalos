@@ -92,6 +92,9 @@ pub enum SignedIndexError {
     /// Its bundle does not verify for the pipeline under the trusted-root snapshot in force.
     #[error("the index's signature does not verify: {0}")]
     Unverifiable(Refusal),
+    /// The pipeline signed it, but it is not an index: it signs other files with the same identity.
+    #[error("the signed file is not an index this build reads")]
+    NotAnIndex,
     /// Older than the index accepted last at this location, or another file signed at the same time.
     #[error("the index is older than the one accepted last from this location")]
     NotNewer,
@@ -105,6 +108,7 @@ impl SignedIndexError {
         let code = match self {
             Self::Unsigned => "index.unsigned",
             Self::Unverifiable(_) => "index.unverifiable",
+            Self::NotAnIndex => "index.malformed",
             Self::NotNewer => "index.not_newer",
             Self::TooOld => "index.too_old",
         };
@@ -121,8 +125,8 @@ pub struct SignedIndex {
     pub is_new: bool,
 }
 
-/// Checks `file` as the pipeline's current index: `bundle` verifies under `trust`, it is no older
-/// than `last` (the digest and signed time accepted last at this location), and it was signed within
+/// Checks `file` as the pipeline's current index: `bundle` verifies under `trust`, it reads as an
+/// index (the pipeline signs its other files with the same identity), it is no older than `last` (the digest and signed time accepted last at this location), and it was signed within
 /// [`MAX_INDEX_AGE_DAYS`] of `now`. The same file again is accepted and is not new.
 pub fn verify_signed(
     trust: &Trust,
@@ -135,6 +139,7 @@ pub fn verify_signed(
     let signed_at = trust
         .verify_signed(file, bundle)
         .map_err(SignedIndexError::Unverifiable)?;
+    Index::parse(file).map_err(|_| SignedIndexError::NotAnIndex)?;
     let digest = digest_of(file);
     check_order_and_age(digest, signed_at, last, now)
 }

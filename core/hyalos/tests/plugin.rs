@@ -1475,7 +1475,27 @@ fn a_mirror_cannot_relabel_replay_or_strip_a_signed_index() -> Res {
     std::fs::remove_file(bundle.join("index.json.sigstore.json"))?;
     let said = refused(release.cli(&world, &["plugin", "update"]), 1)?;
     assert!(said.contains("(index.unsigned)"), "{said}");
+
+    // Another file the pipeline signed, served as the index, is refused and raises no floor.
+    std::fs::copy(
+        bundle.join(hyalos_plugin::revocation::FILE),
+        bundle.join("index.json"),
+    )?;
+    std::fs::copy(
+        bundle.join(hyalos_plugin::revocation::BUNDLE),
+        bundle.join("index.json.sigstore.json"),
+    )?;
+    let said = refused(release.cli(&world, &["plugin", "update"]), 1)?;
+    assert!(said.contains("(index.malformed)"), "{said}");
     assert_eq!(world.events()?.len(), before, "nothing was recorded");
+
+    // So the genuine index still works once the mirror is gone.
+    std::fs::write(bundle.join("index.json"), &current)?;
+    std::fs::write(bundle.join("index.json.sigstore.json"), &new_bundle)?;
+    let said = release
+        .cli(&world, &["plugin", "update"])
+        .map_err(|e| e.1)?;
+    assert!(said.contains("up to date at version 1.1.0"), "{said}");
     Ok(())
 }
 
@@ -1498,7 +1518,10 @@ fn a_frozen_or_unsigned_index_is_the_operators_to_install_from_and_never_policys
     assert!(said.contains("(index.too_old)"), "{said}");
     assert_eq!(installs(&world)?.len(), 0, "policy did not install it");
     let install = ["plugin", "install", "--index", &at, "pdf-tools", "--grant"];
-    refused(release.cli(&world, &install), 1)?;
+    // The operator is told before the passphrase decides anything.
+    let said = refused(release.cli(&world, &install), 1)?;
+    assert!(said.contains("the version below is unverified"), "{said}");
+    assert!(said.contains("passphrase"), "{said}");
     assert_eq!(installs(&world)?.len(), 0, "nor without the passphrase");
 
     // The operator may, and signs it; the version is reported as unverified.
