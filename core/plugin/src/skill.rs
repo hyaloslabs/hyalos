@@ -52,14 +52,27 @@ pub struct SkillFile {
     pub executable: bool,
 }
 
-/// A skill as read: its name, optional declared version, what it asks for and its files by
+/// The `version` a skill's front matter declares. A malformed one is remembered only as malformed:
+/// its text is the skill's own, untrusted, and is not kept (ADR-0127).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeclaredVersion(Declared);
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum Declared {
+    #[default]
+    Absent,
+    Valid(PluginVersion),
+    Malformed,
+}
+
+/// A skill as read: its name, declared version, what it asks for and its files by
 /// relative path (`/`-separated).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
     pub name: PluginName,
-    /// Optional `version` declared in `SKILL.md` front matter; when present, an index install must
-    /// match it.
-    pub version: Option<PluginVersion>,
+    /// What `SKILL.md`'s front matter declares as its version; read it with
+    /// [`Skill::declared_version`]. An index install must match it (ADR-0127).
+    pub version: DeclaredVersion,
     pub asks: Capabilities,
     /// The MCP server it runs in the job's sandbox, if it has an `mcp.json` (ADR-0101).
     pub mcp: Option<McpServer>,
@@ -78,7 +91,8 @@ pub enum SkillError {
     /// `SKILL.md` has no front matter with a `name` that is a plugin name.
     #[error("{SKILL_FILE} has no front matter naming it in lowercase letters, digits and hyphens")]
     NoName,
-    /// `SKILL.md` front matter declares a `version` that is not a valid plugin version.
+    /// `SKILL.md` front matter declares a `version` that is not a valid plugin version. Only an
+    /// install from an index refuses it (ADR-0127).
     #[error("{SKILL_FILE} front matter has an invalid version")]
     BadVersion,
     /// A file or directory name that is not plain, a link, or something that is neither a file nor a
@@ -138,6 +152,16 @@ impl Skill {
         let mut total = 0;
         walk(dir, "", 0, &mut files, &mut total)?;
         Self::from_files(files)
+    }
+
+    /// The version the skill declares, if any, or [`SkillError::BadVersion`] if what it declares is
+    /// not a plugin version.
+    pub fn declared_version(&self) -> Result<Option<PluginVersion>, SkillError> {
+        match &self.version.0 {
+            Declared::Absent => Ok(None),
+            Declared::Valid(version) => Ok(Some(version.clone())),
+            Declared::Malformed => Err(SkillError::BadVersion),
+        }
     }
 
     fn from_files(files: BTreeMap<String, SkillFile>) -> Result<Skill, SkillError> {
@@ -385,7 +409,7 @@ fn walk(
 
 /// The `name` and optional `version` in `SKILL.md`'s front matter: the lines between a first line
 /// of `---` and the next.
-fn front_matter(skill_md: &[u8]) -> Result<(PluginName, Option<PluginVersion>), SkillError> {
+fn front_matter(skill_md: &[u8]) -> Result<(PluginName, DeclaredVersion), SkillError> {
     let text = std::str::from_utf8(skill_md).map_err(|_| SkillError::NoName)?;
     let mut lines = text.lines();
     if lines.next().map(str::trim_end) != Some("---") {
@@ -412,10 +436,15 @@ fn front_matter(skill_md: &[u8]) -> Result<(PluginName, Option<PluginVersion>), 
         } else if version.is_none()
             && let Some(value) = line.strip_prefix("version:")
         {
-            version = Some(PluginVersion::new(unquote(value)).ok_or(SkillError::BadVersion)?);
+            version = Some(
+                PluginVersion::new(unquote(value)).map_or(Declared::Malformed, Declared::Valid),
+            );
         }
     }
-    Ok((name.ok_or(SkillError::NoName)?, version))
+    Ok((
+        name.ok_or(SkillError::NoName)?,
+        DeclaredVersion(version.unwrap_or_default()),
+    ))
 }
 
 /// Where installed skills are kept: one directory per digest. A skill is used only after its files
@@ -801,12 +830,48 @@ mod tests {
             )]))
         };
         let skill = from_md(b"---\nname: pdf-tools\nversion: \"1.2.0\"\n---\nBody.\n").unwrap();
-        assert_eq!(skill.version.as_ref().map(|v| v.as_str()), Some("1.2.0"));
+        assert_eq!(
+            skill
+                .declared_version()
+                .unwrap()
+                .as_ref()
+                .map(|v| v.as_str()),
+            Some("1.2.0")
+        );
 
         let without = from_md(b"---\nname: pdf-tools\n---\nBody.\n").unwrap();
-        assert_eq!(without.version, None);
+        assert_eq!(without.declared_version(), Ok(None));
 
-        let bad = from_md(b"---\nname: pdf-tools\nversion: ../bad\n---\nBody.\n");
-        assert_eq!(bad, Err(SkillError::BadVersion));
+        let bad = from_md(b"---\nname: pdf-tools\nversion: ../bad\n---\nBody.\n").unwrap();
+        assert_eq!(bad.declared_version(), Err(SkillError::BadVersion));
+    }
+
+    #[test]
+    fn a_malformed_version_stores_and_loads_and_its_text_is_not_kept() {
+        let md = b"---\nname: pdf-tools\nversion: 1.0 beta\n---\nBody.\n";
+        let root = scratch("malformed-version");
+        let dir = root.join("skill");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(SKILL_FILE), md).unwrap();
+        let skill = Skill::read(&dir).unwrap();
+        assert_eq!(skill.declared_version(), Err(SkillError::BadVersion));
+        assert!(!format!("{:?}", skill.version).contains("beta"));
+
+        // The version is not part of the digest beyond the file's own bytes.
+        let archive = skill.archive();
+        assert_eq!(
+            Skill::from_archive(&archive).unwrap().digest(),
+            skill.digest()
+        );
+
+        let store = Store::new(root.join("store"));
+        let digest = store.put(&skill).unwrap();
+        assert_eq!(digest, skill.digest());
+        let loaded = store.load(&digest, &skill.name).unwrap();
+        assert_eq!(loaded, skill);
+        // Storing it again reads it back, and is not called altered either.
+        assert_eq!(store.put(&skill), Ok(digest));
+        let _ = make_writable(&root);
+        let _ = fs::remove_dir_all(root);
     }
 }

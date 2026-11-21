@@ -366,6 +366,52 @@ fn policy_install_refuses_a_release_no_newer_than_installed_while_human_may_pin(
 }
 
 #[test]
+fn policy_needs_a_later_signed_time_over_one_and_a_replay_still_reads() -> Res {
+    let p = path("plugin-signed-time")?;
+    let mut e = Engine::open(&p, key())?.with_operator(operator());
+    e.set_install_policy(at(1), policy()?, Decider::Human, why())?;
+    let source = |signed_ms: Option<u64>| -> Res<PluginSource> {
+        Ok(PluginSource::Index {
+            location: IndexLocation::new(TRUSTED).ok_or("location")?,
+            version: PluginVersion::new("1.0.0").ok_or("version")?,
+            signed_at: signed_ms.map(Timestamp::from_millis),
+        })
+    };
+    let not_newer = |result: Result<Head, EngineError>| {
+        matches!(
+            result,
+            Err(EngineError::Rule(RuleViolation::PluginNotNewer))
+        )
+    };
+    let g = docs();
+    // As a log from 0.1.8 or earlier has them: no signed time over none installs by policy.
+    install_from(&mut e, 2, source(None)?, g.clone(), Decider::Policy)?;
+    install_from(&mut e, 3, source(None)?, g.clone(), Decider::Policy)?;
+    // The first update after upgrading: a time over none.
+    install_from(&mut e, 4, source(Some(2_000))?, g.clone(), Decider::Policy)?;
+    // Over a time, policy refuses none, the same time and an older one.
+    for (n, refused) in [(5, None), (6, Some(2_000)), (7, Some(1_000))] {
+        let result = install_from(&mut e, n, source(refused)?, g.clone(), Decider::Policy);
+        assert!(not_newer(result), "{refused:?}");
+    }
+    install_from(&mut e, 8, source(Some(3_000))?, g.clone(), Decider::Policy)?;
+    // A human may install one with no time over one that has it; policy may then update it.
+    install_from(&mut e, 9, source(None)?, g.clone(), Decider::Human)?;
+    install_from(&mut e, 10, source(Some(1_000))?, g, Decider::Policy)?;
+    let kept = e
+        .state()
+        .plugins()
+        .get(&name("pdf")?)
+        .ok_or("lost")?
+        .clone();
+    drop(e);
+    // Every install above replays under the same rule.
+    let e = Engine::open(&p, key())?.with_operator(operator());
+    assert_eq!(e.state().plugins().get(&name("pdf")?), Some(&kept));
+    Ok(())
+}
+
+#[test]
 fn an_update_waits_for_an_index_install_until_any_install_answers_it() -> Res {
     let mut e = Engine::open(&path("pending")?, key())?.with_operator(operator());
     let pending = |version: &str, digest: u8| -> Res<Event> {

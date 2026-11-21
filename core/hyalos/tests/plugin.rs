@@ -985,6 +985,178 @@ fn within_the_operators_install_policy_a_skill_installs_without_them() -> Res {
 }
 
 #[test]
+fn a_malformed_version_installs_locally_and_is_refused_from_an_index() -> Res {
+    let world = World::new("plugin-bad-version", None)?;
+    let release = Release::new()?;
+    let src = skill(&world.root, None)?;
+    std::fs::write(
+        src.join("SKILL.md"),
+        "---\nname: pdf-tools\nversion: 1.0 beta\n---\nBody\n",
+    )?;
+    // Locally it is only a skill: it installs and is read back, never called altered.
+    let path = src.to_string_lossy().into_owned();
+    ok_cli(world.signed(&["plugin", "install", &path])?)?;
+    assert_eq!(installs(&world)?.len(), 1);
+    let listed = ok_cli(world.cli(&["plugin", "list"])?)?;
+    assert!(listed.starts_with("pdf-tools\t"), "{listed}");
+
+    // The same release from an index is refused, and its text is not repeated.
+    let bundle = world.root.join("bundle");
+    std::fs::create_dir(&bundle)?;
+    let at = bundle.to_string_lossy().into_owned();
+    let digest = pack(&world, &src, &bundle, "pdf-1.skill")?;
+    release.sign(&bundle, "pdf-1.skill")?;
+    std::fs::write(
+        bundle.join("index.json"),
+        index(&[("1.0.0", digest.as_str(), "pdf-1.skill")]),
+    )?;
+    let said = refused(
+        release.signed(&world, &["plugin", "install", "--index", &at, "pdf-tools"]),
+        1,
+    )?;
+    assert!(said.contains("(plugin.bad_version)"), "{said}");
+    assert!(!said.contains("beta"), "{said}");
+    assert_eq!(installs(&world)?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn going_back_within_the_policy_takes_the_operators_signature() -> Res {
+    let world = World::new("plugin-rollback", None)?;
+    let release = Release::new()?;
+    let wide = r#"{"version":1,"egress_hosts":["docs.rs"]}"#;
+    let src = skill(&world.root, Some(wide))?;
+    let bundle = world.root.join("bundle");
+    std::fs::create_dir(&bundle)?;
+    let at = bundle.to_string_lossy().into_owned();
+    let ceiling = world.root.join("ceiling.json");
+    std::fs::write(&ceiling, wide)?;
+    ok_cli(world.signed(&[
+        "plugin",
+        "policy",
+        "set",
+        "--ceiling",
+        &ceiling.to_string_lossy(),
+        "--index",
+        &at,
+    ])?)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let publish = |version: &str, asks: Option<&str>, ago: u64| -> Res<(String, String)> {
+        skill(&world.root, asks)?;
+        std::fs::write(
+            src.join("SKILL.md"),
+            format!("---\nname: pdf-tools\nversion: {version}\n---\nVersion {version}\n"),
+        )?;
+        let file = format!("pdf-{version}.skill");
+        let digest = pack(&world, &src, &bundle, &file)?;
+        release.sign_at(&bundle, &file, now - ago)?;
+        Ok((digest, file))
+    };
+    // The oldest asks for more than the two after it, though still within the ceiling.
+    let (d8, f8) = publish("0.8.0", None, 10_800)?;
+    let (d9, f9) = publish("0.9.0", Some(wide), 7_200)?;
+    let (d10, f10) = publish("1.0.0", None, 3_600)?;
+    let (d11, f11) = publish("1.1.0", None, 1_800)?;
+    let (r9, r10, r11) = (
+        ("0.9.0", d9.as_str(), f9.as_str()),
+        ("1.0.0", d10.as_str(), f10.as_str()),
+        ("1.1.0", d11.as_str(), f11.as_str()),
+    );
+    std::fs::write(bundle.join("index.json"), index(&[r9, r10, r11]))?;
+    let install = |version: &'static str, grant: bool| -> Vec<String> {
+        let mut args: Vec<String> = ["plugin", "install", "--index", &at, "pdf-tools"]
+            .map(String::from)
+            .to_vec();
+        args.extend(["--version".to_string(), version.to_string()]);
+        if grant {
+            args.push("--grant".to_string());
+        }
+        args
+    };
+    let run_cli = |args: Vec<String>| {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        release.cli(&world, &args)
+    };
+    let run_signed = |args: Vec<String>| {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        release.signed(&world, &args)
+    };
+    let last = || -> Res<(String, Resolution, bool)> {
+        installs(&world)?
+            .into_iter()
+            .last()
+            .and_then(|e| match e {
+                Event::PluginInstalled {
+                    digest, by, signed, ..
+                } => Some((
+                    digest.to_string(),
+                    by,
+                    matches!(signed, Signed::Operator(_)),
+                )),
+                _ => None,
+            })
+            .ok_or_else(|| "no install".into())
+    };
+    let stored = || -> Res<Vec<String>> {
+        let mut names = std::fs::read_dir(world.data.join("plugins"))?
+            .map(|e| Ok(e?.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        names.sort();
+        Ok(names)
+    };
+
+    // A first install and a strictly newer release go by policy, with no passphrase.
+    let said = run_cli(install("1.0.0", false)).map_err(|e| e.1)?;
+    assert!(said.contains("within your install policy"), "{said}");
+    let said = run_cli(install("1.1.0", false)).map_err(|e| e.1)?;
+    assert!(said.contains("within your install policy"), "{said}");
+    assert_eq!(last()?, (d11.clone(), Resolution::Policy, false));
+
+    // Going older without the passphrase is refused and changes nothing, even with --grant.
+    let (events, kept) = (world.events()?, stored()?);
+    refused(run_cli(install("0.9.0", true)), 1)?;
+    assert_eq!(world.events()?, events);
+    assert_eq!(stored()?, kept);
+    assert!(!kept.contains(&d9));
+
+    // With it, a release that asks for more than is held still needs --grant.
+    let said = refused(run_signed(install("0.9.0", false)), 1)?;
+    assert!(said.contains("run again with --grant"), "{said}");
+    assert_eq!(world.events()?, events);
+
+    // And with both it is the operator's signed decision.
+    let said = run_signed(install("0.9.0", true)).map_err(|e| e.1)?;
+    assert!(said.contains("signed by you"), "{said}");
+    assert_eq!(last()?, (d9.clone(), Resolution::Human, true));
+
+    // Reinstalling the same release takes the same path.
+    let events = world.events()?;
+    refused(run_cli(install("0.9.0", false)), 1)?;
+    assert_eq!(world.events()?, events);
+    let said = run_signed(install("0.9.0", false)).map_err(|e| e.1)?;
+    assert!(said.contains("signed by you"), "{said}");
+    assert_eq!(last()?, (d9.clone(), Resolution::Human, true));
+
+    // An update is now checked against the release rolled back to: older is refused...
+    let r8 = ("0.8.0", d8.as_str(), f8.as_str());
+    std::fs::write(bundle.join("index.json"), index(&[r9, r10, r11, r8]))?;
+    let events = world.events()?;
+    let said = refused(release.cli(&world, &["plugin", "update"]), 1)?;
+    assert!(said.contains("(plugin.not_newer)"), "{said}");
+    assert_eq!(world.events()?, events);
+    // ...and the newer release installs by policy again.
+    std::fs::write(bundle.join("index.json"), index(&[r9, r10, r11]))?;
+    let said = release
+        .cli(&world, &["plugin", "update"])
+        .map_err(|e| e.1)?;
+    assert!(said.contains("updated to version 1.1.0"), "{said}");
+    assert_eq!(last()?, (d11, Resolution::Policy, false));
+    Ok(())
+}
+
+#[test]
 fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_runs() -> Res {
     let world = World::new("plugin-update", None)?;
     let release = Release::new()?;

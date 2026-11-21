@@ -251,7 +251,7 @@ pub enum RuleViolation {
     /// An install of a release recorded as revoked under that name (ADR-0098).
     #[error("a release recorded as revoked is not installed again (ADR-0098)")]
     PluginRevoked,
-    /// A policy-driven update to a release no later than the one already installed.
+    /// A policy-driven update to a release not proven later than the one already installed.
     #[error("a release installed by policy must be later than the one installed")]
     PluginNotNewer,
     /// A plugin's grant holds a name the capability vocabulary does not accept (ADR-0085).
@@ -826,16 +826,13 @@ impl State {
                 if !human && !within_policy {
                     return Err(RuleViolation::PluginNeedsAHuman { by: *by });
                 }
+                // Over a release with a signed time, policy needs a strictly later one: a source
+                // with none is not known to be newer (ADR-0127).
                 if !human
-                    && let PluginSource::Index {
-                        signed_at: Some(next),
-                        ..
-                    } = source
-                    && let Some(PluginSource::Index {
-                        signed_at: Some(prev),
-                        ..
-                    }) = self.plugins.get(name).map(|p| &p.source)
-                    && next <= prev
+                    && self
+                        .plugins
+                        .get(name)
+                        .is_some_and(|p| !source.policy_may_replace(&p.source))
                 {
                     return Err(RuleViolation::PluginNotNewer);
                 }

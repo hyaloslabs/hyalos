@@ -37,8 +37,9 @@ use crate::{
 /// is in force. Version 15 added the revocation list imported last and the installed plugins it
 /// revoked (ADR-0098); earlier images have neither. Version 16 added the skills Hyalos drafted
 /// (ADR-0113); earlier images have none. Version 17 added when each draft was trusted (ADR-0114);
-/// an earlier draft reads as not trusted.
-pub const STATE_VERSION: u32 = 17;
+/// an earlier draft reads as not trusted. Version 18 added when an index plugin's release was signed
+/// (ADR-0127); an earlier plugin reads as having no signed time.
+pub const STATE_VERSION: u32 = 18;
 
 /// Every task, job and hold as of `last_seq`. Lists are in id order, so one state has one encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -442,6 +443,20 @@ impl StateImage {
             for draft in drafts {
                 if let Some(draft) = draft.as_object_mut() {
                     draft.insert("trusted".into(), Value::Null);
+                }
+            }
+        }
+        // 17 -> 18: no index plugin's signed time was kept, so an older one reads as having none.
+        // The field defaults to none, so this only says so; a time already there is kept.
+        if version < 18
+            && let Some(Value::Array(plugins)) = object.get_mut("plugins")
+        {
+            for plugin in plugins {
+                if let Some(Value::Object(index)) = plugin
+                    .get_mut("source")
+                    .and_then(|source| source.get_mut("index"))
+                {
+                    index.entry("signed_at").or_insert(Value::Null);
                 }
             }
         }

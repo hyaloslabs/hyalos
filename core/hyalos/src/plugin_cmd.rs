@@ -250,10 +250,14 @@ pub fn manage_with(
                 .map(|p| p.grant.clone())
                 .unwrap_or_default();
             // Within the install policy the operator signed, it installs without them (ADR-0091).
-            let by_policy = state
-                .as_ref()
-                .and_then(|s| s.install_policy())
-                .is_some_and(|p| p.policy.covers(&source, &skill.asks));
+            // A release not proven later than the one installed is theirs to sign (ADR-0127).
+            let by_policy = state.as_ref().is_some_and(|s| {
+                s.install_policy()
+                    .is_some_and(|p| p.policy.covers(&source, &skill.asks))
+                    && s.plugins()
+                        .get(&skill.name)
+                        .is_none_or(|p| source.policy_may_replace(&p.source))
+            });
             let diff = held.diff(&skill.asks);
             // The command an MCP server runs in each job given it, printable ASCII (ADR-0101).
             let mcp = skill.mcp.as_ref().map_or(String::new(), |m| {
@@ -912,8 +916,12 @@ fn from_index(
             entry.artifact
         ));
     }
-    if let Some(version) = &skill.version
-        && *version != entry.version
+    // Only an index release must declare a well-formed version, if it declares one (ADR-0127).
+    let declared = skill
+        .declared_version()
+        .map_err(|e| format!("{}: {e} ({})", entry.artifact, e.code()))?;
+    if let Some(version) = declared
+        && version != entry.version
     {
         return Err(format!(
             "{}: the skill in it is version {version}, not {} (plugin.wrong_version)",
