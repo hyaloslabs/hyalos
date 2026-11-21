@@ -505,6 +505,7 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
                 location: hyalos_types::IndexLocation::new("https://plugins.example/v1")
                     .ok_or("location")?,
                 version: hyalos_types::PluginVersion::new("1.2.0").ok_or("version")?,
+                signed_at: None,
             },
             by: Resolution::Human,
             reason: ReasonCode::new("plugin.installed").ok_or("reason")?,

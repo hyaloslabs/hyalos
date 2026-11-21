@@ -147,8 +147,13 @@ impl TestSigstore {
 
     /// A v0.3 bundle for `artifact`, signed now as `signer` and logged in this instance's log.
     pub fn sign(&self, artifact: &[u8], signer: Signer<'_>) -> Result<Vec<u8>, Error> {
+        self.sign_at(artifact, signer, now())
+    }
+
+    /// A v0.3 bundle for `artifact`, signed at Unix timestamp `at` (seconds) as `signer`.
+    pub fn sign_at(&self, artifact: &[u8], signer: Signer<'_>, at: u64) -> Result<Vec<u8>, Error> {
         let key = KeyPair::generate_ecdsa_p256()?;
-        let now = now();
+        let now = at;
         let cert = self.leaf(&key, signer, now)?;
         let signature = key.sign(artifact)?;
         let signature = STANDARD.encode(signature.as_bytes());

@@ -20,9 +20,7 @@ use hyalos_substrate_contract::LocalProcessSubstrate;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 
-use hyalos_types::{
-    Event, IndexLocation, JobOutcome, PluginName, PluginSource, PluginVersion, Resolution, Signed,
-};
+use hyalos_types::{Event, JobOutcome, PluginName, PluginSource, Resolution, Signed};
 
 mod common;
 
@@ -59,6 +57,13 @@ impl Release {
     /// empty revocation list signed beside an archive if `dir` has none, as every release carries
     /// one.
     fn sign(&self, dir: &Path, file: &str) -> Res {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs();
+        self.sign_at(dir, file, now)
+    }
+
+    fn sign_at(&self, dir: &Path, file: &str, at: u64) -> Res {
         let list = hyalos_plugin::revocation::FILE;
         if file != list && file != hyalos_plugin::snapshot::FILE && !dir.join(list).exists() {
             std::fs::write(
@@ -75,7 +80,7 @@ impl Release {
         };
         let bundle = self
             .sigstore
-            .sign(&std::fs::read(dir.join(file))?, signer)
+            .sign_at(&std::fs::read(dir.join(file))?, signer, at)
             .map_err(|e| e.to_string())?;
         std::fs::write(dir.join(format!("{file}.sigstore.json")), bundle)?;
         Ok(())
@@ -629,20 +634,32 @@ fn a_skill_installs_by_name_from_a_directory_index_only_with_its_digest() -> Res
         )
         .map_err(|e| e.1)?;
     let recorded = installs(&world)?;
-    let sources: Vec<PluginSource> = recorded
+    let sources: Vec<(String, String, bool)> = recorded
         .iter()
         .filter_map(|e| match e {
-            Event::PluginInstalled { source, .. } => Some(source.clone()),
+            Event::PluginInstalled {
+                source:
+                    PluginSource::Index {
+                        location,
+                        version,
+                        signed_at,
+                    },
+                ..
+            } => Some((
+                location.as_str().to_string(),
+                version.as_str().to_string(),
+                signed_at.is_some(),
+            )),
             _ => None,
         })
         .collect();
-    let from = |v: &str| -> Res<PluginSource> {
-        Ok(PluginSource::Index {
-            location: IndexLocation::new(&at).ok_or("location")?,
-            version: PluginVersion::new(v).ok_or("version")?,
-        })
-    };
-    assert_eq!(sources, vec![from("1.1.0")?, from("1.0.0")?]);
+    assert_eq!(
+        sources,
+        vec![
+            (at.clone(), "1.1.0".to_string(), true),
+            (at.clone(), "1.0.0".to_string(), true),
+        ]
+    );
     let listed = ok_cli(world.cli(&["plugin", "list"])?)?;
     assert!(listed.contains("version 1.0.0 from"), "{listed}");
 
@@ -989,21 +1006,22 @@ fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_ru
         "--index",
         &at,
     ])?)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
     let one = pack(&world, &src, &bundle, "pdf-1.skill")?;
-    let mut published = vec![("1.0.0".to_string(), one, "pdf-1.skill".to_string())];
-    let publish = |published: &[(String, String, String)]| -> Res {
+    release.sign_at(&bundle, "pdf-1.skill", now - 3600)?;
+    let mut published = vec![("1.0.0".to_string(), one.clone(), "pdf-1.skill".to_string())];
+    let write_index = |published: &[(String, String, String)]| -> Res {
         let entries: Vec<(&str, &str, &str)> = published
             .iter()
             .map(|(v, d, a)| (v.as_str(), d.as_str(), a.as_str()))
             .collect();
-        for (_, _, artifact) in published {
-            release.sign(&bundle, artifact)?;
-        }
         std::fs::write(bundle.join("index.json"), index(&entries))?;
         Ok(())
     };
     let update = || release.cli(&world, &["plugin", "update"]).map_err(|e| e.1);
-    publish(&published)?;
+    write_index(&published)?;
     release
         .cli(&world, &["plugin", "install", "--index", &at, "pdf-tools"])
         .map_err(|e| e.1)?;
@@ -1016,11 +1034,12 @@ fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_ru
     // A new version within the policy installs by policy, with no one asked.
     std::fs::write(
         src.join("SKILL.md"),
-        "---\nname: pdf-tools\n---\nVersion 1.1\n",
+        "---\nname: pdf-tools\nversion: 1.1.0\n---\nVersion 1.1\n",
     )?;
     let next = pack(&world, &src, &bundle, "pdf-1.1.skill")?;
+    release.sign_at(&bundle, "pdf-1.1.skill", now - 1800)?;
     published.push(("1.1.0".into(), next.clone(), "pdf-1.1.skill".into()));
-    publish(&published)?;
+    write_index(&published)?;
     // The binary checks the same index and refuses the release, which the pipeline did not sign:
     // a failed check, and nothing written.
     let before = world.events()?.len();
@@ -1045,14 +1064,54 @@ fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_ru
     };
     assert_eq!(installed(&world)?, (next.clone(), Resolution::Policy));
 
+    // Reordering the index to put the older signed 1.0.0 last is refused as a rollback, even if
+    // the index relabels it as a higher version; the installed 1.1.0 keeps running.
+    let before = world.events()?.len();
+    let reordered = vec![
+        (
+            "1.1.0".to_string(),
+            next.clone(),
+            "pdf-1.1.skill".to_string(),
+        ),
+        ("9.9.9".to_string(), one.clone(), "pdf-1.skill".to_string()),
+    ];
+    write_index(&reordered)?;
+    let rollback = release.cli(&world, &["plugin", "update"]);
+    assert!(
+        matches!(&rollback, Err((1, msg)) if msg.contains("(plugin.not_newer)")),
+        "{rollback:?}"
+    );
+    assert_eq!(world.events()?.len(), before);
+    assert_eq!(installed(&world)?, (next.clone(), Resolution::Policy));
+
+    // A signed skill that declares its version in SKILL.md is refused if the index claims another.
+    let spoofed = vec![(
+        "9.9.9".to_string(),
+        next.clone(),
+        "pdf-1.1.skill".to_string(),
+    )];
+    write_index(&spoofed)?;
+    let spoof_install = release.cli(&world, &["plugin", "install", "--index", &at, "pdf-tools"]);
+    assert!(
+        matches!(&spoof_install, Err((1, msg)) if msg.contains("(plugin.wrong_version)")),
+        "{spoof_install:?}"
+    );
+    let spoof_update = release.cli(&world, &["plugin", "update"]);
+    assert!(
+        matches!(&spoof_update, Err((1, msg)) if msg.contains("(plugin.wrong_version)")),
+        "{spoof_update:?}"
+    );
+    write_index(&published)?;
+
     // One that adds a capability waits, once, and the installed version stays.
     skill(
         &world.root,
         Some(r#"{"version":1,"egress_hosts":["docs.rs"],"actions":["push"]}"#),
     )?;
     let wide = pack(&world, &src, &bundle, "pdf-2.skill")?;
+    release.sign_at(&bundle, "pdf-2.skill", now)?;
     published.push(("2.0.0".into(), wide.clone(), "pdf-2.skill".into()));
-    publish(&published)?;
+    write_index(&published)?;
     let said = update()?;
     assert!(said.contains("version 2.0.0 waits for you"), "{said}");
     let said = update()?;

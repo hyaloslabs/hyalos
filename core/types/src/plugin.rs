@@ -12,7 +12,7 @@ use std::fmt;
 use serde::de::{Deserialize, Deserializer, Error};
 use serde::{Serialize, Serializer};
 
-use crate::Capabilities;
+use crate::{Capabilities, Timestamp};
 
 /// The capabilities granted to one plugin. A local install starts with none (ADR-0006).
 pub type Grant = Capabilities;
@@ -81,11 +81,14 @@ pub enum PluginSource {
     /// Read from a directory on the operator's machine. It has no signature or transparency-log
     /// entry, so every capability it holds was granted by a human (ADR-0006).
     Local,
-    /// Resolved by name in a plugin index (ADR-0090): the index it was found in and the version it
-    /// named. Its files had the digest the index gave.
+    /// Resolved by name in a plugin index (ADR-0090): the index it was found in, the version it
+    /// named, and (when verified via Sigstore) the earliest signed time its bundle proved.
+    /// Its files had the digest the index gave.
     Index {
         location: IndexLocation,
         version: PluginVersion,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signed_at: Option<Timestamp>,
     },
 }
 
@@ -312,6 +315,7 @@ mod tests {
         let source = PluginSource::Index {
             location: IndexLocation::new("/srv/bundle").unwrap(),
             version: PluginVersion::new("1.2.0").unwrap(),
+            signed_at: None,
         };
         let json = serde_json::to_string(&source).unwrap();
         assert_eq!(

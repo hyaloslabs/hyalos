@@ -644,6 +644,7 @@ mod tests {
         let skill = |name: &str, mcp: Option<McpServer>| {
             let skill = Skill {
                 name: PluginName::new(name).unwrap(),
+                version: None,
                 asks: hyalos_types::Capabilities::none(),
                 mcp,
                 files: BTreeMap::new(),

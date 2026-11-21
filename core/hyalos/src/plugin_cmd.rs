@@ -31,6 +31,7 @@ use hyalos_types::capability::Field;
 use hyalos_types::{
     Capabilities, Clock, Diff, Digest, Event, Grant, IndexLocation, InstallPolicy,
     MAX_CAPABILITY_DOCUMENT, Origin, PluginName, PluginSource, PluginVersion, ReasonCode,
+    Timestamp,
 };
 
 use crate::clock::SystemClock;
@@ -693,14 +694,16 @@ fn check_updates(env: Env<'_>, log: &EngineLog, base: &Snapshot) -> (String, boo
         Ok(engine) => engine,
         Err(e) => return (format!("{e}\n"), false),
     };
-    let installed: Vec<(PluginName, Digest, IndexLocation)> = engine
+    let installed: Vec<(PluginName, Digest, IndexLocation, Option<Timestamp>)> = engine
         .state()
         .plugins()
         .iter()
         .filter_map(|(name, p)| match &p.source {
-            PluginSource::Index { location, .. } => {
-                Some((name.clone(), p.digest, location.clone()))
-            }
+            PluginSource::Index {
+                location,
+                signed_at,
+                ..
+            } => Some((name.clone(), p.digest, location.clone(), *signed_at)),
             PluginSource::Local => None,
         })
         .collect();
@@ -712,7 +715,7 @@ fn check_updates(env: Env<'_>, log: &EngineLog, base: &Snapshot) -> (String, boo
         Ok(snapshot) => snapshot,
         Err(e) => return (format!("{e}\n"), false),
     };
-    for (name, digest, location) in installed {
+    for (name, digest, location, installed_signed_at) in installed {
         snapshot = refreshed(env, &mut engine, &location, snapshot, &mut out);
         // Too old a snapshot or list refuses the update; the installed version keeps running.
         let stale =
@@ -735,7 +738,15 @@ fn check_updates(env: Env<'_>, log: &EngineLog, base: &Snapshot) -> (String, boo
             Ok(trust) => trust,
             Err(e) => return (format!("{out}{e}\n"), false),
         };
-        match update_one(env, &mut engine, &name, digest, location, &trust) {
+        match update_one(
+            env,
+            &mut engine,
+            &name,
+            digest,
+            installed_signed_at,
+            location,
+            &trust,
+        ) {
             Ok(line) => out.push_str(&format!("{name}: {line}\n")),
             Err(e) => {
                 clean = false;
@@ -779,17 +790,28 @@ fn update_one(
     engine: &mut hyalos_engine::Engine,
     name: &PluginName,
     installed: Digest,
+    installed_signed_at: Option<Timestamp>,
     location: IndexLocation,
     trust: &Trust,
 ) -> Result<String, String> {
     let (skill, source) = from_index(location.clone(), name, None, trust)?;
-    let PluginSource::Index { version, .. } = &source else {
+    let PluginSource::Index {
+        version, signed_at, ..
+    } = &source
+    else {
         return Err("not from an index".into());
     };
     let version = version.clone();
     let digest = skill.digest();
     if digest == installed {
         return Ok(format!("up to date at version {version}"));
+    }
+    if let (Some(prev), Some(next)) = (installed_signed_at, *signed_at)
+        && next <= prev
+    {
+        return Err(format!(
+            "version {version} is not newer than the installed release (plugin.not_newer)"
+        ));
     }
     let list = plugin_trust::revocations_in_force(env, Some(engine.state()))?;
     if let Some(reason) = list.as_ref().and_then(|l| l.reason(&digest)) {
@@ -874,7 +896,7 @@ fn from_index(
         ));
     }
     let bundle = plugin_source::fetch(&location, &entry.bundle, MAX_BUNDLE)?;
-    trust.verify(&archive, &bundle).map_err(|e| {
+    let signed_at = trust.verify_signed(&archive, &bundle).map_err(|e| {
         format!(
             "{}: {e}, so {} was not read ({})",
             entry.bundle,
@@ -890,9 +912,18 @@ fn from_index(
             entry.artifact
         ));
     }
+    if let Some(version) = &skill.version
+        && *version != entry.version
+    {
+        return Err(format!(
+            "{}: the skill in it is version {version}, not {} (plugin.wrong_version)",
+            entry.artifact, entry.version
+        ));
+    }
     let source = PluginSource::Index {
         location,
         version: entry.version.clone(),
+        signed_at: Some(signed_at),
     };
     Ok((skill, source))
 }
@@ -917,7 +948,9 @@ fn describe(policy: &InstallPolicy) -> String {
 fn from(source: &PluginSource) -> String {
     match source {
         PluginSource::Local => ", local: no signature or transparency-log entry".into(),
-        PluginSource::Index { location, version } => format!(", version {version} from {location}"),
+        PluginSource::Index {
+            location, version, ..
+        } => format!(", version {version} from {location}"),
     }
 }
 

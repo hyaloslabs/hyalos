@@ -13,7 +13,7 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use hyalos_types::{Capabilities, CapabilityError, Digest, PluginName, ReasonCode};
+use hyalos_types::{Capabilities, CapabilityError, Digest, PluginName, PluginVersion, ReasonCode};
 use sha2::{Digest as _, Sha256};
 
 /// The file every skill has, at its root.
@@ -52,10 +52,14 @@ pub struct SkillFile {
     pub executable: bool,
 }
 
-/// A skill as read: its name, what it asks for and its files by relative path (`/`-separated).
+/// A skill as read: its name, optional declared version, what it asks for and its files by
+/// relative path (`/`-separated).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skill {
     pub name: PluginName,
+    /// Optional `version` declared in `SKILL.md` front matter; when present, an index install must
+    /// match it.
+    pub version: Option<PluginVersion>,
     pub asks: Capabilities,
     /// The MCP server it runs in the job's sandbox, if it has an `mcp.json` (ADR-0101).
     pub mcp: Option<McpServer>,
@@ -74,6 +78,9 @@ pub enum SkillError {
     /// `SKILL.md` has no front matter with a `name` that is a plugin name.
     #[error("{SKILL_FILE} has no front matter naming it in lowercase letters, digits and hyphens")]
     NoName,
+    /// `SKILL.md` front matter declares a `version` that is not a valid plugin version.
+    #[error("{SKILL_FILE} front matter has an invalid version")]
+    BadVersion,
     /// A file or directory name that is not plain, a link, or something that is neither a file nor a
     /// directory.
     #[error(
@@ -107,6 +114,7 @@ impl SkillError {
             Self::Unreadable => "plugin.unreadable",
             Self::NoSkillFile => "plugin.no_skill_file",
             Self::NoName => "plugin.no_name",
+            Self::BadVersion => "plugin.bad_version",
             Self::BadEntry => "plugin.bad_entry",
             Self::TooLarge => "plugin.too_large",
             Self::Capabilities(_) => "plugin.bad_capabilities",
@@ -134,7 +142,7 @@ impl Skill {
 
     fn from_files(files: BTreeMap<String, SkillFile>) -> Result<Skill, SkillError> {
         let skill_md = files.get(SKILL_FILE).ok_or(SkillError::NoSkillFile)?;
-        let name = name_of(&skill_md.bytes).ok_or(SkillError::NoName)?;
+        let (name, version) = front_matter(&skill_md.bytes)?;
         let asks = match files.get(CAPABILITIES_FILE) {
             Some(file) => {
                 Capabilities::from_document(&file.bytes).map_err(SkillError::Capabilities)?
@@ -147,6 +155,7 @@ impl Skill {
         };
         Ok(Skill {
             name,
+            version,
             asks,
             mcp,
             files,
@@ -374,29 +383,39 @@ fn walk(
     Ok(())
 }
 
-/// The `name` in `SKILL.md`'s front matter: the lines between a first line of `---` and the next.
-fn name_of(skill_md: &[u8]) -> Option<PluginName> {
-    let text = std::str::from_utf8(skill_md).ok()?;
+/// The `name` and optional `version` in `SKILL.md`'s front matter: the lines between a first line
+/// of `---` and the next.
+fn front_matter(skill_md: &[u8]) -> Result<(PluginName, Option<PluginVersion>), SkillError> {
+    let text = std::str::from_utf8(skill_md).map_err(|_| SkillError::NoName)?;
     let mut lines = text.lines();
-    if lines.next()?.trim_end() != "---" {
-        return None;
+    if lines.next().map(str::trim_end) != Some("---") {
+        return Err(SkillError::NoName);
     }
+    fn unquote(raw: &str) -> &str {
+        let value = raw.trim();
+        value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+            .unwrap_or(value)
+    }
+    let (mut name, mut version) = (None, None);
     for line in lines {
         let line = line.trim_end();
         if line == "---" {
-            return None;
+            break;
         }
-        if let Some(value) = line.strip_prefix("name:") {
-            let value = value.trim();
-            let value = value
-                .strip_prefix('"')
-                .and_then(|v| v.strip_suffix('"'))
-                .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
-                .unwrap_or(value);
-            return PluginName::new(value);
+        if name.is_none()
+            && let Some(value) = line.strip_prefix("name:")
+        {
+            name = Some(PluginName::new(unquote(value)).ok_or(SkillError::NoName)?);
+        } else if version.is_none()
+            && let Some(value) = line.strip_prefix("version:")
+        {
+            version = Some(PluginVersion::new(unquote(value)).ok_or(SkillError::BadVersion)?);
         }
     }
-    None
+    Ok((name.ok_or(SkillError::NoName)?, version))
 }
 
 /// Where installed skills are kept: one directory per digest. A skill is used only after its files
@@ -768,5 +787,26 @@ mod tests {
         );
         let _ = make_writable(&root);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn front_matter_parses_optional_version_and_refuses_bad_one() {
+        let from_md = |md: &[u8]| {
+            Skill::from_files(BTreeMap::from([(
+                SKILL_FILE.to_string(),
+                SkillFile {
+                    bytes: md.to_vec(),
+                    executable: false,
+                },
+            )]))
+        };
+        let skill = from_md(b"---\nname: pdf-tools\nversion: \"1.2.0\"\n---\nBody.\n").unwrap();
+        assert_eq!(skill.version.as_ref().map(|v| v.as_str()), Some("1.2.0"));
+
+        let without = from_md(b"---\nname: pdf-tools\n---\nBody.\n").unwrap();
+        assert_eq!(without.version, None);
+
+        let bad = from_md(b"---\nname: pdf-tools\nversion: ../bad\n---\nBody.\n");
+        assert_eq!(bad, Err(SkillError::BadVersion));
     }
 }

@@ -101,6 +101,7 @@ fn events() -> Res<Vec<Event>> {
             source: PluginSource::Index {
                 location: index()?,
                 version: version("1.2.0")?,
+                signed_at: None,
             },
             by: Resolution::Human,
             reason: why(),

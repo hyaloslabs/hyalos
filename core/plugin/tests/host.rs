@@ -383,6 +383,7 @@ fn answering(answer: &str, ok: bool) -> Vec<u8> {
 fn with_component(bytes: Vec<u8>) -> hyalos_plugin::skill::Skill {
     hyalos_plugin::skill::Skill {
         name: hyalos_types::PluginName::new("risk-score").unwrap(),
+        version: None,
         asks: hyalos_types::Capabilities::none(),
         mcp: None,
         files: [(
