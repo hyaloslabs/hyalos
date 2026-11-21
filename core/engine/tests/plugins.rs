@@ -167,6 +167,7 @@ fn from(location: &str) -> Res<PluginSource> {
     Ok(PluginSource::Index {
         location: IndexLocation::new(location).ok_or("location")?,
         version: PluginVersion::new("1.0.0").ok_or("version")?,
+        signed_at: None,
     })
 }
 
@@ -304,6 +305,63 @@ fn policy_installs_only_from_a_trusted_index_within_the_ceiling_and_never_a_veri
         e.state().install_policy().map(|s| s.policy.clone()),
         Some(policy()?)
     );
+    Ok(())
+}
+
+#[test]
+fn policy_install_refuses_a_release_no_newer_than_installed_while_human_may_pin() -> Res {
+    let p = path("plugin-not-newer")?;
+    let mut e = Engine::open(&p, key())?.with_operator(operator());
+    e.set_install_policy(at(1), policy()?, Decider::Human, why())?;
+    let source = |version: &str, signed_ms: u64| -> Res<PluginSource> {
+        Ok(PluginSource::Index {
+            location: IndexLocation::new(TRUSTED).ok_or("location")?,
+            version: PluginVersion::new(version).ok_or("version")?,
+            signed_at: Some(Timestamp::from_millis(signed_ms)),
+        })
+    };
+    let within = Grant {
+        egress_hosts: ["docs.rs".to_string()].into(),
+        ..Grant::none()
+    };
+    install_from(
+        &mut e,
+        2,
+        source("1.1.0", 2_000)?,
+        within.clone(),
+        Decider::Policy,
+    )?;
+    // Policy refuses same or older signed_at.
+    assert!(matches!(
+        install_from(
+            &mut e,
+            3,
+            source("1.0.0", 1_000)?,
+            within.clone(),
+            Decider::Policy
+        ),
+        Err(EngineError::Rule(RuleViolation::PluginNotNewer))
+    ));
+    assert!(matches!(
+        install_from(
+            &mut e,
+            4,
+            source("1.1.0-alt", 2_000)?,
+            within.clone(),
+            Decider::Policy
+        ),
+        Err(EngineError::Rule(RuleViolation::PluginNotNewer))
+    ));
+    // A newer release installs by policy.
+    install_from(
+        &mut e,
+        5,
+        source("1.2.0", 3_000)?,
+        within.clone(),
+        Decider::Policy,
+    )?;
+    // An explicit human install may still pin an older release.
+    install_from(&mut e, 6, source("1.0.0", 1_000)?, within, Decider::Human)?;
     Ok(())
 }
 

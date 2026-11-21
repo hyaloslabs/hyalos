@@ -292,6 +292,7 @@ fn ready(name: &str, kind: &str) -> Res<(Engine, Event)> {
                 hyalos_types::PluginSource::Index {
                     location: location.clone(),
                     version: hyalos_types::PluginVersion::new("1").ok_or("version")?,
+                    signed_at: None,
                 },
                 Decider::Human,
                 why(),

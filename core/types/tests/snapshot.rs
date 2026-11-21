@@ -424,6 +424,7 @@ fn v11_image() -> StateImage {
                 location: IndexLocation::new("https://plugins.example/v1")
                     .unwrap_or_else(|| unreachable!()),
                 version: PluginVersion::new("1.2.0").unwrap_or_else(|| unreachable!()),
+                signed_at: None,
             },
             by: Resolution::Human,
             reason: ReasonCode::unavailable(),

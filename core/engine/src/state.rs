@@ -251,6 +251,9 @@ pub enum RuleViolation {
     /// An install of a release recorded as revoked under that name (ADR-0098).
     #[error("a release recorded as revoked is not installed again (ADR-0098)")]
     PluginRevoked,
+    /// A policy-driven update to a release no later than the one already installed.
+    #[error("a release installed by policy must be later than the one installed")]
+    PluginNotNewer,
     /// A plugin's grant holds a name the capability vocabulary does not accept (ADR-0085).
     #[error("a plugin's grant holds a name the capability vocabulary does not accept (ADR-0085)")]
     PluginGrantInvalid,
@@ -822,6 +825,19 @@ impl State {
                         .is_some_and(|p| p.policy.covers(source, grant));
                 if !human && !within_policy {
                     return Err(RuleViolation::PluginNeedsAHuman { by: *by });
+                }
+                if !human
+                    && let PluginSource::Index {
+                        signed_at: Some(next),
+                        ..
+                    } = source
+                    && let Some(PluginSource::Index {
+                        signed_at: Some(prev),
+                        ..
+                    }) = self.plugins.get(name).map(|p| &p.source)
+                    && next <= prev
+                {
+                    return Err(RuleViolation::PluginNotNewer);
                 }
                 if grant.check().is_err() {
                     return Err(RuleViolation::PluginGrantInvalid);
