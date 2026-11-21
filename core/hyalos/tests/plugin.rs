@@ -985,6 +985,42 @@ fn within_the_operators_install_policy_a_skill_installs_without_them() -> Res {
 }
 
 #[test]
+fn a_malformed_version_installs_locally_and_is_refused_from_an_index() -> Res {
+    let world = World::new("plugin-bad-version", None)?;
+    let release = Release::new()?;
+    let src = skill(&world.root, None)?;
+    std::fs::write(
+        src.join("SKILL.md"),
+        "---\nname: pdf-tools\nversion: 1.0 beta\n---\nBody\n",
+    )?;
+    // Locally it is only a skill: it installs and is read back, never called altered.
+    let path = src.to_string_lossy().into_owned();
+    ok_cli(world.signed(&["plugin", "install", &path])?)?;
+    assert_eq!(installs(&world)?.len(), 1);
+    let listed = ok_cli(world.cli(&["plugin", "list"])?)?;
+    assert!(listed.starts_with("pdf-tools\t"), "{listed}");
+
+    // The same release from an index is refused, and its text is not repeated.
+    let bundle = world.root.join("bundle");
+    std::fs::create_dir(&bundle)?;
+    let at = bundle.to_string_lossy().into_owned();
+    let digest = pack(&world, &src, &bundle, "pdf-1.skill")?;
+    release.sign(&bundle, "pdf-1.skill")?;
+    std::fs::write(
+        bundle.join("index.json"),
+        index(&[("1.0.0", digest.as_str(), "pdf-1.skill")]),
+    )?;
+    let said = refused(
+        release.signed(&world, &["plugin", "install", "--index", &at, "pdf-tools"]),
+        1,
+    )?;
+    assert!(said.contains("(plugin.bad_version)"), "{said}");
+    assert!(!said.contains("beta"), "{said}");
+    assert_eq!(installs(&world)?.len(), 1);
+    Ok(())
+}
+
+#[test]
 fn an_update_within_policy_installs_and_one_beyond_it_waits_while_the_old_one_runs() -> Res {
     let world = World::new("plugin-update", None)?;
     let release = Release::new()?;

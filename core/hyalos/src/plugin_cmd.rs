@@ -912,8 +912,12 @@ fn from_index(
             entry.artifact
         ));
     }
-    if let Some(version) = &skill.version
-        && *version != entry.version
+    // Only an index release must declare a well-formed version, if it declares one (ADR-0127).
+    let declared = skill
+        .declared_version()
+        .map_err(|e| format!("{}: {e} ({})", entry.artifact, e.code()))?;
+    if let Some(version) = declared
+        && version != entry.version
     {
         return Err(format!(
             "{}: the skill in it is version {version}, not {} (plugin.wrong_version)",
