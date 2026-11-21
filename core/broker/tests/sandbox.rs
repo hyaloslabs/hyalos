@@ -341,17 +341,51 @@ fn a_call_still_open_when_the_job_ends_never_reaches_the_provider() -> Res {
     r.broker
         .handle(ToBroker::EndJob { job: m.job }, r.clock.as_ref())?;
 
+    // In one write: the broker refuses on the head and closes without reading further, so a body
+    // sent separately could meet a closed socket (the next test).
+    let body = serde_json::to_vec(&messages())?;
+    let mut request = format!(
+        "POST /v1/messages HTTP/1.1\r\ncontent-length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    request.extend_from_slice(&body);
+    open.write_all(&request)?;
+    let mut answer = String::new();
+    open.read_to_string(&mut answer)?;
+    assert!(answer.starts_with("HTTP/1.1 403 "), "{answer}");
+    assert!(answer.contains("the job has ended"), "{answer}");
+    assert!(r.provider.sent.lock().map_err(|_| "lock")?.is_empty());
+    assert_eq!(r.meter.spent(m.job), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
+fn a_body_sent_after_the_job_ended_is_refused_unread_and_reaches_no_provider() -> Res {
+    let mut r = rig(true)?;
+    let dir = job_dir("end-body")?;
+    let socket = dir.join("broker.sock");
+    let m = manifest(10, Role::Actor, 1_000, 10_000);
+    start(&mut r, &m, &socket)?;
+    let mut open = UnixStream::connect(&socket)?;
+    std::thread::sleep(Duration::from_millis(200));
+    r.broker
+        .handle(ToBroker::EndJob { job: m.job }, r.clock.as_ref())?;
+
+    // The head alone is enough for the refusal, and the broker then closes the connection.
     let body = serde_json::to_vec(&messages())?;
     write!(
         open,
         "POST /v1/messages HTTP/1.1\r\ncontent-length: {}\r\n\r\n",
         body.len()
     )?;
-    open.write_all(&body)?;
     let mut answer = String::new();
     open.read_to_string(&mut answer)?;
     assert!(answer.starts_with("HTTP/1.1 403 "), "{answer}");
     assert!(answer.contains("the job has ended"), "{answer}");
+    let late = open.write_all(&body).map_err(|e| e.kind());
+    assert_eq!(late, Err(std::io::ErrorKind::BrokenPipe));
     assert!(r.provider.sent.lock().map_err(|_| "lock")?.is_empty());
     assert_eq!(r.meter.spent(m.job), 0);
     let _ = std::fs::remove_dir_all(&dir);
