@@ -730,6 +730,40 @@ fn golden() -> Res<Vec<(u32, &'static str, String, Event)>> {
             digest: d(14),
         },
     ));
+
+    // Version 25 added `signed_at` to an index plugin's source in `plugin.installed` (ADR-0127), so
+    // every other kind reads as it did at version 24, and an install written before has no signed
+    // time. Its sample is an update by policy, the install whose signed time is checked.
+    let at_24: Vec<_> = all
+        .iter()
+        .filter(|g| g.0 == 24 && g.1 != "plugin.installed")
+        .cloned()
+        .collect();
+    for (_, kind, json, event) in at_24 {
+        all.push((25, kind, json, event));
+    }
+    all.push((
+        25,
+        "plugin.installed",
+        format!(
+            r#"{{"kind":"plugin.installed","name":"lint","digest":"{}","grant":{{"actions":[],"egress_hosts":[],"tools":[],"data_flows":[]}},"source":{{"index":{{"location":"https://plugins.example/v1","version":"1.3.0","signed_at":1794900000000}}}},"by":"policy","reason":"plugin.updated","signed":"none"}}"#,
+            hex(15)
+        ),
+        Event::PluginInstalled {
+            name: hyalos_types::PluginName::new("lint").ok_or("name")?,
+            digest: d(15),
+            grant: hyalos_types::Grant::none(),
+            source: hyalos_types::PluginSource::Index {
+                location: hyalos_types::IndexLocation::new("https://plugins.example/v1")
+                    .ok_or("location")?,
+                version: hyalos_types::PluginVersion::new("1.3.0").ok_or("version")?,
+                signed_at: Some(hyalos_types::Timestamp::from_millis(1_794_900_000_000)),
+            },
+            by: Resolution::Policy,
+            reason: ReasonCode::new("plugin.updated").ok_or("reason")?,
+            signed: Signed::None,
+        },
+    ));
     Ok(all)
 }
 
@@ -789,6 +823,16 @@ fn every_pinned_payload_loads_under_the_current_schema() -> Res {
         let loaded = Event::decode(kind, version, json.as_bytes())?;
         assert_eq!(loaded, event, "{kind} written at version {version}");
         assert_eq!(loaded.kind(), kind);
+    }
+    Ok(())
+}
+
+#[test]
+fn the_current_version_writes_exactly_its_pinned_payloads() -> Res {
+    for (version, kind, json, event) in golden()? {
+        if version == SCHEMA_VERSION {
+            assert_eq!(String::from_utf8(event.encode()?)?, json, "{kind}");
+        }
     }
     Ok(())
 }

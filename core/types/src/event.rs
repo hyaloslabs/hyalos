@@ -14,11 +14,11 @@ use crate::{
 };
 
 /// The version these events are written with. Older versions are read by upcasting (ADR-0023).
-pub const SCHEMA_VERSION: u32 = 24;
+pub const SCHEMA_VERSION: u32 = 25;
 
-/// What this build reads: version 24, and versions 1 to 23 upcast to it (ADR-0023, ADR-0025, ADR-0027,
+/// What this build reads: version 25, and versions 1 to 24 upcast to it (ADR-0023, ADR-0025, ADR-0027,
 /// ADR-0029, ADR-0034, ADR-0043, ADR-0050, ADR-0053, ADR-0057, ADR-0063, ADR-0068, ADR-0069,
-/// ADR-0070, ADR-0071, ADR-0089, ADR-0106).
+/// ADR-0070, ADR-0071, ADR-0089, ADR-0106, ADR-0127).
 ///
 /// Version 2 added the stakes of a hold and the reason for resolving one. A version 1 hold is given the
 /// most cautious stakes, so only a human can release it; a version 1 resolution is given an explicit
@@ -42,6 +42,8 @@ pub const SCHEMA_VERSION: u32 = 24;
 /// none and reads as it was. Version 22 added the `dependency` gate (ADR-0106), which `gate.answered`
 /// and `hold.opened` may name, and changed no payload. Version 23 added `skill.drafted` (ADR-0113)
 /// and changed no payload. Version 24 added `skill.trusted` (ADR-0114) and changed no payload.
+/// Version 25 added `signed_at` to an index plugin's source in `plugin.installed` (ADR-0127); an
+/// earlier event has none and reads as it was.
 pub static SCHEMA: Schema = Schema {
     current: SCHEMA_VERSION,
     steps: &[
