@@ -328,6 +328,17 @@ fn ending_the_job_closes_its_socket_and_drops_its_meter() -> Res {
     Ok(())
 }
 
+/// Returns once every connection made before this call has been accepted: they are accepted in
+/// order, and this one has been answered. A malformed request reaches no provider.
+fn wait_until_accepted(socket: &Path) -> Res {
+    let mut probe = UnixStream::connect(socket)?;
+    probe.write_all(b"GET\r\n\r\n")?;
+    let mut answer = String::new();
+    probe.read_to_string(&mut answer)?;
+    assert!(answer.starts_with("HTTP/1.1 400 "), "{answer}");
+    Ok(())
+}
+
 #[test]
 fn a_call_still_open_when_the_job_ends_never_reaches_the_provider() -> Res {
     let mut r = rig(true)?;
@@ -337,7 +348,7 @@ fn a_call_still_open_when_the_job_ends_never_reaches_the_provider() -> Res {
     start(&mut r, &m, &socket)?;
     // Connected, and accepted, but the request not yet sent.
     let mut open = UnixStream::connect(&socket)?;
-    std::thread::sleep(Duration::from_millis(200));
+    wait_until_accepted(&socket)?;
     r.broker
         .handle(ToBroker::EndJob { job: m.job }, r.clock.as_ref())?;
 
@@ -369,7 +380,7 @@ fn a_body_sent_after_the_job_ended_is_refused_unread_and_reaches_no_provider() -
     let m = manifest(10, Role::Actor, 1_000, 10_000);
     start(&mut r, &m, &socket)?;
     let mut open = UnixStream::connect(&socket)?;
-    std::thread::sleep(Duration::from_millis(200));
+    wait_until_accepted(&socket)?;
     r.broker
         .handle(ToBroker::EndJob { job: m.job }, r.clock.as_ref())?;
 
