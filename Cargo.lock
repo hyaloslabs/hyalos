@@ -1096,7 +1096,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hyalos"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "base64",
  "getrandom 0.4.3",
@@ -1124,7 +1124,7 @@ dependencies = [
 
 [[package]]
 name = "hyalos-broker"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -1140,7 +1140,7 @@ dependencies = [
 
 [[package]]
 name = "hyalos-broker-contract"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "hyalos-broker",
  "hyalos-props",
@@ -1149,7 +1149,7 @@ dependencies = [
 
 [[package]]
 name = "hyalos-engine"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "hyalos-log",
  "hyalos-policy",
@@ -1162,7 +1162,7 @@ dependencies = [
 
 [[package]]
 name = "hyalos-log"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "ed25519-dalek",
  "hyalos-types",
@@ -1173,7 +1173,7 @@ dependencies = [
 
 [[package]]
 name = "hyalos-mcp-conformance"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "hyalos",
  "serde_json",
@@ -1181,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "hyalos-plugin"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "base64",
  "hyalos-sigstore-testkit",
@@ -1197,7 +1197,7 @@ dependencies = [
 
 [[package]]
 name = "hyalos-plugin-contract"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "hyalos-plugin",
  "hyalos-props",
@@ -1207,7 +1207,7 @@ dependencies = [
 
 [[package]]
 name = "hyalos-policy"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "cedar-policy",
  "hyalos-sim",
@@ -1217,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "hyalos-policy-proof"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "cedar-policy",
  "cedar-policy-symcc",
@@ -1227,14 +1227,14 @@ dependencies = [
 
 [[package]]
 name = "hyalos-props"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "hyalos-types",
 ]
 
 [[package]]
 name = "hyalos-redteam"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "hyalos-broker",
  "hyalos-types",
@@ -1244,7 +1244,7 @@ dependencies = [
 
 [[package]]
 name = "hyalos-sandbox-tools"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "hyalos-broker",
  "hyalos-types",
@@ -1254,7 +1254,7 @@ dependencies = [
 
 [[package]]
 name = "hyalos-sigstore-testkit"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "base64",
  "serde_json",
@@ -1266,14 +1266,14 @@ dependencies = [
 
 [[package]]
 name = "hyalos-sim"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "hyalos-types",
 ]
 
 [[package]]
 name = "hyalos-substrate"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "hyalos-types",
  "serde_json",
@@ -1282,7 +1282,7 @@ dependencies = [
 
 [[package]]
 name = "hyalos-substrate-contract"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "hyalos-props",
  "hyalos-substrate",
@@ -1291,7 +1291,7 @@ dependencies = [
 
 [[package]]
 name = "hyalos-types"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "ed25519-dalek",
  "serde",
@@ -1301,14 +1301,14 @@ dependencies = [
 
 [[package]]
 name = "hyalos-vm-init"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "hyalos-world"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "hyalos-broker",
  "hyalos-engine",
@@ -3397,7 +3397,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "serde_json",
 ]
