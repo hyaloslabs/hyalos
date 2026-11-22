@@ -6,6 +6,10 @@
 //!
 //! `notary --listen <address> --dir <directory> --operator-transport-public <hex>
 //!  [--approved-server <name>] [--root <DER file>]... [--stop-on-stdin-close]`
+//!
+//! `notary report --dir <directory> [--wall <file>] [--real-wall <file>]` reads what a serving
+//! notary recorded and measures nothing itself. Each wall-time file holds one call's seconds per
+//! line: `--wall` for the reported sessions, `--real-wall` from a run against the real provider.
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use attest::{
@@ -19,7 +23,12 @@ use std::{
     io::{Read, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    pin::Pin,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    task::{Context as TaskContext, Poll},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tlsn::{
@@ -36,6 +45,7 @@ use tlsn::{
     webpki::{CertificateDer, RootCertStore},
 };
 use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpStream},
     sync::{Semaphore, oneshot},
     task::JoinHandle,
@@ -53,6 +63,10 @@ const HANDSHAKE: Duration = Duration::from_secs(5);
 const DEADLINE_MARGIN: Duration = Duration::from_secs(1);
 /// The first line of the run sequences. A file without it was not written whole by this program.
 const SEQUENCES_HEADER: &str = "hyalos.sequences/1";
+/// The first line of the usage file.
+const USAGE_HEADER: &str = "hyalos.usage/1";
+/// Below this many attested sessions the report says its figures are not yet a measurement.
+const MEASURED_FROM: u64 = 40;
 
 /// A reason a session line may give for `refused`.
 type Reason = &'static str;
@@ -129,6 +143,81 @@ struct Line {
     server: Option<String>,
     sent: u64,
     received: u64,
+    /// Whether the peer proved the enrolled key, so its link bytes count. Never written to a line.
+    enrolled: bool,
+}
+
+/// The usage file's counters, for one life of the serving process. Numbers only.
+#[derive(Default)]
+struct Usage {
+    attested: u64,
+    refused: u64,
+    link_sent: u64,
+    link_received: u64,
+}
+
+impl Usage {
+    /// Rewrites the file whole, with this process's CPU time and peak memory so far.
+    fn save(&self, path: &Path) -> std::io::Result<()> {
+        // SAFETY: `getrusage` only writes the struct it is given, which is zeroed and owned here.
+        let mut own: libc::rusage = unsafe { std::mem::zeroed() };
+        if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut own) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let micros = |time: libc::timeval| (time.tv_sec as u64).saturating_mul(1_000_000).saturating_add(time.tv_usec as u64);
+        let cpu = micros(own.ru_utime).saturating_add(micros(own.ru_stime));
+        let text = format!(
+            "{USAGE_HEADER}\nattested {}\nrefused {}\ncpu_micros {cpu}\npeak_kb {}\nlink_sent {}\nlink_received {}\nend\n",
+            self.attested, self.refused, own.ru_maxrss, self.link_sent, self.link_received
+        );
+        let fresh = path.with_extension("new");
+        let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&fresh)?;
+        file.write_all(text.as_bytes())?;
+        fs::rename(&fresh, path)
+    }
+}
+
+/// The session lines and the usage file move together, under one lock.
+struct Books {
+    lines: fs::File,
+    usage: Usage,
+    usage_path: PathBuf,
+}
+
+/// Counts the bytes crossing the link to the operator, and sees nothing else of them.
+struct Counted {
+    inner: TcpStream,
+    read: Arc<AtomicU64>,
+    written: Arc<AtomicU64>,
+}
+
+impl AsyncRead for Counted {
+    fn poll_read(mut self: Pin<&mut Self>, context: &mut TaskContext<'_>, buffer: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        let before = buffer.filled().len();
+        let polled = Pin::new(&mut self.inner).poll_read(context, buffer);
+        if matches!(polled, Poll::Ready(Ok(()))) {
+            self.read.fetch_add((buffer.filled().len() - before) as u64, Ordering::Relaxed);
+        }
+        polled
+    }
+}
+
+impl AsyncWrite for Counted {
+    fn poll_write(mut self: Pin<&mut Self>, context: &mut TaskContext<'_>, bytes: &[u8]) -> Poll<std::io::Result<usize>> {
+        let polled = Pin::new(&mut self.inner).poll_write(context, bytes);
+        if let Poll::Ready(Ok(count)) = polled {
+            self.written.fetch_add(count as u64, Ordering::Relaxed);
+        }
+        polled
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, context: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(context)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(context)
+    }
 }
 
 struct Notary {
@@ -137,7 +226,7 @@ struct Notary {
     approved: String,
     roots: RootCertStore,
     sequences: Mutex<Sequences>,
-    lines: Mutex<fs::File>,
+    books: Mutex<Books>,
     open: Arc<Semaphore>,
 }
 
@@ -151,36 +240,54 @@ impl<T> Drop for Aborting<T> {
 }
 
 impl Notary {
-    fn write_line(&self, line: &Line, outcome: &str) {
+    /// Writes the session line, then the usage file that counts it. `link` is what the notary sent
+    /// and received on this connection, zero for a peer that never proved the enrolled key.
+    fn write_line(&self, line: &Line, outcome: &str, link: (u64, u64)) {
         let time = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs());
         let text = format!("{time} {} {} {} {outcome}\n", line.server.as_deref().unwrap_or("none"), line.sent, line.received);
-        let mut file = self.lines.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if file.write_all(text.as_bytes()).is_err() {
+        let mut books = self.books.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if books.lines.write_all(text.as_bytes()).is_err() {
             eprintln!("cannot write a session line");
+        }
+        let usage = &mut books.usage;
+        if outcome.starts_with("attested ") {
+            usage.attested += 1;
+        } else {
+            usage.refused += 1;
+        }
+        usage.link_sent = usage.link_sent.saturating_add(link.0);
+        usage.link_received = usage.link_received.saturating_add(link.1);
+        // A file that falls behind the lines makes the report refuse, so this cannot misreport.
+        if books.usage.save(&books.usage_path).is_err() {
+            eprintln!("cannot write the usage file");
         }
     }
 
     async fn serve(self: Arc<Self>, socket: TcpStream, evicted: oneshot::Receiver<()>) {
         let mut line = Line::default();
         let started = Instant::now();
+        let (read, written) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+        let socket = Counted { inner: socket, read: read.clone(), written: written.clone() };
         let outcome = match tokio::time::timeout(DEADLINE, self.session(socket, evicted, &mut line)).await {
             Ok(Ok((run, sequence))) => format!("attested {run} {sequence}"),
             Ok(Err("dropped")) if started.elapsed() >= DEADLINE - DEADLINE_MARGIN => "refused deadline".to_string(),
             Ok(Err(reason)) => format!("refused {reason}"),
             Err(_) => "refused deadline".to_string(),
         };
-        self.write_line(&line, &outcome);
+        let link = if line.enrolled { (written.load(Ordering::Relaxed), read.load(Ordering::Relaxed)) } else { (0, 0) };
+        self.write_line(&line, &outcome, link);
     }
 
     /// One session, through the states of `design.md` §4 as ADR-014 amends them. The sequence number
     /// is saved when the session opens, and nothing is signed before the server's name is verified.
-    async fn session(&self, socket: TcpStream, evicted: oneshot::Receiver<()>, line: &mut Line) -> Result<(String, u64), Reason> {
+    async fn session(&self, socket: Counted, evicted: oneshot::Receiver<()>, line: &mut Line) -> Result<(String, u64), Reason> {
         // A peer that is not the enrolled key ends here, before the protocol starts.
         let accepted = tokio::select! {
             accepted = tokio::time::timeout(HANDSHAKE, self.acceptor.accept(socket)) => accepted,
             _ = evicted => return Err("unenrolled"),
         };
         let mut tls = accepted.map_err(|_| "unenrolled")?.map_err(|_| "unenrolled")?;
+        line.enrolled = true;
         let _open = self.open.clone().try_acquire_owned().map_err(|_| "busy")?;
 
         let first = link::read_line(&mut tls, RELEASE.len() + 128).await.map_err(|_| "dropped")?;
@@ -360,6 +467,108 @@ fn arguments() -> Result<Start> {
     })
 }
 
+/// The usage file, read strictly: anything this program would not have written is a refusal.
+fn read_usage(path: &Path) -> Result<(Usage, u64, u64)> {
+    let unreadable = "the usage file cannot be read";
+    let text = fs::read_to_string(path).map_err(|_| anyhow!(unreadable))?;
+    let mut lines = text.lines();
+    ensure!(text.ends_with('\n') && lines.next() == Some(USAGE_HEADER), unreadable);
+    let mut field = |name: &str| -> Result<u64> {
+        let value = lines.next().and_then(|line| line.strip_prefix(name)).and_then(|rest| rest.strip_prefix(' ')).context(unreadable)?;
+        let number: u64 = value.parse().map_err(|_| anyhow!(unreadable))?;
+        ensure!(number.to_string() == value, unreadable);
+        Ok(number)
+    };
+    let (attested, refused, cpu, peak, link_sent, link_received) = (field("attested")?, field("refused")?, field("cpu_micros")?, field("peak_kb")?, field("link_sent")?, field("link_received")?);
+    ensure!(lines.next() == Some("end") && lines.next().is_none(), unreadable);
+    Ok((Usage { attested, refused, link_sent, link_received }, cpu, peak))
+}
+
+/// Whether a session line is attested, or `None` for a line this program would not have written.
+fn line_attested(line: &str) -> Option<bool> {
+    let fields: Vec<&str> = line.split(' ').collect();
+    let numbers = fields.len() >= 6 && [0, 2, 3].iter().all(|&at| fields[at].parse::<u64>().is_ok());
+    match (numbers, fields.get(4).copied(), fields.len()) {
+        (true, Some("attested"), 7) => (binding(fields[5], 0).is_ok() && fields[6].parse::<u64>().is_ok()).then_some(true),
+        (true, Some("refused"), 6) => Some(false),
+        _ => None,
+    }
+}
+
+/// Checks that the newest lines are the sessions the usage file counts.
+fn check_lines(path: &Path, usage: &Usage) -> Result<()> {
+    let disagree = "the session lines and the usage file disagree";
+    let file = fs::File::open(path).map_err(|_| anyhow!("the session lines cannot be read"))?;
+    let wanted = usize::try_from(usage.attested.checked_add(usage.refused).context(disagree)?).map_err(|_| anyhow!(disagree))?;
+    // Anyone who reaches the port can grow this file, so only the newest lines are held.
+    let mut newest = VecDeque::new();
+    for line in std::io::BufRead::lines(std::io::BufReader::new(file)) {
+        let line = line.map_err(|_| anyhow!("the session lines cannot be read"))?;
+        newest.push_back(line_attested(&line).context("the session lines cannot be read")?);
+        if newest.len() > wanted {
+            newest.pop_front();
+        }
+    }
+    ensure!(newest.len() == wanted && newest.iter().filter(|&&attested| attested).count() as u64 == usage.attested, disagree);
+    Ok(())
+}
+
+/// The mean of a file of one call's seconds per line, and how many calls it holds.
+fn wall_times(path: &Path) -> Result<(f64, usize)> {
+    let unreadable = "a wall-time file cannot be read";
+    let text = fs::read_to_string(path).map_err(|_| anyhow!(unreadable))?;
+    let mut times = Vec::new();
+    for line in text.lines() {
+        let seconds: f64 = line.parse().map_err(|_| anyhow!(unreadable))?;
+        ensure!(seconds.is_finite() && seconds > 0.0, unreadable);
+        times.push(seconds);
+    }
+    ensure!(!times.is_empty(), unreadable);
+    Ok((times.iter().sum::<f64>() / times.len() as f64, times.len()))
+}
+
+fn report(mut args: impl Iterator<Item = String>) -> Result<()> {
+    let usage_text = "usage: notary report --dir <directory> [--wall <file>] [--real-wall <file>]";
+    let (mut dir, mut wall, mut real) = (None, None, None);
+    while let Some(flag) = args.next() {
+        let slot = match flag.as_str() {
+            "--dir" => &mut dir,
+            "--wall" => &mut wall,
+            "--real-wall" => &mut real,
+            _ => bail!("{usage_text}"),
+        };
+        ensure!(slot.replace(PathBuf::from(args.next().context(usage_text)?)).is_none(), "{usage_text}");
+    }
+    let dir = dir.context(usage_text)?;
+    let (usage, cpu, peak) = read_usage(&dir.join("usage"))?;
+    check_lines(&dir.join("sessions.log"), &usage)?;
+    println!("sessions: {} attested, {} refused, in one life of the serving process", usage.attested, usage.refused);
+    if usage.attested < MEASURED_FROM {
+        println!("not yet a measurement: the figures need {MEASURED_FROM} attested sessions");
+        return Ok(());
+    }
+    let each = usage.attested as f64;
+    println!("notary CPU: {:.3} s per attestation", cpu as f64 / 1_000_000.0 / each);
+    println!("notary peak memory: {peak} KB, one figure for the process");
+    println!("link bytes per attestation: {:.0} sent by the notary, {:.0} received", usage.link_sent as f64 / each, usage.link_received as f64 / each);
+    match wall {
+        Some(file) => {
+            let (mean, calls) = wall_times(&file)?;
+            ensure!(calls as u64 == usage.attested, "the wall-time file does not cover the reported sessions");
+            println!("operator's wall time, without the real provider: {mean:.3} s per call over {calls} calls");
+        }
+        None => println!("operator's wall time, without the real provider: not supplied"),
+    }
+    match real {
+        Some(file) => {
+            let (mean, calls) = wall_times(&file)?;
+            println!("operator's wall time, with the real provider: {mean:.3} s per call over {calls} call(s)");
+        }
+        None => println!("operator's wall time, with the real provider: not supplied"),
+    }
+    Ok(())
+}
+
 async fn run() -> Result<()> {
     let start = arguments()?;
     fs::DirBuilder::new().recursive(true).mode(0o700).create(&start.dir).context("cannot use the notary's directory")?;
@@ -377,6 +586,10 @@ async fn run() -> Result<()> {
         roots.roots.push(CertificateDer(fs::read(file).map_err(|_| anyhow!("cannot read a trusted root"))?));
     }
     let lines = fs::OpenOptions::new().append(true).create(true).mode(0o600).open(start.dir.join("sessions.log")).context("cannot keep the session lines")?;
+    // A new life starts its counters at zero, because CPU time and peak memory start there too.
+    let usage_path = start.dir.join("usage");
+    let usage = Usage::default();
+    usage.save(&usage_path).context("cannot keep the usage file")?;
     let acceptor = link::acceptor(&transport, &start.operator)?;
     let listener = TcpListener::bind(&start.listen).await.context("cannot listen on that address")?;
 
@@ -397,7 +610,7 @@ async fn run() -> Result<()> {
         approved: start.approved,
         roots,
         sequences: Mutex::new(sequences),
-        lines: Mutex::new(lines),
+        books: Mutex::new(Books { lines, usage, usage_path }),
         open: Arc::new(Semaphore::new(1)),
     });
     let _lock = lock;
@@ -407,7 +620,7 @@ async fn run() -> Result<()> {
         // While a session is open, any other connection is closed at once.
         if notary.open.available_permits() == 0 {
             drop(socket);
-            notary.write_line(&Line::default(), "refused busy");
+            notary.write_line(&Line::default(), "refused busy", (0, 0));
             continue;
         }
         pending.retain(|handshake| !handshake.is_closed());
@@ -423,7 +636,14 @@ async fn run() -> Result<()> {
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    match run().await {
+    let mut args = std::env::args().skip(1).peekable();
+    let done = if args.peek().map(String::as_str) == Some("report") {
+        args.next();
+        report(args)
+    } else {
+        run().await
+    };
+    match done {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("refused: {error}");
