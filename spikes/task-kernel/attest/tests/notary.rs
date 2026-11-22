@@ -129,7 +129,7 @@ fn s_01_3_e1_a_certificate_for_another_name_is_refused() {
 #[test]
 fn s_01_3_a_session_with_a_server_the_notary_does_not_approve_signs_nothing() {
     // An operator that tells its own tool another name: the session completes, and the notary,
-    // which verified the certificate for that name, refuses it and spends no number.
+    // which verified the certificate for that name, refuses it. Its number was spent when it opened.
     let _one = one_at_a_time();
     let rig = Rig::new("s-01-3-cheat", &["--present", "other.test"]);
     let mut command = rig.command();
@@ -139,7 +139,7 @@ fn s_01_3_a_session_with_a_server_the_notary_does_not_approve_signs_nothing() {
     assert!(!rig.file("never.presentation").exists());
     let line = rig.notary.line_after(0);
     assert!(line.contains(" other.test ") && line.ends_with("refused server"), "{line}");
-    assert!(!recorded(&rig.notary.dir), "a refused session spends no number");
+    assert!(recorded(&rig.notary.dir), "a session spends its number when it opens (ADR-014)");
 }
 
 #[test]
@@ -157,7 +157,7 @@ fn s_01_3_a_certificate_under_a_root_the_notary_does_not_trust_is_a_provider_ref
     assert!(!file.exists());
     let line = notary.line_after(0);
     assert!(line.ends_with("refused server"), "{line}");
-    assert!(!recorded(&notary.dir));
+    assert!(recorded(&notary.dir), "a session spends its number when it opens (ADR-014)");
 }
 
 #[test]
@@ -215,7 +215,7 @@ fn s_01_3_e2_the_notary_serves_the_next_session_after_a_drop() {
     assert_eq!(word(&broken), "provider");
     assert!(notary.line_after(0).contains(" refused "));
     let next = run_ask(command(), &scratch.0.join("next.presentation"), INTENT, 0);
-    assert_eq!(said(&next)["sequence"], 0, "the broken session spent no number");
+    assert_eq!(said(&next)["sequence"], 1, "the broken session spent its number (ADR-014)");
     assert!(notary.line_after(1).contains(" attested "));
 }
 
@@ -335,6 +335,18 @@ fn s_03_5_a_number_that_cannot_be_saved_is_not_signed() {
     assert!(!rig.file("never.presentation").exists());
     assert!(rig.notary.line_after(0).ends_with("refused sequence"));
     assert_eq!(said(&rig.ask("next.presentation", INTENT, 0))["sequence"], 0, "the unsaved number was not used");
+}
+
+#[test]
+fn adr_014_a_session_left_after_reading_the_reply_spends_its_number() {
+    let _one = one_at_a_time();
+    let rig = Rig::new("adr-014", &[]);
+    let mut leaving = rig.command();
+    leaving.env("HYALOS_TEST_LEAVE_AFTER_REPLY", "1");
+    assert_eq!(word(&run_ask(leaving, &rig.file("left.presentation"), INTENT, 0)), "provider");
+    assert!(!rig.file("left.presentation").exists());
+    assert!(rig.notary.line_after(0).ends_with("refused dropped"));
+    assert_eq!(said(&rig.ask("next.presentation", INTENT, 0))["sequence"], 1);
 }
 
 #[test]

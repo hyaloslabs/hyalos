@@ -355,6 +355,25 @@ fn s_03_5_e4_the_first_question_asked_three_times_is_refused() {
 }
 
 #[test]
+fn adr_014_a_session_left_after_reading_the_reply_cannot_be_asked_again() {
+    let _one = locked();
+    let world = World::new("left");
+    let intent = world.declare();
+    fs::create_dir_all(format!("{}.attest", world.record())).unwrap();
+    let before = now() - 1;
+    // The forger reads the answer, dislikes it, and leaves before the proof.
+    let mut leaving = Command::new(built("attest"));
+    leaving.args(["ask", &world.scratch_file("left"), &intent, "0"]).env_clear().envs(world.settings.iter().map(|(n, v)| (n, v))).env("HYALOS_TEST_LEAVE_AFTER_REPLY", "1");
+    let mut child = leaving.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(QUESTIONS[0].as_bytes()).unwrap();
+    let left = child.wait_with_output().unwrap();
+    assert!(!left.status.success());
+    let kept = answer_from(&world.ask(&world.presentation(0), &intent, 0, QUESTIONS[0], None), QUESTIONS[0]);
+    world.close(&intent, vec![kept], before, now() + 1);
+    assert_eq!(world.refused(), "answer 0: the sequence number is not the answer's position, so an attestation is unaccounted for");
+}
+
+#[test]
 fn s_03_5_e5_an_operator_who_tells_the_notary_another_run_is_refused() {
     let _one = locked();
     let world = World::new("told");

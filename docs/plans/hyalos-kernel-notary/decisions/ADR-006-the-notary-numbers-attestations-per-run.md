@@ -1,6 +1,6 @@
 # ADR-006: The notary numbers attestations per run, and the audit requires the number to equal the position
 
-**Status:** accepted (developer, 2026-11-21)
+**Status:** accepted (developer, 2026-11-21), amended by ADR-014
 
 **Proposed by:** author (cold-read); accepted by the developer in cold-read round 1
 

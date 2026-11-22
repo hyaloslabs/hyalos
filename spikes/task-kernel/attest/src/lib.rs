@@ -403,6 +403,8 @@ pub mod link {
         Unreachable,
         /// The peer's key is not the pinned one, or the peer refused ours.
         PeerKey,
+        /// The notary could not save this session's sequence number.
+        Sequence,
     }
 
     /// The operator's side of the handshake, accepting only the configured notary's key.
@@ -457,6 +459,7 @@ pub mod link {
         match read_line(stream, 16).await.map_err(|error| classify(&error, false))?.as_str() {
             "ok" => Ok(true),
             "release" => Ok(false),
+            "sequence" => Err(LinkFailure::Sequence),
             _ => Err(LinkFailure::Unreachable),
         }
     }
