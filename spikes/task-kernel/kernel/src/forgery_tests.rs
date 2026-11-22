@@ -29,6 +29,8 @@ struct World {
     settings: Vec<(String, String)>,
     signer: String,
     operator_transport: String,
+    /// The version of the record and links this world writes.
+    version: u32,
 }
 
 impl Drop for World {
@@ -58,6 +60,10 @@ fn start(children: &mut Vec<Child>, mut command: Command, fields: &[&str]) -> Ve
 
 impl World {
     fn new(label: &str) -> Self {
+        Self::of_version(label, crate::CURRENT_VERSION)
+    }
+
+    fn of_version(label: &str, version: u32) -> Self {
         let rig = Rig::new(&format!("forgery-{label}"));
         let (log, ledger_key) = (rig.key("test-log"), rig.key("operator"));
         let home = rig.root.join("home");
@@ -80,7 +86,7 @@ impl World {
             ("HYALOS_TRUST_PROVIDER_ADDRESS".to_string(), provider),
             ("HYALOS_OPERATOR_TRANSPORT_KEY".to_string(), transport_key.display().to_string()),
         ];
-        let mut world = Self { rig, log, ledger_key, children, settings, signer: String::new(), operator_transport };
+        let mut world = Self { rig, log, ledger_key, children, settings, signer: String::new(), operator_transport, version };
         let (signer, transport, address) = world.notary("notary");
         world.signer = signer;
         world.point_at(&transport, &address, &world.signer.clone());
@@ -137,10 +143,13 @@ impl World {
     }
 
     /// The transcript's frame. The guest and input are labels: this audit does not run the guest.
-    fn frame() -> Transcript {
+    fn frame(&self) -> Transcript {
+        let guest_sha256 = sha(b"the forger's guest");
+        let task = if self.version == 1 { String::new() } else { crate::task_v2(&guest_sha256, &[b"one input".to_vec()]).unwrap() };
         Transcript {
-            version: 1,
-            guest_sha256: sha(b"the forger's guest"),
+            version: self.version,
+            task,
+            guest_sha256,
             inputs_hex: vec![crate::hex(b"one input")],
             answers: Vec::new(),
             effects: Vec::new(),
@@ -151,22 +160,27 @@ impl World {
 
     /// Logs an intent for the frame's task and gives its hash.
     fn declare(&self) -> String {
-        let frame = Self::frame();
+        let frame = self.frame();
         let inputs = vec![b"one input".to_vec()];
-        let intent = json!({"v": 1, "kind": "intent", "task": crate::task_of(&frame.guest_sha256, &inputs), "guest_sha256": frame.guest_sha256});
+        let intent = if self.version == 1 {
+            json!({"v": 1, "kind": "intent", "task": crate::task_of(&frame.guest_sha256, &inputs), "guest_sha256": frame.guest_sha256})
+        } else {
+            let key = public_der(&fs::read_to_string(self.rig.path("operator.pub")).unwrap()).unwrap();
+            json!({"v": self.version, "kind": "intent", "task": frame.task, "guest_sha256": frame.guest_sha256, "operator": sha(&key)})
+        };
         self.rig.push(&self.log, &self.ledger_key, intent)
     }
 
     /// Writes the record over these answers, files already in place, and logs its result link.
     /// The log then signs `intent_time` and `result_time` for the run's two links.
     fn close(&self, intent: &str, answers: Vec<Answer>, intent_time: u64, result_time: u64) {
-        let mut t = Self::frame();
+        let mut t = self.frame();
         t.answers = answers;
         let salt = random_salt();
         fs::write(self.record(), serde_json::to_vec_pretty(&t).unwrap()).unwrap();
         fs::write(format!("{}.salt", self.record()), &salt).unwrap();
         let commitment = sha([salt.as_bytes(), &serde_json::to_vec(&t).unwrap()].concat().as_slice());
-        self.rig.push(&self.log, &self.ledger_key, json!({"v": 1, "kind": "result", "intent": intent, "outcome": "ok", "transcript": commitment}));
+        self.rig.push(&self.log, &self.ledger_key, json!({"v": self.version, "kind": "result", "intent": intent, "outcome": "ok", "transcript": commitment}));
         self.sign_times(intent_time, result_time);
     }
 
@@ -182,11 +196,16 @@ impl World {
     }
 
     fn audit(&self) -> Result<String, String> {
+        self.audit_with(false)
+    }
+
+    fn audit_with(&self, legacy: bool) -> Result<String, String> {
         let inputs = AuditInputs {
             dir: Some(self.rig.path("ledger")),
             operator: Some(self.rig.path("operator.pub")),
             notary: self.signer.clone(),
             verify: built("attest").display().to_string(),
+            legacy,
         };
         let trust = self.settings.iter().filter(|(name, _)| name.starts_with("HYALOS_TRUST_")).map(|(n, v)| (n.clone(), v.into())).collect();
         let verifier = Verifier { program: inputs.verify.clone(), trust };
@@ -463,7 +482,7 @@ fn s_04_1_the_whole_audit_passes_with_an_empty_home() {
         .unwrap();
     let report = String::from_utf8(output.stdout).unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(report.starts_with("audit passed\ntest trust settings"), "{report}");
+    assert!(report.starts_with("interim audit passed: attempt budget not yet checked\ntest trust settings"), "{report}");
     assert!(!report.contains("public log"), "a stand-in report claims nothing of the public log: {report}");
     assert_eq!(fs::read_dir(&empty).unwrap().count(), 0, "the home directory stays empty");
 }
@@ -471,4 +490,85 @@ fn s_04_1_the_whole_audit_passes_with_an_empty_home() {
 #[test]
 fn t_5_1_the_monitor_names_no_notary_setting() {
     assert!(!include_str!("main.rs").contains(concat!("HYALOS_", "NOTARY")));
+}
+
+/// A world holding one honest attested answer in a record of `version`.
+fn one_answer(label: &str, version: u32) -> World {
+    let world = World::of_version(label, version);
+    let intent = world.declare();
+    let before = now() - 1;
+    let answers = world.honest(&intent, &QUESTIONS[..1]);
+    world.close(&intent, answers, before, now() + 1);
+    world
+}
+
+/// The audit of a record file that its version check refuses, so no key or log is reached.
+fn audit_file(record: &str, legacy: bool) -> Result<String, String> {
+    let inputs = AuditInputs { dir: None, operator: Some("/nonexistent".into()), notary: format!("02{}", "11".repeat(32)), verify: "/nonexistent".into(), legacy };
+    crate::audit_record(record, &inputs, None, &Verifier { program: "/nonexistent".into(), trust: Vec::new() })
+}
+
+fn record_of_version(rig: &Rig, version: u32) -> String {
+    let record = rig.path("versioned");
+    fs::write(&record, json!({"version": version, "guest_sha256": "g", "inputs_hex": [], "answers": [], "effects": [], "result_hex": "", "fuel_used": 1}).to_string()).unwrap();
+    record
+}
+
+#[test]
+fn record_s_01_1_e1_an_unknown_version_is_refused_and_named() {
+    let rig = Rig::new("r-01-1-e1");
+    let record = record_of_version(&rig, 3);
+    assert_eq!(audit_file(&record, false).unwrap_err(), "record version 3 is not known");
+    assert_eq!(crate::read_transcript(&fs::read(&record).unwrap()).unwrap_err(), "record version 3 is not known");
+}
+
+#[test]
+fn record_s_01_1_e2_version_0_is_refused_even_with_the_legacy_option() {
+    let rig = Rig::new("r-01-1-e2");
+    assert_eq!(audit_file(&record_of_version(&rig, 0), true).unwrap_err(), "record version 0 is not known");
+}
+
+#[test]
+fn record_s_01_2_e1_a_version_1_record_without_the_option_is_refused_naming_it() {
+    let rig = Rig::new("r-01-2-e1");
+    let refused = audit_file(&record_of_version(&rig, 1), false).unwrap_err();
+    assert!(refused.contains("--legacy-v1"), "{refused}");
+}
+
+#[test]
+fn record_s_01_2_e2_a_version_2_record_is_not_refused_for_its_version() {
+    let _one = locked();
+    assert!(one_answer("r-01-2-e2", 2).audit().is_ok());
+}
+
+#[test]
+fn record_s_01_3_e1_a_valid_version_1_record_passes_as_legacy() {
+    let _one = locked();
+    let report = one_answer("r-01-3-e1", 1).audit_with(true).unwrap();
+    assert_eq!(report.lines().next(), Some("legacy audit passed: no attempt budget"));
+}
+
+#[test]
+fn record_s_01_3_e2_a_version_2_record_with_the_option_is_audited_as_version_2() {
+    let _one = locked();
+    let report = one_answer("r-01-3-e2", 2).audit_with(true).unwrap();
+    assert_eq!(report.lines().next(), Some("interim audit passed: attempt budget not yet checked"));
+    assert!(!report.contains("legacy"), "{report}");
+}
+
+#[test]
+fn record_s_01_7_e1_a_legacy_pass_never_opens_with_audit_passed() {
+    let _one = locked();
+    let report = one_answer("r-01-7-e1", 1).audit_with(true).unwrap();
+    assert!(!report.starts_with("audit passed"), "{report}");
+}
+
+#[test]
+fn record_1_1_a_version_2_pass_says_the_budget_is_not_checked() {
+    let _one = locked();
+    let report = one_answer("r-1-1", 2).audit().unwrap();
+    let (first, rest) = report.split_once('\n').unwrap();
+    assert_eq!(first, "interim audit passed: attempt budget not yet checked");
+    assert!(!first.starts_with("audit passed"));
+    assert!(!rest.contains("attempt") && !rest.contains("ceiling"), "{report}");
 }

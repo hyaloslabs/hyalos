@@ -55,6 +55,12 @@ impl Ledger {
         Some(B64.encode(openssl(&["pkey", "-in", self.key.to_str()?, "-pubout"])?))
     }
 
+    /// The SHA-256 of the operator public key's DER bytes, which a version 2 intent names.
+    pub(crate) fn fingerprint(&self) -> Option<String> {
+        let public = openssl(&["pkey", "-in", self.key.to_str()?, "-pubout"])?;
+        Some(sha(&public_der(std::str::from_utf8(&public).ok()?)?))
+    }
+
     /// The chain's links in order, as the exact bytes that were hashed and logged.
     pub(crate) fn links(&self) -> Vec<Vec<u8>> {
         read_links(&self.dir)
@@ -205,6 +211,8 @@ pub(crate) struct Audited {
     pub(crate) intent: String,
     /// The times the log signed for this run's intent link and result link.
     pub(crate) window: (u64, u64),
+    /// The version of this run's record and links.
+    pub(crate) version: u32,
 }
 
 /// What a record says about itself, recomputed from the record: its commitment, its task and its
@@ -213,6 +221,8 @@ pub(crate) struct Claim {
     pub(crate) commitment: String,
     pub(crate) task: String,
     pub(crate) guest: String,
+    /// The record's version, which its links must carry.
+    pub(crate) version: u32,
 }
 
 /// The audit's view of a chain: public keys and stored replies. It opens no private key and reads
@@ -372,6 +382,12 @@ impl Auditor {
                 return Err(format!("the chain is broken at link {seq}"));
             }
         }
+        // A link of a version this program does not know could mean anything, so none is read past.
+        for (seq, link) in parsed.iter().enumerate() {
+            if !matches!(link["v"].as_u64(), Some(1 | 2)) {
+                return Err(format!("link {seq}: its version is not known"));
+            }
+        }
         let logged = self.logged()?;
         let mine: Vec<String> = links.iter().map(|l| sha(l)).collect();
         if logged != mine {
@@ -396,6 +412,10 @@ impl Auditor {
                         return Err(format!("link {seq}: a second result was logged for one run"));
                     }
                     intent.1 = true;
+                    let at = links.iter().position(|l| Some(sha(l).as_str()) == named).ok_or("the chain is unreadable")?;
+                    if link["v"] != parsed[at]["v"] {
+                        return Err(format!("link {seq}: its version is not its intent's"));
+                    }
                 }
                 _ => return Err(format!("link {seq}: it is neither an intent nor a result")),
             }
@@ -410,6 +430,14 @@ impl Auditor {
             return Err("this record's result link says the run was refused".into());
         }
         let intent = links.iter().position(|l| json!(sha(l)) == result["intent"]).ok_or("the result names an intent that is not in the chain")?;
+        // A run hash belongs to one log key, so no version 2 intent may name another (ADR-010).
+        let fingerprint = sha(&self.operator);
+        if let Some(seq) = parsed.iter().position(|l| l["kind"] == "intent" && l["v"] == 2 && l["operator"] != json!(fingerprint)) {
+            return Err(format!("link {seq}: the intent names another operator key"));
+        }
+        if parsed[intent]["v"].as_u64() != Some(u64::from(claim.version)) {
+            return Err(format!("link {intent}: the run's links are not this record's version"));
+        }
         if parsed[intent]["task"] != json!(claim.task) || parsed[intent]["guest_sha256"] != json!(claim.guest) {
             return Err(format!("link {intent}: the intent names another task than this record's"));
         }
@@ -424,6 +452,7 @@ impl Auditor {
             stand_in: matches!(self.log, Log::StandIn(_)),
             intent: sha(&links[intent]),
             window: (times[intent], result_time),
+            version: claim.version,
         })
     }
 }

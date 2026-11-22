@@ -31,6 +31,8 @@ pub(crate) const MAX_RESULT: usize = 4 * 1024;
 const MAX_EFFECTS: usize = 1;
 const LABELS: i32 = 4; // schema 0: 0 bug, 1 feature, 2 security, 3 other
 const NOTIFY: i32 = 0;
+/// The record and link version new runs write.
+const CURRENT_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Reason {
@@ -87,6 +89,9 @@ struct EffectRecord {
 #[serde(deny_unknown_fields)]
 struct Transcript {
     version: u32,
+    /// The framed task identity. Required in version 2, and absent from version 1's bytes.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    task: String,
     guest_sha256: String,
     inputs_hex: Vec<String>,
     answers: Vec<Answer>,
@@ -340,15 +345,27 @@ fn in_process(guest: &[u8], host: Host) -> Result<(Host, Vec<u8>, u64), Reason> 
     Ok((process.host, process.result.ok_or(Reason::NoResult)?, fuel_used))
 }
 
+/// A new run, at the version new runs are written in.
 fn execute(backend: &Backend, guest: &[u8], inputs: Vec<Vec<u8>>, mode: Mode) -> Result<Transcript, Reason> {
+    execute_as(CURRENT_VERSION, backend, guest, inputs, mode)
+}
+
+/// A run written at `version`, so a replay rebuilds the bytes of the version it was given.
+fn execute_as(version: u32, backend: &Backend, guest: &[u8], inputs: Vec<Vec<u8>>, mode: Mode) -> Result<Transcript, Reason> {
     let inputs_hex = inputs.iter().map(|i| hex(i)).collect();
+    let task = match version {
+        1 => String::new(),
+        2 => task_v2(&sha(guest), &inputs).ok_or(Reason::ReplayDiverged)?,
+        _ => return Err(Reason::ReplayDiverged),
+    };
     let host = Host { mode, inputs, answers: vec![], effects: vec![] };
     let (host, result, fuel_used) = match backend {
         Backend::Process => in_process(guest, host)?,
         Backend::Kvm { kernel, limit } => kvm::run(kernel, guest, host, *limit)?,
     };
     Ok(Transcript {
-        version: 1,
+        version,
+        task,
         guest_sha256: sha(guest),
         inputs_hex,
         answers: host.answers,
@@ -364,10 +381,26 @@ fn replay(backend: &Backend, guest: &[u8], recorded: &Transcript) -> Result<(), 
     }
     let inputs = recorded.inputs_hex.iter().map(|i| unhex(i)).collect::<Option<Vec<_>>>().ok_or(Reason::ReplayDiverged)?;
     let mode = Mode::Replay { answers: recorded.answers.clone(), effects: recorded.effects.clone() };
-    let again = execute(backend, guest, inputs, mode)?;
+    let again = execute_as(recorded.version, backend, guest, inputs, mode)?;
     let same = serde_json::to_vec(&again).map_err(|_| Reason::ReplayDiverged)?
         == serde_json::to_vec(recorded).map_err(|_| Reason::ReplayDiverged)?;
     if same { Ok(()) } else { Err(Reason::ReplayDiverged) }
+}
+
+/// Reads a record, refusing a version this program does not know and a task that is not the one
+/// its own guest and inputs give. Every command that takes a record reads it here.
+fn read_transcript(bytes: &[u8]) -> Result<Transcript, String> {
+    let t: Transcript = serde_json::from_slice(bytes).map_err(|_| "cannot parse")?;
+    match t.version {
+        1 if t.task.is_empty() => Ok(t),
+        1 => Err("a version 1 record cannot carry a task".into()),
+        2 if t.task.is_empty() => Err("this version 2 record has no task".into()),
+        2 => {
+            let inputs = t.inputs_hex.iter().map(|i| unhex(i)).collect::<Option<Vec<_>>>().ok_or("the record's inputs are unreadable")?;
+            if task_v2(&t.guest_sha256, &inputs).as_deref() == Some(t.task.as_str()) { Ok(t) } else { Err("this record's task is not the one its guest and inputs give".into()) }
+        }
+        other => Err(format!("record version {other} is not known")),
+    }
 }
 
 fn read_inputs(path: &str) -> Result<Vec<Vec<u8>>, String> {
@@ -618,10 +651,11 @@ fn declared_run(
     mut mode: Mode,
     salt: &str,
     record: &str,
+    operator: &str,
     signed_time: &dyn Fn(usize) -> Option<u64>,
 ) -> Result<(Result<Transcript, Reason>, usize), String> {
-    let task = task_of(&sha(guest), &inputs);
-    let intent = serde_json::json!({"v": 1, "kind": "intent", "task": task, "guest_sha256": sha(guest)});
+    let task = task_v2(&sha(guest), &inputs).ok_or("the guest's hash is unreadable")?;
+    let intent = serde_json::json!({"v": CURRENT_VERSION, "kind": "intent", "task": task, "guest_sha256": sha(guest), "operator": operator});
     let (intent_seq, intent_hash) = append(intent).map_err(|r| format!("{r:?}"))?;
     // The run is declared. From here every attested call names it.
     if let Mode::Live(live) = &mut mode {
@@ -634,7 +668,7 @@ fn declared_run(
         Ok(t) => ("ok".to_string(), sha([salt.as_bytes(), &serde_json::to_vec(t).map_err(|_| "encode")?].concat().as_slice())),
         Err(reason) => (format!("refused:{reason:?}"), String::new()),
     };
-    let result = serde_json::json!({"v": 1, "kind": "result", "intent": intent_hash, "outcome": state, "transcript": commitment});
+    let result = serde_json::json!({"v": CURRENT_VERSION, "kind": "result", "intent": intent_hash, "outcome": state, "transcript": commitment});
     // The record and salt are on disk before the public log commits to them, and take their
     // names only after it has.
     let (pending_record, pending_salt) = (format!("{record}.pending"), format!("{record}.salt.pending"));
@@ -664,18 +698,21 @@ struct AuditInputs {
     /// The trusted notary's signing key, as verify takes it.
     notary: String,
     verify: String,
+    /// `--legacy-v1`: a version 1 record may be read. It changes nothing for version 2.
+    legacy: bool,
 }
 
-/// `[ledger dir] [--operator-public <file>] --notary-public <file> --verify <program>`. There is no
+/// `[ledger dir] [--operator-public <file>] --notary-public <file> --verify <program> [--legacy-v1]`. There is no
 /// setting that skips the attestations: without a trusted notary key the audit does not start.
 fn audit_inputs(rest: &[String]) -> Result<AuditInputs, String> {
-    let (mut dir, mut operator, mut notary, mut verify) = (None, None, None, None);
+    let (mut dir, mut operator, mut notary, mut verify, mut legacy) = (None, None, None, None, false);
     let mut words = rest.iter();
     while let Some(word) = words.next() {
         match word.as_str() {
             "--operator-public" => operator = words.next(),
             "--notary-public" => notary = words.next(),
             "--verify" => verify = words.next(),
+            "--legacy-v1" => legacy = true,
             flag if flag.starts_with("--") => return Err("unknown audit option".into()),
             _ if dir.is_none() => dir = Some(word),
             _ => return Err("too many audit arguments".into()),
@@ -689,7 +726,7 @@ fn audit_inputs(rest: &[String]) -> Result<AuditInputs, String> {
         return Err("the verify program is not a file".into());
     }
     let verify = verify.to_str().ok_or("the verify program's path is not text")?.to_string();
-    Ok(AuditInputs { dir: dir.cloned(), operator: operator.cloned(), notary: notary_key(notary)?, verify })
+    Ok(AuditInputs { dir: dir.cloned(), operator: operator.cloned(), notary: notary_key(notary)?, verify, legacy })
 }
 
 /// The notary's signing key from its file: one compressed secp256k1 point in lowercase hex.
@@ -712,7 +749,10 @@ fn stand_in_log() -> Result<Option<(String, String)>, String> {
 /// The whole audit of one record. Everything is checked before anything is reported, so a failure
 /// states no proof.
 fn audit_record(record: &str, inputs: &AuditInputs, stand_in: Option<(String, String)>, verifier: &Verifier) -> Result<String, String> {
-    let t: Transcript = serde_json::from_slice(&fs::read(record).map_err(|_| "cannot read")?).map_err(|_| "cannot parse")?;
+    let t = read_transcript(&fs::read(record).map_err(|_| "cannot read")?)?;
+    if t.version == 1 && !inputs.legacy {
+        return Err("this is a version 1 record, with no attempt budget: audit it with --legacy-v1".into());
+    }
     let salt = fs::read(format!("{record}.salt")).map_err(|_| "no salt for this record")?;
     let commitment = sha([salt.as_slice(), &serde_json::to_vec(&t).map_err(|_| "encode")?].concat().as_slice());
     let operator = inputs.operator.as_deref().ok_or("the operator's public key is not given: --operator-public <file>")?;
@@ -725,7 +765,9 @@ fn audit_record(record: &str, inputs: &AuditInputs, stand_in: Option<(String, St
 /// What a passing audit proved, then what it did not.
 fn audit_report(audited: &ledger::Audited, answers: usize, test_settings: bool) -> String {
     let log = if audited.stand_in { "stand-in log" } else { "public log" };
-    let mut lines = vec!["audit passed".to_string()];
+    // Only a pass that checked an attempt budget may open with `audit passed` (ADR-011).
+    let first = if audited.version == 1 { "legacy audit passed: no attempt budget" } else { "interim audit passed: attempt budget not yet checked" };
+    let mut lines = vec![first.to_string()];
     if audited.stand_in {
         lines.push("test trust settings: the log here is a stand-in".to_string());
     }
@@ -734,8 +776,8 @@ fn audit_report(audited: &ledger::Audited, answers: usize, test_settings: bool) 
     lines.push(format!("proven: the chain is unbroken and is the same list as the {log}'s entries under the operator's key"));
     lines.push(format!("proven: this record is at link {} of {}, with one result for its run", audited.link, audited.links));
     let times = if audited.runs == 1 { "time" } else { "times" };
-    lines.push(format!("the task was run {} {times}, as the intent links name the task", audited.runs));
-    lines.push(format!("the chain holds {} run(s) of any task under this key", audited.all_runs));
+    lines.push(format!("the task was run {} {times} under this log key only, as the intent links name the task", audited.runs));
+    lines.push(format!("the chain holds {} run(s) of any task under this log key only", audited.all_runs));
     if test_settings {
         lines.push("test trust settings: the provider here is a stand-in".to_string());
     }
@@ -762,15 +804,32 @@ fn task_of(guest_sha256: &str, inputs: &[Vec<u8>]) -> String {
     sha(format!("{guest_sha256}:{}", sha(&inputs.concat())).as_bytes())
 }
 
+/// The version 2 task identity: a domain tag, the guest's hash as raw bytes, the input count, then
+/// each input with its length, so two different input lists can never give the same bytes.
+/// `None` when the guest hash is not 32 bytes of hex.
+fn task_v2(guest_sha256: &str, inputs: &[Vec<u8>]) -> Option<String> {
+    let guest = unhex(guest_sha256).filter(|g| g.len() == 32)?;
+    let mut framed = Sha256::new();
+    framed.update(b"hyalos.task/2");
+    framed.update(&guest);
+    framed.update((inputs.len() as u64).to_be_bytes());
+    for input in inputs {
+        framed.update((input.len() as u64).to_be_bytes());
+        framed.update(input);
+    }
+    Some(hex(&framed.finalize()))
+}
+
 /// What the record itself says it is, for the audit to hold the chain to.
 fn claim_of(t: &Transcript, commitment: String) -> Result<ledger::Claim, String> {
     let inputs = t.inputs_hex.iter().map(|i| unhex(i)).collect::<Option<Vec<_>>>().ok_or("the record's inputs are unreadable")?;
-    Ok(ledger::Claim { commitment, task: task_of(&t.guest_sha256, &inputs), guest: t.guest_sha256.clone() })
+    let task = if t.version == 1 { task_of(&t.guest_sha256, &inputs) } else { task_v2(&t.guest_sha256, &inputs).ok_or("the record's guest hash is unreadable")? };
+    Ok(ledger::Claim { commitment, task, guest: t.guest_sha256.clone(), version: t.version })
 }
 
 fn main_inner() -> Result<bool, String> {
     let args: Vec<String> = env::args().collect();
-    let arg = |i: usize| args.get(i).map(String::as_str).ok_or_else(|| "usage: run|replay|attacks|bench ...".to_string());
+    let arg = |i: usize| args.get(i).map(String::as_str).ok_or_else(|| "usage: run|replay|task|attacks|bench ...".to_string());
     match arg(1)? {
         "run" => {
             let backend = load_backend()?;
@@ -818,7 +877,8 @@ fn main_inner() -> Result<bool, String> {
                 .and_then(|mut device| std::io::Read::read_exact(&mut device, &mut salt))
                 .map_err(|_| "no randomness")?;
             let salt = hex(&salt);
-            let (outcome, seq) = declared_run(&mut |link| ledger.append(link), &backend, &guest, inputs, mode, &salt, arg(4)?, &|seq| ledger.signed_time(seq))?;
+            let operator = ledger.fingerprint().ok_or("cannot read the operator's public key")?;
+            let (outcome, seq) = declared_run(&mut |link| ledger.append(link), &backend, &guest, inputs, mode, &salt, arg(4)?, &operator, &|seq| ledger.signed_time(seq))?;
             let stamped = ledger.timestamp(seq).is_some();
             let t = outcome.map_err(|r| format!("{r:?}"))?;
             println!("committed: link {seq} in the public log, Bitcoin timestamp requested: {stamped}");
@@ -836,10 +896,10 @@ fn main_inner() -> Result<bool, String> {
         }
         "attested" => {
             let inputs = audit_inputs(&args[3..])?;
-            if inputs.dir.is_some() || inputs.operator.is_some() {
+            if inputs.dir.is_some() || inputs.operator.is_some() || inputs.legacy {
                 return Err("attested takes no ledger: --notary-public <file> --verify <program>".into());
             }
-            let t: Transcript = serde_json::from_slice(&fs::read(arg(2)?).map_err(|_| "cannot read")?).map_err(|_| "cannot parse")?;
+            let t = read_transcript(&fs::read(arg(2)?).map_err(|_| "cannot read")?)?;
             let answers = witnessed(&t, arg(2)?, &inputs.notary, &Verifier::from_env(&inputs.verify), None)?;
             println!("{}", answers.lines.join("\n"));
             println!("not checked here: the run's links and its window. The audit checks them");
@@ -848,15 +908,17 @@ fn main_inner() -> Result<bool, String> {
         }
         "forge" => {
             // A test of the auditor: the operator logs a second result for an earlier run.
-            let t: Transcript = serde_json::from_slice(&fs::read(arg(2)?).map_err(|_| "cannot read")?).map_err(|_| "cannot parse")?;
+            let t = read_transcript(&fs::read(arg(2)?).map_err(|_| "cannot read")?)?;
             let home = env::var("HOME").map_err(|_| "no home")?;
             let ledger = ledger::Ledger::open("ledger", &home).ok_or("cannot open the ledger")?;
             let salt = fs::read(format!("{}.salt", arg(3)?)).map_err(|_| "no salt")?;
             fs::write(format!("{}.salt", arg(2)?), &salt).map_err(|_| "cannot write")?;
             let commitment = sha([salt.as_slice(), &serde_json::to_vec(&t).map_err(|_| "encode")?].concat().as_slice());
             let links = ledger.links();
-            let intent = links.iter().rev().find(|l| l.windows(15).any(|w| w == b"\"kind\":\"intent\"")).map(|l| sha(l)).ok_or("no intent")?;
-            let forged = serde_json::json!({"v": 1, "kind": "result", "intent": intent, "outcome": "ok", "transcript": commitment});
+            let last = links.iter().rev().find(|l| l.windows(15).any(|w| w == b"\"kind\":\"intent\"")).ok_or("no intent")?;
+            let intent = sha(last);
+            let version = serde_json::from_slice::<serde_json::Value>(last).map_err(|_| "cannot parse")?["v"].clone();
+            let forged = serde_json::json!({"v": version, "kind": "result", "intent": intent, "outcome": "ok", "transcript": commitment});
             ledger.append(forged).map_err(|r| format!("{r:?}"))?;
             println!("forged a second result for the last run");
             Ok(true)
@@ -872,9 +934,16 @@ fn main_inner() -> Result<bool, String> {
         "replay" => {
             let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
-            let t: Transcript = serde_json::from_slice(&fs::read(arg(3)?).map_err(|_| "cannot read")?).map_err(|_| "cannot parse")?;
+            let t = read_transcript(&fs::read(arg(3)?).map_err(|_| "cannot read")?)?;
             replay(&backend, &guest, &t).map_err(|r| format!("{r:?}"))?;
             println!("replay identical");
+            Ok(true)
+        }
+        "task" => {
+            // Reads a guest and its inputs only: no key, no network.
+            let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
+            let inputs = read_inputs(arg(3)?)?;
+            println!("{}", task_v2(&sha(&guest), &inputs).ok_or("the guest's hash is unreadable")?);
             Ok(true)
         }
         "attacks" => {
@@ -896,7 +965,7 @@ fn main_inner() -> Result<bool, String> {
             println!("{n} runs, {inferences} inferences each, {:.1} us per run including start-up, {:.1} us per inference", per_run * 1e6, per_run * 1e6 / inferences.max(1) as f64);
             Ok(true)
         }
-        _ => Err("usage: run|replay|attacks|bench ...".into()),
+        _ => Err("usage: run|replay|task|attacks|bench ...".into()),
     }
 }
 
