@@ -1,18 +1,15 @@
 //! The built programs, run as an operator would run them, against the stand-in provider.
 //!
-//! One attested call is made and shared by every test here: a session costs seconds and several
-//! hundred megabytes. The credential these tests use is a made-up value in a temporary home.
+//! One attested call, through a real notary, is shared by every test here: a session costs seconds
+//! and several hundred megabytes. The credential these tests use is a made-up value in a temporary
+//! home.
 
-use std::{
-    io::{BufRead, BufReader, Write},
-    path::PathBuf,
-    process::{Child, Command, Stdio},
-    sync::OnceLock,
-};
+mod common;
 
-const INTENT: &str = "5f1d0c7a9b3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8";
-const POSITION: &str = "3";
-const NAME: &str = "provider.test";
+use common::{INTENT, NAME, Notary, Operator, Scratch, Standin};
+use std::{path::PathBuf, process::Command, sync::OnceLock};
+
+const POSITION: u64 = 3;
 
 struct Call {
     home: PathBuf,
@@ -20,70 +17,34 @@ struct Call {
     presentation: PathBuf,
     said: serde_json::Value,
     notary: String,
-    /// Held so the stand-in lives as long as the tests, and ends when they do.
-    _standin: Child,
+    who: Operator,
+    /// Held so the programs live as long as the tests, and end when they do.
+    _programs: (Standin, Notary, Scratch),
 }
 
-fn tool(call_home: &PathBuf, root: &PathBuf, address: Option<&str>) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_attest"));
-    command.env("HOME", call_home).env("HYALOS_TRUST_SERVER_NAME", NAME).env("HYALOS_TRUST_ROOT", root);
-    if let Some(address) = address {
-        command.env("HYALOS_TRUST_PROVIDER_ADDRESS", address);
-    }
-    command
+fn tool(call: &Call, home: &PathBuf, provider: &str) -> Command {
+    let who = Operator { home: home.clone(), key: call.who.key.clone(), public: call.who.public.clone() };
+    common::tool(&who, &call.root, provider, &call._programs.1.address, &call._programs.1.transport, &call.notary)
 }
 
 fn call() -> &'static Call {
     static CALL: OnceLock<Call> = OnceLock::new();
     CALL.get_or_init(|| {
-        // Under the build's own scratch directory, so nothing is left in the system's, and named
-        // for this process, so two runs on one build directory do not share it.
-        let home = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("binding-home-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        let config = home.join(".config/hyalos-spike");
-        std::fs::create_dir_all(&config).unwrap();
-        // Made up, and exactly the length the tool is pinned to.
-        std::fs::write(config.join("anthropic.key"), format!("{}\n", "x".repeat(106))).unwrap();
-        let root = home.join("root.der");
-        let mut standin = Command::new(env!("CARGO_BIN_EXE_standin"))
-            .arg(&root)
-            .arg(NAME)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut line = String::new();
-        BufReader::new(standin.stdout.take().unwrap()).read_line(&mut line).unwrap();
-        let address = line.trim().strip_prefix("listening ").expect("the stand-in did not start").to_string();
-
+        let scratch = Scratch::new("binding-home");
+        let home = scratch.0.join("home");
+        let who = common::operator(&home);
+        let standin = common::standin(&scratch.0, &[]);
+        let root = standin.root.clone();
+        let notary = common::notary(&scratch.0.join("notary"), &who.public, &root);
         let presentation = home.join("one.presentation");
-        let mut ask = tool(&home, &root, Some(&address))
-            .args(["ask", presentation.to_str().unwrap(), INTENT, POSITION])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        ask.stdin.take().unwrap().write_all(b"The build fails on a clean checkout").unwrap();
-        // A stuck session fails the tests. It does not hang them.
-        let started = std::time::Instant::now();
-        while ask.try_wait().unwrap().is_none() {
-            if started.elapsed() > std::time::Duration::from_secs(120) {
-                let _ = ask.kill();
-                panic!("the attested call did not finish in 120 seconds");
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        let output = ask.wait_with_output().unwrap();
-        assert!(output.status.success(), "ask failed: {}", String::from_utf8_lossy(&output.stderr));
-        let said = serde_json::from_slice(&output.stdout).unwrap();
-        let notary = tool(&home, &root, None).arg("notary").output().unwrap();
-        Call { home, root, presentation, said, notary: String::from_utf8(notary.stdout).unwrap().trim().to_string(), _standin: standin }
+        let command = common::tool(&who, &root, &standin.address, &notary.address, &notary.transport, &notary.signing);
+        let said = common::said(&common::run_ask(command, &presentation, INTENT, POSITION));
+        Call { home, root, presentation, said, notary: notary.signing.clone(), who, _programs: (standin, notary, scratch) }
     })
 }
 
 fn verify(call: &Call, file: &PathBuf) -> Result<serde_json::Value, String> {
-    let output = tool(&call.home, &call.root, None).args(["verify", file.to_str().unwrap(), &call.notary]).output().unwrap();
+    let output = tool(call, &call.home, "127.0.0.1:9").args(["verify", file.to_str().unwrap(), &call.notary]).output().unwrap();
     if output.status.success() {
         Ok(serde_json::from_slice(&output.stdout).unwrap())
     } else {
@@ -198,15 +159,7 @@ fn issue_394_a_credential_of_another_length_is_refused_before_anything_is_sent()
     std::fs::create_dir_all(home.join(".config/hyalos-spike")).unwrap();
     std::fs::write(home.join(".config/hyalos-spike/anthropic.key"), format!("{}\n", "x".repeat(107))).unwrap();
     // Nothing listens at this address, so only a refusal before connecting gives this message.
-    let mut ask = tool(&home, &call.root, Some("127.0.0.1:9"))
-        .args(["ask", home.join("never.presentation").to_str().unwrap(), INTENT, POSITION])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    ask.stdin.take().unwrap().write_all(b"A title").unwrap();
-    let output = ask.wait_with_output().unwrap();
+    let output = common::run_ask(tool(call, &home, "127.0.0.1:9"), &home.join("never.presentation"), INTENT, POSITION);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("not the length this tool is pinned to"));
     assert!(!home.join("never.presentation").exists());
@@ -218,15 +171,7 @@ fn a_real_shaped_credential_is_never_sent_under_test_settings() {
     let home = call.home.join("real-shaped");
     std::fs::create_dir_all(home.join(".config/hyalos-spike")).unwrap();
     std::fs::write(home.join(".config/hyalos-spike/anthropic.key"), "sk-ant-made-up-for-tests\n").unwrap();
-    let mut ask = tool(&home, &call.root, Some("127.0.0.1:9"))
-        .args(["ask", home.join("never.presentation").to_str().unwrap(), INTENT, POSITION])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    ask.stdin.take().unwrap().write_all(b"A title").unwrap();
-    let output = ask.wait_with_output().unwrap();
+    let output = common::run_ask(tool(call, &home, "127.0.0.1:9"), &home.join("never.presentation"), INTENT, POSITION);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("refusing to send a real credential under test trust settings"));
     assert!(!home.join("never.presentation").exists());
