@@ -379,7 +379,7 @@ The baseline was measured by the operator's account, from `spikes/task-kernel`, 
 
 **Benchmark.** The notary's cost report after 40 or more sessions gives all four figures (S-05.1, S-05.2). Its exact command is defined by the slice that adds it. The notary's own cost is measured against the stand-in provider, so it can be repeated without the operator. The wall time against the real provider is measured with the operator.
 
-**Recorded deviation, awaiting the developer (Slice 6, criterion 6.1).** This entry adds the first measured figures. It sets no target and changes none above. S-05.1 reads as peak memory per attestation, and the report gives one peak for the whole serving process, as `The usage file` says.
+**Recorded deviation, accepted by the developer on 2026-11-22 (Slice 6, criterion 6.1).** This entry adds the first measured figures. It sets no target and changes none above. S-05.1 reads as peak memory per attestation, and the report gives one peak for the whole serving process, as `The usage file` says. The developer accepted that one figure for the process.
 
 | Measure | Measured | Conditions |
 |---|---|---|

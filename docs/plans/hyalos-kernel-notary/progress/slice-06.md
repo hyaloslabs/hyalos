@@ -54,7 +54,7 @@ operator's wall time, with the real provider: 7.420 s per call over 1 call(s)
 
 | Plan said | Reality | Why | Contract affected |
 |---|---|---|---|
-| S-05.1 reads as peak memory per attestation | One peak for the process | `The usage file` already says so, and criterion 6.1 records it for the developer | n, awaiting the developer in `design.md` |
+| S-05.1 reads as peak memory per attestation | One peak for the process | `The usage file` already says so, and criterion 6.1 records it for the developer | n, accepted by the developer on 2026-11-22, recorded in `design.md` |
 
 ## Decisions
 
