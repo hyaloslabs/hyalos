@@ -497,6 +497,16 @@ fn run_attacks(backend: &Backend, guest: &[u8], inputs: &[Vec<u8>]) -> Result<bo
 
 /// Checks that every model answer in a record is the one a notary saw the provider's server give
 /// to that exact question. It needs no network and no credential, only the notary key to trust.
+/// The fifth limit of S-04.5 (ADR-012): verify never sees the bytes a request hides.
+const HIDDEN_BYTES_LIMIT: &str = "not proven: the request's hidden bytes are not shown, so the call may have used another credential or carried an added header";
+
+/// What a passing attestation check reports. The limit is part of it, so it cannot be left out.
+fn attested_report(answers: usize, test_settings: bool) -> String {
+    // A check made against a stand-in says so, and so cannot be read as one about the real provider.
+    let mark = if test_settings { "test trust settings: " } else { "" };
+    format!("{mark}attested: {answers} of {answers} model answers match what the notary saw\n{HIDDEN_BYTES_LIMIT}")
+}
+
 fn attested(t: &Transcript, record: &str, notary: &str) -> Result<String, String> {
     let tool = env::var("HYALOS_ATTEST").map_err(|_| "set HYALOS_ATTEST to the attestation tool")?;
     // Set when any answer was verified under trust settings that are not the real provider's.
@@ -521,9 +531,7 @@ fn attested(t: &Transcript, record: &str, notary: &str) -> Result<String, String
         }
         test_settings |= !seen["trust"].is_null();
     }
-    // A check made against a stand-in says so, and so cannot be read as one about the real provider.
-    let mark = if test_settings { "test trust settings: " } else { "" };
-    Ok(format!("{mark}attested: {} of {} model answers match what the notary saw", t.answers.len(), t.answers.len()))
+    Ok(attested_report(t.answers.len(), test_settings))
 }
 
 fn main_inner() -> Result<bool, String> {
@@ -676,6 +684,21 @@ fn main() -> ExitCode {
         Err(message) => {
             eprintln!("refused: {message}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    #[test]
+    fn s_04_5_a_passing_attestation_check_names_the_hidden_bytes_limit() {
+        for test_settings in [false, true] {
+            let report = attested_report(3, test_settings);
+            assert!(report.contains("attested: 3 of 3"), "{report}");
+            assert_eq!(report.lines().last(), Some(HIDDEN_BYTES_LIMIT));
+            assert_eq!(report.starts_with("test trust settings: "), test_settings);
         }
     }
 }

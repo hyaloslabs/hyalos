@@ -117,7 +117,7 @@ As an auditor, I want to audit a record holding nothing but public keys, so that
 - **S-04.2** Given the ledger's links, when the audit runs, then it verifies each link's signature under the operator's public key, and each entry's inclusion proof and signed time under the public log's published key.
 - **S-04.3** Given a record with answers, when the audit runs, then every answer must carry an attestation. A record with any unattested answer is refused.
 - **S-04.4** Given a forger who holds the operator's credential, ledger key and files but not the notary's key, when they build a record with an answer the notary did not witness for that run, then the audit refuses it.
-- **S-04.5** Given an audit that passes, when it reports, then it states what was proven and what was not: the notary's independence is the customer's own, the model's name is the provider's claim, the answer's correctness is not judged, and the public log is trusted to have shown every entry it holds under the operator's key. The report also states how many runs the public log holds under that key for the same task, as the intent link names the task, so a reader sees when a task was run more than once.
+- **S-04.5** Given an audit that passes, when it reports, then it states what was proven and what was not: the notary's independence is the customer's own, the model's name is the provider's claim, the answer's correctness is not judged, the public log is trusted to have shown every entry it holds under the operator's key, and the request's hidden bytes are not shown, so the call may have used another credential or carried an added header (ADR-012). The report also states how many runs the public log holds under that key for the same task, as the intent link names the task, so a reader sees when a task was run more than once.
 
 ### S-05 The notary's cost is known
 
@@ -239,7 +239,7 @@ Rule: a passing audit says what it does not prove.
 
 | ID | Given | When the audit passes | Then |
 |---|---|---|---|
-| S-04.5.e1 | A record that passes | | The report lists what was proven, then the four limits by name |
+| S-04.5.e1 | A record that passes | | The report lists what was proven, then the five limits by name |
 | S-04.5.e2 | A record that fails | | The report names the first check that failed and prints no statement of proof |
 | S-04.5.e3 | A record that passes, whose task the log holds three runs of under the operator's key | | The report says the task was run 3 times |
 

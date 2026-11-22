@@ -257,7 +257,7 @@ sequenceDiagram
     AU->>AU: notary's run is this run, sequence equals position
     AU->>AU: session time inside the run's window
   end
-  AU->>AU: report what was proven, the four limits and the run count
+  AU->>AU: report what was proven, the five limits and the run count
 ```
 
 ## 6. Test strategy
@@ -348,7 +348,7 @@ It is six months later and this failed. Why?
 | The public log lies about what it holds | Each entry's inclusion proof and signed time are verified with the log's published key (S-04.2) |
 | A forged record is handed over with altered files | Every file the audit reads is checked against a signature, a proof or a hash named by something signed |
 
-**Out of scope, stated:** a notary that colludes with the operator (ADR-001), a compromised provider, a compromised public log key, and a public log that withholds entries. These are the threat model's exclusions. What an audit report must say to its reader is the four limits of S-04.5 in the prd, and that list is the report's wording.
+**Out of scope, stated:** a notary that colludes with the operator (ADR-001), a compromised provider, a compromised public log key, and a public log that withholds entries. These are the threat model's exclusions. What an audit report must say to its reader is the five limits of S-04.5 in the prd, and that list is the report's wording.
 
 There are no `auditor` findings for this code. It has had no independent review.
 
