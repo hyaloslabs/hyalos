@@ -10,8 +10,8 @@
 //! only its own transport key and the notary's two public keys.
 //!
 //! Every request names the run it was made for and its position in that run, inside the attested
-//! bytes. The notary adds the run it was told and how many attestations it had signed for that
-//! run, under its one signature.
+//! bytes. The notary adds the run it was told and how many sessions it had opened for that run,
+//! under its one signature.
 //!
 //! The credential is read here, goes to the provider and nowhere else: not into the presentation,
 //! a message, or an error.

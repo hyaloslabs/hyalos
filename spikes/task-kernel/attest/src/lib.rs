@@ -33,7 +33,7 @@ pub const END: &[u8] = b"\r\n\r\n";
 /// checked must not be able to choose it.
 pub const CREDENTIAL_LENGTH: usize = 106;
 /// The notary's addition to an attestation: the run it was told, as 64 lowercase hex characters,
-/// then how many attestations it had signed for that run before this one, as 8 big-endian bytes.
+/// then how many sessions it had opened for that run before this one, as 8 big-endian bytes.
 pub const RUN_SEQUENCE: &[u8] = b"hyalos.run-sequence/1";
 
 /// Whom this tool trusts to be the provider. The defaults are the real provider. Anything else

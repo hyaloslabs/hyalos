@@ -57,7 +57,7 @@ const SEQUENCES_HEADER: &str = "hyalos.sequences/1";
 /// A reason a session line may give for `refused`.
 type Reason = &'static str;
 
-/// How many attestations this notary has signed for each run. Saved before a number is used.
+/// How many sessions this notary has opened for each run (ADR-014). Saved before a number is used.
 struct Sequences {
     path: PathBuf,
     next: BTreeMap<String, u64>,
