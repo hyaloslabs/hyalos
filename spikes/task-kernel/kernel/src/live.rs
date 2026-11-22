@@ -106,7 +106,7 @@ fn run_tool(mut command: Command, question: &[u8]) -> Result<(bool, Vec<u8>), Re
         Ok(Ok(said)) => Ok((status.success(), said)),
         Ok(Err(_)) => Err(Reason::ModelUnavailable),
         Err(_) => {
-            // Something the tool started still holds the pipe, so the group, and its id, still exist.
+            // Something the tool started still holds the pipe, so its group is still there to end.
             end_group(pid);
             Err(Reason::ModelUnavailable)
         }
@@ -115,7 +115,7 @@ fn run_tool(mut command: Command, question: &[u8]) -> Result<(bool, Vec<u8>), Re
 
 /// True when nothing of an earlier run is at this record path, so this run cannot overwrite it.
 pub(crate) fn record_is_fresh(record: &str) -> bool {
-    [record.to_string(), format!("{record}.salt"), format!("{record}.attest")]
+    [record.to_string(), format!("{record}.salt"), format!("{record}.attest"), format!("{record}.pending"), format!("{record}.salt.pending")]
         .iter()
         .all(|path| matches!(fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound))
 }

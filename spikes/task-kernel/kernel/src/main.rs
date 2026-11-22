@@ -573,14 +573,8 @@ fn declared_run(
         write_synced(&pending_record, &serde_json::to_vec_pretty(t).map_err(|_| "encode")?)?;
         write_synced(&pending_salt, salt.as_bytes())?;
     }
-    let (seq, _) = match append(result) {
-        Ok(link) => link,
-        Err(reason) => {
-            let _ = fs::remove_file(&pending_record);
-            let _ = fs::remove_file(&pending_salt);
-            return Err(format!("{reason:?}"));
-        }
-    };
+    // A failed append may still have reached the public log, so the pending files are kept.
+    let (seq, _) = append(result).map_err(|r| format!("{r:?}"))?;
     if outcome.is_ok() {
         fs::rename(&pending_record, record).map_err(|_| "cannot write")?;
         fs::rename(&pending_salt, format!("{record}.salt")).map_err(|_| "cannot write")?;
@@ -618,15 +612,15 @@ fn main_inner() -> Result<bool, String> {
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
             let inputs = read_inputs(arg(3)?)?;
             let issue = arg(6)?.parse().map_err(|_| "bad issue number")?;
+            // A second run on one path would overwrite the first run's evidence.
+            if !live::record_is_fresh(arg(4)?) {
+                return Err("the record path is already in use".into());
+            }
             // `stub` as the repository runs the same committed flow with the stand-in model and no
             // real notification, so the chain can be exercised without a credential.
             let mode = if arg(5)? == "stub" {
                 Mode::Record { seed: issue }
             } else {
-                // A second run on one path would overwrite the first run's presentations.
-                if !live::record_is_fresh(arg(4)?) {
-                    return Err("the record path is already in use".into());
-                }
                 // Every model call goes through the customer's notary, and its presentation is
                 // kept beside the record. With no notary configured, the run is refused.
                 Mode::Live(live::Live::new(arg(5)?, issue, live::Attest::from_env(arg(4)?)).ok_or("bad repository name")?)

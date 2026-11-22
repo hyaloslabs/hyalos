@@ -76,7 +76,7 @@ The stop conditions did not trigger: the real run passed where the stand-in pass
 - **The monitor's reasons:** `NotaryUnreachable`, `NotaryDeadline`, `WrongNotaryKey`, `ReleaseMismatch`, `ProviderRefused`. No notary configured is `NotaryUnreachable`.
 - **A testable run:** `declared_run` holds the intent link, the execution, the result link and the record, and takes the link writer as a function, so tests never post to the public log.
 - **An answer needs its presentation:** the monitor refuses an answer unless the hash ask printed is the hash of the file it wrote.
-- **A record path is used once:** a live run refuses a path that already holds a record, salt or attestation directory.
+- **A record path is used once:** a live run, `stub` included, refuses a path that already holds a record, salt, attestation directory or pending file. Pending files are kept when a result link fails, since it may still have reached the public log.
 - **A peer on another release:** `standin other-release` answers `release` on a real link, since a release cannot be set by configuration.
 
 ## Discoveries

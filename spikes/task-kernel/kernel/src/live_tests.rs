@@ -312,7 +312,7 @@ fn t_3_a_record_path_in_use_is_not_fresh() {
     let record = rig.record();
     let record = record.to_str().unwrap();
     assert!(crate::live::record_is_fresh(record));
-    for used in [record.to_string(), format!("{record}.salt"), format!("{record}.attest")] {
+    for used in [record.to_string(), format!("{record}.salt"), format!("{record}.attest"), format!("{record}.pending"), format!("{record}.salt.pending")] {
         fs::write(&used, b"").unwrap();
         assert!(!crate::live::record_is_fresh(record), "{used}");
         fs::remove_file(&used).unwrap();
