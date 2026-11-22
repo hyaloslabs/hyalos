@@ -49,327 +49,327 @@
       "question_sha256": "1b8b69a51af4c6b4f2c244171dd240179f59a59500116f46d26e0c9b34fe7bcb",
       "label": 0,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHyxoXt5k7dNBNe5UtCj",
-      "attestation": "9b900a1e388b158e049f8e3aac175cd4ce81de9736422ad4de020a2c238cfb9d"
+      "response_id": "msg_011ChHJsy5CF4aKA3pRBTD6o",
+      "attestation": "9771d462b0e3f5b6d0712e61bf38d0ae97225bd76a2f476ba79e278271b007c8"
     },
     {
       "schema": 0,
       "question_sha256": "3b46aad984daab6c44e25e40840f0f4380ebb3f52473777a704bf1c775113042",
       "label": 1,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHyyaFTx8Vfno281hMz8",
-      "attestation": "7a0c4100825a0493777ba1bffb6eb0ce46c03ac595b98e7b400a67b56d3f595f"
+      "response_id": "msg_011ChHJtHiNA3o5U1GStzzqW",
+      "attestation": "f97832fad1919ed3e5b8d4d659289b70cbfca7b21616da15a60f499e24e20791"
     },
     {
       "schema": 0,
       "question_sha256": "cc0707a576a1df0f2fe8f93e0f8db8c0ac65a33605926d8f63b18806ff22a4e9",
       "label": 2,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHyzKbBapYyknkCoXhxa",
-      "attestation": "44e578ed17db0177d226e2d82adf1fcf607d72e6e86818456c6415f58f785bfa"
+      "response_id": "msg_011ChHJta2tAZZmEyBw2cFS2",
+      "attestation": "a9d861400d2486222788b04232b7f1c26626c17d3aa20d0afdc433d53368a6d3"
     },
     {
       "schema": 0,
       "question_sha256": "a5542adea5366531b517198f68793c97bcb0e8e3a37a4016aa3b6cc5300c4814",
       "label": 3,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz1492KecMn6EqD2wcx",
-      "attestation": "3b577a926a5f6ba4518912d7fd87cd0d2c034bd09700ab91baed73525b788769"
+      "response_id": "msg_011ChHJtsTdB9LCEB6qcLVh8",
+      "attestation": "cf8c0a7550dce10778985f105ad44a714de8f848d5c0da0b7f13b100a1658565"
     },
     {
       "schema": 0,
       "question_sha256": "2111347379a0dda08556d342ee07d4cb46e69a179003e492071b2adf84e397a6",
       "label": 2,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz1NjiekuKBda1XVTnB",
-      "attestation": "18851a91401d7d5527b842d87e88a41196264e8057f848367ac4222681654cdc"
+      "response_id": "msg_011ChHJuBkxE1dZBLxNRTLF4",
+      "attestation": "aef048c251c5f75c8bde51420406253e82f51ef9900e60b9f4bd0af37eac35b7"
     },
     {
       "schema": 0,
       "question_sha256": "dda52b76ec2ec7034610367e95ebfc91b70a31b662de19602ce6814579ff4ffc",
       "label": 0,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz1ih1qym5K8javsVzr",
-      "attestation": "c8885f5f965ac2129e04445f9d9389b55e06810790769865fe009782ba0fdc25"
+      "response_id": "msg_011ChHJuWZ3xQiNnG7YuwTmf",
+      "attestation": "175f02de5334c1945a800ca49b4e696067a92469a2029d37251728872699bfd0"
     },
     {
       "schema": 0,
       "question_sha256": "720837641c6994b0592fe1c5e9e96bdb62c500f2d9e3ec9b8b79e68af710ac2b",
       "label": 1,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz22wNF9VpJVNa9WZxJ",
-      "attestation": "157519d3df1756aaf09edda742d9a26d9d0a40c95d7a501f30bb65b522c32f76"
+      "response_id": "msg_011ChHJupjhJFwaY5go1yVuz",
+      "attestation": "b6dd5bdb8d1538a481c1710310b5de1cf7ed9d297579a7263f3dcb317e48f0ab"
     },
     {
       "schema": 0,
       "question_sha256": "9d9735c2e0cdf38b5d11f093c7c2a2c70c28bb546b94a5a0c3b35691c1fcdc1f",
       "label": 0,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz2LR6ZK5LXkR8DLGkk",
-      "attestation": "10c2d94bffb53573ae4fb40d9c0c7d339c4dcc8479ea907235e57631d6863ce8"
+      "response_id": "msg_011ChHJv7BQKW3e2tvG3WB8s",
+      "attestation": "c29ee3ad63891071e6ce9884cd1a3e7e5e36b0d12a346f9325823e8a3c5eb784"
     },
     {
       "schema": 0,
       "question_sha256": "5ac51be75da628913ab09bc9b30d83a448b448ae2f5fe2d3b70576eb05553596",
       "label": 3,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz2dfg754ctLYewAFct",
-      "attestation": "4b4c65fe5db06e22b99fdbe65711563f123cde637831a8ecd49d859bb7e82365"
+      "response_id": "msg_011ChHJvP9Lg85Mk7chmtocB",
+      "attestation": "9fc7cc7faa12198277c737994e0aa75be0cf83a9cecfb842f699c158b6a553a3"
     },
     {
       "schema": 0,
       "question_sha256": "fbf974834f2bf98c31e591a3b1d476d7c4802312804693c482598189d9edf761",
       "label": 0,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz2wQ2D9DZTMwR3efLF",
-      "attestation": "e35620216ec45fd7dfc4993a1572f4186e55b0cbac2d7239dbf446cceafc62da"
+      "response_id": "msg_011ChHJw3ThX7UuvtfAFmbyt",
+      "attestation": "4d0fafa1a5b6b065c6f657449e6c07cdb835a40654dea0293273a525ba2a1a51"
     },
     {
       "schema": 0,
       "question_sha256": "62f76d16d0605e0a2c5c7a41e8641217c0a90d4cc80aae9cc0013bcffb1ebe25",
       "label": 0,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz3Eb8ga7ZQigDyDNsp",
-      "attestation": "906cdb49e346045a00e7748fa14db83ea1445ad3f49c916daf514cc13cf17ebe"
+      "response_id": "msg_011ChHJwQCsk5F7fa3it9uhm",
+      "attestation": "4b68363225943fd7f58e380a5351511646c7f50c73f1585e2521e41a84df3458"
     },
     {
       "schema": 0,
       "question_sha256": "39f008489852cc81dc5d79f21a80a6bfe2fe26cf98c1c3493dc978095e168d12",
       "label": 2,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz3ghG9hEKKfK6ke9Sa",
-      "attestation": "1e8ff29b1efe28df4802217987fd41e0deb54bcbc366a4797db3ddebce0f27a0"
+      "response_id": "msg_011ChHJwhfc5Ex8EJaVTzdwU",
+      "attestation": "dd995cff78d766b4cc6149076d23d9d4e8ec8b844787895b9631bddc6ce35091"
     },
     {
       "schema": 0,
       "question_sha256": "e03ae5c14fb493c31bd89953e76b3fb2d5c6afbc998e913eaa2f8db5a684106f",
       "label": 2,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz45dA1Shb66Y5Dzqaz",
-      "attestation": "9db9ee7707d044358bed2add099334886dcdc3b1563f03c17fa186db513f30fc"
+      "response_id": "msg_011ChHJx2D594JeojPBAaUZy",
+      "attestation": "77bef6ee15deb17338c3baf9b661a5c34216e15e4de732d983fea5b4fa59e102"
     },
     {
       "schema": 0,
       "question_sha256": "3acbbd42fb4e276a29c8d2deeb48f139b2c9dc7fa11ef789ba139b98eed9b93c",
       "label": 2,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz4TkRHUsmwwuEwp5Xz",
-      "attestation": "a0f19e42a2cac9cf16a42a49a69fc327236a72f4897951cd08b8887c80083eb0"
+      "response_id": "msg_011ChHJxJhFaZr6n4k9sU7jA",
+      "attestation": "a29233e2fd0f8a2c1131f10cc1931bca265ad090479769ad3aaaf86b9e6c7969"
     },
     {
       "schema": 0,
       "question_sha256": "1af0da41efa4899515426d2163666bc3cab8cf6391d3aec507475de17c78edad",
       "label": 0,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz4tLGuyFaJfcH2Nugv",
-      "attestation": "af03700324a2cdcf27317384b512fd5ad43176441f1c8cdeea5efe56aa32130d"
+      "response_id": "msg_011ChHJxbWHinfKYhpLJyNSb",
+      "attestation": "9ad9bb3569501d84421dede1b701fc2b9ac5f06d672f21907edf1ac0480e05a9"
     },
     {
       "schema": 0,
       "question_sha256": "4f9d70199c167735e8e494c6e729e10577bb8801d901153adb516e7db76c8494",
       "label": 0,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz5J5HUFbeW1KXhCbzA",
-      "attestation": "0c5fc7d9b4f26e10420a5b74ee7da828d27bc97f2b7a4ca8b7c52c301cc2f081"
+      "response_id": "msg_011ChHJxsyzZjFpvk7Yoku6k",
+      "attestation": "132a248447124fb5003b3c59bf9e88b0bc1d32e9c017c2967de4bd13b80a1e1e"
     },
     {
       "schema": 0,
       "question_sha256": "848d671a0f4f13b2b43dff20ae8140c5aba8b9e967d5b87d2678dd1530e07d5a",
       "label": 3,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz5k1zegb4F2Z2bS3Rr",
-      "attestation": "64e5d0209e23e8b20d57fbc27651f443e239bc2ebd6fe08f5aa6fd144fba6c04"
+      "response_id": "msg_011ChHJyAWAntqTUBgWTVwwt",
+      "attestation": "7a2358b2350c028db1f1afe3349dfd496315da95027b13555bc472ff07e8a379"
     },
     {
       "schema": 0,
       "question_sha256": "80f2e437a3e81d82790dafdb877a582318e46facae0eec77e8cd24456e0fb45f",
       "label": 0,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz67v8M7g2vDPwrWmPR",
-      "attestation": "ac5bf140b610b4f4486fe0be1f7518f29900e0deb74d8cb0891b3d4dd1cf52c1"
+      "response_id": "msg_011ChHJyV8bWqEciKpsEpHof",
+      "attestation": "86fe22eb1219c3002fb2750a02390bc6b018dd276415e901981cfa563fbd9371"
     },
     {
       "schema": 0,
       "question_sha256": "412d25cbb7d9ed17fdd9fbba96d1ef7618af3ed7a7c6e6236f20a551de9b7f8a",
       "label": 1,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz6agwNxuhfwehXfPUX",
-      "attestation": "2f26b8fb031e50f418e4890829a2d0e5f2fffc987718524a45ef247e965ec3f8"
+      "response_id": "msg_011ChHJymUbg9TqkWAhpnMXr",
+      "attestation": "0f6ca674301eff56f11541c99586d7a8bf7837c80fac5986128f0ce3e19ee8aa"
     },
     {
       "schema": 0,
       "question_sha256": "633ee4a5ca4dac88a92506ebe4edf7e1180155ff8eb9beeb624f84b59439a174",
       "label": 1,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz6zCpCSSJR56ZD3nsU",
-      "attestation": "a8c7baa98cf678b5e818be28076d4e3719e8be9d0ac50be52198ef5ad00494c4"
+      "response_id": "msg_011ChHJz3TmfQzemtBNauuZx",
+      "attestation": "528979a44541068a558e85595c7321c57507b5a478c93325e2f1a7faff18e1d6"
     },
     {
       "schema": 0,
       "question_sha256": "1328e99ae354adb1698ad4a69ca1f54bea50d4b4f21b7bf44a0ba67b4c066820",
       "label": 1,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz7PSoL3E32j2Y8e7rG",
-      "attestation": "aa3d385c8002b63960372569fc06d3edb30946f5ffb2aec9304454745c170221"
+      "response_id": "msg_011ChHJzMK4zS6Ve5rrwHtgF",
+      "attestation": "75e3f4325ce2af2921d9e0597863d06a8d1afacc9ef050bb16656e506f09b3ae"
     },
     {
       "schema": 0,
       "question_sha256": "706138ef610a99e4f8b38ed6ed554fb4de36564245c01ee7a6179faffa380d39",
       "label": 0,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz7pGng7oAT63ozweCY",
-      "attestation": "2675e9648d72ebbfae81072bfdde594bfec3b26df86c338b1703e5a73e0fc85d"
+      "response_id": "msg_011ChHJzft2SfExhCCp4dTEe",
+      "attestation": "6f887c8f48e94d7fa41389306d72353c9f570c9efa40a934daf95efb2dc3dbeb"
     },
     {
       "schema": 0,
       "question_sha256": "1765d7064a641143edb9b271ee486a6e09fdc8867fa96625804e55e7cf7a7e9c",
-      "label": 3,
+      "label": 1,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz8C6xBGi86LPHZB6Ed",
-      "attestation": "7ac7c5840380b4a45622a836fcfc87e76bab68bfeda1f81469b73a3ff250e787"
+      "response_id": "msg_011ChHJzxoGMPDaNviYtstRj",
+      "attestation": "073b4e8f08d3aba78c600f49449480b3019d46dc01031d1bf06bc8c85d03f042"
     },
     {
       "schema": 0,
       "question_sha256": "258bbceb687ad66e3f5a4ef8a309c185f73ec4acb96c7813e9a15a4938c10659",
       "label": 1,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz8boUbh2XPUTZRt3ck",
-      "attestation": "69f7a2dc5c521f338a79adda6dea59b97ce63ec90e38218074f6cbb1783ce787"
+      "response_id": "msg_011ChHK1HWtrcRdGV4cvQ29u",
+      "attestation": "802b9d3878be2ddcc8cee1a5d7545a93cd6de316a212d4ce84369f6613a54d3e"
     },
     {
       "schema": 0,
       "question_sha256": "8a9688cdb8454b00a90a77b3529f1658266a19b050550b91a5015ef2fcbdf2c6",
       "label": 3,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz8yK34Cpwfsn3mDuzS",
-      "attestation": "9cf477aeabdef48384a60c14a1cc0aae3544608285b7057c0641b3ea2caee158"
+      "response_id": "msg_011ChHK1a9XdH5yEJRRJzGZ8",
+      "attestation": "29d9a50921c23b35347b0917a6b3dcc2b387c640518ff103374fd747a0e4831f"
     },
     {
       "schema": 0,
       "question_sha256": "3290dc7a011086b809186ec038e0792ab5c9b102bc608516dd58f1a7e902215e",
       "label": 0,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz9RyeZqENXv7jrv5mL",
-      "attestation": "91e811aff23528b7540a29ef63dd217353ef23c2654d880ace8bd2b12ab4ab29"
+      "response_id": "msg_011ChHK1v55zNrDt8KwEryzT",
+      "attestation": "66c85bf74cf3423b6b00eb8b822579ee662cdbc4d01f38da390dfb5b8a909818"
     },
     {
       "schema": 0,
       "question_sha256": "ba3933e2f8f34b3895d6f9041ac2497efd0f90d18bce13042655f7bc319dfb46",
       "label": 1,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHz9sEBspG7CG78H9fsq",
-      "attestation": "7502545eec2e63691a3eb55f52640f71880793f6e398692aabed45a9a0e6033e"
+      "response_id": "msg_011ChHK2Bq7WxTKv1aSL6PdU",
+      "attestation": "4ce78c05ee30f147b2b50e7536fb3f9c35bd2f32cdd1bd0e296f14a018d270f5"
     },
     {
       "schema": 0,
       "question_sha256": "8a14402f74c35c630b8e3fa6c99cbbf33b058b0a5f47862046485c1e33e72f03",
       "label": 0,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHzAJFMC7RVNYLfFi4Cd",
-      "attestation": "65fe8e11e2fba9440773e208b28875216455e221084bbff62276ef73982b6126"
+      "response_id": "msg_011ChHK2VXyspt6iNAHoz6BJ",
+      "attestation": "d91252719574119694c59e33959357733b73d67d7a0187e2fc6b20dd42f84cfc"
     },
     {
       "schema": 0,
       "question_sha256": "213a9738b072d267a3e43f40d5ace446b10f049d49724c758326bc0c505753e4",
       "label": 0,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHzAhHBUEyt4X7rrgiAG",
-      "attestation": "693e2018efb1a115bfd0696cfb57be63ab6852c9148e291d1d7a44252e107500"
+      "response_id": "msg_011ChHK2n2vfkjYnnSQBAhYV",
+      "attestation": "7dbb32c712068345a454220f5c143576e27c507dd2d335c74d1a6ae26a9524ad"
     },
     {
       "schema": 0,
       "question_sha256": "aff177375a21437502a3716c83ba9847a789e452c10b899ed9237fd328984220",
       "label": 3,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHzB5PD8D8d8Wbimu7aP",
-      "attestation": "f328e1dc2c08bee8e1db41e29c37764d663e09f3fc6b63099059e515fdbedeac"
+      "response_id": "msg_011ChHK3XW5u1M2qsWmsvUko",
+      "attestation": "9dab406007197922a7a6872da825a49b0450ceb65f862eea15d52c99fae39bf4"
     },
     {
       "schema": 0,
       "question_sha256": "f6804b8fe72df948463153ebd3eb74003f2c4c3309928140ba7a2cca3679ea65",
       "label": 3,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHzBULMJai9ToWfiAH1N",
-      "attestation": "ad747fdd78ea5cf1a7dbc16e1157b83ebbeef4b01a915d84fb587cea0598859b"
+      "response_id": "msg_011ChHK3zuqf8Qv8jk9eTgHV",
+      "attestation": "a9cb8a913b326eb3ebd52c03edf0da4112ea0556d3338b16e42152f15cf98714"
     },
     {
       "schema": 0,
       "question_sha256": "34e777cd30b151c97acd9fa91d280f3a39e65e7364c290f16be81102132b1012",
-      "label": 3,
+      "label": 1,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHzBr166b9VgGvp1RxBj",
-      "attestation": "4eda66570787f71af7f7efb2f16a3e78de5f245956167dd563570ea65c7efe63"
+      "response_id": "msg_011ChHK4jo2bo7Q35tqEo6Wh",
+      "attestation": "0c3b82528020cf718f892016e9f8ba736a7f55ba67b14a85a54da4851aac1c54"
     },
     {
       "schema": 0,
       "question_sha256": "6012ab43b7022f6edb20a14c84e0e0fd45b0e5e524c3b5028bad977b6944a44f",
-      "label": 3,
+      "label": 1,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHzCE2etdQvhp4bNZbPn",
-      "attestation": "9eeb0323dec554c809d829916bff8044077c65cfb0becffbac9b987866be3e76"
+      "response_id": "msg_011ChHK54dcRVnP8TV2VvpaR",
+      "attestation": "a5324bbe3517fa1c37083f62ac030f8ab7126c59c69c04a65f661f0649f042c9"
     },
     {
       "schema": 0,
       "question_sha256": "caf60e0aff65662cc21279ce402d2ac3facac9c99d17f3733846409055efa5b5",
       "label": 1,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHzCfPPBtW5CtsShuhwC",
-      "attestation": "b8fd330c869d55c39d4c09aaa33b9d66b3ac25a00b2347e46de3074789f4ae24"
+      "response_id": "msg_011ChHK5N2P3k9vrGMYMdwUn",
+      "attestation": "d44a7e281f82ca170e2304832c5b82c51eaca78f7835ec89b09abb8f2af74ca9"
     },
     {
       "schema": 0,
       "question_sha256": "598e9b2ecc8badf63c1ac0440ab4fe1bb9f8cdd60e13419e9f9516e3e676a880",
       "label": 0,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHzD2NCkHea6pVKtGqst",
-      "attestation": "22ab8df09902e8820b39e4dca663756cd83cc21df6726697e6b6ee14599ca3c0"
+      "response_id": "msg_011ChHK5ejTEpm2C1xkpSKkM",
+      "attestation": "32a6e6dc74bdb5d78dbacf8c9344a2cea1f8429548c926a2846ab1c7cbc02bda"
     },
     {
       "schema": 0,
       "question_sha256": "6becc3352cfa6d8c8d1b67445e07e3014f4529a1b135b5e2f5aac50e0801eeda",
       "label": 3,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHzDSXFhBhMZkz9kqmD9",
-      "attestation": "ba1ca8b7514f6222c61ef6ded2e950b020fd06195a342c8d51245004c6df5e74"
+      "response_id": "msg_011ChHK5xBwafaT5tdFJiKbY",
+      "attestation": "e0681be747abda8a7596f1c52ed72aed7e906299885cb01f86743677b2f3b4c4"
     },
     {
       "schema": 0,
       "question_sha256": "6cf41a0287ac6d82aa557dc25d4824e6f33eb3f0b8ab8f6840afcec5e69b0f22",
       "label": 0,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHzDsZ9x3yBu6pYGMgz9",
-      "attestation": "67f8643becf38d736bbf21bf06fa02237b75c4a44ed8c8fbb2a18d69cddb6ffa"
+      "response_id": "msg_011ChHK6KDjJDR32XYfLQXyz",
+      "attestation": "1fa3144cee4cd476ad232c8772af99ee0fed84d70701ad4c416dcbb17402eb8b"
     },
     {
       "schema": 0,
       "question_sha256": "d1d603e722e9e22a3416c203b845bbae505dacf792efdc6c3be3cbf3fd046ea2",
       "label": 2,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHzEFp77jkgmoULsM1AQ",
-      "attestation": "7dda278d46300f0c52035b68eb2b581c11857e6251479a29f3b0d6682132cbe0"
+      "response_id": "msg_011ChHK6ea4wyRCFdA8mTWdY",
+      "attestation": "49c81f36fe5036b9cdae18f5e75fa52f9473059d5dbe2426e754d7bd0daa32be"
     },
     {
       "schema": 0,
       "question_sha256": "d7881842926f8bc3a5922d4b689a868b2c7c226b05d7cb5cc79a2127e02d6fe1",
       "label": 0,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHzEdEiN8gasbidF2fWL",
-      "attestation": "aca37fdfe807b8dbf2e8dc09b016b6d92f5137cb520b831e6b8505228b30bac8"
+      "response_id": "msg_011ChHK6vpcwyb2dwcd74UWQ",
+      "attestation": "e640be9774c1f62807b36ce72b795cb90d377115d798e83e13f5d1271c1e5fad"
     },
     {
       "schema": 0,
       "question_sha256": "97016dbbf63ac57cc0b5152b6dd9278d0e4b5841402712954927f3fab864c87b",
       "label": 3,
       "model": "claude-haiku-5-5",
-      "response_id": "msg_011ChHzF4nciiYPsW2uAxGd2",
-      "attestation": "74035f6def5c825048c9e321f38ba3821444e3f9f52e9aeae5e49f6782c0d513"
+      "response_id": "msg_011ChHK7E6S1H82Ro9BLFd5a",
+      "attestation": "141b1b92aec4d5144114b82ce8e37ceb0d2ef695fe8c7f87b4d42290c80750c2"
     }
   ],
   "effects": [
     {
       "kind": 0,
-      "body_hex": "746f74616c20343020627567203135206665617475726520382073656375726974792036206f746865722031310a2333373520506c7567696e20757064617465733a2070726576656e742073696c656e7420726f6c6c6261636b20746f206f6c646572207369676e65642072656c65617365730a2333373020436f6e74656e7420676174653a20656e636f6465642063726564656e7469616c73207769746820636861726163746572207265666572656e63657320616e6420736368656d652d72656c61746976652049507636206c696e6b73207061737320636865636b5f7075626c69736865640a2333333920547275737465642d636f72652068617264656e696e672066726f6d20746865207072652d726561643a206c6174656e7420636865636b73207468617420686f6c64206f6e6c792062656361757365206f6620736f6d657468696e6720656c73650a2333333820436f6e74656e7420676174653a20766172696174696f6e2073656c6563746f72732c20552b3036314320616e64207768697465737061636520696e73696465206120666f726765206c696e6b20706173732074686520636865636b730a233333372042726f6b65723a20636f6e66696e65207468652062726f6b657220736f2069742063616e6e6f74207265616420656e67696e652e6b6579206f72206769746875622d6170702e70656d0a23323536206879616c6f732067697468756220636865636b2070617373657320666f7220616e2041707020746861742063616e6e6f74206d696e742061206a6f62277320746f6b656e202869742061736b73206f6e6c7920636f6e74656e74733a2072656164290a",
-      "receipt": "https://github.com/hyaloslabs/hyalos/issues/384#issuecomment-7079320153"
+      "body_hex": "746f74616c2034302062756720313520666561747572652031312073656375726974792036206f7468657220380a2333373520506c7567696e20757064617465733a2070726576656e742073696c656e7420726f6c6c6261636b20746f206f6c646572207369676e65642072656c65617365730a2333373020436f6e74656e7420676174653a20656e636f6465642063726564656e7469616c73207769746820636861726163746572207265666572656e63657320616e6420736368656d652d72656c61746976652049507636206c696e6b73207061737320636865636b5f7075626c69736865640a2333333920547275737465642d636f72652068617264656e696e672066726f6d20746865207072652d726561643a206c6174656e7420636865636b73207468617420686f6c64206f6e6c792062656361757365206f6620736f6d657468696e6720656c73650a2333333820436f6e74656e7420676174653a20766172696174696f6e2073656c6563746f72732c20552b3036314320616e64207768697465737061636520696e73696465206120666f726765206c696e6b20706173732074686520636865636b730a233333372042726f6b65723a20636f6e66696e65207468652062726f6b657220736f2069742063616e6e6f74207265616420656e67696e652e6b6579206f72206769746875622d6170702e70656d0a23323536206879616c6f732067697468756220636865636b2070617373657320666f7220616e2041707020746861742063616e6e6f74206d696e742061206a6f62277320746f6b656e202869742061736b73206f6e6c7920636f6e74656e74733a2072656164290a",
+      "receipt": "https://github.com/hyaloslabs/hyalos/issues/388#issuecomment-7074028784"
     }
   ],
   "result_hex": "6f6b203430",
