@@ -499,6 +499,8 @@ fn run_attacks(backend: &Backend, guest: &[u8], inputs: &[Vec<u8>]) -> Result<bo
 /// to that exact question. It needs no network and no credential, only the notary key to trust.
 fn attested(t: &Transcript, record: &str, notary: &str) -> Result<String, String> {
     let tool = env::var("HYALOS_ATTEST").map_err(|_| "set HYALOS_ATTEST to the attestation tool")?;
+    // Set when any answer was verified under trust settings that are not the real provider's.
+    let mut test_settings = false;
     for (index, answer) in t.answers.iter().enumerate() {
         let file = format!("{record}.attest/{index:03}.presentation");
         let bytes = fs::read(&file).map_err(|_| format!("answer {index}: no attestation"))?;
@@ -517,8 +519,11 @@ fn attested(t: &Transcript, record: &str, notary: &str) -> Result<String, String
         if !same {
             return Err(format!("answer {index}: the notary saw a different question or answer than the record claims"));
         }
+        test_settings |= !seen["trust"].is_null();
     }
-    Ok(format!("attested: {} of {} model answers match what the notary saw", t.answers.len(), t.answers.len()))
+    // A check made against a stand-in says so, and so cannot be read as one about the real provider.
+    let mark = if test_settings { "test trust settings: " } else { "" };
+    Ok(format!("{mark}attested: {} of {} model answers match what the notary saw", t.answers.len(), t.answers.len()))
 }
 
 fn main_inner() -> Result<bool, String> {
@@ -548,7 +553,7 @@ fn main_inner() -> Result<bool, String> {
             let key = format!("{}/.config/hyalos-spike/anthropic.key", env::var("HOME").map_err(|_| "no home")?);
             // `stub` as the repository runs the same committed flow with the stand-in model and no
             // real notification, so the chain can be exercised without a credential.
-            let mode = if arg(5)? == "stub" {
+            let mut mode = if arg(5)? == "stub" {
                 Mode::Record { seed: issue }
             } else {
                 // With HYALOS_ATTEST naming the attestation tool, every model call goes through a
@@ -573,6 +578,10 @@ fn main_inner() -> Result<bool, String> {
             let task = sha(format!("{}:{}", sha(&guest), sha(&inputs.concat())).as_bytes());
             let intent = serde_json::json!({"v": 1, "kind": "intent", "task": task, "guest_sha256": sha(&guest)});
             let (_, intent_hash) = ledger.append(intent).map_err(|r| format!("{r:?}"))?;
+            // The run is declared. From here every attested call names it.
+            if let Mode::Live(live) = &mut mode {
+                live.bind(&intent_hash);
+            }
             let outcome = execute(&backend, &guest, inputs, mode);
             let (state, commitment) = match &outcome {
                 Ok(t) => ("ok".to_string(), sha([salt.as_bytes(), &serde_json::to_vec(t).map_err(|_| "encode")?].concat().as_slice())),
