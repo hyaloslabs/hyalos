@@ -42,7 +42,8 @@ fn call() -> &'static Call {
         let _ = std::fs::remove_dir_all(&home);
         let config = home.join(".config/hyalos-spike");
         std::fs::create_dir_all(&config).unwrap();
-        std::fs::write(config.join("anthropic.key"), "made-up-credential-for-tests\n").unwrap();
+        // Made up, and exactly the length the tool is pinned to.
+        std::fs::write(config.join("anthropic.key"), format!("{}\n", "x".repeat(106))).unwrap();
         let root = home.join("root.der");
         let mut standin = Command::new(env!("CARGO_BIN_EXE_standin"))
             .arg(&root)
@@ -188,6 +189,27 @@ fn s_03_1_any_one_test_setting_marks_the_report() {
     let call = call();
     let both = [("HYALOS_TRUST_ROOT", call.root.as_os_str()), ("HYALOS_TRUST_SERVER_NAME", std::ffi::OsStr::new(NAME))];
     assert_eq!(verify_with(call, &both).unwrap()["trust"], "test trust settings");
+}
+
+#[test]
+fn issue_394_a_credential_of_another_length_is_refused_before_anything_is_sent() {
+    let call = call();
+    let home = call.home.join("other-length");
+    std::fs::create_dir_all(home.join(".config/hyalos-spike")).unwrap();
+    std::fs::write(home.join(".config/hyalos-spike/anthropic.key"), format!("{}\n", "x".repeat(107))).unwrap();
+    // Nothing listens at this address, so only a refusal before connecting gives this message.
+    let mut ask = tool(&home, &call.root, Some("127.0.0.1:9"))
+        .args(["ask", home.join("never.presentation").to_str().unwrap(), INTENT, POSITION])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    ask.stdin.take().unwrap().write_all(b"A title").unwrap();
+    let output = ask.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not the length this tool is pinned to"));
+    assert!(!home.join("never.presentation").exists());
 }
 
 #[test]

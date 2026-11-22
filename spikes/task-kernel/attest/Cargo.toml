@@ -14,7 +14,7 @@ futures = "0.3"
 hex = "0.4"
 serde_json = "1"
 sha2 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 # The stand-in provider only: a local TLS server and a test root for it.
 rcgen = "0.13"
