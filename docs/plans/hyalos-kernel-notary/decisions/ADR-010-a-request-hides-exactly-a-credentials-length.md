@@ -1,6 +1,6 @@
 # ADR-010: A request hides exactly a credential's length
 
-**Status:** accepted (developer, 2026-11-21)
+**Status:** accepted (developer, 2026-11-21); the forgery in its residual is tested in ADR-011
 
 **Proposed by:** author (issue #394); chosen by the developer on 2026-11-21
 
