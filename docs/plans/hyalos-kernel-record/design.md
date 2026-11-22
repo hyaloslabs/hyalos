@@ -235,7 +235,7 @@ sequenceDiagram
 | S-06.1 to S-06.4 | Unit for the entry, integration for the report |
 | S-06.5 | Structural |
 
-**Forged tickets in tests.** A real notary never signs a bad ticket, so the audit's shape and range checks are reached through a test-only program, `forging-notary`. It is a separate binary with `required-features = ["forge-ticket"]`, a Cargo feature that is off by default. It runs the notary's real session and signs the ticket extension bytes named by `HYALOS_FORGE_TICKET`: missing, doubled, short or out of range. The default `notary` build holds no path to it, and Slice 5's Verify proves that on the release binary. S-05.7.e5 edits a stored attestation, updates the record's hash and re-signs the chain under the forger's keys, so the check reached is that the attestation does not verify.
+**Forged tickets in tests.** A real notary never signs a bad ticket, so the audit's shape and range checks are reached through a test-only program, `forging-notary`. It is a separate binary with `required-features = ["forge-ticket"]`, a Cargo feature that is off by default. It runs the notary's real session and signs the ticket extension bytes named by `HYALOS_FORGE_TICKET`: missing, doubled, short or out of range. The hook is defined only in `forging-notary.rs`, ahead of its include of `notary.rs`, so a `notary` built with the feature does not compile. The default `notary` build holds no path to it, and Slice 5's Verify proves both on the release build. S-05.7.e5 edits a stored attestation, updates the record's hash and re-signs the chain under the forger's keys, so the check reached is that the attestation does not verify.
 
 No test contacts the real provider or the public log.
 

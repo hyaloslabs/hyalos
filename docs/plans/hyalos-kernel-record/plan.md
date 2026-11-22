@@ -350,6 +350,7 @@ A version 2 audit holds each answer's signed ticket to the record, and reports t
 - **S-05.6**
 - **S-05.7** (ticket side): rows S-05.7.e1 to S-05.7.e5, and S-05.7.e8.
 - **5.1** Given the default release build of `notary`, when its bytes are searched, then `HYALOS_FORGE_TICKET` does not appear.
+- **5.2** Given the `forge-ticket` feature, when `notary` itself is built with it, then the build fails, because the hook exists only in `forging-notary`.
 
 ### Contracts
 
@@ -360,6 +361,7 @@ A version 2 audit holds each answer's signed ticket to the record, and reports t
 - Stop if a contract this slice depends on has drifted from `context.md` (preflight).
 - Stop if any version 2 record can pass with a missing, duplicated or malformed ticket extension.
 - Stop if the default `notary` build can reach the forging path, or if the forging path would need a runtime switch in it.
+- Stop if `notary` compiles with the `forge-ticket` feature on.
 - Stop if a forgery in the threat model passes and no named check can refuse it. That is a design gap, not a test to adjust.
 
 ### Verify
@@ -367,6 +369,7 @@ A version 2 audit holds each answer's signed ticket to the record, and reports t
 ```bash
 cargo build --release --manifest-path attest/Cargo.toml
 grep -c HYALOS_FORGE_TICKET attest/target/release/notary
+cargo build --release --manifest-path attest/Cargo.toml --features forge-ticket --bin notary
 cargo build --release --manifest-path attest/Cargo.toml --features forge-ticket --bin forging-notary
 cargo build --release
 cargo test --manifest-path attest/Cargo.toml
@@ -375,7 +378,7 @@ target/release/task-kernel replay guest/digest.wasm out/live3.json
 comm -23 <(grep -oE '^\| S-(01\.7|05\.[1-6]|05\.7)\.e[0-9]+' ../../docs/plans/hyalos-kernel-record/prd.md | grep -Ev 'S-01\.7\.e1|S-05\.7\.e[67]' | sed 's/^| S-/record_s_/; s/\./_/g' | sort -u) <(grep -rhoE 'fn record_s_[0-9]+_[0-9]+_e[0-9]+' kernel/src attest/src attest/tests | sed 's/^fn //' | sort -u)
 ```
 
-Expected: each build ends with `Finished`. The first `grep -c` prints `0`, which proves **5.1**. Both test runs end with `test result: ok`. Replay prints `replay identical`. `comm` prints nothing.
+Expected: the `--bin notary` build with the feature fails to compile, which proves **5.2**, and every other build ends with `Finished`. The `grep -c` prints `0`, which proves **5.1**. Both test runs end with `test result: ok`. Replay prints `replay identical`. `comm` prints nothing.
 
 ### Pattern to follow
 
@@ -387,7 +390,7 @@ Expected: each build ends with `Finished`. The first `grep -c` prints `0`, which
 
 Default route. You may deviate if every mandatory item still holds; record why.
 
-1. Add the `forge-ticket` feature and the `forging-notary` binary. It includes `notary.rs`'s source, so the session is not moved, and the hook that replaces the ticket bytes is compiled only under the feature. Tests set `HYALOS_FORGE_TICKET` on that child only, never in the monitor.
+1. Add the `forge-ticket` feature and the `forging-notary` binary. It defines the hook that replaces the ticket bytes, then includes `notary.rs`'s source, so the session is not moved. `notary.rs` calls the hook only under the feature, so `notary` itself cannot compile with it. Tests set `HYALOS_FORGE_TICKET` on that child only, never in the monitor.
 2. Read the `ticket` object from `verify`'s report in `witnessed`, which the `attested` command also calls. Presence, range and agreement run there. The task binding runs only in `audit_record`, against `claim_of`'s task.
 3. Add the ticket checks to `check_answer`, and agreement across answers.
 4. Extend `audit_report`, and change the first line to `audit passed`.
