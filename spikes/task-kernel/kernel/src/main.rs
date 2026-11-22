@@ -53,6 +53,11 @@ pub(crate) enum Reason {
     NoKvm,
     ModelUnavailable,
     ModelRefused,
+    NotaryUnreachable,
+    NotaryDeadline,
+    WrongNotaryKey,
+    ReleaseMismatch,
+    ProviderRefused,
     EffectFailed,
     LedgerFailed,
 }
@@ -534,6 +539,55 @@ fn attested(t: &Transcript, record: &str, notary: &str) -> Result<String, String
     Ok(attested_report(t.answers.len(), test_settings))
 }
 
+/// One declared run: its intent link, its execution, and a result link that says how it ended.
+/// A record is written only for a run that was not refused.
+fn declared_run(
+    append: &mut dyn FnMut(serde_json::Value) -> Result<(usize, String), Reason>,
+    backend: &Backend,
+    guest: &[u8],
+    inputs: Vec<Vec<u8>>,
+    mut mode: Mode,
+    salt: &str,
+    record: &str,
+) -> Result<(Result<Transcript, Reason>, usize), String> {
+    // The task is named without a salt, so repeated runs of one task are visible as such.
+    let task = sha(format!("{}:{}", sha(guest), sha(&inputs.concat())).as_bytes());
+    let intent = serde_json::json!({"v": 1, "kind": "intent", "task": task, "guest_sha256": sha(guest)});
+    let (_, intent_hash) = append(intent).map_err(|r| format!("{r:?}"))?;
+    // The run is declared. From here every attested call names it.
+    if let Mode::Live(live) = &mut mode {
+        live.bind(&intent_hash);
+    }
+    // With no notary the guest does not start, so a task that asks nothing cannot act either.
+    let no_notary = matches!(&mode, Mode::Live(live) if !live.has_notary());
+    let outcome = if no_notary { Err(Reason::NotaryUnreachable) } else { execute(backend, guest, inputs, mode) };
+    let (state, commitment) = match &outcome {
+        Ok(t) => ("ok".to_string(), sha([salt.as_bytes(), &serde_json::to_vec(t).map_err(|_| "encode")?].concat().as_slice())),
+        Err(reason) => (format!("refused:{reason:?}"), String::new()),
+    };
+    let result = serde_json::json!({"v": 1, "kind": "result", "intent": intent_hash, "outcome": state, "transcript": commitment});
+    // The record and salt are on disk before the public log commits to them, and take their
+    // names only after it has.
+    let (pending_record, pending_salt) = (format!("{record}.pending"), format!("{record}.salt.pending"));
+    if let Ok(t) = &outcome {
+        write_synced(&pending_record, &serde_json::to_vec_pretty(t).map_err(|_| "encode")?)?;
+        write_synced(&pending_salt, salt.as_bytes())?;
+    }
+    // A failed append may still have reached the public log, so the pending files are kept.
+    let (seq, _) = append(result).map_err(|r| format!("{r:?}"))?;
+    if outcome.is_ok() {
+        fs::rename(&pending_record, record).map_err(|_| "cannot write")?;
+        fs::rename(&pending_salt, format!("{record}.salt")).map_err(|_| "cannot write")?;
+    }
+    Ok((outcome, seq))
+}
+
+fn write_synced(path: &str, bytes: &[u8]) -> Result<(), String> {
+    let mut file = fs::File::create(path).map_err(|_| "cannot write")?;
+    std::io::Write::write_all(&mut file, bytes).map_err(|_| "cannot write")?;
+    file.sync_all().map_err(|_| "cannot write".to_string())
+}
+
 fn main_inner() -> Result<bool, String> {
     let args: Vec<String> = env::args().collect();
     let arg = |i: usize| args.get(i).map(String::as_str).ok_or_else(|| "usage: run|replay|attacks|bench ...".to_string());
@@ -558,19 +612,23 @@ fn main_inner() -> Result<bool, String> {
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
             let inputs = read_inputs(arg(3)?)?;
             let issue = arg(6)?.parse().map_err(|_| "bad issue number")?;
-            let key = format!("{}/.config/hyalos-spike/anthropic.key", env::var("HOME").map_err(|_| "no home")?);
+            // A second run on one path would overwrite the first run's evidence.
+            if !live::record_is_fresh(arg(4)?) {
+                return Err("the record path is already in use".into());
+            }
             // `stub` as the repository runs the same committed flow with the stand-in model and no
             // real notification, so the chain can be exercised without a credential.
-            let mut mode = if arg(5)? == "stub" {
+            let mode = if arg(5)? == "stub" {
                 Mode::Record { seed: issue }
             } else {
-                // With HYALOS_ATTEST naming the attestation tool, every model call goes through a
-                // notarized session and its presentation is kept beside the record.
-                let attest = env::var("HYALOS_ATTEST").ok().map(|tool| (tool, format!("{}.attest", &args[4])));
-                Mode::Live(live::Live::new(&key, arg(5)?, issue, attest).ok_or("cannot use the credential file")?)
+                // Every model call goes through the customer's notary, and its presentation is
+                // kept beside the record. With no notary configured, the run is refused.
+                Mode::Live(live::Live::new(arg(5)?, issue, live::Attest::from_env(arg(4)?)).ok_or("bad repository name")?)
             };
+            // Room for every call to take its whole 35-second limit.
+            let limit = Duration::from_secs(600u64.max(inputs.len() as u64 * 35 + 60));
             let backend = match backend {
-                Backend::Kvm { kernel, .. } => Backend::Kvm { kernel, limit: Duration::from_secs(600) },
+                Backend::Kvm { kernel, .. } => Backend::Kvm { kernel, limit },
                 other => other,
             };
             // Commit to the run before it happens, and to its outcome after, in the public chain.
@@ -582,25 +640,9 @@ fn main_inner() -> Result<bool, String> {
                 .and_then(|mut device| std::io::Read::read_exact(&mut device, &mut salt))
                 .map_err(|_| "no randomness")?;
             let salt = hex(&salt);
-            // The task is named without a salt, so repeated runs of one task are visible as such.
-            let task = sha(format!("{}:{}", sha(&guest), sha(&inputs.concat())).as_bytes());
-            let intent = serde_json::json!({"v": 1, "kind": "intent", "task": task, "guest_sha256": sha(&guest)});
-            let (_, intent_hash) = ledger.append(intent).map_err(|r| format!("{r:?}"))?;
-            // The run is declared. From here every attested call names it.
-            if let Mode::Live(live) = &mut mode {
-                live.bind(&intent_hash);
-            }
-            let outcome = execute(&backend, &guest, inputs, mode);
-            let (state, commitment) = match &outcome {
-                Ok(t) => ("ok".to_string(), sha([salt.as_bytes(), &serde_json::to_vec(t).map_err(|_| "encode")?].concat().as_slice())),
-                Err(reason) => (format!("refused:{reason:?}"), String::new()),
-            };
-            let result = serde_json::json!({"v": 1, "kind": "result", "intent": intent_hash, "outcome": state, "transcript": commitment});
-            let (seq, _) = ledger.append(result).map_err(|r| format!("{r:?}"))?;
+            let (outcome, seq) = declared_run(&mut |link| ledger.append(link), &backend, &guest, inputs, mode, &salt, arg(4)?)?;
             let stamped = ledger.timestamp(seq).is_some();
             let t = outcome.map_err(|r| format!("{r:?}"))?;
-            fs::write(arg(4)?, serde_json::to_vec_pretty(&t).map_err(|_| "encode")?).map_err(|_| "cannot write")?;
-            fs::write(format!("{}.salt", arg(4)?), &salt).map_err(|_| "cannot write")?;
             println!("committed: link {seq} in the public log, Bitcoin timestamp requested: {stamped}");
             let model = t.answers.first().map_or("", |a| a.model.as_str());
             println!("ok: {} inputs, {} inferences by {model}, fuel {}", t.inputs_hex.len(), t.answers.len(), t.fuel_used);
@@ -687,6 +729,9 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod live_tests;
 
 #[cfg(test)]
 mod report_tests {
