@@ -356,7 +356,7 @@ An auditor with the record, the links, the stored log replies, public keys and a
 
 - **S-04.1**
 - **S-04.2**
-- **S-04.5** (report side): the report lists what this slice proved, which is the link signatures, the inclusion proofs, the signed times, the chain rule and the run count, then the four limits. It says in its own line that the answers' attestations were not checked.
+- **S-04.5** (report side): the report lists what this slice proved, which is the link signatures, the inclusion proofs, the signed times, the chain rule and the run count, then the five limits. It says in its own line that the answers' attestations were not checked.
 - **4.1** The audit path opens no file under the operator's home directory and starts no program that reads a private key.
 - **4.2** Verifying each link's proof, signed time and signature uses only the stored log replies and needs no network. The audit as a whole still needs the network for one step, asking the log which entries it holds under the operator's key, and is refused when that step cannot be done.
 
@@ -411,7 +411,7 @@ Dry-run scenarios, each a test over copies of the entries in `spikes/task-kernel
 - **S-04.2.e1:** the stored entries verify.
 - **S-04.2.e2:** one hash in one stored inclusion proof is altered, and the audit refuses, naming that link.
 - **S-04.2.e3:** one link is replaced by one signed with a test key, and the audit refuses, naming that link.
-- **S-04.5.e1, S-04.5.e2:** the report of a passing audit lists what was proven and then the four limits of S-04.5 by name. A failing one names the first failed check and prints no statement of proof.
+- **S-04.5.e1, S-04.5.e2:** the report of a passing audit lists what was proven and then the five limits of S-04.5 by name. A failing one names the first failed check and prints no statement of proof.
 - **S-04.5.e3:** a chain made for the test with three intent links for one task, signed with a test ledger key and entered in a stand-in log under a test log key. The report of the passing record says the task was run 3 times. The count is over the chain's links, after the chain has been found equal to the log's list, which is what makes it the log's count. The code that counts is there today (`spikes/task-kernel/kernel/src/ledger.rs:151`).
 - **4.2:** the proof, signed-time and signature tests above run with no network and pass. A whole audit with the default log setting and no network is refused, naming the step.
 

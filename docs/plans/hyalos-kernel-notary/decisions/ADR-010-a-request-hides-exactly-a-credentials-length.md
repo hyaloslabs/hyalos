@@ -1,6 +1,6 @@
 # ADR-010: A request hides exactly a credential's length
 
-**Status:** accepted (developer, 2026-11-21); a body forged in the hidden bytes is tested in ADR-011, and the API-key case in its residual is tracked in #398
+**Status:** accepted (developer, 2026-11-21); a body forged in the hidden bytes is tested in ADR-011, and the API-key case in its residual is named as the fifth limit of S-04.5 by ADR-012
 
 **Proposed by:** author (issue #394); chosen by the developer on 2026-11-21
 

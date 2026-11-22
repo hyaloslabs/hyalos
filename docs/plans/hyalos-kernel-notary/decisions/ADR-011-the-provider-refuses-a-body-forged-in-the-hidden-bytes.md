@@ -1,6 +1,6 @@
 # ADR-011: The provider refuses a body forged in the hidden bytes
 
-**Status:** accepted (developer, 2026-11-21)
+**Status:** accepted (developer, 2026-11-21); its residual is named as the fifth limit of S-04.5 by ADR-012
 
 **Proposed by:** author (issue #396); chosen by the developer on 2026-11-21
 
