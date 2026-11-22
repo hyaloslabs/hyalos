@@ -6,7 +6,7 @@
 use super::audit_tests::Rig;
 use super::*;
 use crate::live_tests::{built, locked, random_salt};
-use crate::{Answer, AuditInputs, Transcript, Verifier};
+use crate::{Answer, AuditInputs, Backend, Mode, Transcript, Verifier};
 use std::{
     io::{BufRead, BufReader, Write},
     process::{Child, Stdio},
@@ -31,6 +31,25 @@ struct World {
     operator_transport: String,
     /// The version of the record and links this world writes.
     version: u32,
+    /// A real guest that asks the first questions of `QUESTIONS` and returns.
+    guest: Vec<u8>,
+}
+
+/// A guest that asks these questions once each, in order, then returns one byte.
+fn asking(questions: &[&str]) -> Vec<u8> {
+    let (mut data, mut calls, mut at) = (String::new(), String::new(), 1);
+    for question in questions {
+        data.push_str(&format!("(data (i32.const {at}) \"{question}\")"));
+        calls.push_str(&format!("(drop (call $infer (i32.const 0) (i32.const {at}) (i32.const {})))", question.len()));
+        at += question.len();
+    }
+    wat::parse_str(format!(
+        r#"(module (import "hyalos" "infer" (func $infer (param i32 i32 i32) (result i32)))
+           (import "hyalos" "return" (func $return (param i32 i32)))
+           (memory (export "memory") 1) {data}
+           (func (export "run") {calls} (call $return (i32.const 0) (i32.const 1))))"#
+    ))
+    .unwrap()
 }
 
 impl Drop for World {
@@ -60,10 +79,11 @@ fn start(children: &mut Vec<Child>, mut command: Command, fields: &[&str]) -> Ve
 
 impl World {
     fn new(label: &str) -> Self {
-        Self::of_version(label, crate::CURRENT_VERSION)
+        Self::asking(label, crate::CURRENT_VERSION, QUESTIONS.len())
     }
 
-    fn of_version(label: &str, version: u32) -> Self {
+    /// A world whose guest asks the first `asks` questions.
+    fn asking(label: &str, version: u32, asks: usize) -> Self {
         let rig = Rig::new(&format!("forgery-{label}"));
         let (log, ledger_key) = (rig.key("test-log"), rig.key("operator"));
         let home = rig.root.join("home");
@@ -86,7 +106,8 @@ impl World {
             ("HYALOS_TRUST_PROVIDER_ADDRESS".to_string(), provider),
             ("HYALOS_OPERATOR_TRANSPORT_KEY".to_string(), transport_key.display().to_string()),
         ];
-        let mut world = Self { rig, log, ledger_key, children, settings, signer: String::new(), operator_transport, version };
+        let mut world = Self { rig, log, ledger_key, children, settings, signer: String::new(), operator_transport, version, guest: asking(&QUESTIONS[..asks]) };
+        fs::write(world.rig.path("guest.wasm"), &world.guest).unwrap();
         let (signer, transport, address) = world.notary("notary");
         world.signer = signer;
         world.point_at(&transport, &address, &world.signer.clone());
@@ -142,9 +163,9 @@ impl World {
         self.rig.path(&format!("asked-{name}"))
     }
 
-    /// The transcript's frame. The guest and input are labels: this audit does not run the guest.
+    /// The transcript's frame, before a run's answers and what the guest did with them.
     fn frame(&self) -> Transcript {
-        let guest_sha256 = sha(b"the forger's guest");
+        let guest_sha256 = sha(&self.guest);
         let task = if self.version == 1 { String::new() } else { crate::task_v2(&guest_sha256, &[b"one input".to_vec()]).unwrap() };
         Transcript {
             version: self.version,
@@ -175,6 +196,12 @@ impl World {
     /// The log then signs `intent_time` and `result_time` for the run's two links.
     fn close(&self, intent: &str, answers: Vec<Answer>, intent_time: u64, result_time: u64) {
         let mut t = self.frame();
+        // What the guest does with these answers, when it can run on them. A record it cannot
+        // run on keeps the frame's, and a forgery that reaches replay diverges there.
+        let mode = Mode::Replay { answers: answers.clone(), effects: Vec::new() };
+        if let Ok(run) = crate::execute_as(self.version, &Backend::Process, &self.guest, vec![b"one input".to_vec()], mode) {
+            (t.result_hex, t.fuel_used) = (run.result_hex, run.fuel_used);
+        }
         t.answers = answers;
         let salt = random_salt();
         fs::write(self.record(), serde_json::to_vec_pretty(&t).unwrap()).unwrap();
@@ -200,12 +227,17 @@ impl World {
     }
 
     fn audit_with(&self, legacy: bool) -> Result<String, String> {
+        self.audit_on(legacy, Some(self.rig.path("guest.wasm")))
+    }
+
+    fn audit_on(&self, legacy: bool, guest: Option<String>) -> Result<String, String> {
         let inputs = AuditInputs {
             dir: Some(self.rig.path("ledger")),
             operator: Some(self.rig.path("operator.pub")),
             notary: self.signer.clone(),
             verify: built("attest").display().to_string(),
             legacy,
+            guest,
         };
         let trust = self.settings.iter().filter(|(name, _)| name.starts_with("HYALOS_TRUST_")).map(|(n, v)| (n.clone(), v.into())).collect();
         let verifier = Verifier { program: inputs.verify.clone(), trust };
@@ -455,7 +487,7 @@ fn t_5_the_window_is_strict_at_the_intent_and_inclusive_at_the_result() {
 #[test]
 fn s_04_1_the_whole_audit_passes_with_an_empty_home() {
     let _one = locked();
-    let world = World::new("cli");
+    let world = World::asking("cli", crate::CURRENT_VERSION, 1);
     let intent = world.declare();
     let before = now() - 1;
     let answers = world.honest(&intent, &QUESTIONS[..1]);
@@ -468,7 +500,7 @@ fn s_04_1_the_whole_audit_passes_with_an_empty_home() {
         .arg("audit")
         .arg(world.record())
         .arg(world.rig.path("ledger"))
-        .args(["--operator-public", &world.rig.path("operator.pub"), "--notary-public", &world.rig.path("notary.pub"), "--verify"])
+        .args(["--operator-public", &world.rig.path("operator.pub"), "--notary-public", &world.rig.path("notary.pub"), "--guest", &world.rig.path("guest.wasm"), "--verify"])
         .arg(built("attest"))
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
@@ -494,7 +526,7 @@ fn t_5_1_the_monitor_names_no_notary_setting() {
 
 /// A world holding one honest attested answer in a record of `version`.
 fn one_answer(label: &str, version: u32) -> World {
-    let world = World::of_version(label, version);
+    let world = World::asking(label, version, 1);
     let intent = world.declare();
     let before = now() - 1;
     let answers = world.honest(&intent, &QUESTIONS[..1]);
@@ -504,7 +536,7 @@ fn one_answer(label: &str, version: u32) -> World {
 
 /// The audit of a record file that its version check refuses, so no key or log is reached.
 fn audit_file(record: &str, legacy: bool) -> Result<String, String> {
-    let inputs = AuditInputs { dir: None, operator: Some("/nonexistent".into()), notary: format!("02{}", "11".repeat(32)), verify: "/nonexistent".into(), legacy };
+    let inputs = AuditInputs { dir: None, operator: Some("/nonexistent".into()), notary: format!("02{}", "11".repeat(32)), verify: "/nonexistent".into(), legacy, guest: None };
     crate::audit_record(record, &inputs, None, &Verifier { program: "/nonexistent".into(), trust: Vec::new() })
 }
 
@@ -571,4 +603,58 @@ fn record_1_1_a_version_2_pass_says_the_budget_is_not_checked() {
     assert_eq!(first, "interim audit passed: attempt budget not yet checked");
     assert!(!first.starts_with("audit passed"));
     assert!(!rest.contains("attempt") && !rest.contains("ceiling"), "{report}");
+}
+
+#[test]
+fn record_s_05_8_e1_a_version_2_audit_with_no_guest_is_refused() {
+    let _one = locked();
+    let world = one_answer("r-05-8-e1", 2);
+    assert_eq!(world.audit_on(false, None).unwrap_err(), "the guest is not given: --guest <file>");
+}
+
+#[test]
+fn record_s_05_8_e2_a_guest_with_one_byte_changed_is_refused() {
+    let _one = locked();
+    let world = one_answer("r-05-8-e2", 2);
+    let mut changed = world.guest.clone();
+    *changed.last_mut().unwrap() ^= 1;
+    let file = world.rig.path("changed.wasm");
+    fs::write(&file, changed).unwrap();
+    assert_eq!(world.audit_on(false, Some(file)).unwrap_err(), "the guest is not this record's");
+}
+
+#[test]
+fn record_s_05_8_e3_the_records_guest_and_a_record_that_replays_are_not_refused() {
+    let _one = locked();
+    assert!(one_answer("r-05-8-e3", 2).audit().is_ok());
+}
+
+#[test]
+fn record_s_05_7_e6_extra_sessions_written_into_the_record_diverge() {
+    let _one = locked();
+    let world = World::asking("r-05-7-e6", 2, 1);
+    let intent = world.declare();
+    let before = now() - 1;
+    // Two real attested sessions for a guest that asks one question.
+    let answers = world.honest(&intent, &QUESTIONS[..2]);
+    world.close(&intent, answers, before, now() + 1);
+    assert_eq!(world.refused(), "the record does not replay on its guest");
+}
+
+#[test]
+fn record_s_05_7_e7_a_reworded_question_diverges() {
+    let _one = locked();
+    let world = World::asking("r-05-7-e7", 2, 1);
+    let intent = world.declare();
+    let before = now() - 1;
+    let answers = world.honest(&intent, &["Question zero, reworded"]);
+    world.close(&intent, answers, before, now() + 1);
+    assert_eq!(world.refused(), "the record does not replay on its guest");
+}
+
+#[test]
+fn record_2_1_a_version_1_record_needs_no_guest() {
+    let _one = locked();
+    let report = one_answer("r-2-1", 1).audit_on(true, None).unwrap();
+    assert_eq!(report.lines().next(), Some("legacy audit passed: no attempt budget"));
 }
