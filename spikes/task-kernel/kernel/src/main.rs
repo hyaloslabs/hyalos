@@ -77,6 +77,25 @@ struct Answer {
     /// The hash of a notary's presentation of this answer, when the call was attested.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     attestation: String,
+    /// Proofs a provider may one day supply. None is checked and none counts as evidence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    provider_proofs: Vec<ProviderProof>,
+}
+
+/// One named provider proof. No kind is known, so the audit only counts these (ADR-006).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderProof {
+    kind: String,
+    sha256: String,
+}
+
+impl ProviderProof {
+    fn well_formed(&self) -> bool {
+        let kind = !self.kind.is_empty() && self.kind.len() <= 64 && self.kind.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'/'));
+        let digest = self.sha256.len() == 64 && self.sha256.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+        kind && digest
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,17 +154,20 @@ impl Host {
     pub(crate) fn infer(&mut self, schema: i32, question: &[u8]) -> Result<i32, Reason> {
         let digest = sha(question);
         let at = self.answers.len();
-        let (label, model, response_id, attestation) = match &mut self.mode {
-            Mode::Record { seed } => (stub_model(question, *seed), "stub".to_string(), String::new(), String::new()),
-            Mode::Live(live) => live.infer(question)?,
+        let (label, model, response_id, attestation, provider_proofs) = match &mut self.mode {
+            Mode::Record { seed } => (stub_model(question, *seed), "stub".to_string(), String::new(), String::new(), Vec::new()),
+            Mode::Live(live) => {
+                let (label, model, response_id, attestation) = live.infer(question)?;
+                (label, model, response_id, attestation, Vec::new())
+            }
             Mode::Replay { answers, .. } => match answers.get(at) {
                 Some(a) if a.schema == schema && a.question_sha256 == digest && (0..LABELS).contains(&a.label) => {
-                    (a.label, a.model.clone(), a.response_id.clone(), a.attestation.clone())
+                    (a.label, a.model.clone(), a.response_id.clone(), a.attestation.clone(), a.provider_proofs.clone())
                 }
                 _ => return Err(Reason::ReplayDiverged),
             },
         };
-        self.answers.push(Answer { schema, question_sha256: digest, label, model, response_id, attestation });
+        self.answers.push(Answer { schema, question_sha256: digest, label, model, response_id, attestation, provider_proofs });
         Ok(label)
     }
 
@@ -393,6 +415,15 @@ fn replay(backend: &Backend, guest: &[u8], recorded: &Transcript) -> Result<(), 
 /// its own guest and inputs give. Every command that takes a record reads it here.
 fn read_transcript(bytes: &[u8]) -> Result<Transcript, String> {
     let t: Transcript = serde_json::from_slice(bytes).map_err(|_| "cannot parse")?;
+    if matches!(t.version, 1 | 2) {
+        let mut proofs = t.answers.iter().flat_map(|answer| &answer.provider_proofs).peekable();
+        if t.version == 1 && proofs.peek().is_some() {
+            return Err("a version 1 record cannot carry a provider proof".into());
+        }
+        if !proofs.all(ProviderProof::well_formed) {
+            return Err("a provider proof is malformed".into());
+        }
+    }
     match t.version {
         1 if t.task.is_empty() => Ok(t),
         1 => Err("a version 1 record cannot carry a task".into()),
@@ -822,11 +853,12 @@ fn audit_record(record: &str, inputs: &AuditInputs, stand_in: Option<(String, St
     if let Some(guest) = &guest {
         replay(&Backend::Process, guest, &t).map_err(|_| "the record does not replay on its guest")?;
     }
-    Ok(audit_report(&audited, answers.lines.len(), answers.test_settings, answers.attempt.as_ref()))
+    let proofs = t.answers.iter().map(|answer| answer.provider_proofs.len()).sum();
+    Ok(audit_report(&audited, answers.lines.len(), answers.test_settings, answers.attempt.as_ref(), proofs))
 }
 
 /// What a passing audit proved, then what it did not.
-fn audit_report(audited: &ledger::Audited, answers: usize, test_settings: bool, attempt: Option<&Attempt>) -> String {
+fn audit_report(audited: &ledger::Audited, answers: usize, test_settings: bool, attempt: Option<&Attempt>, proofs: usize) -> String {
     let log = if audited.stand_in { "stand-in log" } else { "public log" };
     // Only a pass that checked an attempt budget may open with `audit passed` (ADR-011).
     let first = if audited.version != 1 && attempt.is_some() { "audit passed" } else { "legacy audit passed: no attempt budget" };
@@ -847,6 +879,8 @@ fn audit_report(audited: &ledger::Audited, answers: usize, test_settings: bool, 
     lines.push(format!("proven: all {answers} answers were attested by the trusted notary for this run and position, inside the run's window, each with a sequence number equal to its position"));
     if let Some(held) = attempt {
         lines.push(format!("attempt {} of at most {} under this authorisation, {} authorised earlier, for this exact task on this notary", held.ticket + 1, held.budget, held.prior));
+        // A count and nothing else: a proof's kind is the operator's text.
+        lines.push(format!("unchecked provider proofs: {proofs}, which prove nothing"));
     }
     lines.push("not proven: the notary's independence is the customer's own".to_string());
     lines.push("not proven: the model's name is the provider's claim".to_string());

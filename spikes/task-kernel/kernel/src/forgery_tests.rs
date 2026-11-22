@@ -300,6 +300,7 @@ fn answer_from(said: &Value, question: &str) -> Answer {
         model: said["model"].as_str().unwrap().to_string(),
         response_id: said["response_id"].as_str().unwrap().to_string(),
         attestation: said["presentation_sha256"].as_str().unwrap().to_string(),
+        provider_proofs: Vec::new(),
     }
 }
 
@@ -504,14 +505,14 @@ fn s_04_4_e3_an_attestation_obtained_before_the_intent_was_logged_is_refused() {
 fn s_03_2_e4_an_attestation_whose_request_carries_no_binding_is_refused() {
     // What verify reports for a request with no binding has neither field. Verify itself refuses
     // such a request: `s_03_4_a_request_with_no_binding_or_a_loose_one_is_refused` in `attest/src/lib.rs`.
-    let answer = Answer { schema: 0, question_sha256: "q".into(), label: 0, model: "m".into(), response_id: "r".into(), attestation: "a".into() };
+    let answer = Answer { schema: 0, question_sha256: "q".into(), label: 0, model: "m".into(), response_id: "r".into(), attestation: "a".into(), provider_proofs: Vec::new() };
     let seen = json!({"run": "r", "sequence": 0, "question_sha256": "q", "label": 0, "model": "m", "response_id": "r", "time": 5});
     assert_eq!(crate::check_answer(&seen, &answer, 0, "r", Some((1, 9))).unwrap_err(), "answer 0: the binding names another run");
 }
 
 #[test]
 fn t_5_the_window_is_strict_at_the_intent_and_inclusive_at_the_result() {
-    let answer = Answer { schema: 0, question_sha256: "q".into(), label: 0, model: "m".into(), response_id: "r".into(), attestation: "a".into() };
+    let answer = Answer { schema: 0, question_sha256: "q".into(), label: 0, model: "m".into(), response_id: "r".into(), attestation: "a".into(), provider_proofs: Vec::new() };
     let at = |time: u64| json!({"intent_hash": "r", "position": 0, "run": "r", "sequence": 0, "question_sha256": "q", "label": 0, "model": "m", "response_id": "r", "time": time});
     for (time, passes) in [(9, false), (10, false), (11, true), (20, true), (21, false)] {
         assert_eq!(crate::check_answer(&at(time), &answer, 0, "r", Some((10, 20))).is_ok(), passes, "{time}");
@@ -718,7 +719,7 @@ fn forged(label: &str, asks: usize, forge: &str) -> World {
         if output.status.success() {
             answer_from(&serde_json::from_slice(&output.stdout).unwrap(), question)
         } else {
-            Answer { schema: 0, question_sha256: sha(question.as_bytes()), label: 0, model: String::new(), response_id: String::new(), attestation: sha(&fs::read(&file).unwrap()) }
+            Answer { schema: 0, question_sha256: sha(question.as_bytes()), label: 0, model: String::new(), response_id: String::new(), attestation: sha(&fs::read(&file).unwrap()), provider_proofs: Vec::new() }
         }
     }).collect();
     world.close(&intent, answers, before, now() + 1);
@@ -921,4 +922,105 @@ fn record_s_05_7_e8_a_run_under_another_log_key_cannot_back_this_chain() {
     let said = world.ask(&world.presentation(0), &other, 0, QUESTIONS[0], None);
     world.close(&intent, vec![answer_from(&said, QUESTIONS[0])], before, now() + 1);
     assert_eq!(world.refused(), "answer 0: the binding names another run");
+}
+
+const AN_UNKNOWN_KIND: &str = "example.provider/proof-9";
+
+fn a_proof() -> crate::ProviderProof {
+    crate::ProviderProof { kind: AN_UNKNOWN_KIND.to_string(), sha256: "ab".repeat(32) }
+}
+
+/// A world holding one attested answer that names a provider proof.
+fn answer_with_a_proof(label: &str) -> (World, String, Vec<Answer>) {
+    let world = World::asking(label, 2, 1);
+    let intent = world.declare();
+    let before = now() - 1;
+    let mut answers = world.honest(&intent, &QUESTIONS[..1]);
+    answers[0].provider_proofs = vec![a_proof()];
+    world.close(&intent, answers.clone(), before, now() + 1);
+    (world, intent, answers)
+}
+
+/// A record's bytes, otherwise well formed, whose one answer holds these proof entries.
+fn record_with_proofs(version: u32, proofs: Value) -> Vec<u8> {
+    let guest = sha(b"a guest");
+    let mut record = json!({"version": version, "guest_sha256": guest, "inputs_hex": [], "effects": [], "result_hex": "", "fuel_used": 1,
+        "answers": [{"schema": 0, "question_sha256": "q", "label": 0, "model": "m", "response_id": "r", "provider_proofs": proofs}]});
+    if version == 2 {
+        record["task"] = json!(crate::task_v2(&guest, &[]).unwrap());
+    }
+    serde_json::to_vec(&record).unwrap()
+}
+
+#[test]
+fn record_s_06_1_e1_an_answer_with_no_proof_has_no_slot_in_its_bytes() {
+    let _one = locked();
+    let world = one_answer("r-06-1-e1", 2);
+    let written = fs::read_to_string(world.record()).unwrap();
+    assert!(written.contains("\"attestation\""));
+    assert!(!written.contains("provider_proofs"), "{written}");
+}
+
+#[test]
+fn record_s_06_1_e2_a_version_1_record_replays_byte_identically() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let bytes = fs::read(root.join("out/live3.json")).unwrap();
+    let t = crate::read_transcript(&bytes).unwrap();
+    assert_eq!(t.version, 1);
+    assert!(!serde_json::to_string(&t).unwrap().contains("provider_proofs"));
+    crate::replay(&Backend::Process, &fs::read(root.join("guest/digest.wasm")).unwrap(), &t).unwrap();
+}
+
+#[test]
+fn record_s_06_2_e1_an_unknown_proof_passes_and_is_counted_without_its_kind() {
+    let _one = locked();
+    let (world, ..) = answer_with_a_proof("r-06-2-e1");
+    let report = world.audit().unwrap();
+    assert_eq!(report.lines().next(), Some("audit passed"));
+    assert!(report.contains("unchecked provider proofs: 1, which prove nothing"), "{report}");
+    assert!(!report.contains(AN_UNKNOWN_KIND) && !report.contains("example.provider"), "{report}");
+}
+
+#[test]
+fn record_s_06_2_e2_a_proof_does_not_rescue_a_record_that_fails_another_check() {
+    let _one = locked();
+    let (world, intent, mut answers) = answer_with_a_proof("r-06-2-e2");
+    answers[0].label = (answers[0].label + 1) % 4;
+    rewrite(&world, &intent, answers);
+    assert_eq!(world.refused(), "answer 0: the notary saw a different question or answer than the record claims");
+}
+
+#[test]
+fn record_s_06_3_e1_a_proof_with_a_bad_kind_or_shape_is_refused() {
+    let digest = "ab".repeat(32);
+    assert!(crate::read_transcript(&record_with_proofs(2, json!([{"kind": "a.kind", "sha256": digest}]))).is_ok(), "the control");
+    for kind in [String::new(), "x".repeat(65), "Upper".to_string(), "a kind".to_string(), "kind\n".to_string()] {
+        let refused = crate::read_transcript(&record_with_proofs(2, json!([{"kind": kind, "sha256": digest}]))).unwrap_err();
+        assert_eq!(refused, "a provider proof is malformed");
+    }
+    assert_eq!(crate::read_transcript(&record_with_proofs(2, json!([{"kind": "a.kind", "sha256": digest, "extra": 1}]))).unwrap_err(), "cannot parse");
+    assert_eq!(crate::read_transcript(&record_with_proofs(1, json!([{"kind": "a.kind", "sha256": digest}]))).unwrap_err(), "a version 1 record cannot carry a provider proof");
+}
+
+#[test]
+fn record_s_06_3_e2_a_proof_whose_digest_is_not_64_lowercase_hex_is_refused() {
+    for digest in ["ab".repeat(31), "ab".repeat(33), "AB".repeat(32), "zz".repeat(32)] {
+        let refused = crate::read_transcript(&record_with_proofs(2, json!([{"kind": "a.kind", "sha256": digest}]))).unwrap_err();
+        assert_eq!(refused, "a provider proof is malformed");
+    }
+}
+
+#[test]
+fn record_s_06_4_e1_a_proof_does_not_remove_the_model_name_limit() {
+    let _one = locked();
+    let (world, ..) = answer_with_a_proof("r-06-4-e1");
+    assert!(world.audit().unwrap().contains("not proven: the model's name is the provider's claim"));
+}
+
+#[test]
+fn record_s_06_4_e2_with_no_proof_the_model_name_limit_is_stated() {
+    let _one = locked();
+    let report = one_answer("r-06-4-e2", 2).audit().unwrap();
+    assert!(report.contains("not proven: the model's name is the provider's claim"), "{report}");
+    assert!(report.contains("unchecked provider proofs: 0, which prove nothing"), "{report}");
 }
