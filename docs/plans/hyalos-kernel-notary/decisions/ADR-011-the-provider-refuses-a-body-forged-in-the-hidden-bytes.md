@@ -20,14 +20,16 @@ The operator ran `spikes/task-kernel/attest/probes/hidden_header.py` against the
 
 | Request | Status |
 |---|---|
-| Control: the smallest valid body alone | 200 |
-| The same body, then the blank line and the start of a longer body, up to that longer body's `content-length` | 400 |
+| Control before: the smallest valid body alone | 200 |
+| The same body, then the blank line and the start of the tool's approved body, up to the approved body's `content-length` | 400 |
+| Control after: the smallest valid body alone | 200 |
 
-The control shows the credential and the small body are accepted, so the refusal is caused by the forged shape. No code change follows from this: the pins of ADR-010 stand, and this forgery is treated as refused.
+The probe does not read the reply's body, so the 400's stated reason is not recorded. The same credential and small body were answered immediately before and after it, so the difference between the requests is the forged shape. An earlier run of a looser version of the probe, with one control and a stand-in body, gave 200 then 400. No verification code changes: the pins of ADR-010 stand, and this forgery is treated as refused.
 
 ## Consequences
 
 - **The room is also tight.** The smallest valid body found is 86 bytes. With its blank line it fits in the 106 hidden bytes only beside a credential of 16 bytes or fewer. The credential in use fills all 106.
 - **This holds for the provider's behaviour on the day tested.** The provider can change it. Re-run the probe before relying on this for a release; a 200 on the second request reopens option 1.
+- **Chunked encoding does not fit.** Hiding `transfer-encoding: chunked` with the small body needs at least 124 bytes before any credential.
 - **One forged shape was tested.** A shorter hidden prefix meant to use the shown bytes as the rest of its JSON was not sent. By the JSON grammar it should fail: the pinned length cuts off the approved body's closing brackets, and a raw line break is not allowed inside a string.
-- **Residual, untested.** A short API key could be hidden beside a junk bearer value with the approved body unchanged. The question asked would be the same, but the call could run on another account or carry an added header. Testing it needs an API key, which the operator does not hold. It is not among the four limits S-04.5 names.
+- **Residual, untested.** A short API key could be hidden beside a junk bearer value with the approved body unchanged. The question asked would be the same, but the call could run on another account or carry an added header. Testing it needs an API key, which the operator does not hold. It is not among the four limits S-04.5 names. Tracked in #398.
