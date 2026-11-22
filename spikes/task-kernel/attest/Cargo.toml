@@ -37,5 +37,15 @@ name = "notary"
 path = "src/bin/notary.rs"
 test = false
 
+# Signs bad tickets for the audit's tests. Off by default, and `notary` does not compile with it on.
+[features]
+forge-ticket = []
+
+[[bin]]
+name = "forging-notary"
+path = "src/bin/forging-notary.rs"
+required-features = ["forge-ticket"]
+test = false
+
 [profile.release]
 opt-level = 3

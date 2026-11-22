@@ -657,8 +657,15 @@ impl Notary {
             .connection_info(ConnectionInfo { time: transcript.time(), version: transcript.version(), transcript_length: TranscriptLength { sent, received } })
             .server_ephemeral_key(certificate.server_ephemeral_key.clone())
             .transcript_commitments(commitments)
-            .extension(Extension { id: RUN_SEQUENCE.to_vec(), value: run_sequence(run, sequence) })
-            .extension(Extension { id: TICKET.to_vec(), value: ticket.bytes() });
+            .extension(Extension { id: RUN_SEQUENCE.to_vec(), value: run_sequence(run, sequence) });
+        // The hook exists only in `forging-notary`, so this program does not compile with the feature.
+        #[cfg(feature = "forge-ticket")]
+        let tickets = crate::forged_ticket(ticket, sequence);
+        #[cfg(not(feature = "forge-ticket"))]
+        let tickets = [ticket.bytes()];
+        for value in tickets {
+            builder.extension(Extension { id: TICKET.to_vec(), value });
+        }
         let attestation = builder.build(&provider).map_err(|_| "dropped")?;
         Ok((sequence, bincode::serialize(&attestation).map_err(|_| "dropped")?))
     }
@@ -885,7 +892,7 @@ async fn run() -> Result<()> {
 }
 
 #[tokio::main]
-async fn main() -> std::process::ExitCode {
+pub(crate) async fn main() -> std::process::ExitCode {
     let mut args = std::env::args().skip(1).peekable();
     let done = match args.peek().map(String::as_str) {
         Some("report") => {

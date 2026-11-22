@@ -361,10 +361,17 @@ async fn run() -> Result<ExitCode> {
                 Err(_) => Err(Word::Deadline),
                 Ok(Err(error)) => Err(word_for(&error, started, &broke)),
                 // The sequence number is read back from the presentation, as an auditor would read it.
-                Ok(Ok((answer, presentation))) if find(&presentation, credential.as_bytes()).is_none() => match verify(&presentation, &notary.signer, &trust) {
-                    Ok(report) => Ok((answer, presentation, report["sequence"].clone())),
-                    Err(_) => Err(Word::Provider),
-                },
+                Ok(Ok((answer, presentation))) if find(&presentation, credential.as_bytes()).is_none() => {
+                    // For the audit's tests of a presentation this check refuses. It is no door: a
+                    // forger can change this program the same way, and the audit refuses the file.
+                    if env::var_os("HYALOS_TEST_KEEP_PRESENTATION").is_some() {
+                        fs::write(out, &presentation).context("cannot write the presentation")?;
+                    }
+                    match verify(&presentation, &notary.signer, &trust) {
+                        Ok(report) => Ok((answer, presentation, report["sequence"].clone())),
+                        Err(_) => Err(Word::Provider),
+                    }
+                }
                 Ok(Ok(_)) => Err(Word::Provider),
             };
             let (answer, presentation, sequence) = match checked {

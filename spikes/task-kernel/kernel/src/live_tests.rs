@@ -19,7 +19,8 @@ static ONE: Mutex<()> = Mutex::new(());
 
 pub(crate) fn built(program: &str) -> PathBuf {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../attest/target/release").join(program);
-    assert!(path.exists(), "{program} is not built: run cargo build --release --manifest-path attest/Cargo.toml");
+    let features = if program == "forging-notary" { " --features forge-ticket --bin forging-notary" } else { "" };
+    assert!(path.exists(), "{program} is not built: run cargo build --release --manifest-path attest/Cargo.toml{features}");
     path
 }
 
@@ -437,11 +438,12 @@ fn record_s_02_3_e2_a_missing_guest_file_prints_no_identity() {
     assert!(output.stdout.is_empty(), "no identity is printed");
 }
 
-/// A tool that answers every call with one refusal word, as `ask` does.
+/// A tool that answers every call with one refusal word, as `ask` does. Like `ask` it reads the
+/// question first: one that left before the monitor wrote it would break the pipe.
 fn tool_saying(rig: &Rig, word: &str) -> Attest {
     use std::os::unix::fs::PermissionsExt;
     let tool = rig.dir.join("says-one-word");
-    fs::write(&tool, format!("#!/bin/sh\nprintf '%s\\n' '{word}'\nexit 1\n")).unwrap();
+    fs::write(&tool, format!("#!/bin/sh\ncat > /dev/null\nprintf '%s\\n' '{word}'\nexit 1\n")).unwrap();
     fs::set_permissions(&tool, fs::Permissions::from_mode(0o700)).unwrap();
     Attest { tool: tool.display().to_string(), dir: format!("{}.attest", rig.record().display()), settings: Vec::new() }
 }

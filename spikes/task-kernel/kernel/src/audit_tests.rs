@@ -237,7 +237,7 @@ fn t_4_an_altered_signed_time_is_refused() {
 fn s_04_5_e1_a_passing_report_lists_what_was_proven_then_the_five_limits() {
     let rig = Rig::new("s-04-5-e1");
     let audited = rig.real().audit(&real_claim()).unwrap();
-    let report = crate::audit_report(&audited, 8, false);
+    let report = crate::audit_report(&audited, 8, false, None);
     let lines: Vec<&str> = report.lines().collect();
     let first_limit = lines.iter().position(|l| l.starts_with("not proven")).unwrap();
     assert!(lines[..first_limit].iter().filter(|l| l.starts_with("proven: ")).count() == 5, "{report}");
@@ -257,7 +257,7 @@ fn s_04_5_e3_the_report_counts_three_runs_of_one_task() {
     let commitment = rig.chain(&["intent", "result", "intent", "result", "intent", "result"], &log, &operator);
     let audited = rig.auditor("operator.pub", "test-log.pub").audit(&test_claim(&commitment)).unwrap();
     assert_eq!(audited.runs, 3);
-    assert!(crate::audit_report(&audited, 1, false).contains("the task was run 3 times"));
+    assert!(crate::audit_report(&audited, 1, false, None).contains("the task was run 3 times"));
 }
 
 #[test]
@@ -371,7 +371,7 @@ fn t_4_a_run_relabelled_as_another_task_still_counts_in_the_total() {
     rig.push(&log, &operator, result_link(&intent, "kept"));
     let audited = audit_of(&rig, &test_claim("kept")).unwrap();
     assert_eq!((audited.runs, audited.all_runs), (1, 2));
-    let report = crate::audit_report(&audited, 1, false);
+    let report = crate::audit_report(&audited, 1, false, None);
     assert!(report.contains("as the intent links name the task") && report.contains("the chain holds 2 run(s) of any task"), "{report}");
 }
 
@@ -482,7 +482,7 @@ fn record_s_05_10_e1_one_run_is_counted_under_this_log_key_only() {
     let (rig, log, operator) = forged("r-05-10-e1");
     let intent = rig.push(&log, &operator, intent_v2(&rig));
     rig.push(&log, &operator, result_v2(&intent, "kept"));
-    let report = crate::audit_report(&audit_of(&rig, &claim_v2("kept")).unwrap(), 1, false);
+    let report = crate::audit_report(&audit_of(&rig, &claim_v2("kept")).unwrap(), 1, false, None);
     assert!(report.contains("the task was run 1 time under this log key only"), "{report}");
     assert!(report.contains("the chain holds 1 run(s) of any task under this log key only"), "{report}");
 }
@@ -494,7 +494,7 @@ fn record_s_05_10_e2_three_runs_are_counted_under_this_log_key_only() {
         let intent = rig.push(&log, &operator, intent_v2(&rig));
         rig.push(&log, &operator, result_v2(&intent, &format!("run-{run}")));
     }
-    let report = crate::audit_report(&audit_of(&rig, &claim_v2("run-0")).unwrap(), 1, false);
+    let report = crate::audit_report(&audit_of(&rig, &claim_v2("run-0")).unwrap(), 1, false, None);
     assert!(report.contains("the task was run 3 times under this log key only"), "{report}");
     assert!(report.contains("the chain holds 3 run(s) of any task under this log key only"), "{report}");
 }

@@ -38,6 +38,10 @@ struct World {
     /// Audit through `old-verify`, which reports a presentation as an older notary's, with no ticket.
     /// This notary always signs a ticket, and a version 1 record is from before tickets.
     old_verifier: bool,
+    /// The task's one input.
+    input: Vec<u8>,
+    /// What the test-only `forging-notary` signs in place of the ticket.
+    forge: Option<String>,
 }
 
 /// A guest that asks these questions once each, in order, then returns one byte.
@@ -89,6 +93,11 @@ impl World {
 
     /// A world whose guest asks the first `asks` questions.
     fn asking(label: &str, version: u32, asks: usize) -> Self {
+        Self::signing(label, version, asks, None)
+    }
+
+    /// A world whose notary signs the ticket `forge` names, when it names one.
+    fn signing(label: &str, version: u32, asks: usize, forge: Option<&str>) -> Self {
         let rig = Rig::new(&format!("forgery-{label}"));
         let (log, ledger_key) = (rig.key("test-log"), rig.key("operator"));
         let home = rig.root.join("home");
@@ -111,7 +120,7 @@ impl World {
             ("HYALOS_TRUST_PROVIDER_ADDRESS".to_string(), provider),
             ("HYALOS_OPERATOR_TRANSPORT_KEY".to_string(), transport_key.display().to_string()),
         ];
-        let mut world = Self { rig, log, ledger_key, children, settings, signer: String::new(), operator_transport, version, guest: asking(&QUESTIONS[..asks]), authorisation: String::new(), old_verifier: version == 1 };
+        let mut world = Self { rig, log, ledger_key, children, settings, signer: String::new(), operator_transport, version, guest: asking(&QUESTIONS[..asks]), authorisation: String::new(), old_verifier: version == 1, input: b"one input".to_vec(), forge: forge.map(str::to_string) };
         fs::write(world.rig.path("guest.wasm"), &world.guest).unwrap();
         let old = world.rig.path("old-verify");
         fs::write(&old, format!("#!/bin/sh\nout=$('{}' verify \"$2\" \"$3\") || exit $?\nprintf '%s\\n' \"$out\" | /usr/bin/sed 's/\"ticket\":{{[^}}]*}}/\"ticket\":null/'\n", built("attest").display())).unwrap();
@@ -125,14 +134,17 @@ impl World {
 
     /// Starts a notary of its own directory, and gives its signing key, transport key and address.
     fn notary(&mut self, dir: &str) -> (String, String, String) {
-        let mut command = Command::new(built("notary"));
+        let mut command = Command::new(built(if self.forge.is_some() { "forging-notary" } else { "notary" }));
+        if let Some(forge) = &self.forge {
+            command.env("HYALOS_FORGE_TICKET", forge);
+        }
         command
             .args(["--listen", "127.0.0.1:0", "--approved-server", NAME, "--stop-on-stdin-close", "--operator-transport-public", &self.operator_transport, "--dir"])
             .arg(self.rig.root.join(dir))
             .arg("--root")
             .arg(self.rig.root.join("root.der"));
         let mut values = start(&mut self.children, command, &["signing", "transport", "listening"]);
-        let task = crate::task_v2(&sha(&self.guest), &[b"one input".to_vec()]).unwrap();
+        let task = crate::task_v2(&sha(&self.guest), &[self.input.clone()]).unwrap();
         let made = Command::new(built("notary")).args(["authorize", "--dir"]).arg(self.rig.root.join(dir)).args(["--task", &task, "--attempts", "100"]).output().unwrap();
         assert!(made.status.success());
         self.authorisation = String::from_utf8(made.stdout).unwrap().trim().to_string();
@@ -164,6 +176,15 @@ impl World {
         serde_json::from_slice(&output.stdout).unwrap()
     }
 
+    /// One call that may be refused, keeping any presentation the tool's own check refuses.
+    fn try_ask(&self, file: &str, intent: &str, position: usize, question: &str) -> std::process::Output {
+        let mut command = Command::new(built("attest"));
+        command.args(["ask", file, intent, &position.to_string()]).env_clear().envs(self.settings.iter().map(|(n, v)| (n, v))).env("HYALOS_TEST_KEEP_PRESENTATION", "1");
+        let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(question.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    }
+
     fn record(&self) -> String {
         self.rig.path("record")
     }
@@ -179,12 +200,12 @@ impl World {
     /// The transcript's frame, before a run's answers and what the guest did with them.
     fn frame(&self) -> Transcript {
         let guest_sha256 = sha(&self.guest);
-        let task = if self.version == 1 { String::new() } else { crate::task_v2(&guest_sha256, &[b"one input".to_vec()]).unwrap() };
+        let task = if self.version == 1 { String::new() } else { crate::task_v2(&guest_sha256, &[self.input.clone()]).unwrap() };
         Transcript {
             version: self.version,
             task,
             guest_sha256,
-            inputs_hex: vec![crate::hex(b"one input")],
+            inputs_hex: vec![crate::hex(&self.input)],
             answers: Vec::new(),
             effects: Vec::new(),
             result_hex: String::new(),
@@ -195,7 +216,7 @@ impl World {
     /// Logs an intent for the frame's task and gives its hash.
     fn declare(&self) -> String {
         let frame = self.frame();
-        let inputs = vec![b"one input".to_vec()];
+        let inputs = vec![self.input.clone()];
         let intent = if self.version == 1 {
             json!({"v": 1, "kind": "intent", "task": crate::task_of(&frame.guest_sha256, &inputs), "guest_sha256": frame.guest_sha256})
         } else {
@@ -212,7 +233,7 @@ impl World {
         // What the guest does with these answers, when it can run on them. A record it cannot
         // run on keeps the frame's, and a forgery that reaches replay diverges there.
         let mode = Mode::Replay { answers: answers.clone(), effects: Vec::new() };
-        if let Ok(run) = crate::execute_as(self.version, &Backend::Process, &self.guest, vec![b"one input".to_vec()], mode) {
+        if let Ok(run) = crate::execute_as(self.version, &Backend::Process, &self.guest, vec![self.input.clone()], mode) {
             (t.result_hex, t.fuel_used) = (run.result_hex, run.fuel_used);
         }
         t.answers = answers;
@@ -302,7 +323,7 @@ fn s_03_2_e1_s_03_3_e1_s_03_5_e1_s_04_3_e1_an_honest_record_of_eight_passes_and_
     let report = world.audit().unwrap();
     assert!(report.contains("all 8 answers were attested by the trusted notary for this run and position"), "{report}");
     assert!(report.contains("test trust settings: the provider here is a stand-in"), "{report}");
-    assert_eq!(report.lines().filter(|l| l.starts_with("not proven")).count(), 5, "{report}");
+    assert_eq!(report.lines().filter(|l| l.starts_with("not proven")).count(), 7, "{report}");
     assert!(!report.contains("not checked"), "{report}");
 
     // S-03.3.e2: the log signed the intent after the sessions.
@@ -527,7 +548,7 @@ fn s_04_1_the_whole_audit_passes_with_an_empty_home() {
         .unwrap();
     let report = String::from_utf8(output.stdout).unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(report.starts_with("interim audit passed: attempt budget not yet checked\ntest trust settings"), "{report}");
+    assert!(report.starts_with("audit passed\ntest trust settings"), "{report}");
     assert!(!report.contains("public log"), "a stand-in report claims nothing of the public log: {report}");
     assert_eq!(fs::read_dir(&empty).unwrap().count(), 0, "the home directory stays empty");
 }
@@ -597,7 +618,7 @@ fn record_s_01_3_e1_a_valid_version_1_record_passes_as_legacy() {
 fn record_s_01_3_e2_a_version_2_record_with_the_option_is_audited_as_version_2() {
     let _one = locked();
     let report = one_answer("r-01-3-e2", 2).audit_with(true).unwrap();
-    assert_eq!(report.lines().next(), Some("interim audit passed: attempt budget not yet checked"));
+    assert_eq!(report.lines().next(), Some("audit passed"));
     assert!(!report.contains("legacy"), "{report}");
 }
 
@@ -609,13 +630,10 @@ fn record_s_01_7_e1_a_legacy_pass_never_opens_with_audit_passed() {
 }
 
 #[test]
-fn record_1_1_a_version_2_pass_says_the_budget_is_not_checked() {
+fn record_s_01_7_e2_a_version_2_pass_opens_with_audit_passed() {
     let _one = locked();
-    let report = one_answer("r-1-1", 2).audit().unwrap();
-    let (first, rest) = report.split_once('\n').unwrap();
-    assert_eq!(first, "interim audit passed: attempt budget not yet checked");
-    assert!(!first.starts_with("audit passed"));
-    assert!(!rest.contains("attempt") && !rest.contains("ceiling"), "{report}");
+    let report = one_answer("r-01-7-e2", 2).audit().unwrap();
+    assert_eq!(report.lines().next(), Some("audit passed"));
 }
 
 #[test]
@@ -685,4 +703,222 @@ fn record_s_01_6_e2_a_version_1_record_with_no_ticket_passes_as_legacy() {
     let _one = locked();
     let report = one_answer("r-01-6-e2", 1).audit_with(true).unwrap();
     assert_eq!(report.lines().next(), Some("legacy audit passed: no attempt budget"));
+}
+
+/// A version 2 run of `asks` answers against a notary that signs the ticket `forge` names. A
+/// presentation the tool's own check refuses is still kept and named by the record.
+fn forged(label: &str, asks: usize, forge: &str) -> World {
+    let world = World::signing(label, 2, asks, Some(forge));
+    let intent = world.declare();
+    let before = now() - 1;
+    fs::create_dir_all(format!("{}.attest", world.record())).unwrap();
+    let answers = QUESTIONS[..asks].iter().enumerate().map(|(position, question)| {
+        let file = world.presentation(position);
+        let output = world.try_ask(&file, &intent, position, question);
+        if output.status.success() {
+            answer_from(&serde_json::from_slice(&output.stdout).unwrap(), question)
+        } else {
+            Answer { schema: 0, question_sha256: sha(question.as_bytes()), label: 0, model: String::new(), response_id: String::new(), attestation: sha(&fs::read(&file).unwrap()) }
+        }
+    }).collect();
+    world.close(&intent, answers, before, now() + 1);
+    world
+}
+
+#[test]
+fn record_s_05_1_e1_no_ticket_extension_is_refused() {
+    let _one = locked();
+    assert_eq!(forged("r-05-1-e1", 1, "missing").refused(), "answer 0: the attestation carries no ticket");
+}
+
+#[test]
+fn record_s_05_1_e2_two_ticket_extensions_are_refused() {
+    let _one = locked();
+    assert_eq!(forged("r-05-1-e2", 1, "doubled").refused(), "answer 0: the attestation does not verify");
+}
+
+#[test]
+fn record_s_05_1_e3_a_ticket_one_byte_short_is_refused() {
+    let _one = locked();
+    assert_eq!(forged("r-05-1-e3", 1, "short").refused(), "answer 0: the attestation does not verify");
+}
+
+#[test]
+fn record_s_05_2_e1_another_ticket_on_a_later_answer_is_refused() {
+    let _one = locked();
+    assert_eq!(forged("r-05-2-e1", 2, "later:ticket=1").refused(), "answer 1: the ticket is not the one answer 0 carries");
+}
+
+#[test]
+fn record_s_05_2_e2_another_authorisation_on_a_later_answer_is_refused() {
+    let _one = locked();
+    let forge = format!("later:authorisation={}", "c".repeat(64));
+    assert_eq!(forged("r-05-2-e2", 2, &forge).refused(), "answer 1: the ticket is not the one answer 0 carries");
+}
+
+#[test]
+fn record_s_05_2_e3_answers_with_the_same_values_are_not_refused() {
+    let _one = locked();
+    let world = World::asking("r-05-2-e3", 2, 2);
+    let intent = world.declare();
+    let before = now() - 1;
+    let answers = world.honest(&intent, &QUESTIONS[..2]);
+    world.close(&intent, answers, before, now() + 1);
+    assert!(world.audit().is_ok());
+}
+
+#[test]
+fn record_s_05_3_e1_a_ticket_for_another_task_is_refused() {
+    let _one = locked();
+    let forge = format!("task={}", "d".repeat(64));
+    assert_eq!(forged("r-05-3-e1", 1, &forge).refused(), "the ticket's task is not this record's");
+}
+
+#[test]
+fn record_s_05_3_e2_a_ticket_for_the_records_task_is_not_refused() {
+    let _one = locked();
+    assert!(one_answer("r-05-3-e2", 2).audit().is_ok());
+}
+
+#[test]
+fn record_s_05_4_e1_ticket_2_of_budget_2_is_refused() {
+    let _one = locked();
+    assert_eq!(forged("r-05-4-e1", 1, "budget=2,ticket=2").refused(), "answer 0: the ticket is not inside its budget");
+}
+
+#[test]
+fn record_s_05_4_e2_budget_0_is_refused() {
+    let _one = locked();
+    assert_eq!(forged("r-05-4-e2", 1, "budget=0").refused(), "answer 0: the ticket is not inside its budget");
+}
+
+#[test]
+fn record_s_05_4_e3_budget_101_is_refused() {
+    let _one = locked();
+    assert_eq!(forged("r-05-4-e3", 1, "budget=101").refused(), "answer 0: the ticket is not inside its budget");
+}
+
+#[test]
+fn record_s_05_5_e1_the_report_states_the_first_attempt() {
+    let _one = locked();
+    let report = forged("r-05-5-e1", 1, "budget=1").audit().unwrap();
+    assert!(report.contains("attempt 1 of at most 1 under this authorisation, 0 authorised earlier, for this exact task on this notary"), "{report}");
+}
+
+#[test]
+fn record_s_05_5_e2_the_report_states_a_later_attempt_and_earlier_budget() {
+    let _one = locked();
+    let report = forged("r-05-5-e2", 1, "budget=5,round=1,prior=3,ticket=2").audit().unwrap();
+    assert!(report.contains("attempt 3 of at most 5 under this authorisation, 3 authorised earlier, for this exact task on this notary"), "{report}");
+}
+
+#[test]
+fn record_s_05_6_e1_a_pass_names_the_seven_limits() {
+    let _one = locked();
+    let report = one_answer("r-05-6-e1", 2).audit().unwrap();
+    let limits: Vec<&str> = report.lines().filter(|line| line.starts_with("not proven")).collect();
+    assert_eq!(limits.len(), 7, "{report}");
+    assert_eq!(limits[5], "not proven: the operator may have asked the provider directly, away from the notary");
+    assert_eq!(limits[6], "not proven: the customer did not authorise this task again after this attestation");
+}
+
+#[test]
+fn record_s_05_6_e2_a_failing_record_states_no_proof() {
+    let _one = locked();
+    let refused = forged("r-05-6-e2", 1, "missing").refused();
+    assert!(!refused.contains("proven") && !refused.contains("audit passed"), "{refused}");
+}
+
+#[test]
+fn record_s_05_7_e1_an_attestation_from_another_run_is_refused() {
+    let _one = locked();
+    let world = World::asking("r-05-7-e1", 2, 1);
+    let intent = world.declare();
+    let before = now() - 1;
+    fs::create_dir_all(format!("{}.attest", world.record())).unwrap();
+    let said = world.ask(&world.presentation(0), &"a".repeat(64), 0, QUESTIONS[0], None);
+    world.close(&intent, vec![answer_from(&said, QUESTIONS[0])], before, now() + 1);
+    assert_eq!(world.refused(), "answer 0: the binding names another run");
+}
+
+#[test]
+fn record_s_05_7_e2_a_varied_input_under_the_original_authorisation_is_refused() {
+    let _one = locked();
+    let mut world = World::asking("r-05-7-e2", 2, 1);
+    // The notary authorised the original input. The record and its links name another.
+    world.input = b"a varied input".to_vec();
+    let intent = world.declare();
+    let before = now() - 1;
+    let answers = world.honest(&intent, &QUESTIONS[..1]);
+    world.close(&intent, answers, before, now() + 1);
+    assert_eq!(world.refused(), "the ticket's task is not this record's");
+}
+
+#[test]
+fn record_s_05_7_e3_presenting_work_as_version_1_avoids_no_budget() {
+    let _one = locked();
+    let mut world = one_answer("r-05-7-e3", 1);
+    assert!(world.audit().unwrap_err().contains("--legacy-v1"));
+    // With the option, what is truly ticketless reports that it has no budget.
+    let report = world.audit_with(true).unwrap();
+    assert_eq!(report.lines().next(), Some("legacy audit passed: no attempt budget"));
+    // The real verifier sees this notary's ticket, so the same record is refused.
+    world.old_verifier = false;
+    assert_eq!(world.audit_with(true).unwrap_err(), "answer 0: a version 1 record cannot carry a ticket");
+}
+
+#[test]
+fn record_s_05_7_e4_a_second_log_key_gets_no_more_attempts() {
+    let _one = locked();
+    let mut world = World::asking("r-05-7-e4", 2, 1);
+    let made = Command::new(built("notary"))
+        .args(["authorize", "--dir"])
+        .arg(world.rig.root.join("notary"))
+        .args(["--task", &"e".repeat(64), "--attempts", "1"])
+        .output()
+        .unwrap();
+    assert!(made.status.success());
+    let identifier = String::from_utf8(made.stdout).unwrap().trim().to_string();
+    world.settings.retain(|(name, _)| name != "HYALOS_NOTARY_AUTHORISATION");
+    world.settings.push(("HYALOS_NOTARY_AUTHORISATION".to_string(), identifier));
+    // The notary never sees a log key: a run under a second key is one more new run to it.
+    let first = world.try_ask(&world.scratch_file("first"), &"1".repeat(64), 0, QUESTIONS[0]);
+    assert!(first.status.success());
+    let second = world.try_ask(&world.scratch_file("second"), &"2".repeat(64), 0, QUESTIONS[0]);
+    assert!(!second.status.success());
+    assert_eq!(String::from_utf8_lossy(&second.stdout).trim(), "spent");
+}
+
+#[test]
+fn record_s_05_7_e5_an_edited_budget_in_a_stored_attestation_is_refused() {
+    let _one = locked();
+    let world = World::asking("r-05-7-e5", 2, 1);
+    let intent = world.declare();
+    let before = now() - 1;
+    let mut answers = world.honest(&intent, &QUESTIONS[..1]);
+    world.close(&intent, answers.clone(), before, now() + 1);
+    let mut bytes = fs::read(world.presentation(0)).unwrap();
+    let at = bytes.windows(64).position(|w| w == world.authorisation.as_bytes()).expect("the ticket's bytes are in the presentation");
+    bytes[at + 128 + 3] = 101;
+    fs::write(world.presentation(0), &bytes).unwrap();
+    answers[0].attestation = sha(&bytes);
+    rewrite(&world, &intent, answers);
+    assert_eq!(world.refused(), "answer 0: the attestation does not verify");
+}
+
+#[test]
+fn record_s_05_7_e8_a_run_under_another_log_key_cannot_back_this_chain() {
+    let _one = locked();
+    let world = World::asking("r-05-7-e8", 2, 1);
+    let intent = world.declare();
+    let before = now() - 1;
+    // The hash this run would have had in a chain under a second key.
+    let link = fs::read_to_string(world.rig.root.join("ledger/00000.json")).unwrap();
+    let key = public_der(&fs::read_to_string(world.rig.path("operator.pub")).unwrap()).unwrap();
+    assert!(link.contains(&sha(&key)));
+    let other = sha(link.replace(&sha(&key), &sha(b"a second operator key")).as_bytes());
+    fs::create_dir_all(format!("{}.attest", world.record())).unwrap();
+    let said = world.ask(&world.presentation(0), &other, 0, QUESTIONS[0], None);
+    world.close(&intent, vec![answer_from(&said, QUESTIONS[0])], before, now() + 1);
+    assert_eq!(world.refused(), "answer 0: the binding names another run");
 }
