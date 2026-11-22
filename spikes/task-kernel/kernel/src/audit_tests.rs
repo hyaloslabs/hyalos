@@ -142,7 +142,7 @@ fn result_link(intent: &str, commitment: &str) -> Value {
 }
 
 fn test_claim(commitment: &str) -> Claim {
-    Claim { commitment: commitment.to_string(), task: "one task".to_string(), guest: "one guest".to_string() }
+    Claim { commitment: commitment.to_string(), task: "one task".to_string(), guest: "one guest".to_string(), version: 1 }
 }
 
 /// The real record's claim, recomputed from `out/live2.json`.
@@ -390,4 +390,140 @@ fn t_4_a_field_the_commitment_does_not_cover_is_refused() {
     let mut record: Value = serde_json::from_slice(&fs::read(source("out/live2.json")).unwrap()).unwrap();
     record["reviewed_by"] = json!("someone");
     assert!(serde_json::from_value::<crate::Transcript>(record).is_err());
+}
+
+/// A version 2 intent naming the test operator's key.
+fn intent_v2(rig: &Rig) -> Value {
+    let key = public_der(&fs::read_to_string(rig.path("operator.pub")).unwrap()).unwrap();
+    json!({"v": 2, "kind": "intent", "task": "one task", "guest_sha256": "one guest", "operator": sha(&key)})
+}
+
+fn result_v2(intent: &str, commitment: &str) -> Value {
+    json!({"v": 2, "kind": "result", "intent": intent, "outcome": "ok", "transcript": commitment})
+}
+
+fn claim_v2(commitment: &str) -> Claim {
+    Claim { version: 2, ..test_claim(commitment) }
+}
+
+#[test]
+fn record_s_01_4_e1_a_version_2_record_whose_intent_says_1_is_refused() {
+    let (rig, log, operator) = forged("r-01-4-e1");
+    let intent = rig.push(&log, &operator, intent_link());
+    rig.push(&log, &operator, result_link(&intent, "kept"));
+    assert_eq!(audit_of(&rig, &claim_v2("kept")).err().unwrap(), "link 0: the run's links are not this record's version");
+}
+
+#[test]
+fn record_s_01_4_e2_a_version_2_record_whose_result_says_1_is_refused() {
+    let (rig, log, operator) = forged("r-01-4-e2");
+    let intent = rig.push(&log, &operator, intent_v2(&rig));
+    rig.push(&log, &operator, result_link(&intent, "kept"));
+    assert_eq!(audit_of(&rig, &claim_v2("kept")).err().unwrap(), "link 1: its version is not its intent's");
+}
+
+#[test]
+fn record_s_01_4_e3_a_chain_of_both_versions_passes_for_the_version_2_record() {
+    let (rig, log, operator) = forged("r-01-4-e3");
+    let old = rig.push(&log, &operator, intent_link());
+    rig.push(&log, &operator, result_link(&old, "old"));
+    let new = rig.push(&log, &operator, intent_v2(&rig));
+    rig.push(&log, &operator, result_v2(&new, "kept"));
+    assert_eq!(audit_of(&rig, &claim_v2("kept")).unwrap().version, 2);
+}
+
+#[test]
+fn record_s_01_8_e1_another_link_of_an_unknown_version_is_refused() {
+    let (rig, log, operator) = forged("r-01-8-e1");
+    let intent = rig.push(&log, &operator, intent_v2(&rig));
+    rig.push(&log, &operator, result_v2(&intent, "kept"));
+    let mut unknown = intent_v2(&rig);
+    unknown["v"] = json!(99);
+    rig.push(&log, &operator, unknown);
+    assert_eq!(audit_of(&rig, &claim_v2("kept")).err().unwrap(), "link 2: its version is not known");
+}
+
+#[test]
+fn record_s_01_8_e2_a_result_differing_from_its_intent_is_refused_for_any_record() {
+    let (rig, log, operator) = forged("r-01-8-e2");
+    let intent = rig.push(&log, &operator, intent_v2(&rig));
+    rig.push(&log, &operator, result_v2(&intent, "kept"));
+    let other = rig.push(&log, &operator, intent_v2(&rig));
+    rig.push(&log, &operator, result_link(&other, "other"));
+    assert_eq!(audit_of(&rig, &claim_v2("kept")).err().unwrap(), "link 3: its version is not its intent's");
+}
+
+#[test]
+fn record_s_01_8_e3_the_committed_chain_is_not_refused_for_its_versions() {
+    let rig = Rig::new("r-01-8-e3");
+    assert_eq!(rig.real().audit(&real_claim()).unwrap().version, 1);
+}
+
+#[test]
+fn record_s_05_9_e1_an_intent_naming_another_key_is_refused() {
+    let (rig, log, operator) = forged("r-05-9-e1");
+    let mut other = intent_v2(&rig);
+    other["operator"] = json!("ab".repeat(32));
+    let intent = rig.push(&log, &operator, other);
+    rig.push(&log, &operator, result_v2(&intent, "kept"));
+    assert_eq!(audit_of(&rig, &claim_v2("kept")).err().unwrap(), "link 0: the intent names another operator key");
+}
+
+#[test]
+fn record_s_05_9_e2_an_intent_naming_this_key_is_not_refused() {
+    let (rig, log, operator) = forged("r-05-9-e2");
+    let intent = rig.push(&log, &operator, intent_v2(&rig));
+    rig.push(&log, &operator, result_v2(&intent, "kept"));
+    assert!(audit_of(&rig, &claim_v2("kept")).is_ok());
+}
+
+#[test]
+fn record_s_05_10_e1_one_run_is_counted_under_this_log_key_only() {
+    let (rig, log, operator) = forged("r-05-10-e1");
+    let intent = rig.push(&log, &operator, intent_v2(&rig));
+    rig.push(&log, &operator, result_v2(&intent, "kept"));
+    let report = crate::audit_report(&audit_of(&rig, &claim_v2("kept")).unwrap(), 1, false);
+    assert!(report.contains("the task was run 1 time under this log key only"), "{report}");
+    assert!(report.contains("the chain holds 1 run(s) of any task under this log key only"), "{report}");
+}
+
+#[test]
+fn record_s_05_10_e2_three_runs_are_counted_under_this_log_key_only() {
+    let (rig, log, operator) = forged("r-05-10-e2");
+    for run in 0..3 {
+        let intent = rig.push(&log, &operator, intent_v2(&rig));
+        rig.push(&log, &operator, result_v2(&intent, &format!("run-{run}")));
+    }
+    let report = crate::audit_report(&audit_of(&rig, &claim_v2("run-0")).unwrap(), 1, false);
+    assert!(report.contains("the task was run 3 times under this log key only"), "{report}");
+    assert!(report.contains("the chain holds 3 run(s) of any task under this log key only"), "{report}");
+}
+
+fn identity(inputs: &[&[u8]]) -> String {
+    crate::task_v2(&sha(b"a guest"), &inputs.iter().map(|i| i.to_vec()).collect::<Vec<_>>()).unwrap()
+}
+
+#[test]
+fn record_s_02_1_e1_inputs_with_equal_joined_bytes_differ() {
+    assert_ne!(identity(&[b"ab", b"c"]), identity(&[b"a", b"bc"]));
+}
+
+#[test]
+fn record_s_02_1_e2_no_inputs_and_one_empty_input_differ() {
+    assert_ne!(identity(&[]), identity(&[b""]));
+}
+
+#[test]
+fn record_s_02_1_e3_the_same_list_gives_the_same_identity() {
+    assert_eq!(identity(&[b"ab", b"c"]), identity(&[b"ab", b"c"]));
+}
+
+#[test]
+fn record_s_02_2_e1_the_two_versions_of_one_task_differ() {
+    assert_ne!(identity(&[b"ab"]), crate::task_of(&sha(b"a guest"), &[b"ab".to_vec()]));
+}
+
+#[test]
+fn record_s_02_2_e2_the_two_versions_of_no_inputs_differ() {
+    assert_ne!(identity(&[]), crate::task_of(&sha(b"a guest"), &[]));
 }

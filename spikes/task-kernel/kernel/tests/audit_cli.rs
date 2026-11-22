@@ -61,6 +61,7 @@ impl Rig {
             .arg(source("out/live2.json"))
             .arg(self.path("ledger"))
             .args(extra)
+            .arg("--legacy-v1")
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap())
             .env("HOME", self.path("home"))

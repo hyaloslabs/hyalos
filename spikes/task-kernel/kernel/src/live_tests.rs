@@ -131,7 +131,7 @@ impl Rig {
             links.push(link);
             Ok((links.len() - 1, hash))
         };
-        let (outcome, _) = declared_run(&mut append, &Backend::Process, &guest, inputs, mode, &random_salt(), self.record().to_str().unwrap(), &|_| Some(0)).unwrap();
+        let (outcome, _) = declared_run(&mut append, &Backend::Process, &guest, inputs, mode, &random_salt(), self.record().to_str().unwrap(), &"ab".repeat(32), &|_| Some(0)).unwrap();
         let reason = outcome.err().expect("the run must be refused");
         (reason, links)
     }
@@ -289,7 +289,7 @@ fn t_3_3_with_no_notary_a_task_that_asks_nothing_does_not_run() {
         links.push(link);
         Ok((links.len() - 1, hash))
     };
-    let (outcome, _) = declared_run(&mut append, &Backend::Process, &guest, Vec::new(), mode, &random_salt(), rig.record().to_str().unwrap(), &|_| Some(0)).unwrap();
+    let (outcome, _) = declared_run(&mut append, &Backend::Process, &guest, Vec::new(), mode, &random_salt(), rig.record().to_str().unwrap(), &"ab".repeat(32), &|_| Some(0)).unwrap();
     assert_eq!(outcome.err(), Some(Reason::NotaryUnreachable));
     assert_eq!(links[1]["outcome"], "refused:NotaryUnreachable");
     assert!(!rig.record().exists());
@@ -351,4 +351,77 @@ fn t_5_with_no_signed_time_or_one_far_ahead_no_call_is_made() {
         assert_eq!(live.infer(b"A question").unwrap_err(), Reason::LedgerFailed);
         assert!(!called.exists(), "the tool was started");
     }
+}
+
+fn committed(path: &str) -> Vec<u8> {
+    fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(path)).unwrap()
+}
+
+#[test]
+fn record_s_01_5_e1_a_committed_version_1_record_replays_identically() {
+    let t = read_transcript(&committed("out/live3.json")).unwrap();
+    assert_eq!(t.version, 1);
+    assert_eq!(replay(&Backend::Process, &committed("guest/digest.wasm"), &t), Ok(()));
+}
+
+#[test]
+fn record_s_01_5_e2_that_record_relabelled_as_version_2_never_replays() {
+    let mut t = read_transcript(&committed("out/live3.json")).unwrap();
+    t.version = 2;
+    assert!(read_transcript(&serde_json::to_vec(&t).unwrap()).is_err());
+    assert_eq!(replay(&Backend::Process, &committed("guest/digest.wasm"), &t), Err(Reason::ReplayDiverged));
+}
+
+fn version_2_run() -> Transcript {
+    let inputs = read_inputs(Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/issues.tsv").to_str().unwrap()).unwrap();
+    execute(&Backend::Process, &committed("guest/digest.wasm"), inputs, Mode::Record { seed: 0 }).unwrap()
+}
+
+#[test]
+fn record_s_01_9_e1_a_version_2_transcript_with_no_task_is_refused() {
+    let mut t = version_2_run();
+    assert!(read_transcript(&serde_json::to_vec(&t).unwrap()).is_ok());
+    t.task.clear();
+    assert_eq!(read_transcript(&serde_json::to_vec(&t).unwrap()).unwrap_err(), "this version 2 record has no task");
+}
+
+#[test]
+fn record_s_01_9_e2_a_version_2_transcript_naming_another_task_is_refused() {
+    let mut t = version_2_run();
+    t.task = "ab".repeat(32);
+    assert_eq!(read_transcript(&serde_json::to_vec(&t).unwrap()).unwrap_err(), "this record's task is not the one its guest and inputs give");
+    assert_eq!(replay(&Backend::Process, &committed("guest/digest.wasm"), &t), Err(Reason::ReplayDiverged));
+}
+
+#[test]
+fn record_s_02_3_e1_the_task_command_prints_what_the_run_logs() {
+    let rig = Rig::new("r-02-3-e1");
+    let guest_file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest/digest.wasm");
+    let inputs_file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/issues.tsv");
+    let program = env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("task-kernel");
+    assert!(program.exists(), "the monitor is not built");
+    let printed = Command::new(program).arg("task").arg(&guest_file).arg(&inputs_file).env_clear().output().unwrap();
+    assert!(printed.status.success());
+    let mut links = Vec::new();
+    let mut append = |link: serde_json::Value| {
+        let hash = sha(link.to_string().as_bytes());
+        links.push(link);
+        Ok((links.len() - 1, hash))
+    };
+    let inputs = read_inputs(inputs_file.to_str().unwrap()).unwrap();
+    declared_run(&mut append, &Backend::Process, &fs::read(&guest_file).unwrap(), inputs, Mode::Record { seed: 0 }, &random_salt(), rig.record().to_str().unwrap(), &"ab".repeat(32), &|_| Some(0)).unwrap();
+    assert_eq!(links[0]["task"], String::from_utf8(printed.stdout).unwrap().trim());
+    assert_eq!((links[0]["v"].as_u64(), links[1]["v"].as_u64()), (Some(2), Some(2)));
+}
+
+#[test]
+fn record_s_02_3_e2_a_missing_guest_file_prints_no_identity() {
+    let rig = Rig::new("r-02-3-e2");
+    let inputs = rig.dir.join("inputs");
+    fs::write(&inputs, "one input\n").unwrap();
+    let program = env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("task-kernel");
+    assert!(program.exists(), "the monitor is not built");
+    let output = Command::new(program).arg("task").arg(rig.dir.join("no-such-guest")).arg(&inputs).env_clear().stdin(Stdio::null()).output().unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "no identity is printed");
 }
