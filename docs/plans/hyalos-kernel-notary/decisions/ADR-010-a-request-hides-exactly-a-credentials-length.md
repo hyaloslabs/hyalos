@@ -16,11 +16,11 @@ An attested request hides one run of bytes, the credential's value. Verify sees 
 
 ## Decision
 
-The hidden run must be exactly 106 bytes, the length measured from the public presentations of real runs. The number is a constant in the tool's source, not a setting or an input, because the party being checked must not be able to choose it. Verify refuses any other length. Ask refuses a credential of any other length before it sends anything.
+The hidden run must be exactly 106 bytes, the length measured from the public presentations of real runs, all of which use the `authorization: Bearer` head. The number is a constant in the tool's source, not a setting or an input, because the party being checked must not be able to choose it. Verify refuses any other length and any other head, including the `x-api-key` head. Ask refuses an API key, and a credential of any other length, before it sends anything.
 
 ## Consequences
 
-- The hidden run must start with a working credential, so a credential of the pinned length leaves no room for anything else.
-- **Residual.** An operator who holds a working credential shorter than 106 bytes could use the spare bytes. This decision assumes the provider issues none for this kind of credential. That assumption was not tested.
-- A credential of another length, including an API key if its length differs, is refused until the constant changes. Changing it is a reviewed code change.
+- A request that hides more than 106 bytes, or fewer, is refused, so a working credential of the full length leaves no room for anything else.
+- **Residual.** Verify never sees the hidden bytes, so it cannot tell that they are the bearer credential. Any credential the provider accepts, of any kind and in any header, that fits in 106 bytes with its framing leaves room to alter the request. For example, the run could be a junk bearer value, a line break, and `x-api-key: <key>`, which fits an API key of up to 92 bytes. Whether such a key exists, and how the provider treats a bad `authorization` beside a good `x-api-key`, was not tested. Until they are, this decision narrows the forgery and does not rule it out. Tracked in #396.
+- A different credential is refused until the constant and the accepted head change. Changing them is a reviewed code change.
 - Slice 2 moves the constant to the library file with the other shared constants.

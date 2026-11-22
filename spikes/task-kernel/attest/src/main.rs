@@ -172,11 +172,16 @@ fn approved(body_bytes: &[u8]) -> Result<(String, String, u64)> {
 /// credential for this title and binding. That fixes every header and the body's length, so the
 /// only thing a request can hide is the value of its last header.
 fn written_head(shown: &[u8], title: &str, binding: &str, server: &str) -> bool {
-    // One head per credential shape: `request` picks the header by the credential's prefix.
-    ["sk-ant-api", ""].iter().any(|shape| {
-        let (bytes, hidden) = request(title, binding, server, shape);
-        bytes[..hidden.start] == *shown
-    })
+    // The bearer head only: it is the one shape whose credential length has been measured.
+    let (bytes, hidden) = request(title, binding, server, "");
+    bytes[..hidden.start] == *shown
+}
+
+/// Whether this tool may send the credential: the bearer kind, at the pinned length.
+fn pinned_credential(credential: &str) -> Result<()> {
+    ensure!(!credential.starts_with("sk-ant-api"), "this tool is pinned to the bearer credential");
+    ensure!(credential.len() == CREDENTIAL_LENGTH, "the credential is not the length this tool is pinned to");
+    Ok(())
 }
 
 fn find(bytes: &[u8], needle: &[u8]) -> Option<usize> {
@@ -497,7 +502,7 @@ async fn run() -> Result<()> {
             // Test settings can point anywhere, so a credential shaped like a real one never follows them.
             ensure!(!(trust.test && credential.starts_with("sk-ant-")), "refusing to send a real credential under test trust settings");
             // Refused before anything is sent: verify would refuse the presentation anyway.
-            ensure!(credential.len() == CREDENTIAL_LENGTH, "the credential is not the length this tool is pinned to");
+            pinned_credential(&credential)?;
             // A failure inside is reported by its root cause, cut short and with the credential's bytes replaced.
             let (answer, presentation) = ask(&title, &binding, intent, &trust, &credential, notary_key()?).await.map_err(|error| {
                 anyhow!("the attested call failed: {}", error.root_cause().to_string().replace(credential.as_str(), "[hidden]").chars().take(160).collect::<String>())
@@ -590,11 +595,21 @@ mod tests {
         }
     }
 
+    /// Removes a test's directory however the test ends.
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     /// A real session against the stand-in, with `credential` as the request's hidden bytes, and
-    /// what verify says about its presentation.
+    /// what verify says about its presentation. It needs the built stand-in, so run these with
+    /// plain `cargo test`: a filter such as `--bin attest` does not build it.
     async fn session_hiding(credential: &str, position: u64) -> Result<Value> {
         let dir = std::env::temp_dir().join(format!("hyalos-attest-hidden-{}-{position}", std::process::id()));
         fs::create_dir_all(&dir)?;
+        let _cleanup = Cleanup(dir.clone());
         let root_file = dir.join("root.der");
         // Beside this test binary's directory, where cargo builds the crate's programs.
         let standin = env::current_exe()?.parent().and_then(|deps| deps.parent()).context("no build directory")?.join("standin");
@@ -614,11 +629,10 @@ mod tests {
         let run = "a".repeat(64);
         let carried = binding(&run, position)?;
         let key = [7u8; 32];
-        let attested = ask("A title", &carried, &run, &trust, credential, key).await;
+        let attested = tokio::time::timeout(std::time::Duration::from_secs(120), ask("A title", &carried, &run, &trust, credential, key)).await;
         let _ = child.kill();
         let _ = child.wait();
-        let _ = fs::remove_dir_all(&dir);
-        let (_, presentation) = attested?;
+        let (_, presentation) = attested.map_err(|_| anyhow!("the attested call did not finish in 120 seconds"))??;
         let public = hex::encode(Secp256k1Signer::new(&key).map_err(|_| anyhow!("bad test key"))?.verifying_key().data);
         verify(&presentation, &public, &trust)
     }
@@ -643,9 +657,21 @@ mod tests {
     }
 
     #[test]
+    fn issue_394_only_the_bearer_credential_at_the_pinned_length_may_be_sent() {
+        assert!(pinned_credential(&"x".repeat(CREDENTIAL_LENGTH)).is_ok());
+        assert!(pinned_credential(&"x".repeat(CREDENTIAL_LENGTH + 1)).is_err());
+        let api_key = format!("sk-ant-api{}", "x".repeat(CREDENTIAL_LENGTH - 10));
+        assert_eq!(api_key.len(), CREDENTIAL_LENGTH);
+        assert!(pinned_credential(&api_key).is_err());
+    }
+
+    #[test]
     fn s_03_4_only_the_head_this_tool_writes_is_accepted() {
         let carried = binding(INTENT, 2).unwrap();
-        for shape in ["sk-ant-api", "other"] {
+        // The API-key head has no measured length, so it is refused whatever it carries.
+        let (bytes, hidden) = request("A title", &carried, SERVER, "sk-ant-api");
+        assert!(!written_head(&bytes[..hidden.start], "A title", &carried, SERVER));
+        for shape in ["other"] {
             let (bytes, hidden) = request("A title", &carried, SERVER, shape);
             let head = &bytes[..hidden.start];
             assert!(written_head(head, "A title", &carried, SERVER));
