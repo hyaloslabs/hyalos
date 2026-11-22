@@ -12,7 +12,7 @@
 
 ## Brief
 
-This pack replaces [the gated wall](../gated-wall/README.md), whose seven child packs are no longer planned. The gated wall tried to contain a general-purpose agent. This plan stops giving the model a computer at all.
+This pack replaces the gated wall, an earlier plan whose seven child packs are no longer planned and whose drafts were not kept in this repository. The gated wall tried to contain a general-purpose agent. This plan stops giving the model a computer at all.
 
 **Problem.** Every sandbox product still hands the agent a general-purpose machine, then tries to wall it in. The incidents that matter were not walls breaking: a stolen provider key, and a file the agent wrote that a trusted tool outside the box later ran. Containing the driving agent also made Hyalos hard to install, because the wall had to sit between two OS users. And a record the operator alone signs proves nothing to anyone else, because a compromised or dishonest signer can issue any record it likes.
 
