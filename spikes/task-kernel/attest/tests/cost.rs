@@ -25,7 +25,7 @@ impl Rig {
     fn sessions(&self, count: u64) -> String {
         let mut times = String::new();
         for position in 0..count {
-            let command = tool(&self.who, &self.standin.root, &self.standin.address, &self.notary.address, &self.notary.transport, &self.notary.signing);
+            let command = tool(&self.who, &self.standin.root, &self.standin.address, &self.notary.address, &self.notary.transport, &self.notary.signing, &self.notary.authorisation);
             let started = Instant::now();
             let output = run_ask(command, &self.scratch.0.join("call.presentation"), INTENT, position);
             let elapsed = started.elapsed().as_secs_f64();

@@ -60,6 +60,8 @@ pub(crate) enum Reason {
     WrongNotaryKey,
     ReleaseMismatch,
     ProviderRefused,
+    NoAuthorisation,
+    AttemptsSpent,
     EffectFailed,
     LedgerFailed,
 }
@@ -635,6 +637,10 @@ fn witnessed(t: &Transcript, record: &str, notary: &str, verifier: &Verifier, ch
         let seen: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| "cannot read the verdict")?;
         let named = run.get_or_insert_with(|| seen["intent_hash"].as_str().unwrap_or_default().to_string());
         check_answer(&seen, answer, index, named, chain.map(|(_, window)| window))?;
+        // A ticketed attestation in a version 1 record would hide its budget (ADR-011).
+        if t.version == 1 && !seen["ticket"].is_null() {
+            return Err(format!("answer {index}: a version 1 record cannot carry a ticket"));
+        }
         test_settings |= !seen["trust"].is_null();
         lines.push(format!("answer {index}: run {named} position {index} sequence {index} session {}", seen["time"]));
     }

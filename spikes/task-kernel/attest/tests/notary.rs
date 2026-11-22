@@ -23,7 +23,7 @@ impl Rig {
     }
 
     fn command(&self) -> Command {
-        tool(&self.who, &self.standin.root, &self.standin.address, &self.notary.address, &self.notary.transport, &self.notary.signing)
+        tool(&self.who, &self.standin.root, &self.standin.address, &self.notary.address, &self.notary.transport, &self.notary.signing, &self.notary.authorisation)
     }
 
     fn file(&self, name: &str) -> std::path::PathBuf {
@@ -152,7 +152,7 @@ fn s_01_3_a_certificate_under_a_root_the_notary_does_not_trust_is_a_provider_ref
     std::fs::write(&other_root, b"").unwrap();
     let notary = notary(&scratch.0.join("notary"), &who.public, &other_root);
     let file = scratch.0.join("never.presentation");
-    let output = run_ask(tool(&who, &provider.root, &provider.address, &notary.address, &notary.transport, &notary.signing), &file, INTENT, 0);
+    let output = run_ask(tool(&who, &provider.root, &provider.address, &notary.address, &notary.transport, &notary.signing, &notary.authorisation), &file, INTENT, 0);
     assert_eq!(word(&output), "provider");
     assert!(!file.exists());
     let line = notary.line_after(0);
@@ -205,12 +205,12 @@ fn s_01_3_e2_the_notary_serves_the_next_session_after_a_drop() {
     let who = operator(&scratch.0.join("home"));
     let good = standin(&scratch.0, &[]);
     let notary = notary(&scratch.0.join("notary"), &who.public, &good.root);
-    let command = || tool(&who, &good.root, &good.address, &notary.address, &notary.transport, &notary.signing);
+    let command = || tool(&who, &good.root, &good.address, &notary.address, &notary.transport, &notary.signing, &notary.authorisation);
     // A provider that takes the connection and closes it: the session breaks halfway.
     let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = silent.local_addr().unwrap().to_string();
     let closer = std::thread::spawn(move || drop(silent.accept()));
-    let broken = run_ask(tool(&who, &good.root, &address, &notary.address, &notary.transport, &notary.signing), &scratch.0.join("never.presentation"), INTENT, 0);
+    let broken = run_ask(tool(&who, &good.root, &address, &notary.address, &notary.transport, &notary.signing, &notary.authorisation), &scratch.0.join("never.presentation"), INTENT, 0);
     closer.join().unwrap();
     assert_eq!(word(&broken), "provider");
     assert!(notary.line_after(0).contains(" refused "));
@@ -249,7 +249,7 @@ fn s_01_4_e2_with_no_notary_a_call_is_refused_and_a_key_file_there_is_not_opened
     let address = closed.local_addr().unwrap().to_string();
     drop(closed);
     let started = Instant::now();
-    let output = run_ask(tool(&who, &root, "127.0.0.1:9", &address, &"00".repeat(91), &"00".repeat(33)), &scratch.0.join("never.presentation"), INTENT, 0);
+    let output = run_ask(tool(&who, &root, "127.0.0.1:9", &address, &"00".repeat(91), &"00".repeat(33), &"ab".repeat(32)), &scratch.0.join("never.presentation"), INTENT, 0);
     assert_eq!(word(&output), "unreachable");
     assert!(started.elapsed() < DEADLINE, "refused inside its deadline");
     assert!(!scratch.0.join("never.presentation").exists());
@@ -264,7 +264,7 @@ fn s_03_5_e3_sequence_numbers_survive_a_restart_and_each_run_starts_at_zero() {
     let dir = scratch.0.join("notary");
     let ask = |notary: &Notary, name: &str, run: &str, position: u64| {
         let file = scratch.0.join(name);
-        let output = run_ask(tool(&who, &provider.root, &provider.address, &notary.address, &notary.transport, &notary.signing), &file, run, position);
+        let output = run_ask(tool(&who, &provider.root, &provider.address, &notary.address, &notary.transport, &notary.signing, &notary.authorisation), &file, run, position);
         let number = said(&output)["sequence"].as_u64().unwrap();
         let report = verify(&who, &provider.root, &file, &notary.signing).unwrap();
         assert_eq!((report["run"].as_str(), report["sequence"].as_u64()), (Some(run), Some(number)));
@@ -354,7 +354,7 @@ fn t_2_1_an_unenrolled_transport_key_is_closed_before_the_protocol_starts() {
     let _one = one_at_a_time();
     let rig = Rig::new("t-2-1", &[]);
     let stranger = operator(&rig.scratch.0.join("stranger"));
-    let command = tool(&stranger, &rig.standin.root, &rig.standin.address, &rig.notary.address, &rig.notary.transport, &rig.notary.signing);
+    let command = tool(&stranger, &rig.standin.root, &rig.standin.address, &rig.notary.address, &rig.notary.transport, &rig.notary.signing, &rig.notary.authorisation);
     let output = run_ask(command, &rig.file("never.presentation"), INTENT, 0);
     assert_eq!(word(&output), "notary-key");
     assert!(!rig.file("never.presentation").exists());
@@ -368,7 +368,7 @@ fn t_2_1_a_notary_with_another_transport_key_is_refused_by_ask() {
     let _one = one_at_a_time();
     let rig = Rig::new("t-2-1-pin", &[]);
     let other = operator(&rig.scratch.0.join("other")).public;
-    let command = tool(&rig.who, &rig.standin.root, &rig.standin.address, &rig.notary.address, &other, &rig.notary.signing);
+    let command = tool(&rig.who, &rig.standin.root, &rig.standin.address, &rig.notary.address, &other, &rig.notary.signing, &rig.notary.authorisation);
     assert_eq!(word(&run_ask(command, &rig.file("never.presentation"), INTENT, 0)), "notary-key");
     assert!(!rig.file("never.presentation").exists());
 }
@@ -378,7 +378,7 @@ fn t_2_1_an_attestation_under_another_signing_key_is_refused_by_ask() {
     let _one = one_at_a_time();
     let rig = Rig::new("t-2-1-signer", &[]);
     let wrong = format!("02{}", "11".repeat(32));
-    let command = tool(&rig.who, &rig.standin.root, &rig.standin.address, &rig.notary.address, &rig.notary.transport, &wrong);
+    let command = tool(&rig.who, &rig.standin.root, &rig.standin.address, &rig.notary.address, &rig.notary.transport, &wrong, &rig.notary.authorisation);
     assert_eq!(word(&run_ask(command, &rig.file("never.presentation"), INTENT, 0)), "notary-key");
     assert!(!rig.file("never.presentation").exists());
 }
@@ -439,11 +439,11 @@ async fn t_link_another_release_is_answered_release_and_closed() {
 async fn t_link_a_second_connection_during_a_session_is_refused_busy() {
     let rig = Rig::new("t-link-busy", &[]);
     let mut open = enrolled(&rig).await;
-    assert_eq!(link::open(&mut open, INTENT).await, Ok(true));
+    assert_eq!(link::open(&mut open, INTENT, &rig.notary.authorisation).await, Ok(true));
     let me = link::Identity::load(&rig.who.key).unwrap();
     let second = link::connect(&rig.notary.address, &me, &rig.notary.transport).await;
     if let Ok(mut second) = second {
-        assert!(link::open(&mut second, INTENT).await.is_err(), "the second connection is not served");
+        assert!(link::open(&mut second, INTENT, &rig.notary.authorisation).await.is_err(), "the second connection is not served");
     }
     assert!(rig.notary.line_after(0).ends_with("none 0 0 refused busy"));
 }
@@ -454,7 +454,7 @@ async fn t_link_a_session_above_the_size_limits_is_refused() {
     use tokio_util::compat::TokioAsyncReadCompatExt;
     let rig = Rig::new("t-link-limits", &[]);
     let mut stream = enrolled(&rig).await;
-    assert_eq!(link::open(&mut stream, INTENT).await, Ok(true));
+    assert_eq!(link::open(&mut stream, INTENT, &rig.notary.authorisation).await, Ok(true));
     let session = Session::new(stream.compat());
     let (driver, mut handle) = session.split();
     let driver = tokio::spawn(driver);

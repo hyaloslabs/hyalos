@@ -17,6 +17,7 @@ struct Call {
     presentation: PathBuf,
     said: serde_json::Value,
     notary: String,
+    authorisation: String,
     who: Operator,
     /// Held so the programs live as long as the tests, and end when they do.
     _programs: (Standin, Notary, Scratch),
@@ -24,7 +25,7 @@ struct Call {
 
 fn tool(call: &Call, home: &PathBuf, provider: &str) -> Command {
     let who = Operator { home: home.clone(), key: call.who.key.clone(), public: call.who.public.clone() };
-    common::tool(&who, &call.root, provider, &call._programs.1.address, &call._programs.1.transport, &call.notary)
+    common::tool(&who, &call.root, provider, &call._programs.1.address, &call._programs.1.transport, &call.notary, &call.authorisation)
 }
 
 fn call() -> &'static Call {
@@ -37,9 +38,9 @@ fn call() -> &'static Call {
         let root = standin.root.clone();
         let notary = common::notary(&scratch.0.join("notary"), &who.public, &root);
         let presentation = home.join("one.presentation");
-        let command = common::tool(&who, &root, &standin.address, &notary.address, &notary.transport, &notary.signing);
+        let command = common::tool(&who, &root, &standin.address, &notary.address, &notary.transport, &notary.signing, &notary.authorisation);
         let said = common::said(&common::run_ask(command, &presentation, INTENT, POSITION));
-        Call { home, root, presentation, said, notary: notary.signing.clone(), who, _programs: (standin, notary, scratch) }
+        Call { home, root, presentation, said, notary: notary.signing.clone(), authorisation: notary.authorisation.clone(), who, _programs: (standin, notary, scratch) }
     })
 }
 

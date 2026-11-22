@@ -35,6 +35,32 @@ pub const CREDENTIAL_LENGTH: usize = 106;
 /// The notary's addition to an attestation: the run it was told, as 64 lowercase hex characters,
 /// then how many sessions it had opened for that run before this one, as 8 big-endian bytes.
 pub const RUN_SEQUENCE: &[u8] = b"hyalos.run-sequence/1";
+/// The notary's record of the attempt: the authorisation and task as 64 ASCII hex characters each,
+/// then the budget, round, prior total and ticket as 4 big-endian bytes each.
+pub const TICKET: &[u8] = b"hyalos.ticket/1";
+
+/// One numbered attempt under a customer's authorisation, as the notary signs it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ticket {
+    pub authorisation: String,
+    pub task: String,
+    pub budget: u32,
+    pub round: u32,
+    pub prior: u32,
+    pub ticket: u32,
+}
+
+impl Ticket {
+    pub fn bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(144);
+        bytes.extend_from_slice(self.authorisation.as_bytes());
+        bytes.extend_from_slice(self.task.as_bytes());
+        for number in [self.budget, self.round, self.prior, self.ticket] {
+            bytes.extend_from_slice(&number.to_be_bytes());
+        }
+        bytes
+    }
+}
 
 /// Whom this tool trusts to be the provider. The defaults are the real provider. Anything else
 /// comes from the environment, is for tests, and marks every report made with it.
@@ -212,6 +238,25 @@ pub fn read_run_sequence(extensions: &[Extension]) -> Result<(String, u64)> {
     let run = std::str::from_utf8(run).map_err(|_| anyhow!("the run is not text"))?;
     binding(run, 0)?;
     Ok((run.to_string(), u64::from_be_bytes(sequence.try_into().map_err(|_| anyhow!("bad sequence number"))?)))
+}
+
+/// Reads the ticket from a verified attestation's extensions. `None` when it carries none. A second
+/// one, or one not in its one form, is a refusal.
+pub fn read_ticket(extensions: &[Extension]) -> Result<Option<Ticket>> {
+    let mut ours = extensions.iter().filter(|e| e.id == TICKET);
+    let (first, second) = (ours.next(), ours.next());
+    ensure!(second.is_none(), "the attestation carries more than one ticket");
+    let Some(extension) = first else { return Ok(None) };
+    ensure!(extension.value.len() == 144, "the ticket is not in its one form");
+    let hash = |bytes: &[u8]| -> Result<String> {
+        let text = std::str::from_utf8(bytes).map_err(|_| anyhow!("the ticket is not in its one form"))?;
+        binding(text, 0).map_err(|_| anyhow!("the ticket is not in its one form"))?;
+        Ok(text.to_string())
+    };
+    let number = |at: usize| -> Result<u32> {
+        Ok(u32::from_be_bytes(extension.value[at..at + 4].try_into().map_err(|_| anyhow!("the ticket is not in its one form"))?))
+    };
+    Ok(Some(Ticket { authorisation: hash(&extension.value[..64])?, task: hash(&extension.value[64..128])?, budget: number(128)?, round: number(132)?, prior: number(136)?, ticket: number(140)? }))
 }
 
 /// The encrypted link: TLS 1.3 with one pinned peer on each side (ADR-004, ADR-009).
@@ -405,6 +450,10 @@ pub mod link {
         PeerKey,
         /// The notary could not save this session's sequence number.
         Sequence,
+        /// The notary refused the authorisation this session named.
+        Authorisation,
+        /// The authorisation has no ticket left.
+        Spent,
     }
 
     /// The operator's side of the handshake, accepting only the configured notary's key.
@@ -454,12 +503,14 @@ pub mod link {
 
     /// The operator's first message. `Ok(true)` when the notary answered `ok`, `Ok(false)` when it
     /// answered `release`.
-    pub async fn open<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(stream: &mut S, run: &str) -> Result<bool, LinkFailure> {
-        write_line(stream, &format!("{RELEASE} {run}")).await.map_err(|error| classify(&error, false))?;
+    pub async fn open<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(stream: &mut S, run: &str, authorisation: &str) -> Result<bool, LinkFailure> {
+        write_line(stream, &format!("{RELEASE} {run} {authorisation}")).await.map_err(|error| classify(&error, false))?;
         match read_line(stream, 16).await.map_err(|error| classify(&error, false))?.as_str() {
             "ok" => Ok(true),
             "release" => Ok(false),
             "sequence" => Err(LinkFailure::Sequence),
+            "authorisation" => Err(LinkFailure::Authorisation),
+            "spent" => Err(LinkFailure::Spent),
             _ => Err(LinkFailure::Unreachable),
         }
     }
@@ -476,6 +527,25 @@ pub mod link {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn a_ticket() -> Ticket {
+        Ticket { authorisation: "a".repeat(64), task: "b".repeat(64), budget: 3, round: 1, prior: 5, ticket: 2 }
+    }
+
+    #[test]
+    fn a_ticket_is_read_only_in_its_one_form() {
+        let good = Extension { id: TICKET.to_vec(), value: a_ticket().bytes() };
+        assert_eq!(good.value.len(), 144);
+        assert_eq!(read_ticket(std::slice::from_ref(&good)).unwrap(), Some(a_ticket()));
+        assert_eq!(read_ticket(&[]).unwrap(), None);
+        assert!(read_ticket(&[good.clone(), good.clone()]).is_err(), "two tickets");
+        let mut short = good.clone();
+        short.value.pop();
+        assert!(read_ticket(&[short]).is_err());
+        let mut upper = good;
+        upper.value[0] = b'A';
+        assert!(read_ticket(&[upper]).is_err(), "not lowercase hex");
+    }
 
     const INTENT: &str = "5f1d0c7a9b3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8";
 

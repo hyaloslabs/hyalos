@@ -20,7 +20,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use attest::{
     Answer, CREDENTIAL_LENGTH, DEADLINE, END, MAX_QUESTION, MAX_RECV, MAX_SENT, Trust, answer, approved, binding, find,
     link::{self, Identity, LinkFailure},
-    pinned_credential, read_run_sequence, request, written_head,
+    pinned_credential, read_run_sequence, read_ticket, request, written_head,
 };
 use futures::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use serde_json::{Value, json};
@@ -60,6 +60,8 @@ enum Word {
     NotaryKey,
     Release,
     Provider,
+    Authorisation,
+    Spent,
 }
 
 impl std::fmt::Display for Word {
@@ -70,6 +72,8 @@ impl std::fmt::Display for Word {
             Word::NotaryKey => "notary-key",
             Word::Release => "release",
             Word::Provider => "provider",
+            Word::Authorisation => "authorisation",
+            Word::Spent => "spent",
         })
     }
 }
@@ -81,15 +85,17 @@ struct NotaryLink {
     address: String,
     transport: String,
     signer: String,
+    /// The customer's authorisation this session names.
+    authorisation: String,
     me: Identity,
 }
 
 impl NotaryLink {
     fn read() -> Result<Self> {
         let set = |name: &str| env::var(name).ok().filter(|value| !value.is_empty()).with_context(|| format!("set {name}"));
-        let (address, transport, signer) = (set("HYALOS_NOTARY_ADDRESS")?, set("HYALOS_NOTARY_TRANSPORT_PUBLIC")?, set("HYALOS_NOTARY_SIGNER_PUBLIC")?);
+        let (address, transport, signer, authorisation) = (set("HYALOS_NOTARY_ADDRESS")?, set("HYALOS_NOTARY_TRANSPORT_PUBLIC")?, set("HYALOS_NOTARY_SIGNER_PUBLIC")?, set("HYALOS_NOTARY_AUTHORISATION")?);
         let me = Identity::load(Path::new(&set("HYALOS_OPERATOR_TRANSPORT_KEY")?)).map_err(|_| anyhow!("cannot use the operator's transport key"))?;
-        Ok(Self { address, transport, signer, me })
+        Ok(Self { address, transport, signer, authorisation, me })
     }
 }
 
@@ -147,9 +153,11 @@ async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &
         LinkFailure::PeerKey => Word::NotaryKey,
         LinkFailure::Unreachable => Word::Unreachable,
         LinkFailure::Sequence => Word::Provider,
+        LinkFailure::Authorisation => Word::Authorisation,
+        LinkFailure::Spent => Word::Spent,
     };
     let mut stream = link::connect(&notary.address, &notary.me, &notary.transport).await.map_err(said)?;
-    if !link::open(&mut stream, run).await.map_err(said)? {
+    if !link::open(&mut stream, run, &notary.authorisation).await.map_err(said)? {
         return Err(Word::Release.into());
     }
 
@@ -196,6 +204,11 @@ async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &
     commit.commit_recv(&(blank..received.len()))?;
     let mut request_config = RequestConfig::builder();
     request_config.transcript_commit(commit.build()?);
+    // For the test of an operator who asks the notary to sign an extension of its own. It is no
+    // door: a forger can change this program the same way, and the notary refuses the request.
+    if env::var_os("HYALOS_TEST_REQUEST_EXTENSION").is_some() {
+        request_config.extension(tlsn::attestation::Extension { id: attest::TICKET.to_vec(), value: vec![0; 144] });
+    }
     let request_config = request_config.build()?;
     let mut prove = ProveConfig::builder(prover.transcript());
     // The notary compares this name, verified against its own roots, with the one it approves.
@@ -261,6 +274,7 @@ fn verify(bytes: &[u8], trusted_notary: &str, trust: &Trust) -> Result<Value> {
     let server = server_name.context("no server identity")?.to_string();
     ensure!(server == trust.server, "the session was with another server");
     let (run, sequence) = read_run_sequence(&extensions)?;
+    let ticket = read_ticket(&extensions)?;
     let transcript = transcript.context("no transcript")?;
 
     // Sent: everything is shown except one run of bytes, which must be the credential's value.
@@ -286,6 +300,7 @@ fn verify(bytes: &[u8], trusted_notary: &str, trust: &Trust) -> Result<Value> {
         "notary": notary,
         "run": run,
         "sequence": sequence,
+        "ticket": ticket.map(|held| json!({"authorisation": held.authorisation, "task": held.task, "budget": held.budget, "round": held.round, "prior": held.prior, "ticket": held.ticket})),
         "intent_hash": intent,
         "position": position,
         "question_sha256": hex::encode(Sha256::digest(title.as_bytes())),
@@ -442,12 +457,15 @@ mod tests {
             Ok(line.trim().strip_prefix(name).context("the notary did not start")?.trim().to_string())
         };
         let (signer, transport, notary_address) = (field("signing")?, field("transport")?, field("listening")?);
+        let authorised = Command::new(built.join("notary")).args(["authorize", "--dir"]).arg(dir.join("notary")).args(["--task", &"b".repeat(64), "--attempts", "1"]).output()?;
+        ensure!(authorised.status.success(), "the task was not authorised");
+        let authorisation = String::from_utf8(authorised.stdout)?.trim().to_string();
         let mut roots = tlsn::webpki::RootCertStore::mozilla();
         roots.roots.push(tlsn::webpki::CertificateDer(fs::read(&root_file)?));
         let trust = Trust { server: "provider.test".to_string(), roots, address, test: true };
         let run = "a".repeat(64);
         let carried = attest::binding(&run, position)?;
-        let notary = NotaryLink { address: notary_address, transport, signer: signer.clone(), me };
+        let notary = NotaryLink { address: notary_address, transport, signer: signer.clone(), authorisation, me };
         let broke = Arc::new(AtomicBool::new(false));
         let attested = tokio::time::timeout(Duration::from_secs(120), ask("A title", &carried, &run, &trust, credential, &notary, &broke)).await;
         let (_, presentation) = attested.map_err(|_| anyhow!("the attested call did not finish in 120 seconds"))??;
