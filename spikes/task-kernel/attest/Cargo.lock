@@ -117,6 +117,7 @@ dependencies = [
  "bincode",
  "futures",
  "hex",
+ "libc",
  "rcgen",
  "serde_json",
  "sha2",
