@@ -59,7 +59,7 @@ S-03.5.e1, e2, e4 and e5 are the audit's checks, which Slice 5 adds.
 
 | Plan said | Reality | Why | Contract affected |
 |---|---|---|---|
-| The `provider` row of "How ask says why it refused" lists the notary's line as `server`, `limits`, `sequence` or `attested` | When the provider fails before answering, ask's word is `provider` and the notary's line is `dropped` | The notary cannot see why the operator's session with the provider stopped. S-01.3.e2 itself requires a refused line for a session dropped halfway | y: **for the developer to decide** |
+| The `provider` row of "How ask says why it refused" lists the notary's line as `server`, `limits`, `sequence` or `attested` | When the provider fails before answering, ask's word is `provider` and the notary's line is `dropped` | The notary cannot see why the operator's session with the provider stopped. S-01.3.e2 itself requires a refused line for a session dropped halfway | y: the developer accepted it on 2026-11-21 (ADR-013) |
 
 ## Decisions
 
