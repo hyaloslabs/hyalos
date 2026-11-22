@@ -63,6 +63,7 @@ pub(crate) enum Reason {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Answer {
     schema: i32,
     question_sha256: String,
@@ -75,6 +76,7 @@ struct Answer {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EffectRecord {
     kind: i32,
     body_hex: String,
@@ -82,6 +84,7 @@ struct EffectRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Transcript {
     version: u32,
     guest_sha256: String,
@@ -550,8 +553,7 @@ fn declared_run(
     salt: &str,
     record: &str,
 ) -> Result<(Result<Transcript, Reason>, usize), String> {
-    // The task is named without a salt, so repeated runs of one task are visible as such.
-    let task = sha(format!("{}:{}", sha(guest), sha(&inputs.concat())).as_bytes());
+    let task = task_of(&sha(guest), &inputs);
     let intent = serde_json::json!({"v": 1, "kind": "intent", "task": task, "guest_sha256": sha(guest)});
     let (_, intent_hash) = append(intent).map_err(|r| format!("{r:?}"))?;
     // The run is declared. From here every attested call names it.
@@ -588,15 +590,90 @@ fn write_synced(path: &str, bytes: &[u8]) -> Result<(), String> {
     file.sync_all().map_err(|_| "cannot write".to_string())
 }
 
+/// The audit's inputs: `[ledger dir] --operator-public <file> --notary-public <file>`. The notary's
+/// key is required now, and read from Slice 5 on.
+fn audit_inputs(rest: &[String]) -> Result<(String, String), String> {
+    let (mut dir, mut operator, mut notary) = (None, None, None);
+    let mut words = rest.iter();
+    while let Some(word) = words.next() {
+        match word.as_str() {
+            "--operator-public" => operator = words.next(),
+            "--notary-public" => notary = words.next(),
+            flag if flag.starts_with("--") => return Err("unknown audit option".into()),
+            _ if dir.is_none() => dir = Some(word),
+            _ => return Err("too many audit arguments".into()),
+        }
+    }
+    let operator = operator.ok_or("the operator's public key is not given: --operator-public <file>")?;
+    let notary = notary.ok_or("the notary's public key is not given: --notary-public <file>")?;
+    if !fs::metadata(notary).is_ok_and(|m| m.is_file()) {
+        return Err("the notary's public key is not a file".into());
+    }
+    Ok((dir.map_or_else(|| "ledger".to_string(), String::clone), operator.clone()))
+}
+
+/// The test trust setting for the log: a directory of stored replies and the key that signed them.
+fn stand_in_log() -> Result<Option<(String, String)>, String> {
+    match (env::var("HYALOS_TRUST_LOG_DIR"), env::var("HYALOS_TRUST_LOG_KEY")) {
+        (Ok(dir), Ok(key)) => Ok(Some((dir, key))),
+        (Err(_), Err(_)) => Ok(None),
+        _ => Err("a stand-in log needs both HYALOS_TRUST_LOG_DIR and HYALOS_TRUST_LOG_KEY".into()),
+    }
+}
+
+/// What a passing audit proved, then what it did not. `answers` is the attestation step's report,
+/// when it ran.
+fn audit_report(audited: &ledger::Audited, answers: Option<&str>) -> String {
+    let log = if audited.stand_in { "stand-in log" } else { "public log" };
+    let mut lines = vec!["audit passed".to_string()];
+    if audited.stand_in {
+        lines.push("test trust settings: the log here is a stand-in".to_string());
+    }
+    lines.push("proven: every link's signature verifies under the operator's public key".to_string());
+    lines.push(format!("proven: every entry's inclusion proof and signed time verify under the {log}'s key"));
+    lines.push(format!("proven: the chain is unbroken and is the same list as the {log}'s entries under the operator's key"));
+    lines.push(format!("proven: this record is at link {} of {}, with one result for its run", audited.link, audited.links));
+    let times = if audited.runs == 1 { "time" } else { "times" };
+    lines.push(format!("the task was run {} {times}, as the intent links name the task", audited.runs));
+    lines.push(format!("the chain holds {} run(s) of any task under this key", audited.all_runs));
+    match answers {
+        Some(report) => lines.push(report.strip_suffix(HIDDEN_BYTES_LIMIT).unwrap_or(report).trim_end().to_string()),
+        None => lines.push("not checked: the answers' attestations".to_string()),
+    }
+    lines.push("not proven: the notary's independence is the customer's own".to_string());
+    lines.push("not proven: the model's name is the provider's claim".to_string());
+    lines.push("not proven: the answer's correctness is not judged".to_string());
+    lines.push("not proven: the log is trusted to have shown every entry under the operator's key".to_string());
+    lines.push(HIDDEN_BYTES_LIMIT.to_string());
+    lines.join("\n")
+}
+
+/// The backend for the commands that run a guest. The audit never calls this, so it opens no
+/// kernel file.
+fn load_backend() -> Result<Backend, String> {
+    match env::var("HYALOS_KERNEL") {
+        Ok(path) => Ok(Backend::Kvm { kernel: fs::read(path).map_err(|_| "cannot read kernel")?, limit: Duration::from_secs(30) }),
+        Err(_) => Ok(Backend::Process),
+    }
+}
+
+/// A task's name: its guest and inputs, without a salt, so repeated runs of one task show as such.
+fn task_of(guest_sha256: &str, inputs: &[Vec<u8>]) -> String {
+    sha(format!("{guest_sha256}:{}", sha(&inputs.concat())).as_bytes())
+}
+
+/// What the record itself says it is, for the audit to hold the chain to.
+fn claim_of(t: &Transcript, commitment: String) -> Result<ledger::Claim, String> {
+    let inputs = t.inputs_hex.iter().map(|i| unhex(i)).collect::<Option<Vec<_>>>().ok_or("the record's inputs are unreadable")?;
+    Ok(ledger::Claim { commitment, task: task_of(&t.guest_sha256, &inputs), guest: t.guest_sha256.clone() })
+}
+
 fn main_inner() -> Result<bool, String> {
     let args: Vec<String> = env::args().collect();
     let arg = |i: usize| args.get(i).map(String::as_str).ok_or_else(|| "usage: run|replay|attacks|bench ...".to_string());
-    let backend = match env::var("HYALOS_KERNEL") {
-        Ok(path) => Backend::Kvm { kernel: fs::read(path).map_err(|_| "cannot read kernel")?, limit: Duration::from_secs(30) },
-        Err(_) => Backend::Process,
-    };
     match arg(1)? {
         "run" => {
+            let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
             let inputs = read_inputs(arg(3)?)?;
             let seed = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -609,6 +686,7 @@ fn main_inner() -> Result<bool, String> {
             Ok(true)
         }
         "live" => {
+            let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
             let inputs = read_inputs(arg(3)?)?;
             let issue = arg(6)?.parse().map_err(|_| "bad issue number")?;
@@ -655,12 +733,15 @@ fn main_inner() -> Result<bool, String> {
             let t: Transcript = serde_json::from_slice(&fs::read(arg(2)?).map_err(|_| "cannot read")?).map_err(|_| "cannot parse")?;
             let salt = fs::read(format!("{}.salt", arg(2)?)).map_err(|_| "no salt for this record")?;
             let commitment = sha([salt.as_slice(), &serde_json::to_vec(&t).map_err(|_| "encode")?].concat().as_slice());
-            let home = env::var("HOME").map_err(|_| "no home")?;
-            let ledger = ledger::Ledger::open(args.get(3).map_or("ledger", String::as_str), &home).ok_or("cannot open the ledger")?;
-            println!("audit passed: {}", ledger.audit(&commitment)?);
-            if let Ok(notary) = env::var("HYALOS_NOTARY") {
-                println!("{}", attested(&t, arg(2)?, &notary)?);
-            }
+            let (dir, operator) = audit_inputs(&args[3..])?;
+            let auditor = ledger::Auditor::new(&dir, &operator, stand_in_log()?)?;
+            let audited = auditor.audit(&claim_of(&t, commitment)?)?;
+            // Everything is checked before anything is printed, so a failure states no proof.
+            let answers = match env::var("HYALOS_NOTARY") {
+                Ok(notary) => Some(attested(&t, arg(2)?, &notary)?),
+                Err(_) => None,
+            };
+            println!("{}", audit_report(&audited, answers.as_deref()));
             Ok(true)
         }
         "attested" => {
@@ -692,6 +773,7 @@ fn main_inner() -> Result<bool, String> {
             Ok(true)
         }
         "replay" => {
+            let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
             let t: Transcript = serde_json::from_slice(&fs::read(arg(3)?).map_err(|_| "cannot read")?).map_err(|_| "cannot parse")?;
             replay(&backend, &guest, &t).map_err(|r| format!("{r:?}"))?;
@@ -699,10 +781,12 @@ fn main_inner() -> Result<bool, String> {
             Ok(true)
         }
         "attacks" => {
+            let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
             run_attacks(&backend, &guest, &read_inputs(arg(3)?)?)
         }
         "bench" => {
+            let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
             let inputs = read_inputs(arg(3)?)?;
             let n: u32 = arg(4)?.parse().map_err(|_| "bad count")?;
