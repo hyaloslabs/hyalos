@@ -972,7 +972,7 @@ fn main_inner() -> Result<bool, String> {
             let t = read_transcript(&fs::read(arg(2)?).map_err(|_| "cannot read")?)?;
             let answers = witnessed(&t, arg(2)?, &inputs.notary, &Verifier::from_env(&inputs.verify), None)?;
             println!("{}", answers.lines.join("\n"));
-            println!("not checked here: the run's links and its window. The audit checks them");
+            println!("not checked here: the run's links, its window and the ticket's task. The audit checks them");
             println!("{}", attested_report(answers.lines.len(), answers.test_settings));
             Ok(true)
         }

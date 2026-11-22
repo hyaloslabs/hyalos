@@ -19,7 +19,8 @@ static ONE: Mutex<()> = Mutex::new(());
 
 pub(crate) fn built(program: &str) -> PathBuf {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../attest/target/release").join(program);
-    assert!(path.exists(), "{program} is not built: run cargo build --release --manifest-path attest/Cargo.toml");
+    let features = if program == "forging-notary" { " --features forge-ticket --bin forging-notary" } else { "" };
+    assert!(path.exists(), "{program} is not built: run cargo build --release --manifest-path attest/Cargo.toml{features}");
     path
 }
 
