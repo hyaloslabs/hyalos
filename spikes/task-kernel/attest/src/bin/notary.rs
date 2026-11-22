@@ -10,6 +10,11 @@
 //! `notary report --dir <directory> [--wall <file>] [--real-wall <file>]` reads what a serving
 //! notary recorded and measures nothing itself. Each wall-time file holds one call's seconds per
 //! line: `--wall` for the reported sessions, `--real-wall` from a run against the real provider.
+//!
+//! `notary authorize --dir <directory> --task <hash> --attempts <n> [--again]` is the customer's
+//! decision: this exact task may have this many attempts. It prints the authorisation's identifier.
+//!
+//! `notary tickets --dir <directory>` prints each authorisation and what has been spent of it.
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use attest::{
@@ -62,7 +67,15 @@ const HANDSHAKE: Duration = Duration::from_secs(5);
 /// out a moment before ours: its clock starts first.
 const DEADLINE_MARGIN: Duration = Duration::from_secs(1);
 /// The first line of the run sequences. A file without it was not written whole by this program.
-const SEQUENCES_HEADER: &str = "hyalos.sequences/1";
+const SEQUENCES_HEADER: &str = "hyalos.sequences/2";
+/// The first line of run sequences from before tickets. Rewritten as version 2 at start.
+const SEQUENCES_V1_HEADER: &str = "hyalos.sequences/1";
+/// The first line of an authorisation file.
+const AUTHORISATION_HEADER: &str = "hyalos.authorisation/1";
+/// Longer than any authorisation file this program writes.
+const AUTHORISATION_LIMIT: u64 = 256;
+/// The most attempts one authorisation may give.
+const MAX_ATTEMPTS: u32 = 100;
 /// The first line of the usage file.
 const USAGE_HEADER: &str = "hyalos.usage/1";
 /// Below this many attested sessions the report says its figures are not yet a measurement.
@@ -71,40 +84,89 @@ const MEASURED_FROM: u64 = 40;
 /// A reason a session line may give for `refused`.
 type Reason = &'static str;
 
+/// A number in its one written form.
+fn exact<T: std::str::FromStr + ToString>(text: &str) -> Option<T> {
+    text.parse::<T>().ok().filter(|number| number.to_string() == text)
+}
+
+/// What one run holds: its session count and, once it has one, its authorisation and ticket.
+#[derive(Clone)]
+struct RunEntry {
+    count: u64,
+    ticket: Option<(String, u32)>,
+}
+
+/// Reads run sequences of either version, and gives the version. Anything else is a refusal.
+fn parse_sequences(text: &str) -> Result<(u8, BTreeMap<String, RunEntry>)> {
+    let unreadable = "the run sequences cannot be read";
+    let mut lines = text.lines();
+    ensure!(text.ends_with('\n'), "{unreadable}");
+    let version = match lines.next() {
+        Some(SEQUENCES_V1_HEADER) => 1,
+        Some(SEQUENCES_HEADER) => 2,
+        _ => bail!("{unreadable}"),
+    };
+    // The last line counts the runs, so a file cut short is refused and cannot lower a number.
+    let end = lines.next_back().and_then(|line| line.strip_prefix("end ")).context(unreadable)?;
+    let mut next = BTreeMap::new();
+    let mut tickets: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+    for line in lines {
+        let fields: Vec<&str> = line.split(' ').collect();
+        let ticket = match (version, fields.as_slice()) {
+            (1, [_, _]) | (2, [_, _, "-", "-"]) => None,
+            (2, [_, _, authorisation, ticket]) => {
+                binding(authorisation, 0).map_err(|_| anyhow!("{unreadable}"))?;
+                let ticket: u32 = exact(ticket).context(unreadable)?;
+                tickets.entry(authorisation.to_string()).or_default().push(ticket);
+                Some((authorisation.to_string(), ticket))
+            }
+            _ => bail!("{unreadable}"),
+        };
+        binding(fields[0], 0).map_err(|_| anyhow!("{unreadable}"))?;
+        let count: u64 = exact(fields[1]).context(unreadable)?;
+        ensure!(count > 0, "{unreadable}");
+        ensure!(next.insert(fields[0].to_string(), RunEntry { count, ticket }).is_none(), "{unreadable}");
+    }
+    ensure!(end == next.len().to_string(), "{unreadable}");
+    // An authorisation's tickets are exactly 0 to k, so none was skipped or given twice.
+    for held in tickets.values_mut() {
+        held.sort_unstable();
+        ensure!(held.iter().enumerate().all(|(at, ticket)| *ticket as usize == at), "{unreadable}");
+    }
+    Ok((version, next))
+}
+
 /// How many sessions this notary has opened for each run (ADR-014). Saved before a number is used.
 struct Sequences {
     path: PathBuf,
-    next: BTreeMap<String, u64>,
+    next: BTreeMap<String, RunEntry>,
 }
 
 impl Sequences {
     /// Anything in the file this program would not have written is a refusal to start. So is a
     /// missing file once a signing key exists: starting empty would reuse every run's numbers.
+    /// A version 1 file is rewritten as version 2 here, before anything is served.
     fn load(path: PathBuf, key_exists: bool) -> Result<Self> {
         let unreadable = "the run sequences cannot be read";
+        let dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound && !key_exists => {
+                ensure!(authorisation_names(&dir)?.is_empty(), "{unreadable}");
                 let fresh = Self { path, next: BTreeMap::new() };
                 fresh.save().map_err(|_| anyhow!("cannot keep the run sequences"))?;
                 return Ok(fresh);
             }
             Err(_) => bail!("{unreadable}"),
         };
-        let mut lines = text.lines();
-        ensure!(text.ends_with('\n') && lines.next() == Some(SEQUENCES_HEADER), "{unreadable}");
-        // The last line counts the runs, so a file cut short is refused and cannot lower a number.
-        let end = lines.next_back().and_then(|line| line.strip_prefix("end ")).context(unreadable)?;
-        let mut next = BTreeMap::new();
-        for line in lines {
-            let (run, written) = line.split_once(' ').context(unreadable)?;
-            binding(run, 0).map_err(|_| anyhow!("{unreadable}"))?;
-            let count: u64 = written.parse().map_err(|_| anyhow!("{unreadable}"))?;
-            ensure!(count > 0 && count.to_string() == written, "{unreadable}");
-            ensure!(next.insert(run.to_string(), count).is_none(), "{unreadable}");
+        let (version, next) = parse_sequences(&text)?;
+        let loaded = Self { path, next };
+        if version == 1 {
+            // A restored old file would hand back spent tickets (ADR-009).
+            ensure!(authorisation_names(&dir)?.is_empty(), "the run sequences are version 1 and an authorisation exists");
+            loaded.save().map_err(|_| anyhow!("cannot keep the run sequences"))?;
         }
-        ensure!(end == next.len().to_string(), "{unreadable}");
-        Ok(Self { path, next })
+        Ok(loaded)
     }
 
     /// Writes a new file, syncs it and renames it over the old one.
@@ -112,8 +174,11 @@ impl Sequences {
         let fresh = self.path.with_extension("new");
         let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&fresh)?;
         writeln!(file, "{SEQUENCES_HEADER}")?;
-        for (run, count) in &self.next {
-            writeln!(file, "{run} {count}")?;
+        for (run, entry) in &self.next {
+            match &entry.ticket {
+                Some((authorisation, ticket)) => writeln!(file, "{run} {} {authorisation} {ticket}", entry.count)?,
+                None => writeln!(file, "{run} {} - -", entry.count)?,
+            }
         }
         writeln!(file, "end {}", self.next.len())?;
         file.sync_all()?;
@@ -123,18 +188,165 @@ impl Sequences {
 
     /// The run's next number, durably spent. On a failed save nothing was signed with it.
     fn spend(&mut self, run: &str) -> Option<u64> {
-        let number = self.next.get(run).copied().unwrap_or(0);
-        self.next.insert(run.to_string(), number.checked_add(1)?);
+        let before = self.next.get(run).cloned();
+        let number = before.as_ref().map_or(0, |entry| entry.count);
+        let ticket = before.as_ref().and_then(|entry| entry.ticket.clone());
+        self.next.insert(run.to_string(), RunEntry { count: number.checked_add(1)?, ticket });
         if self.save().is_err() {
-            if number == 0 {
-                self.next.remove(run);
-            } else {
-                self.next.insert(run.to_string(), number);
-            }
+            match before {
+                Some(entry) => self.next.insert(run.to_string(), entry),
+                None => self.next.remove(run),
+            };
             return None;
         }
         Some(number)
     }
+}
+
+/// The customer's decision for one task: how many attempts, and what came before it.
+struct Authorisation {
+    task: String,
+    attempts: u32,
+    round: u32,
+    prior: u32,
+}
+
+impl Authorisation {
+    fn text(&self) -> String {
+        format!("{AUTHORISATION_HEADER}\ntask {}\nattempts {}\nround {}\nprior {}\nend\n", self.task, self.attempts, self.round, self.prior)
+    }
+
+    /// Only the exact text `text` writes is an authorisation.
+    fn parse(text: &str) -> Option<Self> {
+        let mut lines = text.strip_suffix('\n')?.split('\n');
+        (lines.next()? == AUTHORISATION_HEADER).then_some(())?;
+        let task = lines.next()?.strip_prefix("task ")?.to_string();
+        binding(&task, 0).ok()?;
+        let attempts: u32 = exact(lines.next()?.strip_prefix("attempts ")?)?;
+        let round: u32 = exact(lines.next()?.strip_prefix("round ")?)?;
+        let prior: u32 = exact(lines.next()?.strip_prefix("prior ")?)?;
+        (lines.next()? == "end" && lines.next().is_none() && (1..=MAX_ATTEMPTS).contains(&attempts)).then_some(Self { task, attempts, round, prior })
+    }
+}
+
+/// The names in the authorisations directory that are authorisations. A leftover temporary file
+/// is not one. No directory means none.
+fn authorisation_names(dir: &Path) -> Result<Vec<String>> {
+    let entries = match fs::read_dir(dir.join("authorisations")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => bail!("the authorisations cannot be read"),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let name = entry.map_err(|_| anyhow!("the authorisations cannot be read"))?.file_name();
+        if let Some(name) = name.to_str().filter(|name| binding(name, 0).is_ok()) {
+            names.push(name.to_string());
+        }
+    }
+    Ok(names)
+}
+
+/// Every authorisation. One that cannot be read refuses them all.
+fn read_authorisations(dir: &Path) -> Result<BTreeMap<String, Authorisation>> {
+    let unreadable = "an authorisation cannot be read";
+    let mut all = BTreeMap::new();
+    for name in authorisation_names(dir)? {
+        let bytes = link::read_private(&dir.join("authorisations").join(&name), AUTHORISATION_LIMIT).map_err(|_| anyhow!(unreadable))?.context(unreadable)?;
+        let text = std::str::from_utf8(&bytes).map_err(|_| anyhow!(unreadable))?;
+        all.insert(name, Authorisation::parse(text).context(unreadable)?);
+    }
+    Ok(all)
+}
+
+/// Held while authorisations are made, and while a starting notary reads its state. It is not the
+/// serving lock, so the customer can authorise while the notary serves.
+fn authorisations_lock(dir: &Path) -> Result<fs::File> {
+    let lock = fs::OpenOptions::new().write(true).create(true).truncate(false).mode(0o600).open(dir.join("authorisations.lock")).context("cannot lock the authorisations")?;
+    loop {
+        // SAFETY: `flock` takes a file descriptor that `lock` keeps open, and touches no memory.
+        if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX) } == 0 {
+            return Ok(lock);
+        }
+        ensure!(std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted, "cannot lock the authorisations");
+    }
+}
+
+fn authorize(mut args: impl Iterator<Item = String>) -> Result<()> {
+    let usage = "usage: notary authorize --dir <directory> --task <hash> --attempts <n> [--again]";
+    let (mut dir, mut task, mut attempts, mut again) = (None, None, None, false);
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--dir" => ensure!(dir.replace(PathBuf::from(args.next().context(usage)?)).is_none(), "{usage}"),
+            "--task" => ensure!(task.replace(args.next().context(usage)?).is_none(), "{usage}"),
+            "--attempts" => ensure!(attempts.replace(args.next().context(usage)?).is_none(), "{usage}"),
+            "--again" => again = true,
+            _ => bail!("{usage}"),
+        }
+    }
+    let (dir, task, attempts) = (dir.context(usage)?, task.context(usage)?, attempts.context(usage)?);
+    binding(&task, 0).map_err(|_| anyhow!("the task is not 64 lowercase hex characters"))?;
+    let attempts = exact::<u32>(&attempts).filter(|n| (1..=MAX_ATTEMPTS).contains(n)).context("the attempts must be a number from 1 to 100")?;
+    // Only that the key exists: this command never reads it.
+    ensure!(dir.join("signing.key").symlink_metadata().is_ok(), "this directory has no notary signing key");
+    let _lock = authorisations_lock(&dir)?;
+    let text = fs::read_to_string(dir.join("sequences")).map_err(|_| anyhow!("the run sequences cannot be read"))?;
+    ensure!(parse_sequences(&text)?.0 == 2, "the run sequences are version 1: start the notary once to move them to version 2");
+    let earlier: Vec<Authorisation> = read_authorisations(&dir)?.into_values().filter(|held| held.task == task).collect();
+    ensure!(earlier.is_empty() || again, "this task is already authorised: --again makes a new round");
+    let round = match earlier.iter().map(|held| held.round).max() {
+        Some(highest) => highest.checked_add(1).context("the round would not fit")?,
+        None => 0,
+    };
+    let prior = u32::try_from(earlier.iter().map(|held| u64::from(held.attempts)).sum::<u64>()).map_err(|_| anyhow!("the prior total would not fit"))?;
+    let held = dir.join("authorisations");
+    match fs::DirBuilder::new().mode(0o700).create(&held) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => bail!("cannot keep the authorisations"),
+    }
+    let about = held.symlink_metadata().map_err(|_| anyhow!("cannot keep the authorisations"))?;
+    ensure!(about.is_dir() && std::os::unix::fs::PermissionsExt::mode(&about.permissions()) & 0o077 == 0, "the authorisations directory's access is too open");
+    let mut identifier = [0u8; 32];
+    // SAFETY: the kernel writes at most `identifier.len()` bytes into the array it is given.
+    let read = unsafe { libc::getrandom(identifier.as_mut_ptr().cast(), identifier.len(), 0) };
+    ensure!(usize::try_from(read).ok() == Some(identifier.len()), "no randomness");
+    let identifier = hex::encode(identifier);
+    let made = Authorisation { task, attempts, round, prior };
+    link::keep_private(&held.join(&identifier), made.text().as_bytes()).map_err(|_| anyhow!("cannot keep the authorisation"))?;
+    println!("{identifier}");
+    Ok(())
+}
+
+/// Prints every authorisation and what has been spent of it, or nothing at all. Reads no key and
+/// takes no lock, so it can run while the notary serves.
+fn tickets(mut args: impl Iterator<Item = String>) -> Result<()> {
+    let usage = "usage: notary tickets --dir <directory>";
+    ensure!(args.next().as_deref() == Some("--dir"), "{usage}");
+    let dir = PathBuf::from(args.next().context(usage)?);
+    ensure!(args.next().is_none(), "{usage}");
+    let unreadable = "the run sequences cannot be read";
+    let text = fs::read_to_string(dir.join("sequences")).map_err(|_| anyhow!(unreadable))?;
+    let (version, runs) = parse_sequences(&text)?;
+    let all = read_authorisations(&dir)?;
+    ensure!(version == 2 || all.is_empty(), "the run sequences are version 1 and an authorisation exists");
+    let mut spent: BTreeMap<&str, u32> = BTreeMap::new();
+    for (authorisation, _) in runs.values().filter_map(|entry| entry.ticket.as_ref()) {
+        ensure!(all.contains_key(authorisation), "a run holds a ticket of an authorisation that is not here");
+        *spent.entry(authorisation).or_default() += 1;
+    }
+    let mut lines: Vec<(&str, u32, String)> = Vec::new();
+    for (identifier, held) in &all {
+        let used = spent.get(identifier.as_str()).copied().unwrap_or(0);
+        ensure!(used <= held.attempts, "an authorisation has more tickets spent than it gave");
+        let line = format!("{identifier} task {} round {} budget {} prior {} spent {used} of {}", held.task, held.round, held.attempts, held.prior, held.attempts);
+        lines.push((&held.task, held.round, line));
+    }
+    lines.sort();
+    for (_, _, line) in lines {
+        println!("{line}");
+    }
+    Ok(())
 }
 
 /// What a session line says. It holds no byte of the exchange and no key.
@@ -578,7 +790,10 @@ async fn run() -> Result<()> {
     ensure!(unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) } == 0, "another notary is using this directory");
     // The sequences are made before the key, so a key never exists without them.
     let signing = start.dir.join("signing.key");
+    // Under the authorisations' lock, so none can appear while a version 1 file is being moved.
+    let authorising = authorisations_lock(&start.dir)?;
     let sequences = Sequences::load(start.dir.join("sequences"), signing.symlink_metadata().is_ok())?;
+    drop(authorising);
     let (key, signing_public) = signing_key(&signing)?;
     let transport = Identity::make_or_load(&start.dir.join("transport.key"))?;
     let mut roots = RootCertStore::mozilla();
@@ -637,11 +852,20 @@ async fn run() -> Result<()> {
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let mut args = std::env::args().skip(1).peekable();
-    let done = if args.peek().map(String::as_str) == Some("report") {
-        args.next();
-        report(args)
-    } else {
-        run().await
+    let done = match args.peek().map(String::as_str) {
+        Some("report") => {
+            args.next();
+            report(args)
+        }
+        Some("authorize") => {
+            args.next();
+            authorize(args)
+        }
+        Some("tickets") => {
+            args.next();
+            tickets(args)
+        }
+        _ => run().await,
     };
     match done {
         Ok(()) => std::process::ExitCode::SUCCESS,
