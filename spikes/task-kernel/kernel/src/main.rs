@@ -63,6 +63,7 @@ pub(crate) enum Reason {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Answer {
     schema: i32,
     question_sha256: String,
@@ -75,6 +76,7 @@ struct Answer {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EffectRecord {
     kind: i32,
     body_hex: String,
@@ -82,6 +84,7 @@ struct EffectRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Transcript {
     version: u32,
     guest_sha256: String,
@@ -550,8 +553,7 @@ fn declared_run(
     salt: &str,
     record: &str,
 ) -> Result<(Result<Transcript, Reason>, usize), String> {
-    // The task is named without a salt, so repeated runs of one task are visible as such.
-    let task = sha(format!("{}:{}", sha(guest), sha(&inputs.concat())).as_bytes());
+    let task = task_of(&sha(guest), &inputs);
     let intent = serde_json::json!({"v": 1, "kind": "intent", "task": task, "guest_sha256": sha(guest)});
     let (_, intent_hash) = append(intent).map_err(|r| format!("{r:?}"))?;
     // The run is declared. From here every attested call names it.
@@ -632,7 +634,8 @@ fn audit_report(audited: &ledger::Audited, answers: Option<&str>) -> String {
     lines.push(format!("proven: the chain is unbroken and is the same list as the {log}'s entries under the operator's key"));
     lines.push(format!("proven: this record is at link {} of {}, with one result for its run", audited.link, audited.links));
     let times = if audited.runs == 1 { "time" } else { "times" };
-    lines.push(format!("the task was run {} {times}", audited.runs));
+    lines.push(format!("the task was run {} {times}, as the intent links name the task", audited.runs));
+    lines.push(format!("the chain holds {} run(s) of any task under this key", audited.all_runs));
     match answers {
         Some(report) => lines.push(report.strip_suffix(HIDDEN_BYTES_LIMIT).unwrap_or(report).trim_end().to_string()),
         None => lines.push("not checked: the answers' attestations".to_string()),
@@ -645,15 +648,32 @@ fn audit_report(audited: &ledger::Audited, answers: Option<&str>) -> String {
     lines.join("\n")
 }
 
+/// The backend for the commands that run a guest. The audit never calls this, so it opens no
+/// kernel file.
+fn load_backend() -> Result<Backend, String> {
+    match env::var("HYALOS_KERNEL") {
+        Ok(path) => Ok(Backend::Kvm { kernel: fs::read(path).map_err(|_| "cannot read kernel")?, limit: Duration::from_secs(30) }),
+        Err(_) => Ok(Backend::Process),
+    }
+}
+
+/// A task's name: its guest and inputs, without a salt, so repeated runs of one task show as such.
+fn task_of(guest_sha256: &str, inputs: &[Vec<u8>]) -> String {
+    sha(format!("{guest_sha256}:{}", sha(&inputs.concat())).as_bytes())
+}
+
+/// What the record itself says it is, for the audit to hold the chain to.
+fn claim_of(t: &Transcript, commitment: String) -> Result<ledger::Claim, String> {
+    let inputs = t.inputs_hex.iter().map(|i| unhex(i)).collect::<Option<Vec<_>>>().ok_or("the record's inputs are unreadable")?;
+    Ok(ledger::Claim { commitment, task: task_of(&t.guest_sha256, &inputs), guest: t.guest_sha256.clone() })
+}
+
 fn main_inner() -> Result<bool, String> {
     let args: Vec<String> = env::args().collect();
     let arg = |i: usize| args.get(i).map(String::as_str).ok_or_else(|| "usage: run|replay|attacks|bench ...".to_string());
-    let backend = match env::var("HYALOS_KERNEL") {
-        Ok(path) => Backend::Kvm { kernel: fs::read(path).map_err(|_| "cannot read kernel")?, limit: Duration::from_secs(30) },
-        Err(_) => Backend::Process,
-    };
     match arg(1)? {
         "run" => {
+            let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
             let inputs = read_inputs(arg(3)?)?;
             let seed = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -666,6 +686,7 @@ fn main_inner() -> Result<bool, String> {
             Ok(true)
         }
         "live" => {
+            let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
             let inputs = read_inputs(arg(3)?)?;
             let issue = arg(6)?.parse().map_err(|_| "bad issue number")?;
@@ -714,7 +735,7 @@ fn main_inner() -> Result<bool, String> {
             let commitment = sha([salt.as_slice(), &serde_json::to_vec(&t).map_err(|_| "encode")?].concat().as_slice());
             let (dir, operator) = audit_inputs(&args[3..])?;
             let auditor = ledger::Auditor::new(&dir, &operator, stand_in_log()?)?;
-            let audited = auditor.audit(&commitment)?;
+            let audited = auditor.audit(&claim_of(&t, commitment)?)?;
             // Everything is checked before anything is printed, so a failure states no proof.
             let answers = match env::var("HYALOS_NOTARY") {
                 Ok(notary) => Some(attested(&t, arg(2)?, &notary)?),
@@ -752,6 +773,7 @@ fn main_inner() -> Result<bool, String> {
             Ok(true)
         }
         "replay" => {
+            let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
             let t: Transcript = serde_json::from_slice(&fs::read(arg(3)?).map_err(|_| "cannot read")?).map_err(|_| "cannot parse")?;
             replay(&backend, &guest, &t).map_err(|r| format!("{r:?}"))?;
@@ -759,10 +781,12 @@ fn main_inner() -> Result<bool, String> {
             Ok(true)
         }
         "attacks" => {
+            let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
             run_attacks(&backend, &guest, &read_inputs(arg(3)?)?)
         }
         "bench" => {
+            let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
             let inputs = read_inputs(arg(3)?)?;
             let n: u32 = arg(4)?.parse().map_err(|_| "bad count")?;

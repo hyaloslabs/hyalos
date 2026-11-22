@@ -188,8 +188,20 @@ enum Log {
 pub(crate) struct Audited {
     pub(crate) link: u64,
     pub(crate) links: usize,
+    /// Runs of this task, as the intent links name the task.
     pub(crate) runs: usize,
+    /// Runs of any task under this key. An operator can label a discarded run with another task,
+    /// but cannot leave it out of this number.
+    pub(crate) all_runs: usize,
     pub(crate) stand_in: bool,
+}
+
+/// What a record says about itself, recomputed from the record: its commitment, its task and its
+/// guest. The audit holds the chain to these rather than to the links' own labels.
+pub(crate) struct Claim {
+    pub(crate) commitment: String,
+    pub(crate) task: String,
+    pub(crate) guest: String,
 }
 
 /// The audit's view of a chain: public keys and stored replies. It opens no private key and reads
@@ -320,7 +332,11 @@ impl Auditor {
                 for id in ids.as_array().ok_or_else(refused)? {
                     let reply = ask(agent.get(&format!("{base}/log/entries/{}", id.as_str().ok_or_else(refused)?)).call())?;
                     let entry = reply.as_object().and_then(|o| o.values().next()).ok_or_else(refused)?;
-                    entries.push(listed(entry).ok_or_else(refused)?);
+                    let listed = listed(entry).ok_or_else(refused)?;
+                    if listed.2 != self.operator {
+                        return Err("the public log listed an entry under another key".into());
+                    }
+                    entries.push(listed);
                 }
             }
         }
@@ -330,7 +346,7 @@ impl Auditor {
     }
 
     /// Checks one record against the chain and the log. Any failure names the first check it broke.
-    pub(crate) fn audit(&self, commitment: &str) -> Result<Audited, String> {
+    pub(crate) fn audit(&self, claim: &Claim) -> Result<Audited, String> {
         let links = read_links(&self.dir);
         let scratch = Scratch::new().ok_or("no private temporary directory for the signature checks")?;
         for (seq, link) in links.iter().enumerate() {
@@ -352,22 +368,44 @@ impl Auditor {
                 mine.len()
             ));
         }
-        let results: Vec<&Value> = parsed.iter().filter(|l| l["kind"] == "result").collect();
-        let Some(result) = results.iter().find(|l| l["transcript"] == json!(commitment)) else {
-            return Err("this record is not in the chain".into());
-        };
-        let rivals = results.iter().filter(|l| l["intent"] == result["intent"]).count();
-        if rivals != 1 {
-            return Err(format!("{rivals} results were logged for this one run"));
+        // Every link is an intent or a result, and every result answers one earlier intent, named
+        // by its exact hash. A link that fits neither could hide a discarded run.
+        let mut intents: Vec<(String, bool)> = Vec::new();
+        for (seq, link) in parsed.iter().enumerate() {
+            match link["kind"].as_str() {
+                Some("intent") => intents.push((sha(&links[seq]), false)),
+                Some("result") => {
+                    let named = link["intent"].as_str();
+                    let Some(intent) = intents.iter_mut().find(|(hash, _)| Some(hash.as_str()) == named) else {
+                        return Err(format!("link {seq}: the result names no earlier intent"));
+                    };
+                    if intent.1 {
+                        return Err(format!("link {seq}: a second result was logged for one run"));
+                    }
+                    intent.1 = true;
+                }
+                _ => return Err(format!("link {seq}: it is neither an intent nor a result")),
+            }
         }
-        let Some(intent) = links.iter().position(|l| json!(sha(l)) == result["intent"]) else {
-            return Err("the result names an intent that is not in the chain".into());
+        let holders: Vec<&Value> = parsed.iter().filter(|l| l["kind"] == "result" && l["transcript"] == json!(claim.commitment)).collect();
+        let result = match holders.as_slice() {
+            [] => return Err("this record is not in the chain".into()),
+            [result] => *result,
+            many => return Err(format!("{} results claim this record", many.len())),
         };
+        if result["outcome"] != "ok" {
+            return Err("this record's result link says the run was refused".into());
+        }
+        let intent = links.iter().position(|l| json!(sha(l)) == result["intent"]).ok_or("the result names an intent that is not in the chain")?;
+        if parsed[intent]["task"] != json!(claim.task) || parsed[intent]["guest_sha256"] != json!(claim.guest) {
+            return Err(format!("link {intent}: the intent names another task than this record's"));
+        }
         let same_task = |l: &&Value| l["kind"] == "intent" && l["task"] == parsed[intent]["task"];
         Ok(Audited {
             link: result["seq"].as_u64().ok_or("the chain is unreadable")?,
             links: links.len(),
             runs: parsed.iter().filter(same_task).count(),
+            all_runs: intents.len(),
             stand_in: matches!(self.log, Log::StandIn(_)),
         })
     }

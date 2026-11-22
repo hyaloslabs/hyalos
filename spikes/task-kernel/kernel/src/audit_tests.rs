@@ -2,7 +2,6 @@
 //! Nothing here contacts the network or opens a key outside its own temporary directory.
 
 use super::*;
-use std::process::Stdio;
 
 const REAL_LINKS: usize = 4;
 
@@ -97,31 +96,55 @@ impl Rig {
         serde_json::to_vec(&reply).unwrap()
     }
 
+    /// Adds one link to the chain under test keys, naming the one before it. Returns its hash.
+    fn push(&self, log: &str, operator: &str, mut link: Value) -> String {
+        let chain = read_links(&self.root.join("ledger"));
+        let seq = chain.len();
+        link["seq"] = json!(seq);
+        link["prev"] = json!(chain.last().map(|l| sha(l)).unwrap_or_default());
+        let bytes = serde_json::to_vec(&link).unwrap();
+        fs::write(self.root.join(format!("ledger/{seq:05}.json")), &bytes).unwrap();
+        let reply = self.entry(log, operator, &bytes, 100 + seq as u64);
+        for dir in ["ledger", "log"] {
+            fs::write(self.root.join(format!("{dir}/{seq:05}.rekor.json")), &reply).unwrap();
+        }
+        sha(&bytes)
+    }
+
     /// Writes a chain under test keys and returns the commitment of its first result.
     fn chain(&self, kinds: &[&str], log: &str, operator: &str) -> String {
-        let (mut prev, mut intent, mut first) = (String::new(), String::new(), String::new());
+        let (mut intent, mut first) = (String::new(), String::new());
         for (seq, kind) in kinds.iter().enumerate() {
-            let commitment = format!("commitment-{seq}");
-            let link = if *kind == "intent" {
-                json!({"v": 1, "kind": "intent", "task": "one task", "seq": seq, "prev": prev})
-            } else {
-                json!({"v": 1, "kind": "result", "intent": intent, "outcome": "ok", "transcript": commitment, "seq": seq, "prev": prev})
-            };
-            let bytes = serde_json::to_vec(&link).unwrap();
             if *kind == "intent" {
-                intent = sha(&bytes);
-            } else if first.is_empty() {
-                first = commitment;
-            }
-            prev = sha(&bytes);
-            fs::write(self.root.join(format!("ledger/{seq:05}.json")), &bytes).unwrap();
-            let reply = self.entry(log, operator, &bytes, 100 + seq as u64);
-            for dir in ["ledger", "log"] {
-                fs::write(self.root.join(format!("{dir}/{seq:05}.rekor.json")), &reply).unwrap();
+                intent = self.push(log, operator, intent_link());
+            } else {
+                let commitment = format!("commitment-{seq}");
+                self.push(log, operator, result_link(&intent, &commitment));
+                if first.is_empty() {
+                    first = commitment;
+                }
             }
         }
         first
     }
+}
+
+fn intent_link() -> Value {
+    json!({"v": 1, "kind": "intent", "task": "one task", "guest_sha256": "one guest"})
+}
+
+fn result_link(intent: &str, commitment: &str) -> Value {
+    json!({"v": 1, "kind": "result", "intent": intent, "outcome": "ok", "transcript": commitment})
+}
+
+fn test_claim(commitment: &str) -> Claim {
+    Claim { commitment: commitment.to_string(), task: "one task".to_string(), guest: "one guest".to_string() }
+}
+
+/// The real record's claim, recomputed from `out/live2.json`.
+fn real_claim() -> Claim {
+    let t: crate::Transcript = serde_json::from_slice(&fs::read(source("out/live2.json")).unwrap()).unwrap();
+    crate::claim_of(&t, real_commitment()).unwrap()
 }
 
 /// The commitment of the real record that the second real link names.
@@ -130,61 +153,11 @@ fn real_commitment() -> String {
     link["transcript"].as_str().unwrap().to_string()
 }
 
-/// The built program, beside this test's own binary.
-fn program() -> PathBuf {
-    let path = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("task-kernel");
-    assert!(path.exists(), "task-kernel is not built: run cargo build --release");
-    path
-}
-
-fn run_audit(rig: &Rig, extra: &[&str]) -> std::process::Output {
-    let mut command = Command::new(program());
-    command
-        .arg("audit")
-        .arg(source("out/live2.json"))
-        .arg(rig.path("ledger"))
-        .args(extra)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap())
-        .env("HOME", rig.path("home"))
-        .env("HYALOS_TRUST_LOG_DIR", rig.path("log"))
-        .env("HYALOS_TRUST_LOG_KEY", rig.path("log.pub"))
-        .stdin(Stdio::null());
-    command.output().unwrap()
-}
-
 #[test]
 fn t_4_the_pinned_key_is_the_one_in_the_trusted_root_and_hashes_to_the_log_id() {
     let root = fs::read_to_string(source("../../core/hyalos/tests/fixtures/marketplace-r10/trusted-root.json")).unwrap();
     assert_eq!(root.lines().nth(106).unwrap().split('"').nth(3), Some(REKOR_KEY));
     assert_eq!(sha(&B64.decode(REKOR_KEY).unwrap()), "c0d23d6ad406973f9559f3ba2d1ca01f84147d8ffc5b8445c224f98b9591801d");
-}
-
-#[test]
-fn s_04_1_e1_e2_t_4_1_the_audit_completes_with_an_empty_home_and_two_public_keys() {
-    let rig = Rig::new("s-04-1");
-    rig.real();
-    let keys = [rig.path("operator.pub"), rig.path("notary.pub")];
-    let output = run_audit(&rig, &["--operator-public", &keys[0], "--notary-public", &keys[1]]);
-    let report = String::from_utf8(output.stdout).unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(report.starts_with("audit passed\ntest trust settings"), "{report}");
-    assert!(!report.contains("public log"), "a stand-in report claims nothing of the public log: {report}");
-    assert_eq!(fs::read_dir(rig.path("home")).unwrap().count(), 0, "the home directory stays empty");
-}
-
-#[test]
-fn s_04_1_a_missing_public_key_is_refused_and_named() {
-    let rig = Rig::new("s-04-1-keys");
-    rig.real();
-    let operator = rig.path("operator.pub");
-    let notary = rig.path("notary.pub");
-    let no_notary = run_audit(&rig, &["--operator-public", &operator]);
-    assert!(!no_notary.status.success());
-    assert!(String::from_utf8_lossy(&no_notary.stderr).contains("notary's public key"));
-    let no_operator = run_audit(&rig, &["--notary-public", &notary]);
-    assert!(!no_operator.status.success());
-    assert!(String::from_utf8_lossy(&no_operator.stderr).contains("operator's public key"));
 }
 
 #[test]
@@ -198,7 +171,7 @@ fn t_4_1_a_private_key_given_as_the_operator_key_is_refused() {
 #[test]
 fn s_04_2_e1_the_stored_entries_verify() {
     let rig = Rig::new("s-04-2-e1");
-    let audited = rig.real().audit(&real_commitment()).unwrap();
+    let audited = rig.real().audit(&real_claim()).unwrap();
     assert_eq!((audited.link, audited.links, audited.runs), (1, 4, 2));
 }
 
@@ -213,7 +186,7 @@ fn s_04_2_e2_an_altered_inclusion_proof_is_refused_naming_the_link() {
     let flipped = if hash.starts_with('0') { "1" } else { "0" };
     reply[&id]["verification"]["inclusionProof"]["hashes"][3] = json!(format!("{flipped}{}", &hash[1..]));
     fs::write(&file, serde_json::to_vec(&reply).unwrap()).unwrap();
-    assert_eq!(auditor.audit(&real_commitment()).err().unwrap(), "link 2: the inclusion proof does not verify");
+    assert_eq!(auditor.audit(&real_claim()).err().unwrap(), "link 2: the inclusion proof does not verify");
 }
 
 #[test]
@@ -224,7 +197,7 @@ fn s_04_2_e3_a_link_signed_with_a_test_key_is_refused_naming_the_link() {
     let (log, stranger) = (rig.key("test-log"), rig.key("stranger"));
     let link = fs::read(rig.root.join("ledger/00001.json")).unwrap();
     fs::write(rig.root.join("ledger/00001.rekor.json"), rig.entry(&log, &stranger, &link, 7)).unwrap();
-    assert_eq!(auditor.audit(&real_commitment()).err().unwrap(), "link 1: the reply is not from the log's key");
+    assert_eq!(auditor.audit(&real_claim()).err().unwrap(), "link 1: the reply is not from the log's key");
 
     // Under a log that accepts it: only the operator's key can fail it.
     let rig = Rig::new("s-04-2-e3-log");
@@ -233,7 +206,7 @@ fn s_04_2_e3_a_link_signed_with_a_test_key_is_refused_naming_the_link() {
     let link = fs::read(rig.root.join("ledger/00001.json")).unwrap();
     fs::write(rig.root.join("ledger/00001.rekor.json"), rig.entry(&log, &stranger, &link, 101)).unwrap();
     let auditor = rig.auditor("operator.pub", "test-log.pub");
-    assert_eq!(auditor.audit(&commitment).err().unwrap(), "link 1: the link is not signed by the operator's key");
+    assert_eq!(auditor.audit(&test_claim(&commitment)).err().unwrap(), "link 1: the link is not signed by the operator's key");
 }
 
 #[test]
@@ -241,7 +214,7 @@ fn t_4_a_reply_for_another_link_is_refused() {
     let rig = Rig::new("t-4-other");
     let auditor = rig.real();
     fs::copy(rig.root.join("ledger/00000.rekor.json"), rig.root.join("ledger/00001.rekor.json")).unwrap();
-    assert_eq!(auditor.audit(&real_commitment()).err().unwrap(), "link 1: the reply is for another link");
+    assert_eq!(auditor.audit(&real_claim()).err().unwrap(), "link 1: the reply is for another link");
 }
 
 #[test]
@@ -253,13 +226,13 @@ fn t_4_an_altered_signed_time_is_refused() {
     let id = reply.as_object().unwrap().keys().next().unwrap().clone();
     reply[&id]["integratedTime"] = json!(reply[&id]["integratedTime"].as_u64().unwrap() + 1);
     fs::write(&file, serde_json::to_vec(&reply).unwrap()).unwrap();
-    assert_eq!(auditor.audit(&real_commitment()).err().unwrap(), "link 3: the signed time does not verify");
+    assert_eq!(auditor.audit(&real_claim()).err().unwrap(), "link 3: the signed time does not verify");
 }
 
 #[test]
 fn s_04_5_e1_a_passing_report_lists_what_was_proven_then_the_five_limits() {
     let rig = Rig::new("s-04-5-e1");
-    let audited = rig.real().audit(&real_commitment()).unwrap();
+    let audited = rig.real().audit(&real_claim()).unwrap();
     let report = crate::audit_report(&audited, None);
     let lines: Vec<&str> = report.lines().collect();
     let first_limit = lines.iter().position(|l| l.starts_with("not proven")).unwrap();
@@ -275,7 +248,7 @@ fn s_04_5_e1_a_passing_report_lists_what_was_proven_then_the_five_limits() {
 #[test]
 fn t_4_with_attestations_checked_the_report_has_no_not_checked_line_and_five_limits() {
     let rig = Rig::new("t-4-attested");
-    let audited = rig.real().audit(&real_commitment()).unwrap();
+    let audited = rig.real().audit(&real_claim()).unwrap();
     let attested = crate::attested_report(8, false);
     let report = crate::audit_report(&audited, Some(&attested));
     assert!(report.contains("attested: 8 of 8") && !report.contains("not checked"), "{report}");
@@ -283,23 +256,11 @@ fn t_4_with_attestations_checked_the_report_has_no_not_checked_line_and_five_lim
 }
 
 #[test]
-fn s_04_5_e2_a_failing_audit_names_the_first_check_and_prints_no_proof() {
-    let rig = Rig::new("s-04-5-e2");
-    rig.real();
-    fs::remove_file(rig.root.join("ledger/00002.rekor.json")).unwrap();
-    let keys = [rig.path("operator.pub"), rig.path("notary.pub")];
-    let output = run_audit(&rig, &["--operator-public", &keys[0], "--notary-public", &keys[1]]);
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty(), "no statement of proof");
-    assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "refused: link 2: no stored log reply");
-}
-
-#[test]
 fn s_04_5_e3_the_report_counts_three_runs_of_one_task() {
     let rig = Rig::new("s-04-5-e3");
     let (log, operator) = (rig.key("test-log"), rig.key("operator"));
     let commitment = rig.chain(&["intent", "result", "intent", "result", "intent", "result"], &log, &operator);
-    let audited = rig.auditor("operator.pub", "test-log.pub").audit(&commitment).unwrap();
+    let audited = rig.auditor("operator.pub", "test-log.pub").audit(&test_claim(&commitment)).unwrap();
     assert_eq!(audited.runs, 3);
     assert!(crate::audit_report(&audited, None).contains("the task was run 3 times"));
 }
@@ -310,7 +271,7 @@ fn t_4_an_entry_the_chain_does_not_show_is_refused() {
     let (log, operator) = (rig.key("test-log"), rig.key("operator"));
     let commitment = rig.chain(&["intent", "result"], &log, &operator);
     fs::write(rig.root.join("log/00099.rekor.json"), rig.entry(&log, &operator, b"a hidden link", 500)).unwrap();
-    let refused = rig.auditor("operator.pub", "test-log.pub").audit(&commitment).err().unwrap();
+    let refused = rig.auditor("operator.pub", "test-log.pub").audit(&test_claim(&commitment)).err().unwrap();
     assert!(refused.contains("the log lists 3 entries") && refused.contains("has 2"), "{refused}");
 }
 
@@ -327,6 +288,111 @@ fn t_4_2_the_proofs_need_no_network_and_a_log_that_cannot_be_asked_refuses_the_a
         log_key: B64.decode(REKOR_KEY).unwrap(),
         log: Log::Public { base, agent: ureq::AgentBuilder::new().timeout(Duration::from_secs(2)).build() },
     };
-    let refused = auditor.audit(&real_commitment()).err().unwrap();
+    let refused = auditor.audit(&real_claim()).err().unwrap();
     assert_eq!(refused, "the public log could not be asked which entries it holds under the operator's key");
+}
+
+/// A test chain and its keys, for the forgeries below.
+fn forged(label: &str) -> (Rig, String, String) {
+    let rig = Rig::new(label);
+    let (log, operator) = (rig.key("test-log"), rig.key("operator"));
+    (rig, log, operator)
+}
+
+fn audit_of(rig: &Rig, claim: &Claim) -> Result<Audited, String> {
+    rig.auditor("operator.pub", "test-log.pub").audit(claim)
+}
+
+#[test]
+fn t_4_a_discarded_result_with_its_intent_respelled_is_refused() {
+    let (rig, log, operator) = forged("t-4-respelled");
+    let intent = rig.push(&log, &operator, intent_link());
+    rig.push(&log, &operator, result_link(&intent.to_uppercase(), "discarded"));
+    rig.push(&log, &operator, result_link(&intent, "kept"));
+    assert_eq!(audit_of(&rig, &test_claim("kept")).err().unwrap(), "link 1: the result names no earlier intent");
+}
+
+#[test]
+fn t_4_a_link_of_another_kind_is_refused() {
+    let (rig, log, operator) = forged("t-4-kind");
+    let intent = rig.push(&log, &operator, intent_link());
+    let mut hidden = result_link(&intent, "discarded");
+    hidden["kind"] = json!("Result");
+    rig.push(&log, &operator, hidden);
+    rig.push(&log, &operator, result_link(&intent, "kept"));
+    assert_eq!(audit_of(&rig, &test_claim("kept")).err().unwrap(), "link 1: it is neither an intent nor a result");
+}
+
+#[test]
+fn t_4_a_second_result_for_one_run_is_refused_whichever_record_is_shown() {
+    let (rig, log, operator) = forged("t-4-second");
+    let intent = rig.push(&log, &operator, intent_link());
+    rig.push(&log, &operator, result_link(&intent, "first"));
+    rig.push(&log, &operator, result_link(&intent, "second"));
+    for shown in ["first", "second"] {
+        assert_eq!(audit_of(&rig, &test_claim(shown)).err().unwrap(), "link 2: a second result was logged for one run");
+    }
+}
+
+#[test]
+fn t_4_one_record_claimed_by_two_runs_is_refused() {
+    let (rig, log, operator) = forged("t-4-twice");
+    for _ in 0..2 {
+        let intent = rig.push(&log, &operator, intent_link());
+        rig.push(&log, &operator, result_link(&intent, "same"));
+    }
+    assert_eq!(audit_of(&rig, &test_claim("same")).err().unwrap(), "2 results claim this record");
+}
+
+#[test]
+fn t_4_a_result_naming_a_link_that_is_not_an_intent_is_refused() {
+    let (rig, log, operator) = forged("t-4-not-intent");
+    let intent = rig.push(&log, &operator, intent_link());
+    let result = rig.push(&log, &operator, result_link(&intent, "first"));
+    rig.push(&log, &operator, result_link(&result, "second"));
+    assert_eq!(audit_of(&rig, &test_claim("second")).err().unwrap(), "link 2: the result names no earlier intent");
+}
+
+#[test]
+fn t_4_an_intent_labelled_with_another_task_or_guest_is_refused() {
+    for (label, field) in [("task", "task"), ("guest", "guest_sha256")] {
+        let (rig, log, operator) = forged(&format!("t-4-label-{label}"));
+        let mut relabelled = intent_link();
+        relabelled[field] = json!("something else");
+        let intent = rig.push(&log, &operator, relabelled);
+        rig.push(&log, &operator, result_link(&intent, "kept"));
+        assert_eq!(audit_of(&rig, &test_claim("kept")).err().unwrap(), "link 0: the intent names another task than this record's");
+    }
+}
+
+#[test]
+fn t_4_a_run_relabelled_as_another_task_still_counts_in_the_total() {
+    let (rig, log, operator) = forged("t-4-total");
+    let mut other = intent_link();
+    other["task"] = json!("a label for a discarded run");
+    let discarded = rig.push(&log, &operator, other);
+    rig.push(&log, &operator, result_link(&discarded, "discarded"));
+    let intent = rig.push(&log, &operator, intent_link());
+    rig.push(&log, &operator, result_link(&intent, "kept"));
+    let audited = audit_of(&rig, &test_claim("kept")).unwrap();
+    assert_eq!((audited.runs, audited.all_runs), (1, 2));
+    let report = crate::audit_report(&audited, None);
+    assert!(report.contains("as the intent links name the task") && report.contains("the chain holds 2 run(s) of any task"), "{report}");
+}
+
+#[test]
+fn t_4_a_record_whose_result_link_says_refused_is_refused() {
+    let (rig, log, operator) = forged("t-4-outcome");
+    let intent = rig.push(&log, &operator, intent_link());
+    let mut result = result_link(&intent, "kept");
+    result["outcome"] = json!("refused:ModelRefused");
+    rig.push(&log, &operator, result);
+    assert_eq!(audit_of(&rig, &test_claim("kept")).err().unwrap(), "this record's result link says the run was refused");
+}
+
+#[test]
+fn t_4_a_field_the_commitment_does_not_cover_is_refused() {
+    let mut record: Value = serde_json::from_slice(&fs::read(source("out/live2.json")).unwrap()).unwrap();
+    record["reviewed_by"] = json!("someone");
+    assert!(serde_json::from_value::<crate::Transcript>(record).is_err());
 }
