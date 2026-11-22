@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | executing |
+| **Status** | done |
 | **Type** | Feature |
 | **Size** | M — 6 slices |
 | **Modifiers** | security, data, public-api |
@@ -99,3 +99,8 @@ diverged, using the deviations in every progress file._
 
 | Cold read predicted | What diverged | Slice | Lesson for the next pack |
 |---|---|---|---|
+| A legacy audit could pass ticketed attestations between Slices 4 and 5 (Q18), so S-01.6 moved to Slice 4 | The check held, but once the notary signs tickets a real ticketless presentation cannot be made. S-01.6.e2 and the version 1 tests use a wrapper around `verify` | 4 | Before a change ends an old output format, keep a real fixture of that format |
+| Each slice's file list was complete | Slices 1, 4, 5 and 6 changed files the plan did not list. Review of Slice 4 found the two-machine probe broken by a new required setting | 1, 4, 5, 6 | When a slice changes a shared signature or adds a required setting, search for every caller, scripts included |
+| Not predicted | `include!` cannot take `notary.rs`, which opens with inner doc comments, so `forging-notary` loads it as a module | 5 | Compile a proposed build mechanism during planning |
+| Not predicted | `ask`'s own `verify` refuses a doubled or short ticket before writing it, so the audit's test needed another test hook | 5 | Trace a forged artifact through every check before the one under test |
+| Not predicted | A Slice 4 test script could exit before the monitor wrote to it, which failed intermittently and surfaced in Slice 5 | 4, 5 | Repeat new process-spawning tests before merging, and make stand-ins read their input as the real tool does |
