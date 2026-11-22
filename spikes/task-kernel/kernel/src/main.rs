@@ -683,13 +683,16 @@ fn audit_inputs(rest: &[String]) -> Result<AuditInputs, String> {
     }
     let notary = notary.ok_or("the notary's public key is not given: --notary-public <file>")?;
     let verify = verify.ok_or("the verify program is not given: --verify <program you built>")?;
-    if !fs::metadata(verify).is_ok_and(|m| m.is_file()) {
+    // Resolved once, so what runs is the file checked here and never a name found on a search path.
+    let verify = fs::canonicalize(verify).map_err(|_| "the verify program is not a file")?;
+    if !fs::metadata(&verify).is_ok_and(|m| m.is_file()) {
         return Err("the verify program is not a file".into());
     }
-    Ok(AuditInputs { dir: dir.cloned(), operator: operator.cloned(), notary: notary_key(notary)?, verify: verify.clone() })
+    let verify = verify.to_str().ok_or("the verify program's path is not text")?.to_string();
+    Ok(AuditInputs { dir: dir.cloned(), operator: operator.cloned(), notary: notary_key(notary)?, verify })
 }
 
-/// The notary's signing key from its file: one compressed P-256 point in lowercase hex.
+/// The notary's signing key from its file: one compressed secp256k1 point in lowercase hex.
 fn notary_key(file: &str) -> Result<String, String> {
     let text = fs::read_to_string(file).map_err(|_| "the notary's public key is not a readable file")?;
     let key = text.trim();

@@ -132,6 +132,32 @@ fn t_5_1_a_notary_key_that_is_not_a_signing_key_is_refused() {
 }
 
 #[test]
+fn t_5_a_verify_program_named_without_a_slash_is_the_file_in_this_directory() {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+    let rig = Rig::new("t-5-bare");
+    fs::create_dir_all(rig.0.join("record.attest")).unwrap();
+    fs::write(rig.0.join("record.attest/000.presentation"), b"a presentation").unwrap();
+    let digest: String = Sha256::digest(b"a presentation").iter().map(|b| format!("{b:02x}")).collect();
+    let record = serde_json::json!({"version": 1, "guest_sha256": "g", "inputs_hex": [], "effects": [], "result_hex": "", "fuel_used": 1,
+        "answers": [{"schema": 0, "question_sha256": "q", "label": 0, "model": "m", "response_id": "r", "attestation": digest}]});
+    fs::write(rig.0.join("record"), record.to_string()).unwrap();
+    let ran = rig.0.join("ran");
+    let program = rig.0.join("my-verify");
+    fs::write(&program, format!("#!/bin/sh\n: > '{}'\nexit 1\n", ran.display())).unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_task-kernel"))
+        .args(["attested", "record", "--notary-public", &rig.path("notary.pub"), "--verify", "my-verify"])
+        .current_dir(&rig.0)
+        .env_clear()
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "refused: answer 0: the attestation does not verify");
+    assert!(ran.exists(), "the file in this directory was not the program that ran");
+}
+
+#[test]
 fn s_04_5_e2_a_failing_audit_names_the_first_check_and_prints_no_proof() {
     let rig = Rig::new("s-04-5-e2");
     fs::remove_file(rig.0.join("ledger/00002.rekor.json")).unwrap();

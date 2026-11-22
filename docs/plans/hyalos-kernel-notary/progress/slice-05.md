@@ -25,7 +25,7 @@ Checked at `6ca93b4`. Line numbers have moved since the plan was written, so eac
 
 ## Acceptance
 
-From `spikes/task-kernel`: both builds ended `Finished`. The monitor's tests passed 54 of 54 (48 unit, 6 CLI), the attestation crate's 48 of 48, and `attacks` with both kernels printed 51 `PASS` and no `FAIL`. `grep -n 'HYALOS_NOTARY' kernel/src/main.rs` printed nothing and exited 1.
+From `spikes/task-kernel`: both builds ended `Finished`. The monitor's tests passed 55 of 55 (48 unit, 7 CLI), the attestation crate's 48 of 48, and `attacks` with both kernels printed 51 `PASS` and no `FAIL`. `grep -n 'HYALOS_NOTARY' kernel/src/main.rs` printed nothing and exited 1.
 
 | ID | Shown by |
 |---|---|
@@ -58,7 +58,7 @@ Also: `s_04_1_the_whole_audit_passes_with_an_empty_home` (the real command, an e
 
 ## Decisions
 
-- **The verify program's input.** `--verify <program>`, on both `audit` and `attested`. It runs with a cleared environment and only the three `HYALOS_TRUST_*` settings, so it reads no home directory.
+- **The verify program's input.** `--verify <program>`, on both `audit` and `attested`. It runs with a cleared environment and only the three `HYALOS_TRUST_*` settings, so it reads no home directory. The path is resolved once, so a name with no slash is the file in the current directory and never one found on a search path (`t_5_a_verify_program_named_without_a_slash_is_the_file_in_this_directory`).
 - **The trusted notary key file.** One line: the signing key as verify takes it, 66 lowercase hex characters beginning `02` or `03`. Anything else is refused.
 - **The test's variable.** `HYALOS_TEST_TOLD_RUN`, read only by ask, for the run it tells the notary.
 - **`attested` has no ledger.** It requires every answer to name one run, and checks position and sequence. It prints that the run's links and window are not checked there.
