@@ -30,8 +30,15 @@ read -r -t 5 -u "${NOTARY[0]}" _ transport
 read -r -t 5 -u "${NOTARY[0]}" _ _listening
 echo "notary signing public key: $signer"
 
+# The customer's side authorises this task for two runs: the timing call and the real task. A state
+# directory from an earlier probe already holds a round for it, so that case takes a new round.
+task=$("$monitor" task guest/digest.wasm fixtures/issues.tsv)
+authorize="$remote/notary authorize --dir $remote/state --task $task --attempts 2"
+authorisation=$(ssh "$host" "$authorize 2>/dev/null || $authorize --again")
+
 export HYALOS_ATTEST=$attest HYALOS_NOTARY_ADDRESS=127.0.0.1:$port
 export HYALOS_NOTARY_TRANSPORT_PUBLIC=$transport HYALOS_NOTARY_SIGNER_PUBLIC=$signer
+export HYALOS_NOTARY_AUTHORISATION=$authorisation
 export HYALOS_OPERATOR_TRANSPORT_KEY=$key
 
 # 3.2: the round trip, as the median of 20 TCP connection times to the other machine's SSH port.
