@@ -19,7 +19,7 @@
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use attest::{
     Answer, CREDENTIAL_LENGTH, DEADLINE, END, MAX_QUESTION, MAX_RECV, MAX_SENT, Trust, answer, approved, binding, find,
-    link::{self, Identity, LinkFailure, SIGNED},
+    link::{self, Identity, LinkFailure},
     pinned_credential, read_run_sequence, request, written_head,
 };
 use futures::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
@@ -35,7 +35,7 @@ use std::{
     process::ExitCode,
     sync::{Arc, atomic::{AtomicBool, Ordering}},
     task::{Context as TaskContext, Poll},
-    time::{Duration, Instant},
+    time::Instant,
 };
 use tlsn::{
     Session,
@@ -216,14 +216,14 @@ async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &
 
     handle.close();
     let mut socket = driver_task.await??;
-    link::write_frame(&mut socket, &bincode::serialize(&request)?).await?;
-    let reply = link::read_frame(&mut socket).await?;
-    let _ = socket.close().await;
-    let (&tag, attestation_bytes) = reply.split_first().context("the notary sent nothing")?;
-    if tag != SIGNED {
+    socket.write_all(&bincode::serialize(&request)?).await?;
+    socket.close().await?;
+    let attestation_bytes = link::read_bounded(&mut socket).await?;
+    // A notary that refused the session closes with no attestation.
+    if attestation_bytes.is_empty() {
         return Err(Word::Provider.into());
     }
-    let attestation: Attestation = bincode::deserialize(attestation_bytes).map_err(|_| Word::Provider)?;
+    let attestation: Attestation = bincode::deserialize(&attestation_bytes).map_err(|_| Word::Provider)?;
     request.validate(&attestation, &provider).map_err(|_| Word::Provider)?;
 
     // The secrets hold the credential. They are used once, here, and never stored.
@@ -328,8 +328,7 @@ async fn run() -> Result<ExitCode> {
             pinned_credential(&credential)?;
             let started = Instant::now();
             let broke = Arc::new(AtomicBool::new(false));
-            // A second past the notary's own deadline, so that its session line is the one that says so.
-            let call = tokio::time::timeout(DEADLINE + Duration::from_secs(1), ask(&title, &binding, intent, &trust, &credential, &notary, &broke)).await;
+            let call = tokio::time::timeout(DEADLINE, ask(&title, &binding, intent, &trust, &credential, &notary, &broke)).await;
             let checked = match call {
                 Err(_) => Err(Word::Deadline),
                 Ok(Err(error)) => Err(word_for(&error, started, &broke)),
@@ -383,7 +382,7 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{io::BufRead, process::{Child, Command, Stdio}};
+    use std::{io::BufRead, process::{Child, Command, Stdio}, time::Duration};
 
     /// Removes a test's directory and ends its programs however the test ends.
     struct Rig(std::path::PathBuf, Vec<Child>);

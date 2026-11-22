@@ -39,6 +39,11 @@ fn mode(path: &Path) -> u32 {
     std::fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
+/// Whether the notary's run sequences name the test's run.
+fn recorded(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join("sequences")).unwrap().contains(INTENT)
+}
+
 fn fake_operator_public(dir: &Path) -> String {
     operator(&dir.join("enrolled")).public
 }
@@ -134,7 +139,25 @@ fn s_01_3_a_session_with_a_server_the_notary_does_not_approve_signs_nothing() {
     assert!(!rig.file("never.presentation").exists());
     let line = rig.notary.line_after(0);
     assert!(line.contains(" other.test ") && line.ends_with("refused server"), "{line}");
-    assert!(!rig.notary.dir.join("sequences").exists(), "a refused session spends no number");
+    assert!(!recorded(&rig.notary.dir), "a refused session spends no number");
+}
+
+#[test]
+fn s_01_3_a_certificate_under_a_root_the_notary_does_not_trust_is_a_provider_refusal() {
+    let _one = one_at_a_time();
+    let scratch = Scratch::new("s-01-3-root");
+    let who = operator(&scratch.0.join("home"));
+    let provider = standin(&scratch.0, &[]);
+    let other_root = scratch.0.join("no-root.der");
+    std::fs::write(&other_root, b"").unwrap();
+    let notary = notary(&scratch.0.join("notary"), &who.public, &other_root);
+    let file = scratch.0.join("never.presentation");
+    let output = run_ask(tool(&who, &provider.root, &provider.address, &notary.address, &notary.transport, &notary.signing), &file, INTENT, 0);
+    assert_eq!(word(&output), "provider");
+    assert!(!file.exists());
+    let line = notary.line_after(0);
+    assert!(line.ends_with("refused server"), "{line}");
+    assert!(!recorded(&notary.dir));
 }
 
 #[test]
@@ -239,11 +262,26 @@ fn s_03_5_unreadable_run_sequences_refuse_the_start() {
     std::fs::write(&root, b"").unwrap();
     let dir = scratch.0.join("notary");
     drop(notary(&dir, &operator, &root));
-    for bad in ["not a sequence\n", &format!("{INTENT} 0\n"), &format!("{INTENT} +1\n"), &format!("{INTENT} 1\n{INTENT} 2\n")] {
+    let header = "hyalos.sequences/1";
+    for bad in [String::new(), "not a sequence\n".to_string(), format!("{INTENT} 1\n"), format!("{header}\n{INTENT} 0\n"), format!("{header}\n{INTENT} +1\n"), format!("{header}\n{INTENT} 1\n{INTENT} 2\n")] {
         std::fs::write(dir.join("sequences"), bad).unwrap();
         let refusal = try_notary(&dir, &operator, &root).err().expect("it must refuse to start");
         assert!(refusal.contains("run sequences"), "{refusal}");
     }
+}
+
+#[test]
+fn s_03_5_a_lost_sequence_file_refuses_the_start_rather_than_reuse_numbers() {
+    let scratch = Scratch::new("s-03-5-lost");
+    let operator = fake_operator_public(&scratch.0);
+    let root = scratch.0.join("no-root.der");
+    std::fs::write(&root, b"").unwrap();
+    let dir = scratch.0.join("notary");
+    drop(notary(&dir, &operator, &root));
+    std::fs::remove_file(dir.join("sequences")).unwrap();
+    let refusal = try_notary(&dir, &operator, &root).err().expect("it must refuse to start");
+    assert!(refusal.contains("run sequences"), "{refusal}");
+    assert!(!dir.join("sequences").exists(), "and it does not make a new one");
 }
 
 #[test]
@@ -271,7 +309,7 @@ fn t_2_1_an_unenrolled_transport_key_is_closed_before_the_protocol_starts() {
     assert!(!rig.file("never.presentation").exists());
     let line = rig.notary.line_after(0);
     assert!(line.ends_with("none 0 0 refused unenrolled"), "{line}");
-    assert!(!rig.notary.dir.join("sequences").exists());
+    assert!(!recorded(&rig.notary.dir));
 }
 
 #[test]
@@ -292,6 +330,16 @@ fn t_2_1_an_attestation_under_another_signing_key_is_refused_by_ask() {
     let command = tool(&rig.who, &rig.standin.root, &rig.standin.address, &rig.notary.address, &rig.notary.transport, &wrong);
     assert_eq!(word(&run_ask(command, &rig.file("never.presentation"), INTENT, 0)), "notary-key");
     assert!(!rig.file("never.presentation").exists());
+}
+
+#[test]
+fn t_2_1_idle_strangers_cannot_keep_the_enrolled_operator_out() {
+    let _one = one_at_a_time();
+    let rig = Rig::new("t-2-1-idle", &[]);
+    let idle: Vec<_> = (0..32).map(|_| std::net::TcpStream::connect(&rig.notary.address).unwrap()).collect();
+    assert_eq!(said(&rig.ask("one.presentation", INTENT, 0))["sequence"], 0);
+    assert!(!rig.notary.lines().iter().any(|line| line.ends_with("refused busy")), "no session was open while they waited");
+    drop(idle);
 }
 
 #[test]

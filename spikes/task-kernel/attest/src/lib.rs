@@ -15,8 +15,8 @@ use tlsn::{
 pub const RELEASE: &str = concat!(env!("ATTEST_TLSN_TAG"), "/", env!("CARGO_PKG_VERSION"));
 /// How long one session may take, held by each side.
 pub const DEADLINE: Duration = Duration::from_secs(30);
-/// The most either side reads of the messages it frames itself.
-pub const MAX_FRAME: usize = 1 << 20;
+/// The most either side reads of the attestation request or the attestation.
+pub const MAX_MESSAGE: usize = 1 << 20;
 
 pub const SERVER: &str = "api.anthropic.com";
 // These must match the monitor's `live.rs`: an attested answer is an answer to the same question.
@@ -461,28 +461,13 @@ pub mod link {
         }
     }
 
-    /// One message of the two the programs frame themselves, after the protocol's own have ended.
-    pub async fn write_frame<S: futures::io::AsyncWrite + Unpin>(stream: &mut S, bytes: &[u8]) -> Result<()> {
-        ensure!(bytes.len() <= MAX_FRAME, "a message is too long");
-        futures::io::AsyncWriteExt::write_all(stream, &(bytes.len() as u32).to_be_bytes()).await?;
-        futures::io::AsyncWriteExt::write_all(stream, bytes).await?;
-        futures::io::AsyncWriteExt::flush(stream).await?;
-        Ok(())
-    }
-
-    pub async fn read_frame<S: futures::io::AsyncRead + Unpin>(stream: &mut S) -> Result<Vec<u8>> {
-        let mut length = [0u8; 4];
-        futures::io::AsyncReadExt::read_exact(stream, &mut length).await?;
-        let length = u32::from_be_bytes(length) as usize;
-        ensure!(length <= MAX_FRAME, "a message is too long");
-        let mut bytes = vec![0u8; length];
-        futures::io::AsyncReadExt::read_exact(stream, &mut bytes).await?;
+    /// Reads the other side's last message, which ends when it closes its half of the link.
+    pub async fn read_bounded<S: futures::io::AsyncRead + Unpin>(stream: &mut S) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        futures::io::AsyncReadExt::read_to_end(&mut futures::io::AsyncReadExt::take(stream, MAX_MESSAGE as u64 + 1), &mut bytes).await?;
+        ensure!(bytes.len() <= MAX_MESSAGE, "a message is too long");
         Ok(bytes)
     }
-
-    /// The notary's last frame starts with one of these.
-    pub const SIGNED: u8 = 1;
-    pub const REFUSED: u8 = 0;
 }
 
 #[cfg(test)]

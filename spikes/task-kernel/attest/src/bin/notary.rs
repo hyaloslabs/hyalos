@@ -10,17 +10,17 @@
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use attest::{
     DEADLINE, MAX_RECV, MAX_SENT, RELEASE, RUN_SEQUENCE, SERVER, binding,
-    link::{self, Identity, REFUSED, SIGNED},
+    link::{self, Identity},
     run_sequence,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     fs,
     io::{Read, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tlsn::{
     Session,
@@ -37,14 +37,22 @@ use tlsn::{
 };
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{OwnedSemaphorePermit, Semaphore},
+    sync::{Semaphore, oneshot},
     task::JoinHandle,
 };
 use tokio_rustls::TlsAcceptor;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
-/// How many connections may be in their handshake at once. A stranger who opens many gets no more.
+/// How many connections may be in their handshake at once. When a new one arrives past this, the
+/// oldest is closed, so idle strangers cannot keep the enrolled operator out.
 const HANDSHAKES: usize = 16;
+/// How long a peer has to prove its key. A stranger gets no more of the notary's time than this.
+const HANDSHAKE: Duration = Duration::from_secs(5);
+/// A link that drops this close to the deadline ended because the operator's own 30 seconds ran
+/// out a moment before ours: its clock starts first.
+const DEADLINE_MARGIN: Duration = Duration::from_secs(1);
+/// The first line of the run sequences. A file without it was not written whole by this program.
+const SEQUENCES_HEADER: &str = "hyalos.sequences/1";
 
 /// A reason a session line may give for `refused`.
 type Reason = &'static str;
@@ -56,21 +64,28 @@ struct Sequences {
 }
 
 impl Sequences {
-    /// Anything in the file this program would not have written is a refusal to start.
-    fn load(path: PathBuf) -> Result<Self> {
-        let mut next = BTreeMap::new();
+    /// Anything in the file this program would not have written is a refusal to start. So is a
+    /// missing file once a signing key exists: starting empty would reuse every run's numbers.
+    fn load(path: PathBuf, key_exists: bool) -> Result<Self> {
+        let unreadable = "the run sequences cannot be read";
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(_) => bail!("the run sequences cannot be read"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !key_exists => {
+                let fresh = Self { path, next: BTreeMap::new() };
+                fresh.save().map_err(|_| anyhow!("cannot keep the run sequences"))?;
+                return Ok(fresh);
+            }
+            Err(_) => bail!("{unreadable}"),
         };
-        for line in text.lines() {
-            let (run, count) = line.split_once(' ').context("the run sequences cannot be read")?;
-            binding(run, 0).map_err(|_| anyhow!("the run sequences cannot be read"))?;
-            let written = count;
-            let count: u64 = written.parse().map_err(|_| anyhow!("the run sequences cannot be read"))?;
-            ensure!(count > 0 && count.to_string() == written, "the run sequences cannot be read");
-            ensure!(next.insert(run.to_string(), count).is_none(), "the run sequences cannot be read");
+        let mut lines = text.lines();
+        ensure!(lines.next() == Some(SEQUENCES_HEADER), "{unreadable}");
+        let mut next = BTreeMap::new();
+        for line in lines {
+            let (run, written) = line.split_once(' ').context(unreadable)?;
+            binding(run, 0).map_err(|_| anyhow!("{unreadable}"))?;
+            let count: u64 = written.parse().map_err(|_| anyhow!("{unreadable}"))?;
+            ensure!(count > 0 && count.to_string() == written, "{unreadable}");
+            ensure!(next.insert(run.to_string(), count).is_none(), "{unreadable}");
         }
         Ok(Self { path, next })
     }
@@ -79,6 +94,7 @@ impl Sequences {
     fn save(&self) -> std::io::Result<()> {
         let fresh = self.path.with_extension("new");
         let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&fresh)?;
+        writeln!(file, "{SEQUENCES_HEADER}")?;
         for (run, count) in &self.next {
             writeln!(file, "{run} {count}")?;
         }
@@ -135,15 +151,17 @@ impl Notary {
         let time = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs());
         let text = format!("{time} {} {} {} {outcome}\n", line.server.as_deref().unwrap_or("none"), line.sent, line.received);
         let mut file = self.lines.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if file.write_all(text.as_bytes()).and_then(|()| file.sync_data()).is_err() {
+        if file.write_all(text.as_bytes()).is_err() {
             eprintln!("cannot write a session line");
         }
     }
 
-    async fn serve(self: Arc<Self>, socket: TcpStream, handshake: OwnedSemaphorePermit) {
+    async fn serve(self: Arc<Self>, socket: TcpStream, evicted: oneshot::Receiver<()>) {
         let mut line = Line::default();
-        let outcome = match tokio::time::timeout(DEADLINE, self.session(socket, handshake, &mut line)).await {
+        let started = Instant::now();
+        let outcome = match tokio::time::timeout(DEADLINE, self.session(socket, evicted, &mut line)).await {
             Ok(Ok((run, sequence))) => format!("attested {run} {sequence}"),
+            Ok(Err("dropped")) if started.elapsed() >= DEADLINE - DEADLINE_MARGIN => "refused deadline".to_string(),
             Ok(Err(reason)) => format!("refused {reason}"),
             Err(_) => "refused deadline".to_string(),
         };
@@ -152,10 +170,13 @@ impl Notary {
 
     /// One session, through the states of `design.md` §4. Nothing is signed before the server's
     /// name is verified and the sequence number is saved.
-    async fn session(&self, socket: TcpStream, handshake: OwnedSemaphorePermit, line: &mut Line) -> Result<(String, u64), Reason> {
+    async fn session(&self, socket: TcpStream, evicted: oneshot::Receiver<()>, line: &mut Line) -> Result<(String, u64), Reason> {
         // A peer that is not the enrolled key ends here, before the protocol starts.
-        let mut tls = self.acceptor.accept(socket).await.map_err(|_| "unenrolled")?;
-        drop(handshake);
+        let accepted = tokio::select! {
+            accepted = tokio::time::timeout(HANDSHAKE, self.acceptor.accept(socket)) => accepted,
+            _ = evicted => return Err("unenrolled"),
+        };
+        let mut tls = accepted.map_err(|_| "unenrolled")?.map_err(|_| "unenrolled")?;
         let _open = self.open.clone().try_acquire_owned().map_err(|_| "busy")?;
 
         let first = link::read_line(&mut tls, RELEASE.len() + 128).await.map_err(|_| "dropped")?;
@@ -172,25 +193,54 @@ impl Notary {
         let session = Session::new(tls.compat());
         let (driver, mut handle) = session.split();
         let mut driver = Aborting(tokio::spawn(driver));
-        let config = VerifierConfig::builder().root_store(self.roots.clone()).build().map_err(|_| "dropped")?;
-        let verifier = match handle.new_verifier(config).map_err(|_| "dropped")?.commit().await.map_err(|_| "dropped")? {
-            VerifierCommitStart::Mpc(verifier) => {
-                let asked = verifier.config();
-                if asked.max_sent_data() > MAX_SENT || asked.max_recv_data() > MAX_RECV {
-                    let _ = verifier.reject(Some("limits")).await;
-                    return Err("limits");
+        let ran: Result<_, Reason> = async {
+            let config = VerifierConfig::builder().root_store(self.roots.clone()).build().map_err(|_| "dropped")?;
+            let verifier = match handle.new_verifier(config).map_err(|_| "dropped")?.commit().await.map_err(|_| "dropped")? {
+                VerifierCommitStart::Mpc(verifier) => {
+                    let asked = verifier.config();
+                    if asked.max_sent_data() > MAX_SENT || asked.max_recv_data() > MAX_RECV {
+                        let _ = verifier.reject(Some("limits")).await;
+                        return Err("limits");
+                    }
+                    verifier.accept().await.map_err(|_| "dropped")?.run().await.map_err(|_| "dropped")?
                 }
-                verifier.accept().await.map_err(|_| "dropped")?.run().await.map_err(|_| "dropped")?
-            }
-            VerifierCommitStart::Proxy(verifier) => {
-                let _ = verifier.reject(Some("expecting MPC-TLS")).await;
-                return Err("dropped");
+                VerifierCommitStart::Proxy(verifier) => {
+                    let _ = verifier.reject(Some("expecting MPC-TLS")).await;
+                    return Err("dropped");
+                }
+            };
+            let (VerifierOutput { server_name, transcript_commitments, .. }, verifier) = match verifier.verify().await.map_err(|_| "dropped")?.accept().await {
+                Ok(accepted) => accepted,
+                Err(error) if error.is_io() => return Err("dropped"),
+                Err(_) => {
+                    // The certificate did not verify. The library has already said yes, so end its
+                    // protocol cleanly and keep the link until the operator leaves: a broken link
+                    // would read as an unreachable notary, and this is a refused provider.
+                    handle.close();
+                    if let Ok(Ok(mut socket)) = (&mut driver.0).await {
+                        let _ = link::read_bounded(&mut socket).await;
+                        let _ = futures::io::AsyncWriteExt::close(&mut socket).await;
+                    }
+                    return Err("server");
+                }
+            };
+            let tls_transcript = verifier.tls_transcript().clone();
+            verifier.close().await.map_err(|_| "dropped")?;
+            Ok((server_name, transcript_commitments, tls_transcript))
+        }
+        .await;
+        let (server_name, transcript_commitments, tls_transcript) = match ran {
+            Ok(ran) => ran,
+            Err(reason) => {
+                // When the operator's session with the provider fails, the operator is still
+                // deciding what to say. Keep the link until it leaves, or to the deadline, so the
+                // close does not read to it as a notary that went away.
+                if reason == "dropped" {
+                    let _ = (&mut driver.0).await;
+                }
+                return Err(reason);
             }
         };
-        let (VerifierOutput { server_name, transcript_commitments, .. }, verifier) =
-            verifier.verify().await.map_err(|_| "dropped")?.accept().await.map_err(|_| "server")?;
-        let tls_transcript = verifier.tls_transcript().clone();
-        verifier.close().await.map_err(|_| "dropped")?;
         let length = |records: &[tlsn::transcript::Record]| records.iter().filter(|r| matches!(r.typ, ContentType::ApplicationData)).map(|r| r.ciphertext.len()).sum::<usize>();
         let (sent, received) = (length(tls_transcript.sent()), length(tls_transcript.recv()));
         (line.sent, line.received) = (sent as u64, received as u64);
@@ -198,7 +248,7 @@ impl Notary {
 
         handle.close();
         let mut socket = (&mut driver.0).await.map_err(|_| "dropped")?.map_err(|_| "dropped")?;
-        let request = link::read_frame(&mut socket).await.map_err(|_| "dropped")?;
+        let request = link::read_bounded(&mut socket).await.map_err(|_| "dropped")?;
 
         let decided = if line.server.as_deref() != Some(self.approved.as_str()) {
             Err("server")
@@ -210,12 +260,12 @@ impl Notary {
         match decided {
             Ok((sequence, attestation)) => {
                 // The number is spent from here on, whether or not this reaches the operator.
-                link::write_frame(&mut socket, &[&[SIGNED], attestation.as_slice()].concat()).await.map_err(|_| "dropped")?;
+                futures::io::AsyncWriteExt::write_all(&mut socket, &attestation).await.map_err(|_| "dropped")?;
                 futures::io::AsyncWriteExt::close(&mut socket).await.map_err(|_| "dropped")?;
                 Ok((run, sequence))
             }
             Err(reason) => {
-                let _ = link::write_frame(&mut socket, &[REFUSED]).await;
+                // Closing with no attestation is the refusal.
                 let _ = futures::io::AsyncWriteExt::close(&mut socket).await;
                 Err(reason)
             }
@@ -298,9 +348,11 @@ fn arguments() -> Result<Start> {
 async fn run() -> Result<()> {
     let start = arguments()?;
     fs::DirBuilder::new().recursive(true).mode(0o700).create(&start.dir).context("cannot use the notary's directory")?;
-    let (key, signing_public) = signing_key(&start.dir.join("signing.key"))?;
+    // The sequences are made before the key, so a key never exists without them.
+    let signing = start.dir.join("signing.key");
+    let sequences = Sequences::load(start.dir.join("sequences"), signing.symlink_metadata().is_ok())?;
+    let (key, signing_public) = signing_key(&signing)?;
     let transport = Identity::make_or_load(&start.dir.join("transport.key"))?;
-    let sequences = Sequences::load(start.dir.join("sequences"))?;
     let mut roots = RootCertStore::mozilla();
     for file in &start.roots {
         roots.roots.push(CertificateDer(fs::read(file).map_err(|_| anyhow!("cannot read a trusted root"))?));
@@ -329,18 +381,23 @@ async fn run() -> Result<()> {
         lines: Mutex::new(lines),
         open: Arc::new(Semaphore::new(1)),
     });
-    let handshakes = Arc::new(Semaphore::new(HANDSHAKES));
+    let mut pending: VecDeque<oneshot::Sender<()>> = VecDeque::new();
     loop {
         let Ok((socket, _)) = listener.accept().await else { continue };
         // While a session is open, any other connection is closed at once.
-        let permit = if notary.open.available_permits() == 0 { None } else { handshakes.clone().try_acquire_owned().ok() };
-        let Some(permit) = permit else {
+        if notary.open.available_permits() == 0 {
             drop(socket);
             notary.write_line(&Line::default(), "refused busy");
             continue;
-        };
+        }
+        pending.retain(|handshake| !handshake.is_closed());
+        if pending.len() >= HANDSHAKES {
+            pending.pop_front();
+        }
+        let (evict, evicted) = oneshot::channel();
+        pending.push_back(evict);
         let _ = socket.set_nodelay(true);
-        tokio::spawn(notary.clone().serve(socket, permit));
+        tokio::spawn(notary.clone().serve(socket, evicted));
     }
 }
 
