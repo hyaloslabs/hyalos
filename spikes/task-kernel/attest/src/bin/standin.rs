@@ -9,6 +9,10 @@
 //! `--present` puts another name on the certificate. `--reply` sends the body plain or chunked.
 //! `--status` answers with that error status. `--quiet` reads the request and never answers.
 //! `--drop` reads the request and closes the connection with no reply.
+//!
+//! `standin other-release <directory> <operator's transport public key>` is a peer on the link
+//! that runs another release: it prints `transport <key>` and `listening <address>`, and answers
+//! every enrolled first message with `release`.
 
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
 use std::{io::Read, sync::Arc};
@@ -111,9 +115,43 @@ async fn serve(acceptor: TlsAcceptor, socket: tokio::net::TcpStream, controls: C
     Ok(())
 }
 
+async fn other_release(directory: &str, operator: &str) -> Result<(), Failure> {
+    let me = attest::link::Identity::make_or_load(&std::path::Path::new(directory).join("transport.key")).map_err(|_| "no transport key")?;
+    let acceptor = attest::link::acceptor(&me, operator).map_err(|_| "cannot set up the link")?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    println!("transport {}", me.public);
+    println!("listening {}", listener.local_addr()?);
+    stop_with_stdin();
+    loop {
+        let (socket, _) = listener.accept().await?;
+        let acceptor = acceptor.clone();
+        tokio::spawn(async move {
+            let Ok(mut tls) = acceptor.accept(socket).await else { return };
+            if attest::link::read_line(&mut tls, 256).await.is_ok() {
+                let _ = attest::link::write_line(&mut tls, "release").await;
+                let _ = tls.shutdown().await;
+            }
+        });
+    }
+}
+
+/// Ends this program when the test that started it ends.
+fn stop_with_stdin() {
+    std::thread::spawn(|| {
+        let _ = std::io::stdin().read_to_end(&mut Vec::new());
+        std::process::exit(0);
+    });
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Failure> {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("other-release") {
+        let (Some(directory), Some(operator)) = (args.get(2), args.get(3)) else {
+            return Err("usage: standin other-release <directory> <operator public key>".into());
+        };
+        return other_release(directory, operator).await;
+    }
     let (Some(root_file), Some(name)) = (args.get(1), args.get(2)) else {
         return Err("usage: standin <root file> <server name>".into());
     };
@@ -121,10 +159,7 @@ async fn main() -> Result<(), Failure> {
     let acceptor = acceptor(root_file, controls.present.as_deref().unwrap_or(name))?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     println!("listening {}", listener.local_addr()?);
-    std::thread::spawn(|| {
-        let _ = std::io::stdin().read_to_end(&mut Vec::new());
-        std::process::exit(0);
-    });
+    stop_with_stdin();
     loop {
         let (socket, _) = listener.accept().await?;
         let (acceptor, controls) = (acceptor.clone(), controls.clone());

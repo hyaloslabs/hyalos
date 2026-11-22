@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# The operator's run for Slice 3 (criteria 3.1 and 3.2). An executor never runs this: it reads the
+# operator's model credential, writes to the public log and posts one public issue comment.
+#
+#   bash attest/probes/two_machines.sh <ssh host> <owner/repo> <issue number>
+#
+# Run from spikes/task-kernel. It starts a notary on the other machine under keys kept there,
+# reached through an SSH tunnel, and stops it when this script ends.
+set -euo pipefail
+[ $# -eq 3 ] || { echo "usage: two_machines.sh <ssh host> <owner/repo> <issue number>"; exit 2; }
+host=$1 repo=$2 issue=$3
+port=7047 remote=.hyalos-notary out=out/two-machines
+attest=$PWD/attest/target/release/attest
+monitor=$PWD/target/release/task-kernel
+key=$HOME/.config/hyalos-spike/operator-transport.key
+[ -x "$attest" ] && [ -x "$monitor" ] && [ -x attest/target/release/notary ] || { echo "build both programs first"; exit 2; }
+[ ! -e "$out" ] || { echo "$out already exists: move it away first"; exit 2; }
+mkdir -p "$out"
+
+operator_public=$("$attest" link-key "$key")
+ssh "$host" "mkdir -p -m 700 $remote"
+scp -q attest/target/release/notary "$host:$remote/notary"
+
+coproc NOTARY { ssh -o ExitOnForwardFailure=yes -L "$port:127.0.0.1:$port" "$host" \
+    "$remote/notary --listen 127.0.0.1:$port --dir $remote/state --operator-transport-public $operator_public --stop-on-stdin-close"; }
+notary_pid=$NOTARY_PID
+trap 'kill "$notary_pid" 2>/dev/null || true' EXIT
+read -r -t 30 -u "${NOTARY[0]}" _ signer
+read -r -t 5 -u "${NOTARY[0]}" _ transport
+read -r -t 5 -u "${NOTARY[0]}" _ _listening
+echo "notary signing public key: $signer"
+
+export HYALOS_ATTEST=$attest HYALOS_NOTARY_ADDRESS=127.0.0.1:$port
+export HYALOS_NOTARY_TRANSPORT_PUBLIC=$transport HYALOS_NOTARY_SIGNER_PUBLIC=$signer
+export HYALOS_OPERATOR_TRANSPORT_KEY=$key
+
+# 3.2: the round trip, as the median of 20 TCP connection times to the other machine's SSH port.
+address=$(ssh -G "$host" | awk '$1=="hostname"{print $2}')
+ssh_port=$(ssh -G "$host" | awk '$1=="port"{print $2}')
+python3 -I - "$address" "$ssh_port" <<'PY'
+import socket, statistics, sys, time
+times = []
+for _ in range(20):
+    start = time.perf_counter()
+    socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=5).close()
+    times.append((time.perf_counter() - start) * 1000)
+print(f"round trip: median of 20 connections {statistics.median(times):.1f} ms")
+PY
+
+# 3.2: one attested call under a run of its own, so it spends no number of the real run.
+timing_run=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+printf 'The build fails on a clean checkout' > "$out/question.txt"
+/usr/bin/time -f 'one attested call: %e s wall, %M KB peak (operator side)' \
+    "$attest" ask "$out/timing.presentation" "$timing_run" 0 < "$out/question.txt" | sed 's/"response_id":"[^"]*"/"response_id":"…"/'
+
+# 3.1: one real task through the notary. This posts one comment on the issue named.
+"$monitor" live guest/digest.wasm fixtures/issues.tsv "$out/record.json" "$repo" "$issue"
+"$monitor" attested "$out/record.json" "$signer"
