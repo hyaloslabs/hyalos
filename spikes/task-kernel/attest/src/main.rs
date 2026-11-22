@@ -326,9 +326,16 @@ async fn run() -> Result<ExitCode> {
             ensure!(!(trust.test && credential.starts_with("sk-ant-")), "refusing to send a real credential under test trust settings");
             // Refused before anything is sent: verify would refuse the presentation anyway.
             pinned_credential(&credential)?;
+            // For the test of an operator who tells the notary another run. It is no door: a forger
+            // can change this program the same way, and the audit refuses what comes out.
+            let told = match env::var("HYALOS_TEST_TOLD_RUN") {
+                Ok(run) => run,
+                Err(env::VarError::NotPresent) => intent.clone(),
+                Err(env::VarError::NotUnicode(_)) => bail!("the run to tell the notary is not text"),
+            };
             let started = Instant::now();
             let broke = Arc::new(AtomicBool::new(false));
-            let call = tokio::time::timeout(DEADLINE, ask(&title, &binding, intent, &trust, &credential, &notary, &broke)).await;
+            let call = tokio::time::timeout(DEADLINE, ask(&title, &binding, &told, &trust, &credential, &notary, &broke)).await;
             let checked = match call {
                 Err(_) => Err(Word::Deadline),
                 Ok(Err(error)) => Err(word_for(&error, started, &broke)),

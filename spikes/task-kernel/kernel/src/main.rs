@@ -513,33 +513,99 @@ fn attested_report(answers: usize, test_settings: bool) -> String {
     format!("{mark}attested: {answers} of {answers} model answers match what the notary saw\n{HIDDEN_BYTES_LIMIT}")
 }
 
-/// Checks that every model answer in a record is the one a notary saw the provider's server give
-/// to that exact question. It needs no network and no credential, only the notary key to trust.
-fn attested(t: &Transcript, record: &str, notary: &str) -> Result<String, String> {
-    let tool = env::var("HYALOS_ATTEST").map_err(|_| "set HYALOS_ATTEST to the attestation tool")?;
-    // Set when any answer was verified under trust settings that are not the real provider's.
-    let mut test_settings = false;
+/// The settings that point verify at a stand-in. They are the only part of this process's
+/// environment it is given, so it reads no home directory and no credential.
+const TRUST_SETTINGS: [&str; 3] = ["HYALOS_TRUST_SERVER_NAME", "HYALOS_TRUST_ROOT", "HYALOS_TRUST_PROVIDER_ADDRESS"];
+
+/// The verify program the auditor built, and the trust settings it runs under.
+struct Verifier {
+    program: String,
+    trust: Vec<(String, std::ffi::OsString)>,
+}
+
+impl Verifier {
+    fn from_env(program: &str) -> Self {
+        let trust = TRUST_SETTINGS.iter().filter_map(|name| Some((name.to_string(), env::var_os(name)?))).collect();
+        Self { program: program.to_string(), trust }
+    }
+}
+
+/// Holds one answer to what its attestation says. `window` is the run's two signed times, when a
+/// chain was checked. Each refusal names its own check.
+fn check_answer(seen: &serde_json::Value, answer: &Answer, index: usize, run: &str, window: Option<(u64, u64)>) -> Result<(), String> {
+    let fail = |what: &str| Err(format!("answer {index}: {what}"));
+    let position = index as u64;
+    if seen["intent_hash"] != run {
+        return fail("the binding names another run");
+    }
+    if seen["position"].as_u64() != Some(position) {
+        return fail("the binding names another position");
+    }
+    if seen["run"] != run {
+        return fail("the notary was told another run");
+    }
+    if seen["sequence"].as_u64() != Some(position) {
+        return fail("the sequence number is not the answer's position, so an attestation is unaccounted for");
+    }
+    if let Some((intent_time, result_time)) = window {
+        let Some(time) = seen["time"].as_u64() else { return fail("the session has no time") };
+        // Whole seconds cannot order a session inside the intent's own second, so it is refused (ADR-008).
+        if time <= intent_time {
+            return fail("the session is not later than the run's intent");
+        }
+        if time > result_time {
+            return fail("the session is later than the run's result");
+        }
+    }
+    let same = seen["question_sha256"] == answer.question_sha256.as_str()
+        && seen["label"] == answer.label
+        && seen["model"] == answer.model.as_str()
+        && seen["response_id"] == answer.response_id.as_str();
+    if !same {
+        return fail("the notary saw a different question or answer than the record claims");
+    }
+    Ok(())
+}
+
+/// What the per-answer checks found.
+struct Witnessed {
+    lines: Vec<String>,
+    test_settings: bool,
+}
+
+/// Checks that every model answer in a record is the one the trusted notary saw the provider's
+/// server give, for this run and position. It needs no network and no credential. With `chain`,
+/// the run and its window come from the verified log. Without it, every answer must name one run.
+fn witnessed(t: &Transcript, record: &str, notary: &str, verifier: &Verifier, chain: Option<(&str, (u64, u64))>) -> Result<Witnessed, String> {
+    if t.answers.is_empty() {
+        return Err("this record has no attested answers".into());
+    }
+    let mut run = chain.map(|(intent, _)| intent.to_string());
+    let (mut lines, mut test_settings) = (Vec::new(), false);
     for (index, answer) in t.answers.iter().enumerate() {
         let file = format!("{record}.attest/{index:03}.presentation");
         let bytes = fs::read(&file).map_err(|_| format!("answer {index}: no attestation"))?;
         if answer.attestation.is_empty() || sha(&bytes) != answer.attestation {
             return Err(format!("answer {index}: the attestation is not the one the record names"));
         }
-        let output = std::process::Command::new(&tool).args(["verify", &file, notary]).output().map_err(|_| "cannot run the attestation tool")?;
+        let output = std::process::Command::new(&verifier.program)
+            .args(["verify", &file, notary])
+            .env_clear()
+            .envs(verifier.trust.iter().map(|(name, value)| (name, value)))
+            .output()
+            .map_err(|_| "cannot run the verify program")?;
         if !output.status.success() {
-            return Err(format!("answer {index}: the attestation does not verify"));
+            // Only compared, never shown: the program's text stays out of the report.
+            let untrusted = String::from_utf8_lossy(&output.stderr).contains("not the trusted one");
+            return Err(format!("answer {index}: {}", if untrusted { "not attested by the trusted notary" } else { "the attestation does not verify" }));
         }
         let seen: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|_| "cannot read the verdict")?;
-        let same = seen["question_sha256"] == answer.question_sha256.as_str()
-            && seen["label"] == answer.label
-            && seen["model"] == answer.model.as_str()
-            && seen["response_id"] == answer.response_id.as_str();
-        if !same {
-            return Err(format!("answer {index}: the notary saw a different question or answer than the record claims"));
-        }
+        let named = run.get_or_insert_with(|| seen["intent_hash"].as_str().unwrap_or_default().to_string());
+        check_answer(&seen, answer, index, named, chain.map(|(_, window)| window))?;
         test_settings |= !seen["trust"].is_null();
+        lines.push(format!("answer {index}: run {named} position {index} sequence {index} session {}", seen["time"]));
     }
-    Ok(attested_report(t.answers.len(), test_settings))
+    Ok(Witnessed { lines, test_settings })
 }
 
 /// One declared run: its intent link, its execution, and a result link that says how it ended.
@@ -552,13 +618,14 @@ fn declared_run(
     mut mode: Mode,
     salt: &str,
     record: &str,
+    signed_time: &dyn Fn(usize) -> Option<u64>,
 ) -> Result<(Result<Transcript, Reason>, usize), String> {
     let task = task_of(&sha(guest), &inputs);
     let intent = serde_json::json!({"v": 1, "kind": "intent", "task": task, "guest_sha256": sha(guest)});
-    let (_, intent_hash) = append(intent).map_err(|r| format!("{r:?}"))?;
+    let (intent_seq, intent_hash) = append(intent).map_err(|r| format!("{r:?}"))?;
     // The run is declared. From here every attested call names it.
     if let Mode::Live(live) = &mut mode {
-        live.bind(&intent_hash);
+        live.bind(&intent_hash, signed_time(intent_seq));
     }
     // With no notary the guest does not start, so a task that asks nothing cannot act either.
     let no_notary = matches!(&mode, Mode::Live(live) if !live.has_notary());
@@ -590,26 +657,44 @@ fn write_synced(path: &str, bytes: &[u8]) -> Result<(), String> {
     file.sync_all().map_err(|_| "cannot write".to_string())
 }
 
-/// The audit's inputs: `[ledger dir] --operator-public <file> --notary-public <file>`. The notary's
-/// key is required now, and read from Slice 5 on.
-fn audit_inputs(rest: &[String]) -> Result<(String, String), String> {
-    let (mut dir, mut operator, mut notary) = (None, None, None);
+/// What `audit` and `attested` are given on the command line.
+struct AuditInputs {
+    dir: Option<String>,
+    operator: Option<String>,
+    /// The trusted notary's signing key, as verify takes it.
+    notary: String,
+    verify: String,
+}
+
+/// `[ledger dir] [--operator-public <file>] --notary-public <file> --verify <program>`. There is no
+/// setting that skips the attestations: without a trusted notary key the audit does not start.
+fn audit_inputs(rest: &[String]) -> Result<AuditInputs, String> {
+    let (mut dir, mut operator, mut notary, mut verify) = (None, None, None, None);
     let mut words = rest.iter();
     while let Some(word) = words.next() {
         match word.as_str() {
             "--operator-public" => operator = words.next(),
             "--notary-public" => notary = words.next(),
+            "--verify" => verify = words.next(),
             flag if flag.starts_with("--") => return Err("unknown audit option".into()),
             _ if dir.is_none() => dir = Some(word),
             _ => return Err("too many audit arguments".into()),
         }
     }
-    let operator = operator.ok_or("the operator's public key is not given: --operator-public <file>")?;
     let notary = notary.ok_or("the notary's public key is not given: --notary-public <file>")?;
-    if !fs::metadata(notary).is_ok_and(|m| m.is_file()) {
-        return Err("the notary's public key is not a file".into());
+    let verify = verify.ok_or("the verify program is not given: --verify <program you built>")?;
+    if !fs::metadata(verify).is_ok_and(|m| m.is_file()) {
+        return Err("the verify program is not a file".into());
     }
-    Ok((dir.map_or_else(|| "ledger".to_string(), String::clone), operator.clone()))
+    Ok(AuditInputs { dir: dir.cloned(), operator: operator.cloned(), notary: notary_key(notary)?, verify: verify.clone() })
+}
+
+/// The notary's signing key from its file: one compressed P-256 point in lowercase hex.
+fn notary_key(file: &str) -> Result<String, String> {
+    let text = fs::read_to_string(file).map_err(|_| "the notary's public key is not a readable file")?;
+    let key = text.trim();
+    let hex_key = key.len() == 66 && key.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    if hex_key && (key.starts_with("02") || key.starts_with("03")) { Ok(key.to_string()) } else { Err("the notary's public key is not a signing public key".into()) }
 }
 
 /// The test trust setting for the log: a directory of stored replies and the key that signed them.
@@ -621,9 +706,21 @@ fn stand_in_log() -> Result<Option<(String, String)>, String> {
     }
 }
 
-/// What a passing audit proved, then what it did not. `answers` is the attestation step's report,
-/// when it ran.
-fn audit_report(audited: &ledger::Audited, answers: Option<&str>) -> String {
+/// The whole audit of one record. Everything is checked before anything is reported, so a failure
+/// states no proof.
+fn audit_record(record: &str, inputs: &AuditInputs, stand_in: Option<(String, String)>, verifier: &Verifier) -> Result<String, String> {
+    let t: Transcript = serde_json::from_slice(&fs::read(record).map_err(|_| "cannot read")?).map_err(|_| "cannot parse")?;
+    let salt = fs::read(format!("{record}.salt")).map_err(|_| "no salt for this record")?;
+    let commitment = sha([salt.as_slice(), &serde_json::to_vec(&t).map_err(|_| "encode")?].concat().as_slice());
+    let operator = inputs.operator.as_deref().ok_or("the operator's public key is not given: --operator-public <file>")?;
+    let dir = inputs.dir.as_deref().unwrap_or("ledger");
+    let audited = ledger::Auditor::new(dir, operator, stand_in)?.audit(&claim_of(&t, commitment)?)?;
+    let answers = witnessed(&t, record, &inputs.notary, verifier, Some((&audited.intent, audited.window)))?;
+    Ok(audit_report(&audited, answers.lines.len(), answers.test_settings))
+}
+
+/// What a passing audit proved, then what it did not.
+fn audit_report(audited: &ledger::Audited, answers: usize, test_settings: bool) -> String {
     let log = if audited.stand_in { "stand-in log" } else { "public log" };
     let mut lines = vec!["audit passed".to_string()];
     if audited.stand_in {
@@ -636,10 +733,10 @@ fn audit_report(audited: &ledger::Audited, answers: Option<&str>) -> String {
     let times = if audited.runs == 1 { "time" } else { "times" };
     lines.push(format!("the task was run {} {times}, as the intent links name the task", audited.runs));
     lines.push(format!("the chain holds {} run(s) of any task under this key", audited.all_runs));
-    match answers {
-        Some(report) => lines.push(report.strip_suffix(HIDDEN_BYTES_LIMIT).unwrap_or(report).trim_end().to_string()),
-        None => lines.push("not checked: the answers' attestations".to_string()),
+    if test_settings {
+        lines.push("test trust settings: the provider here is a stand-in".to_string());
     }
+    lines.push(format!("proven: all {answers} answers were attested by the trusted notary for this run and position, inside the run's window, each with a sequence number equal to its position"));
     lines.push("not proven: the notary's independence is the customer's own".to_string());
     lines.push("not proven: the model's name is the provider's claim".to_string());
     lines.push("not proven: the answer's correctness is not judged".to_string());
@@ -718,7 +815,7 @@ fn main_inner() -> Result<bool, String> {
                 .and_then(|mut device| std::io::Read::read_exact(&mut device, &mut salt))
                 .map_err(|_| "no randomness")?;
             let salt = hex(&salt);
-            let (outcome, seq) = declared_run(&mut |link| ledger.append(link), &backend, &guest, inputs, mode, &salt, arg(4)?)?;
+            let (outcome, seq) = declared_run(&mut |link| ledger.append(link), &backend, &guest, inputs, mode, &salt, arg(4)?, &|seq| ledger.signed_time(seq))?;
             let stamped = ledger.timestamp(seq).is_some();
             let t = outcome.map_err(|r| format!("{r:?}"))?;
             println!("committed: link {seq} in the public log, Bitcoin timestamp requested: {stamped}");
@@ -730,23 +827,20 @@ fn main_inner() -> Result<bool, String> {
             Ok(true)
         }
         "audit" => {
-            let t: Transcript = serde_json::from_slice(&fs::read(arg(2)?).map_err(|_| "cannot read")?).map_err(|_| "cannot parse")?;
-            let salt = fs::read(format!("{}.salt", arg(2)?)).map_err(|_| "no salt for this record")?;
-            let commitment = sha([salt.as_slice(), &serde_json::to_vec(&t).map_err(|_| "encode")?].concat().as_slice());
-            let (dir, operator) = audit_inputs(&args[3..])?;
-            let auditor = ledger::Auditor::new(&dir, &operator, stand_in_log()?)?;
-            let audited = auditor.audit(&claim_of(&t, commitment)?)?;
-            // Everything is checked before anything is printed, so a failure states no proof.
-            let answers = match env::var("HYALOS_NOTARY") {
-                Ok(notary) => Some(attested(&t, arg(2)?, &notary)?),
-                Err(_) => None,
-            };
-            println!("{}", audit_report(&audited, answers.as_deref()));
+            let inputs = audit_inputs(&args[3..])?;
+            println!("{}", audit_record(arg(2)?, &inputs, stand_in_log()?, &Verifier::from_env(&inputs.verify))?);
             Ok(true)
         }
         "attested" => {
+            let inputs = audit_inputs(&args[3..])?;
+            if inputs.dir.is_some() || inputs.operator.is_some() {
+                return Err("attested takes no ledger: --notary-public <file> --verify <program>".into());
+            }
             let t: Transcript = serde_json::from_slice(&fs::read(arg(2)?).map_err(|_| "cannot read")?).map_err(|_| "cannot parse")?;
-            println!("{}", attested(&t, arg(2)?, arg(3)?)?);
+            let answers = witnessed(&t, arg(2)?, &inputs.notary, &Verifier::from_env(&inputs.verify), None)?;
+            println!("{}", answers.lines.join("\n"));
+            println!("not checked here: the run's links and its window. The audit checks them");
+            println!("{}", attested_report(answers.lines.len(), answers.test_settings));
             Ok(true)
         }
         "forge" => {

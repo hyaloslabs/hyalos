@@ -90,6 +90,13 @@ impl Ledger {
         Ok((seq, sha(&bytes)))
     }
 
+    /// The time the log's stored reply gives for a link. The monitor uses it only to know how long
+    /// to wait. The audit verifies every signed time itself.
+    pub(crate) fn signed_time(&self, seq: usize) -> Option<u64> {
+        let reply: Value = serde_json::from_slice(&fs::read(self.dir.join(format!("{seq:05}.rekor.json"))).ok()?).ok()?;
+        reply.as_object().filter(|o| o.len() == 1)?.values().next()?["integratedTime"].as_u64()
+    }
+
     /// Asks a Bitcoin timestamp calendar to anchor a link's hash. The proof is pending until the
     /// calendar's next Bitcoin transaction confirms, so it is kept, not verified, here.
     pub(crate) fn timestamp(&self, seq: usize) -> Option<()> {
@@ -194,6 +201,10 @@ pub(crate) struct Audited {
     /// but cannot leave it out of this number.
     pub(crate) all_runs: usize,
     pub(crate) stand_in: bool,
+    /// The hash of this record's intent link: the run every answer must name.
+    pub(crate) intent: String,
+    /// The times the log signed for this run's intent link and result link.
+    pub(crate) window: (u64, u64),
 }
 
 /// What a record says about itself, recomputed from the record: its commitment, its task and its
@@ -230,8 +241,9 @@ impl Auditor {
         Ok(Self { dir: PathBuf::from(dir), operator, log_key, log })
     }
 
-    /// Verifies one stored reply against its link, from the reply and the keys alone.
-    fn check_entry(&self, scratch: &Scratch, seq: usize, link: &[u8]) -> Result<(), String> {
+    /// Verifies one stored reply against its link, from the reply and the keys alone, and gives
+    /// the time the log signed for it.
+    fn check_entry(&self, scratch: &Scratch, seq: usize, link: &[u8]) -> Result<u64, String> {
         let fail = |what: &str| format!("link {seq}: {what}");
         let bytes = fs::read(self.dir.join(format!("{seq:05}.rekor.json"))).map_err(|_| fail("no stored log reply"))?;
         let reply: Value = serde_json::from_slice(&bytes).map_err(|_| fail("the stored log reply is unreadable"))?;
@@ -297,7 +309,7 @@ impl Auditor {
         if !signature.is_some_and(|s| scratch.verifies(&self.operator, &s, link)) {
             return Err(fail("the link's signature does not verify"));
         }
-        Ok(())
+        entry["integratedTime"].as_u64().ok_or_else(|| fail("the signed time does not verify"))
     }
 
     /// The hashes the log lists under the operator's key, in the log's order.
@@ -349,8 +361,9 @@ impl Auditor {
     pub(crate) fn audit(&self, claim: &Claim) -> Result<Audited, String> {
         let links = read_links(&self.dir);
         let scratch = Scratch::new().ok_or("no private temporary directory for the signature checks")?;
+        let mut times = Vec::with_capacity(links.len());
         for (seq, link) in links.iter().enumerate() {
-            self.check_entry(&scratch, seq, link)?;
+            times.push(self.check_entry(&scratch, seq, link)?);
         }
         let parsed: Vec<Value> = links.iter().map(|l| serde_json::from_slice(l).unwrap_or_default()).collect();
         for (seq, link) in parsed.iter().enumerate() {
@@ -401,12 +414,16 @@ impl Auditor {
             return Err(format!("link {intent}: the intent names another task than this record's"));
         }
         let same_task = |l: &&Value| l["kind"] == "intent" && l["task"] == parsed[intent]["task"];
+        let at = result["seq"].as_u64().ok_or("the chain is unreadable")?;
+        let result_time = *usize::try_from(at).ok().and_then(|at| times.get(at)).ok_or("the chain is unreadable")?;
         Ok(Audited {
-            link: result["seq"].as_u64().ok_or("the chain is unreadable")?,
+            link: at,
             links: links.len(),
             runs: parsed.iter().filter(same_task).count(),
             all_runs: intents.len(),
             stand_in: matches!(self.log, Log::StandIn(_)),
+            intent: sha(&links[intent]),
+            window: (times[intent], result_time),
         })
     }
 }
@@ -414,3 +431,7 @@ impl Auditor {
 #[cfg(test)]
 #[path = "audit_tests.rs"]
 mod audit_tests;
+
+#[cfg(test)]
+#[path = "forgery_tests.rs"]
+mod forgery_tests;
