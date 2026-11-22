@@ -558,18 +558,40 @@ fn declared_run(
     if let Mode::Live(live) = &mut mode {
         live.bind(&intent_hash);
     }
-    let outcome = execute(backend, guest, inputs, mode);
+    // With no notary the guest does not start, so a task that asks nothing cannot act either.
+    let no_notary = matches!(&mode, Mode::Live(live) if !live.has_notary());
+    let outcome = if no_notary { Err(Reason::NotaryUnreachable) } else { execute(backend, guest, inputs, mode) };
     let (state, commitment) = match &outcome {
         Ok(t) => ("ok".to_string(), sha([salt.as_bytes(), &serde_json::to_vec(t).map_err(|_| "encode")?].concat().as_slice())),
         Err(reason) => (format!("refused:{reason:?}"), String::new()),
     };
     let result = serde_json::json!({"v": 1, "kind": "result", "intent": intent_hash, "outcome": state, "transcript": commitment});
-    let (seq, _) = append(result).map_err(|r| format!("{r:?}"))?;
+    // The record and salt are on disk before the public log commits to them, and take their
+    // names only after it has.
+    let (pending_record, pending_salt) = (format!("{record}.pending"), format!("{record}.salt.pending"));
     if let Ok(t) = &outcome {
-        fs::write(record, serde_json::to_vec_pretty(t).map_err(|_| "encode")?).map_err(|_| "cannot write")?;
-        fs::write(format!("{record}.salt"), salt).map_err(|_| "cannot write")?;
+        write_synced(&pending_record, &serde_json::to_vec_pretty(t).map_err(|_| "encode")?)?;
+        write_synced(&pending_salt, salt.as_bytes())?;
+    }
+    let (seq, _) = match append(result) {
+        Ok(link) => link,
+        Err(reason) => {
+            let _ = fs::remove_file(&pending_record);
+            let _ = fs::remove_file(&pending_salt);
+            return Err(format!("{reason:?}"));
+        }
+    };
+    if outcome.is_ok() {
+        fs::rename(&pending_record, record).map_err(|_| "cannot write")?;
+        fs::rename(&pending_salt, format!("{record}.salt")).map_err(|_| "cannot write")?;
     }
     Ok((outcome, seq))
+}
+
+fn write_synced(path: &str, bytes: &[u8]) -> Result<(), String> {
+    let mut file = fs::File::create(path).map_err(|_| "cannot write")?;
+    std::io::Write::write_all(&mut file, bytes).map_err(|_| "cannot write")?;
+    file.sync_all().map_err(|_| "cannot write".to_string())
 }
 
 fn main_inner() -> Result<bool, String> {
@@ -601,12 +623,18 @@ fn main_inner() -> Result<bool, String> {
             let mode = if arg(5)? == "stub" {
                 Mode::Record { seed: issue }
             } else {
+                // A second run on one path would overwrite the first run's presentations.
+                if !live::record_is_fresh(arg(4)?) {
+                    return Err("the record path is already in use".into());
+                }
                 // Every model call goes through the customer's notary, and its presentation is
                 // kept beside the record. With no notary configured, the run is refused.
                 Mode::Live(live::Live::new(arg(5)?, issue, live::Attest::from_env(arg(4)?)).ok_or("bad repository name")?)
             };
+            // Room for every call to take its whole 35-second limit.
+            let limit = Duration::from_secs(600u64.max(inputs.len() as u64 * 35 + 60));
             let backend = match backend {
-                Backend::Kvm { kernel, .. } => Backend::Kvm { kernel, limit: Duration::from_secs(600) },
+                Backend::Kvm { kernel, .. } => Backend::Kvm { kernel, limit },
                 other => other,
             };
             // Commit to the run before it happens, and to its outcome after, in the public chain.

@@ -222,8 +222,9 @@ fn t_3_3_with_no_notary_configured_the_run_is_refused() {
 }
 
 #[test]
-fn t_3_3_the_monitor_has_no_way_to_the_provider_and_never_holds_the_credential() {
-    for (file, text) in [("live.rs", include_str!("live.rs")), ("main.rs", include_str!("main.rs"))] {
+fn t_3_3_no_monitor_source_file_names_the_provider_or_the_credential_file() {
+    let sources = [("live.rs", include_str!("live.rs")), ("main.rs", include_str!("main.rs")), ("kvm.rs", include_str!("kvm.rs")), ("ledger.rs", include_str!("ledger.rs"))];
+    for (file, text) in sources {
         for banned in ["anthropic.key", "api.anthropic.com", "x-api-key", "credential:"] {
             assert!(!text.contains(banned), "{file} names {banned}");
         }
@@ -268,4 +269,52 @@ fn t_3_a_tool_still_running_at_35_seconds_is_ended() {
     rig.assert_refused(Some(script(&rig, "exec sleep 120")), Reason::ModelUnavailable);
     let took = started.elapsed();
     assert!(took >= Duration::from_secs(35) && took < Duration::from_secs(40), "{took:?}");
+}
+
+#[test]
+fn t_3_3_with_no_notary_a_task_that_asks_nothing_does_not_run() {
+    let rig = Rig::new("t-3-3-silent");
+    let guest = fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest/digest.wasm")).unwrap();
+    let mode = Mode::Live(Live::new("test.invalid/none", 0, None).unwrap());
+    let mut links = Vec::new();
+    let mut append = |link: serde_json::Value| {
+        let hash = sha(link.to_string().as_bytes());
+        links.push(link);
+        Ok((links.len() - 1, hash))
+    };
+    let (outcome, _) = declared_run(&mut append, &Backend::Process, &guest, Vec::new(), mode, "salt", rig.record().to_str().unwrap()).unwrap();
+    assert_eq!(outcome.err(), Some(Reason::NotaryUnreachable));
+    assert_eq!(links[1]["outcome"], "refused:NotaryUnreachable");
+    assert!(!rig.record().exists());
+}
+
+#[test]
+fn t_3_a_descendant_holding_the_output_is_ended_at_the_limit() {
+    let rig = Rig::new("t-3-descendant");
+    let holder = rig.dir.join("holder");
+    let started = Instant::now();
+    let body = format!("cat >/dev/null; sleep 300 & echo $! > '{}'; exit 1", holder.display());
+    rig.assert_refused(Some(script(&rig, &body)), Reason::ModelUnavailable);
+    let took = started.elapsed();
+    assert!(took >= Duration::from_secs(35) && took < Duration::from_secs(40), "{took:?}");
+    let pid = fs::read_to_string(&holder).unwrap();
+    let stat = format!("/proc/{}/stat", pid.trim());
+    let gone = (0..100).any(|_| {
+        std::thread::sleep(Duration::from_millis(20));
+        fs::read_to_string(&stat).map_or(true, |text| text.rsplit(')').next().is_some_and(|rest| rest.trim_start().starts_with('Z')))
+    });
+    assert!(gone, "the descendant is still running");
+}
+
+#[test]
+fn t_3_a_record_path_in_use_is_not_fresh() {
+    let rig = Rig::new("t-3-fresh");
+    let record = rig.record();
+    let record = record.to_str().unwrap();
+    assert!(crate::live::record_is_fresh(record));
+    for used in [record.to_string(), format!("{record}.salt"), format!("{record}.attest")] {
+        fs::write(&used, b"").unwrap();
+        assert!(!crate::live::record_is_fresh(record), "{used}");
+        fs::remove_file(&used).unwrap();
+    }
 }

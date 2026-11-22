@@ -7,7 +7,9 @@ use serde_json::Value;
 use std::{
     env, fs,
     io::{Read, Write},
+    os::unix::process::CommandExt,
     process::{Command, Stdio},
+    sync::mpsc,
     time::{Duration, Instant},
 };
 
@@ -63,20 +65,30 @@ fn refusal(said: &[u8]) -> Reason {
     }
 }
 
-/// Runs the tool on one question. `Err` when it could not be run or outlived its limit.
+/// Ends the tool and anything it started. The tool leads its own process group.
+fn end_group(pid: u32) {
+    // SAFETY: `kill` takes no pointers, and a negative id names only the tool's own group.
+    unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+}
+
+/// Runs the tool on one question. `Err` when it could not be run, or when it or anything it
+/// started still holds its output at the limit.
 fn run_tool(mut command: Command, question: &[u8]) -> Result<(bool, Vec<u8>), Reason> {
     let no = |_| Reason::ModelUnavailable;
-    let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(no)?;
+    let mut child = command.process_group(0).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(no)?;
+    let pid = child.id();
     let written = child.stdin.take().ok_or(Reason::ModelUnavailable).and_then(|mut stdin| stdin.write_all(question).map_err(no));
     let stdout = child.stdout.take().ok_or(Reason::ModelUnavailable);
     let (Ok(()), Ok(stdout)) = (written, stdout) else {
-        let _ = child.kill();
+        end_group(pid);
         let _ = child.wait();
         return Err(Reason::ModelUnavailable);
     };
-    let reader = std::thread::spawn(move || {
+    let (send, receive) = mpsc::channel();
+    std::thread::spawn(move || {
         let mut said = Vec::new();
-        stdout.take(MAX_SAID).read_to_end(&mut said).map(|_| said)
+        let read = stdout.take(MAX_SAID).read_to_end(&mut said).map(|_| said);
+        let _ = send.send(read);
     });
     let started = Instant::now();
     let status = loop {
@@ -84,20 +96,39 @@ fn run_tool(mut command: Command, question: &[u8]) -> Result<(bool, Vec<u8>), Re
             Ok(Some(status)) => break status,
             Ok(None) if started.elapsed() < TOOL_LIMIT => std::thread::sleep(Duration::from_millis(20)),
             _ => {
-                let _ = child.kill();
+                end_group(pid);
                 let _ = child.wait();
                 return Err(Reason::ModelUnavailable);
             }
         }
     };
-    let said = reader.join().map_err(|_| Reason::ModelUnavailable)?.map_err(no)?;
-    Ok((status.success(), said))
+    match receive.recv_timeout(TOOL_LIMIT.saturating_sub(started.elapsed())) {
+        Ok(Ok(said)) => Ok((status.success(), said)),
+        Ok(Err(_)) => Err(Reason::ModelUnavailable),
+        Err(_) => {
+            // Something the tool started still holds the pipe, so the group, and its id, still exist.
+            end_group(pid);
+            Err(Reason::ModelUnavailable)
+        }
+    }
+}
+
+/// True when nothing of an earlier run is at this record path, so this run cannot overwrite it.
+pub(crate) fn record_is_fresh(record: &str) -> bool {
+    [record.to_string(), format!("{record}.salt"), format!("{record}.attest")]
+        .iter()
+        .all(|path| matches!(fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound))
 }
 
 impl Live {
     pub(crate) fn new(repo: &str, issue: u64, attest: Option<Attest>) -> Option<Self> {
         let repo_ok = repo.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b));
         repo_ok.then(|| Self { repo: repo.to_string(), issue, attest, asked: 0, intent: String::new() })
+    }
+
+    /// False when no notary is configured, and so the run must not start.
+    pub(crate) fn has_notary(&self) -> bool {
+        self.attest.is_some()
     }
 
     /// Names the run every later attested call is made for.
@@ -110,7 +141,9 @@ impl Live {
     pub(crate) fn infer(&mut self, question: &[u8]) -> Result<(i32, String, String, String), Reason> {
         std::str::from_utf8(question).map_err(|_| Reason::ModelRefused)?;
         let attest = self.attest.as_ref().ok_or(Reason::NotaryUnreachable)?;
-        fs::create_dir_all(&attest.dir).map_err(|_| Reason::ModelUnavailable)?;
+        if self.asked == 0 {
+            fs::create_dir(&attest.dir).map_err(|_| Reason::ModelUnavailable)?;
+        }
         let position = self.asked.to_string();
         let file = format!("{}/{:03}.presentation", attest.dir, self.asked);
         self.asked += 1;

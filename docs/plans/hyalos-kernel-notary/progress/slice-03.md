@@ -23,7 +23,7 @@ Checked at `435ab67`. `context.md`'s line numbers have moved since `3ef845b`, so
 
 ## Acceptance
 
-From `spikes/task-kernel`: the monitor's tests passed 12 of 12, the attestation crate's 48 of 48, and `attacks` printed 51 `PASS` and no `FAIL`. No test contacts the real provider or the public log.
+From `spikes/task-kernel`: the monitor's tests passed 15 of 15, the attestation crate's 48 of 48, and `attacks` printed 51 `PASS` and no `FAIL`. No test contacts the real provider or the public log.
 
 | ID | Shown by |
 |---|---|
@@ -34,9 +34,9 @@ From `spikes/task-kernel`: the monitor's tests passed 12 of 12, the attestation 
 | S-02.4, S-02.4.e1 | `s_02_4_e1_a_notary_on_another_release_is_refused_at_the_start` |
 | 3.1 | The operator's run below: 40 of 40 answers verify under that notary's key |
 | 3.2 | The operator's run below: 7.42 s for one call, at a 2.9 ms round trip |
-| 3.3 | `t_3_3_with_no_notary_configured_the_run_is_refused`, `t_3_3_the_monitor_has_no_way_to_the_provider_and_never_holds_the_credential` |
+| 3.3 | `t_3_3_with_no_notary_configured_the_run_is_refused`, `t_3_3_with_no_notary_a_task_that_asks_nothing_does_not_run`, `t_3_3_no_monitor_source_file_names_the_provider_or_the_credential_file` |
 
-Also: `t_3_a_provider_error_is_its_own_reason`, `t_3_a_word_outside_the_set_is_the_reason_for_a_failed_tool`, `t_3_an_answer_with_no_presentation_is_refused`, `t_3_a_tool_still_running_at_35_seconds_is_ended`.
+Also: `t_3_a_provider_error_is_its_own_reason`, `t_3_a_word_outside_the_set_is_the_reason_for_a_failed_tool`, `t_3_an_answer_with_no_presentation_is_refused`, `t_3_a_tool_still_running_at_35_seconds_is_ended`, `t_3_a_descendant_holding_the_output_is_ended_at_the_limit`, `t_3_a_record_path_in_use_is_not_fresh`.
 
 ### The operator's run (2026-11-21)
 
@@ -59,6 +59,8 @@ not proven: the request's hidden bytes are not shown, so the call may have used 
 
 The executor then ran `attest verify` on all 40 presentations under the real trust settings, with no credential. Each names `api.anthropic.com`, the run `3c687c7c…8c65` (the SHA-256 of `ledger/00004.json`), and a sequence number equal to its position, 0 to 39. The record, its salt and its presentations are in `spikes/task-kernel/out/two-machines/`.
 
+The run was made at `e9ef572`. The review fixes after it change how a refused run ends and where the record is written, not the attested call.
+
 The stop conditions did not trigger: the real run passed where the stand-in passed, and 7.42 s is under the 10-second target.
 
 ## Deviations
@@ -70,10 +72,11 @@ The stop conditions did not trigger: the real run passed where the stand-in pass
 
 ## Decisions
 
-- **The monitor's settings:** `HYALOS_ATTEST`, `HYALOS_NOTARY_ADDRESS`, `HYALOS_NOTARY_TRANSPORT_PUBLIC`, `HYALOS_NOTARY_SIGNER_PUBLIC`, `HYALOS_OPERATOR_TRANSPORT_KEY`. A run with any of them missing is refused at its first model call.
+- **The monitor's settings:** `HYALOS_ATTEST`, `HYALOS_NOTARY_ADDRESS`, `HYALOS_NOTARY_TRANSPORT_PUBLIC`, `HYALOS_NOTARY_SIGNER_PUBLIC`, `HYALOS_OPERATOR_TRANSPORT_KEY`. A run with any of them missing logs its intent and a refused result, and its guest never starts.
 - **The monitor's reasons:** `NotaryUnreachable`, `NotaryDeadline`, `WrongNotaryKey`, `ReleaseMismatch`, `ProviderRefused`. No notary configured is `NotaryUnreachable`.
 - **A testable run:** `declared_run` holds the intent link, the execution, the result link and the record, and takes the link writer as a function, so tests never post to the public log.
 - **An answer needs its presentation:** the monitor refuses an answer unless the hash ask printed is the hash of the file it wrote.
+- **A record path is used once:** a live run refuses a path that already holds a record, salt or attestation directory.
 - **A peer on another release:** `standin other-release` answers `release` on a real link, since a release cannot be set by configuration.
 
 ## Discoveries
