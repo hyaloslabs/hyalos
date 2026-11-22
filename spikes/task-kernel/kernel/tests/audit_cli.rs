@@ -41,7 +41,8 @@ impl Rig {
         let trusted = fs::read_to_string(source("../../core/hyalos/tests/fixtures/marketplace-r10/trusted-root.json")).unwrap();
         let key = trusted.lines().nth(106).unwrap().split('"').nth(3).unwrap().to_string();
         fs::write(root.join("log.pub"), format!("-----BEGIN PUBLIC KEY-----\n{key}\n-----END PUBLIC KEY-----\n")).unwrap();
-        fs::write(root.join("notary.pub"), "not read until Slice 5\n").unwrap();
+        fs::write(root.join("notary.pub"), format!("02{}\n", "11".repeat(32))).unwrap();
+        fs::write(root.join("verify"), "").unwrap();
         Self(root)
     }
 
@@ -49,8 +50,8 @@ impl Rig {
         self.0.join(name).display().to_string()
     }
 
-    fn keys(&self) -> [String; 4] {
-        ["--operator-public".to_string(), self.path("operator.pub"), "--notary-public".to_string(), self.path("notary.pub")]
+    fn keys(&self) -> [String; 6] {
+        ["--operator-public".to_string(), self.path("operator.pub"), "--notary-public".to_string(), self.path("notary.pub"), "--verify".to_string(), self.path("verify")]
     }
 
     fn audit(&self, extra: &[String], kernel: Option<&str>) -> Output {
@@ -73,14 +74,16 @@ impl Rig {
     }
 }
 
+// The whole audit passing from an empty home is `s_04_1_the_whole_audit_passes_with_an_empty_home`
+// in `kernel/src/forgery_tests.rs`, over a record with real presentations.
+
 #[test]
-fn s_04_1_e1_e2_t_4_1_the_audit_completes_with_an_empty_home_and_two_public_keys() {
-    let rig = Rig::new("s-04-1");
+fn t_5_a_record_made_before_this_pack_is_refused_at_its_attestations() {
+    let rig = Rig::new("t-5-old");
     let output = rig.audit(&rig.keys(), None);
-    let report = String::from_utf8(output.stdout).unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(report.starts_with("audit passed\ntest trust settings"), "{report}");
-    assert!(!report.contains("public log"), "a stand-in report claims nothing of the public log: {report}");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty(), "no statement of proof");
+    assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "refused: answer 0: no attestation");
     assert_eq!(fs::read_dir(rig.path("home")).unwrap().count(), 0, "the home directory stays empty");
 }
 
@@ -88,19 +91,70 @@ fn s_04_1_e1_e2_t_4_1_the_audit_completes_with_an_empty_home_and_two_public_keys
 fn t_4_1_the_audit_does_not_open_the_kernel_file() {
     let rig = Rig::new("t-4-1-kernel");
     let output = rig.audit(&rig.keys(), Some("/nonexistent/hyalos-kernel"));
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "refused: answer 0: no attestation");
 }
 
 #[test]
 fn s_04_1_a_missing_public_key_is_refused_and_named() {
     let rig = Rig::new("s-04-1-keys");
     let keys = rig.keys();
-    let no_notary = rig.audit(&keys[..2], None);
+    let no_notary = rig.audit(&[&keys[..2], &keys[4..]].concat(), None);
     assert!(!no_notary.status.success());
     assert!(String::from_utf8_lossy(&no_notary.stderr).contains("notary's public key"));
     let no_operator = rig.audit(&keys[2..], None);
     assert!(!no_operator.status.success());
     assert!(String::from_utf8_lossy(&no_operator.stderr).contains("operator's public key"));
+}
+
+#[test]
+fn t_5_1_no_notary_setting_replaces_the_key_and_no_verify_program_is_taken_from_the_environment() {
+    let rig = Rig::new("t-5-1");
+    let keys = rig.keys();
+    let mut no_key = Command::new(env!("CARGO_BIN_EXE_task-kernel"));
+    no_key.arg("audit").arg(source("out/live2.json")).arg(rig.path("ledger")).args(&keys[..2]).args(&keys[4..]);
+    let refused = no_key.env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", rig.path("home")).env("HYALOS_NOTARY", "02").output().unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("notary's public key is not given"));
+    let mut no_verify = Command::new(env!("CARGO_BIN_EXE_task-kernel"));
+    no_verify.arg("audit").arg(source("out/live2.json")).arg(rig.path("ledger")).args(&keys[..4]);
+    let refused = no_verify.env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", rig.path("home")).env("HYALOS_ATTEST", rig.path("verify")).output().unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("verify program is not given"));
+}
+
+#[test]
+fn t_5_1_a_notary_key_that_is_not_a_signing_key_is_refused() {
+    let rig = Rig::new("t-5-1-key");
+    fs::write(rig.path("notary.pub"), "not a key\n").unwrap();
+    let output = rig.audit(&rig.keys(), None);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not a signing public key"));
+}
+
+#[test]
+fn t_5_a_verify_program_named_without_a_slash_is_the_file_in_this_directory() {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+    let rig = Rig::new("t-5-bare");
+    fs::create_dir_all(rig.0.join("record.attest")).unwrap();
+    fs::write(rig.0.join("record.attest/000.presentation"), b"a presentation").unwrap();
+    let digest: String = Sha256::digest(b"a presentation").iter().map(|b| format!("{b:02x}")).collect();
+    let record = serde_json::json!({"version": 1, "guest_sha256": "g", "inputs_hex": [], "effects": [], "result_hex": "", "fuel_used": 1,
+        "answers": [{"schema": 0, "question_sha256": "q", "label": 0, "model": "m", "response_id": "r", "attestation": digest}]});
+    fs::write(rig.0.join("record"), record.to_string()).unwrap();
+    let ran = rig.0.join("ran");
+    let program = rig.0.join("my-verify");
+    fs::write(&program, format!("#!/bin/sh\n: > '{}'\nexit 1\n", ran.display())).unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_task-kernel"))
+        .args(["attested", "record", "--notary-public", &rig.path("notary.pub"), "--verify", "my-verify"])
+        .current_dir(&rig.0)
+        .env_clear()
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "refused: answer 0: the attestation does not verify");
+    assert!(ran.exists(), "the file in this directory was not the program that ran");
 }
 
 #[test]

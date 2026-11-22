@@ -10,8 +10,8 @@
 //! only its own transport key and the notary's two public keys.
 //!
 //! Every request names the run it was made for and its position in that run, inside the attested
-//! bytes. The notary adds the run it was told and how many attestations it had signed for that
-//! run, under its one signature.
+//! bytes. The notary adds the run it was told and how many sessions it had opened for that run,
+//! under its one signature.
 //!
 //! The credential is read here, goes to the provider and nowhere else: not into the presentation,
 //! a message, or an error.
@@ -146,6 +146,7 @@ async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &
     let said = |failure| match failure {
         LinkFailure::PeerKey => Word::NotaryKey,
         LinkFailure::Unreachable => Word::Unreachable,
+        LinkFailure::Sequence => Word::Provider,
     };
     let mut stream = link::connect(&notary.address, &notary.me, &notary.transport).await.map_err(said)?;
     if !link::open(&mut stream, run).await.map_err(said)? {
@@ -171,6 +172,11 @@ async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &
     tls.flush().await?;
     let mut reply = Vec::new();
     tls.read_to_end(&mut reply).await?;
+    // For the test of an operator who reads a reply and leaves to ask again. It is no door: a forger
+    // can change this program the same way, and the number is already spent (ADR-014).
+    if env::var_os("HYALOS_TEST_LEAVE_AFTER_REPLY").is_some() {
+        return Err(Word::Provider.into());
+    }
     let _ = tls.close().await;
     let mut prover = prover_task.await??;
 
@@ -238,7 +244,7 @@ async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &
     if hex::encode(&presentation.verifying_key().data) != notary.signer {
         return Err(Word::NotaryKey.into());
     }
-    // Read only now, so a reply that is no label still used this session's number.
+    // Read only now, so a reply that is no label still gets its attestation.
     let answer = answer(&received[..line], &received[blank..]).map_err(|_| Word::Provider)?;
     Ok((answer, bincode::serialize(&presentation)?))
 }
@@ -326,9 +332,16 @@ async fn run() -> Result<ExitCode> {
             ensure!(!(trust.test && credential.starts_with("sk-ant-")), "refusing to send a real credential under test trust settings");
             // Refused before anything is sent: verify would refuse the presentation anyway.
             pinned_credential(&credential)?;
+            // For the test of an operator who tells the notary another run. It is no door: a forger
+            // can change this program the same way, and the audit refuses what comes out.
+            let told = match env::var("HYALOS_TEST_TOLD_RUN") {
+                Ok(run) => run,
+                Err(env::VarError::NotPresent) => intent.clone(),
+                Err(env::VarError::NotUnicode(_)) => bail!("the run to tell the notary is not text"),
+            };
             let started = Instant::now();
             let broke = Arc::new(AtomicBool::new(false));
-            let call = tokio::time::timeout(DEADLINE, ask(&title, &binding, intent, &trust, &credential, &notary, &broke)).await;
+            let call = tokio::time::timeout(DEADLINE, ask(&title, &binding, &told, &trust, &credential, &notary, &broke)).await;
             let checked = match call {
                 Err(_) => Err(Word::Deadline),
                 Ok(Err(error)) => Err(word_for(&error, started, &broke)),

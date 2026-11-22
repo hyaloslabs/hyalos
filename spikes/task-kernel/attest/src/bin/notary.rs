@@ -57,7 +57,7 @@ const SEQUENCES_HEADER: &str = "hyalos.sequences/1";
 /// A reason a session line may give for `refused`.
 type Reason = &'static str;
 
-/// How many attestations this notary has signed for each run. Saved before a number is used.
+/// How many sessions this notary has opened for each run (ADR-014). Saved before a number is used.
 struct Sequences {
     path: PathBuf,
     next: BTreeMap<String, u64>,
@@ -172,8 +172,8 @@ impl Notary {
         self.write_line(&line, &outcome);
     }
 
-    /// One session, through the states of `design.md` §4. Nothing is signed before the server's
-    /// name is verified and the sequence number is saved.
+    /// One session, through the states of `design.md` §4 as ADR-014 amends them. The sequence number
+    /// is saved when the session opens, and nothing is signed before the server's name is verified.
     async fn session(&self, socket: TcpStream, evicted: oneshot::Receiver<()>, line: &mut Line) -> Result<(String, u64), Reason> {
         // A peer that is not the enrolled key ends here, before the protocol starts.
         let accepted = tokio::select! {
@@ -192,6 +192,14 @@ impl Notary {
         }
         binding(run, 0).map_err(|_| "dropped")?;
         let run = run.to_string();
+        // Spent before the operator can see any reply, so leaving a session it dislikes cannot give
+        // the number back (ADR-014).
+        let spent = self.sequences.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).spend(&run);
+        let Some(sequence) = spent else {
+            let _ = link::write_line(&mut tls, "sequence").await;
+            let _ = tokio::io::AsyncWriteExt::shutdown(&mut tls).await;
+            return Err("sequence");
+        };
         link::write_line(&mut tls, "ok").await.map_err(|_| "dropped")?;
 
         let session = Session::new(tls.compat());
@@ -263,11 +271,10 @@ impl Notary {
         } else if sent > MAX_SENT || received > MAX_RECV {
             Err("limits")
         } else {
-            self.sign(&request, &tls_transcript, transcript_commitments, &run, sent as u32, received as u32)
+            self.sign(&request, &tls_transcript, transcript_commitments, &run, sequence, sent as u32, received as u32)
         };
         match decided {
             Ok((sequence, attestation)) => {
-                // The number is spent from here on, whether or not this reaches the operator.
                 futures::io::AsyncWriteExt::write_all(&mut socket, &attestation).await.map_err(|_| "dropped")?;
                 futures::io::AsyncWriteExt::close(&mut socket).await.map_err(|_| "dropped")?;
                 Ok((run, sequence))
@@ -280,8 +287,9 @@ impl Notary {
         }
     }
 
-    /// Checks the request, saves the run's next number, and only then signs.
-    fn sign(&self, request: &[u8], transcript: &tlsn::transcript::TlsTranscript, commitments: Vec<TranscriptCommitment>, run: &str, sent: u32, received: u32) -> Result<(u64, Vec<u8>), Reason> {
+    /// Checks the request and signs it under the number this session spent when it opened.
+    #[allow(clippy::too_many_arguments)]
+    fn sign(&self, request: &[u8], transcript: &tlsn::transcript::TlsTranscript, commitments: Vec<TranscriptCommitment>, run: &str, sequence: u64, sent: u32, received: u32) -> Result<(u64, Vec<u8>), Reason> {
         let request: AttestationRequest = bincode::deserialize(request).map_err(|_| "dropped")?;
         let mut provider = CryptoProvider::default();
         provider.signer.set_signer(Box::new(Secp256k1Signer::new(&self.key).map_err(|_| "dropped")?));
@@ -292,7 +300,6 @@ impl Notary {
             return Err("dropped");
         };
         let mut builder = Attestation::builder(&config).accept_request(request).map_err(|_| "dropped")?;
-        let sequence = self.sequences.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).spend(run).ok_or("sequence")?;
         builder
             .connection_info(ConnectionInfo { time: transcript.time(), version: transcript.version(), transcript_length: TranscriptLength { sent, received } })
             .server_ephemeral_key(certificate.server_ephemeral_key.clone())

@@ -55,4 +55,5 @@ printf 'The build fails on a clean checkout' > "$out/question.txt"
 
 # 3.1: one real task through the notary. This posts one comment on the issue named.
 "$monitor" live guest/digest.wasm fixtures/issues.tsv "$out/record.json" "$repo" "$issue"
-"$monitor" attested "$out/record.json" "$signer"
+printf '%s\n' "$signer" > "$out/notary.pub"
+"$monitor" attested "$out/record.json" --notary-public "$out/notary.pub" --verify "$attest"

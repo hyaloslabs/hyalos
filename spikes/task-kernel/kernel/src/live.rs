@@ -10,7 +10,7 @@ use std::{
     os::unix::process::CommandExt,
     process::{Command, Stdio},
     sync::mpsc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const LABELS: [&str; 4] = ["bug", "feature", "security", "other"];
@@ -19,6 +19,11 @@ const FENCE: &str = "~~~~";
 const TOOL_LIMIT: Duration = Duration::from_secs(35);
 /// More than the tool's one line can be.
 const MAX_SAID: u64 = 64 * 1024;
+/// How far past the intent's signed time the first call waits. A session in the intent's own second
+/// is refused by the audit (ADR-008).
+const PAST_INTENT: u64 = 2;
+/// The longest that wait may be. A log's time further ahead of this clock refuses the run.
+const MAX_WAIT: u64 = 10;
 /// What the tool needs to reach the notary. A run with any of them missing is refused.
 const NOTARY_SETTINGS: [&str; 4] = ["HYALOS_NOTARY_ADDRESS", "HYALOS_NOTARY_TRANSPORT_PUBLIC", "HYALOS_NOTARY_SIGNER_PUBLIC", "HYALOS_OPERATOR_TRANSPORT_KEY"];
 
@@ -50,6 +55,21 @@ pub(crate) struct Live {
     /// The run's intent hash, once its intent link is in the public log. Every attested call
     /// names it, with the call's position, inside the attested request.
     intent: String,
+    /// The second the first call may start, from the log's signed time for the intent link.
+    not_before: Option<u64>,
+}
+
+/// Waits until this clock reaches `second`. A clock that cannot be read, or a wait longer than
+/// `MAX_WAIT`, refuses the run.
+fn wait_until(second: u64) -> Result<(), Reason> {
+    let now = || SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).map_err(|_| Reason::LedgerFailed);
+    if second.saturating_sub(now()?) > MAX_WAIT {
+        return Err(Reason::LedgerFailed);
+    }
+    while now()? < second {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
 }
 
 /// The reason for a tool that failed, from the one word it printed. Anything else is the reason
@@ -123,7 +143,7 @@ pub(crate) fn record_is_fresh(record: &str) -> bool {
 impl Live {
     pub(crate) fn new(repo: &str, issue: u64, attest: Option<Attest>) -> Option<Self> {
         let repo_ok = repo.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b));
-        repo_ok.then(|| Self { repo: repo.to_string(), issue, attest, asked: 0, intent: String::new() })
+        repo_ok.then(|| Self { repo: repo.to_string(), issue, attest, asked: 0, intent: String::new(), not_before: None })
     }
 
     /// False when no notary is configured, and so the run must not start.
@@ -131,9 +151,11 @@ impl Live {
         self.attest.is_some()
     }
 
-    /// Names the run every later attested call is made for.
-    pub(crate) fn bind(&mut self, intent: &str) {
+    /// Names the run every later attested call is made for, and the time the log signed for its
+    /// intent link. Without that time no call is made.
+    pub(crate) fn bind(&mut self, intent: &str, signed_time: Option<u64>) {
         self.intent = intent.to_string();
+        self.not_before = signed_time.map(|time| time.saturating_add(PAST_INTENT));
     }
 
     /// One question, one typed answer that names its presentation. Anything else is a refusal,
@@ -142,6 +164,7 @@ impl Live {
         std::str::from_utf8(question).map_err(|_| Reason::ModelRefused)?;
         let attest = self.attest.as_ref().ok_or(Reason::NotaryUnreachable)?;
         if self.asked == 0 {
+            wait_until(self.not_before.ok_or(Reason::LedgerFailed)?)?;
             fs::create_dir(&attest.dir).map_err(|_| Reason::ModelUnavailable)?;
         }
         let position = self.asked.to_string();

@@ -9,8 +9,8 @@ fn source(path: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(path)
 }
 
-struct Rig {
-    root: PathBuf,
+pub(super) struct Rig {
+    pub(super) root: PathBuf,
 }
 
 impl Drop for Rig {
@@ -20,7 +20,7 @@ impl Drop for Rig {
 }
 
 impl Rig {
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         let root = std::env::temp_dir().join(format!("hyalos-audit-test-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("ledger")).unwrap();
@@ -29,7 +29,7 @@ impl Rig {
         Self { root }
     }
 
-    fn path(&self, name: &str) -> String {
+    pub(super) fn path(&self, name: &str) -> String {
         self.root.join(name).display().to_string()
     }
 
@@ -46,16 +46,15 @@ impl Rig {
         let operator = B64.decode(body["spec"]["signature"]["publicKey"]["content"].as_str().unwrap()).unwrap();
         fs::write(self.path("operator.pub"), operator).unwrap();
         fs::write(self.path("log.pub"), public_pem(&B64.decode(REKOR_KEY).unwrap())).unwrap();
-        fs::write(self.path("notary.pub"), "not read until Slice 5\n").unwrap();
         self.auditor("operator.pub", "log.pub")
     }
 
-    fn auditor(&self, operator: &str, log_key: &str) -> Auditor {
+    pub(super) fn auditor(&self, operator: &str, log_key: &str) -> Auditor {
         Auditor::new(&self.path("ledger"), &self.path(operator), Some((self.path("log"), self.path(log_key)))).unwrap()
     }
 
     /// Makes a P-256 key pair and returns the private key's path. The public key is `<name>.pub`.
-    fn key(&self, name: &str) -> String {
+    pub(super) fn key(&self, name: &str) -> String {
         let private = self.path(&format!("{name}.pem"));
         assert!(openssl(&["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", &private]).is_some());
         let public = openssl(&["pkey", "-in", &private, "-pubout"]).unwrap();
@@ -71,6 +70,11 @@ impl Rig {
 
     /// A reply from a test log: the entry alone in a tree of one, signed as the real log signs.
     fn entry(&self, log: &str, signer: &str, link: &[u8], index: u64) -> Vec<u8> {
+        self.entry_at(log, signer, link, index, 1795297278)
+    }
+
+    /// The same reply, with the log signing `time` for the entry.
+    pub(super) fn entry_at(&self, log: &str, signer: &str, link: &[u8], index: u64, time: u64) -> Vec<u8> {
         let log_der = public_der(&fs::read_to_string(format!("{}.pub", log.trim_end_matches(".pem"))).unwrap()).unwrap();
         let log_id = sha(&log_der);
         let signer_public = fs::read(format!("{}.pub", signer.trim_end_matches(".pem"))).unwrap();
@@ -80,14 +84,14 @@ impl Rig {
         }});
         let body_bytes = serde_json::to_vec(&body).unwrap();
         let body_text = B64.encode(&body_bytes);
-        let canonical = format!("{{\"body\":\"{body_text}\",\"integratedTime\":1795297278,\"logID\":\"{log_id}\",\"logIndex\":{index}}}");
+        let canonical = format!("{{\"body\":\"{body_text}\",\"integratedTime\":{time},\"logID\":\"{log_id}\",\"logIndex\":{index}}}");
         let leaf = Sha256::digest([&[0u8], body_bytes.as_slice()].concat()).to_vec();
         let note = format!("test log\n1\n{}", B64.encode(&leaf));
         let note_signature = self.sign(log, format!("{note}\n").as_bytes());
         let hint = crate::unhex(&log_id).unwrap();
         let line = B64.encode([&hint[..4], note_signature.as_slice()].concat());
         let reply = json!({ format!("entry{index}"): {
-            "body": body_text, "integratedTime": 1795297278u64, "logID": log_id, "logIndex": index,
+            "body": body_text, "integratedTime": time, "logID": log_id, "logIndex": index,
             "verification": {
                 "signedEntryTimestamp": B64.encode(self.sign(log, canonical.as_bytes())),
                 "inclusionProof": {"checkpoint": format!("{note}\n\n— test log {line}\n"), "hashes": [], "logIndex": 0, "rootHash": crate::hex(&leaf), "treeSize": 1},
@@ -97,7 +101,7 @@ impl Rig {
     }
 
     /// Adds one link to the chain under test keys, naming the one before it. Returns its hash.
-    fn push(&self, log: &str, operator: &str, mut link: Value) -> String {
+    pub(super) fn push(&self, log: &str, operator: &str, mut link: Value) -> String {
         let chain = read_links(&self.root.join("ledger"));
         let seq = chain.len();
         link["seq"] = json!(seq);
@@ -233,26 +237,17 @@ fn t_4_an_altered_signed_time_is_refused() {
 fn s_04_5_e1_a_passing_report_lists_what_was_proven_then_the_five_limits() {
     let rig = Rig::new("s-04-5-e1");
     let audited = rig.real().audit(&real_claim()).unwrap();
-    let report = crate::audit_report(&audited, None);
+    let report = crate::audit_report(&audited, 8, false);
     let lines: Vec<&str> = report.lines().collect();
     let first_limit = lines.iter().position(|l| l.starts_with("not proven")).unwrap();
-    assert!(lines[..first_limit].iter().filter(|l| l.starts_with("proven: ")).count() == 4, "{report}");
-    assert!(lines[..first_limit].contains(&"not checked: the answers' attestations"), "{report}");
+    assert!(lines[..first_limit].iter().filter(|l| l.starts_with("proven: ")).count() == 5, "{report}");
+    assert!(lines[..first_limit].iter().any(|l| l.contains("all 8 answers were attested by the trusted notary for this run and position")), "{report}");
+    assert!(!report.contains("not checked"), "{report}");
     let limits = &lines[first_limit..];
     assert_eq!(limits.len(), 5, "{report}");
     for name in ["notary's independence", "model's name", "correctness", "every entry", "hidden bytes"] {
         assert!(limits.iter().any(|l| l.contains(name)), "{name}: {report}");
     }
-}
-
-#[test]
-fn t_4_with_attestations_checked_the_report_has_no_not_checked_line_and_five_limits() {
-    let rig = Rig::new("t-4-attested");
-    let audited = rig.real().audit(&real_claim()).unwrap();
-    let attested = crate::attested_report(8, false);
-    let report = crate::audit_report(&audited, Some(&attested));
-    assert!(report.contains("attested: 8 of 8") && !report.contains("not checked"), "{report}");
-    assert_eq!(report.lines().filter(|l| l.starts_with("not proven")).count(), 5, "{report}");
 }
 
 #[test]
@@ -262,7 +257,7 @@ fn s_04_5_e3_the_report_counts_three_runs_of_one_task() {
     let commitment = rig.chain(&["intent", "result", "intent", "result", "intent", "result"], &log, &operator);
     let audited = rig.auditor("operator.pub", "test-log.pub").audit(&test_claim(&commitment)).unwrap();
     assert_eq!(audited.runs, 3);
-    assert!(crate::audit_report(&audited, None).contains("the task was run 3 times"));
+    assert!(crate::audit_report(&audited, 1, false).contains("the task was run 3 times"));
 }
 
 #[test]
@@ -376,7 +371,7 @@ fn t_4_a_run_relabelled_as_another_task_still_counts_in_the_total() {
     rig.push(&log, &operator, result_link(&intent, "kept"));
     let audited = audit_of(&rig, &test_claim("kept")).unwrap();
     assert_eq!((audited.runs, audited.all_runs), (1, 2));
-    let report = crate::audit_report(&audited, None);
+    let report = crate::audit_report(&audited, 1, false);
     assert!(report.contains("as the intent links name the task") && report.contains("the chain holds 2 run(s) of any task"), "{report}");
 }
 

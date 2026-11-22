@@ -17,7 +17,7 @@ const NAME: &str = "provider.test";
 /// A session costs seconds and several hundred megabytes, so tests take them one at a time.
 static ONE: Mutex<()> = Mutex::new(());
 
-fn built(program: &str) -> PathBuf {
+pub(crate) fn built(program: &str) -> PathBuf {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../attest/target/release").join(program);
     assert!(path.exists(), "{program} is not built: run cargo build --release --manifest-path attest/Cargo.toml");
     path
@@ -131,7 +131,7 @@ impl Rig {
             links.push(link);
             Ok((links.len() - 1, hash))
         };
-        let (outcome, _) = declared_run(&mut append, &Backend::Process, &guest, inputs, mode, &random_salt(), self.record().to_str().unwrap()).unwrap();
+        let (outcome, _) = declared_run(&mut append, &Backend::Process, &guest, inputs, mode, &random_salt(), self.record().to_str().unwrap(), &|_| Some(0)).unwrap();
         let reason = outcome.err().expect("the run must be refused");
         (reason, links)
     }
@@ -148,13 +148,13 @@ impl Rig {
 }
 
 /// A fresh salt for each run, as the `live` command makes one.
-fn random_salt() -> String {
+pub(crate) fn random_salt() -> String {
     let mut salt = [0u8; 32];
     std::io::Read::read_exact(&mut fs::File::open("/dev/urandom").unwrap(), &mut salt).unwrap();
     hex(&salt)
 }
 
-fn locked() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn locked() -> std::sync::MutexGuard<'static, ()> {
     ONE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
@@ -167,7 +167,7 @@ fn s_02_1_e1_an_attested_answer_names_a_presentation_hash_that_matches_the_file(
     let attest = rig.attest();
     let file = format!("{}/000.presentation", attest.dir);
     let mut live = Live::new("test.invalid/none", 0, Some(attest)).unwrap();
-    live.bind(INTENT);
+    live.bind(INTENT, Some(0));
     let (label, model, response, presentation) = live.infer(b"The build fails on a clean checkout").unwrap();
     assert_eq!((label, model.as_str(), response.as_str()), (0, "standin", "msg_standin"));
     assert_eq!(presentation, sha(&fs::read(file).unwrap()));
@@ -289,7 +289,7 @@ fn t_3_3_with_no_notary_a_task_that_asks_nothing_does_not_run() {
         links.push(link);
         Ok((links.len() - 1, hash))
     };
-    let (outcome, _) = declared_run(&mut append, &Backend::Process, &guest, Vec::new(), mode, &random_salt(), rig.record().to_str().unwrap()).unwrap();
+    let (outcome, _) = declared_run(&mut append, &Backend::Process, &guest, Vec::new(), mode, &random_salt(), rig.record().to_str().unwrap(), &|_| Some(0)).unwrap();
     assert_eq!(outcome.err(), Some(Reason::NotaryUnreachable));
     assert_eq!(links[1]["outcome"], "refused:NotaryUnreachable");
     assert!(!rig.record().exists());
@@ -323,5 +323,32 @@ fn t_3_a_record_path_in_use_is_not_fresh() {
         fs::write(&used, b"").unwrap();
         assert!(!crate::live::record_is_fresh(record), "{used}");
         fs::remove_file(&used).unwrap();
+    }
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
+
+#[test]
+fn t_5_the_first_call_waits_until_two_seconds_past_the_intents_signed_time() {
+    let rig = Rig::new("t-5-wait");
+    let mut live = Live::new("test.invalid/none", 0, Some(script(&rig, "cat >/dev/null; echo provider; exit 1"))).unwrap();
+    let signed = now();
+    live.bind(INTENT, Some(signed));
+    assert_eq!(live.infer(b"A question").unwrap_err(), Reason::ProviderRefused);
+    assert!(now() >= signed + 2, "the call was made inside the wait");
+}
+
+#[test]
+fn t_5_with_no_signed_time_or_one_far_ahead_no_call_is_made() {
+    for (label, signed) in [("none", None), ("ahead", Some(now() + 3600))] {
+        let rig = Rig::new(&format!("t-5-no-time-{label}"));
+        let called = rig.dir.join("called");
+        let body = format!("touch '{}'; exit 1", called.display());
+        let mut live = Live::new("test.invalid/none", 0, Some(script(&rig, &body))).unwrap();
+        live.bind(INTENT, signed);
+        assert_eq!(live.infer(b"A question").unwrap_err(), Reason::LedgerFailed);
+        assert!(!called.exists(), "the tool was started");
     }
 }
