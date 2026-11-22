@@ -18,7 +18,7 @@
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use attest::{
-    DEADLINE, MAX_RECV, MAX_SENT, RELEASE, RUN_SEQUENCE, SERVER, binding,
+    DEADLINE, MAX_RECV, MAX_SENT, RELEASE, RUN_SEQUENCE, SERVER, TICKET, Ticket, binding,
     link::{self, Identity},
     run_sequence,
 };
@@ -186,20 +186,43 @@ impl Sequences {
         fs::File::open(self.path.parent().unwrap_or(Path::new(".")))?.sync_all()
     }
 
-    /// The run's next number, durably spent. On a failed save nothing was signed with it.
-    fn spend(&mut self, run: &str) -> Option<u64> {
+    /// The run's next number and its ticket, saved in one write before the operator can see any
+    /// reply. In order: the run's own authorisation, the newest round, then the budget. On a failed
+    /// save the run's whole entry is restored and nothing is signed with it.
+    fn spend(&mut self, run: &str, authorisation: &str) -> Result<(u64, Ticket), Reason> {
+        let dir = self.path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        binding(authorisation, 0).map_err(|_| "authorisation")?;
+        let held = read_authorisation(&dir, authorisation).map_err(|_| "authorisation")?;
         let before = self.next.get(run).cloned();
+        let ticket = match &before {
+            Some(RunEntry { ticket: Some((own, ticket)), .. }) if own == authorisation => *ticket,
+            // Another authorisation's run, or a run from before tickets.
+            Some(_) => return Err("authorisation"),
+            None => {
+                let all = read_authorisations(&dir).map_err(|_| "authorisation")?;
+                let newest = all.values().filter(|other| other.task == held.task).map(|other| other.round).max();
+                if newest != Some(held.round) {
+                    return Err("authorisation");
+                }
+                let used = self.next.values().filter(|entry| entry.ticket.as_ref().is_some_and(|(own, _)| own == authorisation)).count();
+                let used = u32::try_from(used).map_err(|_| "spent")?;
+                if used >= held.attempts {
+                    return Err("spent");
+                }
+                used
+            }
+        };
         let number = before.as_ref().map_or(0, |entry| entry.count);
-        let ticket = before.as_ref().and_then(|entry| entry.ticket.clone());
-        self.next.insert(run.to_string(), RunEntry { count: number.checked_add(1)?, ticket });
+        let count = number.checked_add(1).ok_or("sequence")?;
+        self.next.insert(run.to_string(), RunEntry { count, ticket: Some((authorisation.to_string(), ticket)) });
         if self.save().is_err() {
             match before {
                 Some(entry) => self.next.insert(run.to_string(), entry),
                 None => self.next.remove(run),
             };
-            return None;
+            return Err("sequence");
         }
-        Some(number)
+        Ok((number, Ticket { authorisation: authorisation.to_string(), task: held.task, budget: held.attempts, round: held.round, prior: held.prior, ticket }))
     }
 }
 
@@ -247,14 +270,20 @@ fn authorisation_names(dir: &Path) -> Result<Vec<String>> {
     Ok(names)
 }
 
+/// One authorisation, by a name already known to be 64 lowercase hex characters.
+fn read_authorisation(dir: &Path, name: &str) -> Result<Authorisation> {
+    let unreadable = "an authorisation cannot be read";
+    let bytes = link::read_private(&dir.join("authorisations").join(name), AUTHORISATION_LIMIT).map_err(|_| anyhow!(unreadable))?.context(unreadable)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| anyhow!(unreadable))?;
+    Authorisation::parse(text).context(unreadable)
+}
+
 /// Every authorisation. One that cannot be read refuses them all.
 fn read_authorisations(dir: &Path) -> Result<BTreeMap<String, Authorisation>> {
-    let unreadable = "an authorisation cannot be read";
     let mut all = BTreeMap::new();
     for name in authorisation_names(dir)? {
-        let bytes = link::read_private(&dir.join("authorisations").join(&name), AUTHORISATION_LIMIT).map_err(|_| anyhow!(unreadable))?.context(unreadable)?;
-        let text = std::str::from_utf8(&bytes).map_err(|_| anyhow!(unreadable))?;
-        all.insert(name, Authorisation::parse(text).context(unreadable)?);
+        let held = read_authorisation(dir, &name)?;
+        all.insert(name, held);
     }
     Ok(all)
 }
@@ -502,22 +531,27 @@ impl Notary {
         line.enrolled = true;
         let _open = self.open.clone().try_acquire_owned().map_err(|_| "busy")?;
 
-        let first = link::read_line(&mut tls, RELEASE.len() + 128).await.map_err(|_| "dropped")?;
-        let (release, run) = first.split_once(' ').ok_or("dropped")?;
+        let first = link::read_line(&mut tls, RELEASE.len() + 130).await.map_err(|_| "dropped")?;
+        // The release first, so an older tool's two-field line hears `release`.
+        let (release, rest) = first.split_once(' ').ok_or("dropped")?;
         if release != RELEASE {
             let _ = link::write_line(&mut tls, "release").await;
             let _ = tokio::io::AsyncWriteExt::shutdown(&mut tls).await;
             return Err("release");
         }
+        let (run, authorisation) = rest.split_once(' ').unwrap_or((rest, ""));
         binding(run, 0).map_err(|_| "dropped")?;
         let run = run.to_string();
         // Spent before the operator can see any reply, so leaving a session it dislikes cannot give
-        // the number back (ADR-014).
-        let spent = self.sequences.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).spend(&run);
-        let Some(sequence) = spent else {
-            let _ = link::write_line(&mut tls, "sequence").await;
-            let _ = tokio::io::AsyncWriteExt::shutdown(&mut tls).await;
-            return Err("sequence");
+        // the number or the ticket back (ADR-014).
+        let spent = self.sequences.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).spend(&run, authorisation);
+        let (sequence, ticket) = match spent {
+            Ok(spent) => spent,
+            Err(word) => {
+                let _ = link::write_line(&mut tls, word).await;
+                let _ = tokio::io::AsyncWriteExt::shutdown(&mut tls).await;
+                return Err(word);
+            }
         };
         link::write_line(&mut tls, "ok").await.map_err(|_| "dropped")?;
 
@@ -590,7 +624,7 @@ impl Notary {
         } else if sent > MAX_SENT || received > MAX_RECV {
             Err("limits")
         } else {
-            self.sign(&request, &tls_transcript, transcript_commitments, &run, sequence, sent as u32, received as u32)
+            self.sign(&request, &tls_transcript, transcript_commitments, &run, sequence, &ticket, sent as u32, received as u32)
         };
         match decided {
             Ok((sequence, attestation)) => {
@@ -608,7 +642,7 @@ impl Notary {
 
     /// Checks the request and signs it under the number this session spent when it opened.
     #[allow(clippy::too_many_arguments)]
-    fn sign(&self, request: &[u8], transcript: &tlsn::transcript::TlsTranscript, commitments: Vec<TranscriptCommitment>, run: &str, sequence: u64, sent: u32, received: u32) -> Result<(u64, Vec<u8>), Reason> {
+    fn sign(&self, request: &[u8], transcript: &tlsn::transcript::TlsTranscript, commitments: Vec<TranscriptCommitment>, run: &str, sequence: u64, ticket: &Ticket, sent: u32, received: u32) -> Result<(u64, Vec<u8>), Reason> {
         let request: AttestationRequest = bincode::deserialize(request).map_err(|_| "dropped")?;
         let mut provider = CryptoProvider::default();
         provider.signer.set_signer(Box::new(Secp256k1Signer::new(&self.key).map_err(|_| "dropped")?));
@@ -623,7 +657,8 @@ impl Notary {
             .connection_info(ConnectionInfo { time: transcript.time(), version: transcript.version(), transcript_length: TranscriptLength { sent, received } })
             .server_ephemeral_key(certificate.server_ephemeral_key.clone())
             .transcript_commitments(commitments)
-            .extension(Extension { id: RUN_SEQUENCE.to_vec(), value: run_sequence(run, sequence) });
+            .extension(Extension { id: RUN_SEQUENCE.to_vec(), value: run_sequence(run, sequence) })
+            .extension(Extension { id: TICKET.to_vec(), value: ticket.bytes() });
         let attestation = builder.build(&provider).map_err(|_| "dropped")?;
         Ok((sequence, bincode::serialize(&attestation).map_err(|_| "dropped")?))
     }

@@ -33,6 +33,11 @@ struct World {
     version: u32,
     /// A real guest that asks the first questions of `QUESTIONS` and returns.
     guest: Vec<u8>,
+    /// The authorisation on the notary last started.
+    authorisation: String,
+    /// Audit through `old-verify`, which reports a presentation as an older notary's, with no ticket.
+    /// This notary always signs a ticket, and a version 1 record is from before tickets.
+    old_verifier: bool,
 }
 
 /// A guest that asks these questions once each, in order, then returns one byte.
@@ -106,8 +111,11 @@ impl World {
             ("HYALOS_TRUST_PROVIDER_ADDRESS".to_string(), provider),
             ("HYALOS_OPERATOR_TRANSPORT_KEY".to_string(), transport_key.display().to_string()),
         ];
-        let mut world = Self { rig, log, ledger_key, children, settings, signer: String::new(), operator_transport, version, guest: asking(&QUESTIONS[..asks]) };
+        let mut world = Self { rig, log, ledger_key, children, settings, signer: String::new(), operator_transport, version, guest: asking(&QUESTIONS[..asks]), authorisation: String::new(), old_verifier: version == 1 };
         fs::write(world.rig.path("guest.wasm"), &world.guest).unwrap();
+        let old = world.rig.path("old-verify");
+        fs::write(&old, format!("#!/bin/sh\nout=$('{}' verify \"$2\" \"$3\") || exit $?\nprintf '%s\\n' \"$out\" | /usr/bin/sed 's/\"ticket\":{{[^}}]*}}/\"ticket\":null/'\n", built("attest").display())).unwrap();
+        fs::set_permissions(&old, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
         let (signer, transport, address) = world.notary("notary");
         world.signer = signer;
         world.point_at(&transport, &address, &world.signer.clone());
@@ -124,6 +132,10 @@ impl World {
             .arg("--root")
             .arg(self.rig.root.join("root.der"));
         let mut values = start(&mut self.children, command, &["signing", "transport", "listening"]);
+        let task = crate::task_v2(&sha(&self.guest), &[b"one input".to_vec()]).unwrap();
+        let made = Command::new(built("notary")).args(["authorize", "--dir"]).arg(self.rig.root.join(dir)).args(["--task", &task, "--attempts", "100"]).output().unwrap();
+        assert!(made.status.success());
+        self.authorisation = String::from_utf8(made.stdout).unwrap().trim().to_string();
         let address = values.remove(2);
         let transport = values.remove(1);
         (values.remove(0), transport, address)
@@ -134,6 +146,7 @@ impl World {
         self.settings.push(("HYALOS_NOTARY_ADDRESS".to_string(), address.to_string()));
         self.settings.push(("HYALOS_NOTARY_TRANSPORT_PUBLIC".to_string(), transport.to_string()));
         self.settings.push(("HYALOS_NOTARY_SIGNER_PUBLIC".to_string(), signer.to_string()));
+        self.settings.push(("HYALOS_NOTARY_AUTHORISATION".to_string(), self.authorisation.clone()));
     }
 
     /// One real attested call through `ask`. `told` is the run the notary is told, when it is not
@@ -235,7 +248,7 @@ impl World {
             dir: Some(self.rig.path("ledger")),
             operator: Some(self.rig.path("operator.pub")),
             notary: self.signer.clone(),
-            verify: built("attest").display().to_string(),
+            verify: if self.old_verifier { self.rig.path("old-verify") } else { built("attest").display().to_string() },
             legacy,
             guest,
         };
@@ -656,5 +669,20 @@ fn record_s_05_7_e7_a_reworded_question_diverges() {
 fn record_2_1_a_version_1_record_needs_no_guest() {
     let _one = locked();
     let report = one_answer("r-2-1", 1).audit_on(true, None).unwrap();
+    assert_eq!(report.lines().next(), Some("legacy audit passed: no attempt budget"));
+}
+
+#[test]
+fn record_s_01_6_e1_a_ticketed_attestation_in_a_version_1_record_is_refused() {
+    let _one = locked();
+    let mut world = one_answer("r-01-6-e1", 1);
+    world.old_verifier = false;
+    assert_eq!(world.audit_with(true).unwrap_err(), "answer 0: a version 1 record cannot carry a ticket");
+}
+
+#[test]
+fn record_s_01_6_e2_a_version_1_record_with_no_ticket_passes_as_legacy() {
+    let _one = locked();
+    let report = one_answer("r-01-6-e2", 1).audit_with(true).unwrap();
     assert_eq!(report.lines().next(), Some("legacy audit passed: no attempt budget"));
 }

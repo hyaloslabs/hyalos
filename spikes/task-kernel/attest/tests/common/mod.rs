@@ -13,6 +13,8 @@ use std::{
 
 pub const NAME: &str = "provider.test";
 pub const INTENT: &str = "5f1d0c7a9b3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8";
+/// The task the rigs' notaries authorise. The notary does not compare it with the run.
+pub const TASK: &str = "7f1d0c7a9b3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8";
 pub const OTHER_RUN: &str = "6f1d0c7a9b3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8";
 
 /// A session costs seconds and several hundred megabytes, so tests take them one at a time.
@@ -70,6 +72,8 @@ pub struct Notary {
     pub signing: String,
     pub transport: String,
     pub address: String,
+    /// The authorisation `notary` made or found. Empty from `try_notary`.
+    pub authorisation: String,
     _stdin: Option<ChildStdin>,
     _child: Running,
 }
@@ -118,11 +122,25 @@ pub fn try_notary(dir: &Path, operator: &str, root: &Path) -> Result<Notary, Str
         let _ = child.wait();
         return Err(said);
     };
-    Ok(Notary { dir: dir.to_path_buf(), signing, transport, address, _stdin: stdin, _child: Running(child) })
+    Ok(Notary { dir: dir.to_path_buf(), signing, transport, address, authorisation: String::new(), _stdin: stdin, _child: Running(child) })
 }
 
 pub fn notary(dir: &Path, operator: &str, root: &Path) -> Notary {
-    try_notary(dir, operator, root).expect("the notary did not start")
+    let mut started = try_notary(dir, operator, root).expect("the notary did not start");
+    started.authorisation = authorised(dir);
+    started
+}
+
+/// The directory's one authorisation, made with a generous budget on first use.
+fn authorised(dir: &Path) -> String {
+    if let Ok(mut held) = std::fs::read_dir(dir.join("authorisations")) {
+        if let Some(entry) = held.find(|entry| entry.as_ref().is_ok_and(|e| e.file_name().len() == 64)) {
+            return entry.unwrap().file_name().into_string().unwrap();
+        }
+    }
+    let made = Command::new(env!("CARGO_BIN_EXE_notary")).args(["authorize", "--dir"]).arg(dir).args(["--task", TASK, "--attempts", "100"]).output().unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    String::from_utf8(made.stdout).unwrap().trim().to_string()
 }
 
 /// An operator's home: a made-up credential at the pinned length, and a transport key.
@@ -143,7 +161,7 @@ pub fn operator(home: &Path) -> Operator {
 }
 
 /// The operator's tool, with test trust settings and the notary's address and public keys.
-pub fn tool(who: &Operator, root: &Path, provider: &str, address: &str, transport: &str, signing: &str) -> Command {
+pub fn tool(who: &Operator, root: &Path, provider: &str, address: &str, transport: &str, signing: &str, authorisation: &str) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_attest"));
     command
         .env("HOME", &who.home)
@@ -153,6 +171,7 @@ pub fn tool(who: &Operator, root: &Path, provider: &str, address: &str, transpor
         .env("HYALOS_NOTARY_ADDRESS", address)
         .env("HYALOS_NOTARY_TRANSPORT_PUBLIC", transport)
         .env("HYALOS_NOTARY_SIGNER_PUBLIC", signing)
+        .env("HYALOS_NOTARY_AUTHORISATION", authorisation)
         .env("HYALOS_OPERATOR_TRANSPORT_KEY", &who.key);
     command
 }
@@ -192,6 +211,6 @@ pub fn said(output: &Output) -> serde_json::Value {
 }
 
 pub fn verify(who: &Operator, root: &Path, file: &Path, signing: &str) -> Result<serde_json::Value, String> {
-    let output = tool(who, root, "127.0.0.1:9", "127.0.0.1:9", "00", signing).arg("verify").arg(file).arg(signing).output().unwrap();
+    let output = tool(who, root, "127.0.0.1:9", "127.0.0.1:9", "00", signing, "").arg("verify").arg(file).arg(signing).output().unwrap();
     if output.status.success() { Ok(serde_json::from_slice(&output.stdout).unwrap()) } else { Err(String::from_utf8_lossy(&output.stderr).into_owned()) }
 }

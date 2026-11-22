@@ -25,7 +25,7 @@ const PAST_INTENT: u64 = 2;
 /// The longest that wait may be. A log's time further ahead of this clock refuses the run.
 const MAX_WAIT: u64 = 10;
 /// What the tool needs to reach the notary. A run with any of them missing is refused.
-const NOTARY_SETTINGS: [&str; 4] = ["HYALOS_NOTARY_ADDRESS", "HYALOS_NOTARY_TRANSPORT_PUBLIC", "HYALOS_NOTARY_SIGNER_PUBLIC", "HYALOS_OPERATOR_TRANSPORT_KEY"];
+const NOTARY_SETTINGS: [&str; 5] = ["HYALOS_NOTARY_ADDRESS", "HYALOS_NOTARY_TRANSPORT_PUBLIC", "HYALOS_NOTARY_SIGNER_PUBLIC", "HYALOS_NOTARY_AUTHORISATION", "HYALOS_OPERATOR_TRANSPORT_KEY"];
 
 /// The attestation tool, where its presentations go, and the settings it is started with.
 pub(crate) struct Attest {
@@ -74,13 +74,15 @@ fn wait_until(second: u64) -> Result<(), Reason> {
 
 /// The reason for a tool that failed, from the one word it printed. Anything else is the reason
 /// for a tool that failed in a way it did not name.
-fn refusal(said: &[u8]) -> Reason {
+pub(crate) fn refusal(said: &[u8]) -> Reason {
     match said.strip_suffix(b"\n").unwrap_or(said) {
         b"unreachable" => Reason::NotaryUnreachable,
         b"deadline" => Reason::NotaryDeadline,
         b"notary-key" => Reason::WrongNotaryKey,
         b"release" => Reason::ReleaseMismatch,
         b"provider" => Reason::ProviderRefused,
+        b"authorisation" => Reason::NoAuthorisation,
+        b"spent" => Reason::AttemptsSpent,
         _ => Reason::ModelUnavailable,
     }
 }

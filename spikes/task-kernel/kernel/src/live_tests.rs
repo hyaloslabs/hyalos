@@ -100,6 +100,16 @@ impl Rig {
         self.set("HYALOS_NOTARY_SIGNER_PUBLIC", values[0].clone());
         self.set("HYALOS_NOTARY_TRANSPORT_PUBLIC", values[1].clone());
         self.set("HYALOS_NOTARY_ADDRESS", values[2].clone());
+        let guest = sha(&fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest/digest.wasm")).unwrap());
+        let inputs = read_inputs(Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/issues.tsv").to_str().unwrap()).unwrap();
+        let made = Command::new(built("notary"))
+            .args(["authorize", "--dir"])
+            .arg(self.dir.join("notary"))
+            .args(["--task", &crate::task_v2(&guest, &inputs).unwrap(), "--attempts", "100"])
+            .output()
+            .unwrap();
+        assert!(made.status.success());
+        self.set("HYALOS_NOTARY_AUTHORISATION", String::from_utf8(made.stdout).unwrap().trim());
     }
 
     /// Notary settings that name a peer no one should reach.
@@ -108,6 +118,7 @@ impl Rig {
         self.set("HYALOS_TRUST_PROVIDER_ADDRESS", "127.0.0.1:9");
         self.set("HYALOS_NOTARY_SIGNER_PUBLIC", "00".repeat(33));
         self.set("HYALOS_NOTARY_TRANSPORT_PUBLIC", "00".repeat(91));
+        self.set("HYALOS_NOTARY_AUTHORISATION", "ab".repeat(32));
         fs::write(self.dir.join("root.der"), b"").unwrap();
     }
 
@@ -424,4 +435,32 @@ fn record_s_02_3_e2_a_missing_guest_file_prints_no_identity() {
     let output = Command::new(program).arg("task").arg(rig.dir.join("no-such-guest")).arg(&inputs).env_clear().stdin(Stdio::null()).output().unwrap();
     assert!(!output.status.success());
     assert!(output.stdout.is_empty(), "no identity is printed");
+}
+
+/// A tool that answers every call with one refusal word, as `ask` does.
+fn tool_saying(rig: &Rig, word: &str) -> Attest {
+    use std::os::unix::fs::PermissionsExt;
+    let tool = rig.dir.join("says-one-word");
+    fs::write(&tool, format!("#!/bin/sh\nprintf '%s\\n' '{word}'\nexit 1\n")).unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o700)).unwrap();
+    Attest { tool: tool.display().to_string(), dir: format!("{}.attest", rig.record().display()), settings: Vec::new() }
+}
+
+#[test]
+fn record_s_04_8_e1_spent_is_the_attempts_spent_reason_logged_as_refused() {
+    let rig = Rig::new("r-04-8-e1");
+    rig.assert_refused(Some(tool_saying(&rig, "spent")), Reason::AttemptsSpent);
+}
+
+#[test]
+fn record_s_04_8_e2_authorisation_is_the_no_authorisation_reason_logged_as_refused() {
+    let rig = Rig::new("r-04-8-e2");
+    rig.assert_refused(Some(tool_saying(&rig, "authorisation")), Reason::NoAuthorisation);
+}
+
+#[test]
+fn record_s_04_8_e3_an_unknown_word_is_model_unavailable() {
+    assert_eq!(crate::live::refusal(b"anything else\n"), Reason::ModelUnavailable);
+    let rig = Rig::new("r-04-8-e3");
+    rig.assert_refused(Some(tool_saying(&rig, "anything")), Reason::ModelUnavailable);
 }
