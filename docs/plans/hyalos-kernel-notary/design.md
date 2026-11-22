@@ -378,3 +378,15 @@ The baseline was measured by the operator's account, from `spikes/task-kernel`, 
 | Bytes exchanged between the two programs per attestation | Reported. No target until measured |
 
 **Benchmark.** The notary's cost report after 40 or more sessions gives all four figures (S-05.1, S-05.2). Its exact command is defined by the slice that adds it. The notary's own cost is measured against the stand-in provider, so it can be repeated without the operator. The wall time against the real provider is measured with the operator.
+
+**Recorded deviation, awaiting the developer (Slice 6, criterion 6.1).** This entry adds the first measured figures. It sets no target and changes none above. S-05.1 reads as peak memory per attestation, and the report gives one peak for the whole serving process, as `The usage file` says.
+
+| Measure | Measured | Conditions |
+|---|---|---|
+| Notary CPU per attestation | 1.211 s | 40 attested sessions, 0 refused, in one life of the notary, against the stand-in provider on loopback |
+| Notary peak memory | 548,736 KB | The same process, one figure |
+| Link bytes per attestation | 1,114,950 sent by the notary, 104,361,350 received | The same sessions, counted on the link to the operator, including its TLS |
+| Operator's wall time, without the real provider | 0.595 s per call, mean of 40 | The same sessions. Each time includes the start of a new `ask` process |
+| Operator's wall time, with the real provider | 7.42 s for one call | Slice 3's run, notary on a second machine through an SSH tunnel, 2.9 ms round trip. One measurement, so M2's 10 s holds for this call and is not shown in general |
+
+Measured once on 2026-11-22 at `83dcc0a` plus Slice 6's change, on a 10-CPU Intel Core Ultra 9 185H with 15 GB under WSL2, release build, with the operator and the notary on the same machine for the first four rows. CPU is the serving process's total divided by the attested sessions, so it includes the process's start. The stand-in's short exchange is not the real provider's, so these are a first number for a public notary's cost and not a capacity figure.
