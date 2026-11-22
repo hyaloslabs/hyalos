@@ -700,18 +700,21 @@ struct AuditInputs {
     verify: String,
     /// `--legacy-v1`: a version 1 record may be read. It changes nothing for version 2.
     legacy: bool,
+    /// `--guest`: the guest a version 2 record is replayed on.
+    guest: Option<String>,
 }
 
-/// `[ledger dir] [--operator-public <file>] --notary-public <file> --verify <program> [--legacy-v1]`. There is no
+/// `[ledger dir] [--operator-public <file>] --notary-public <file> --verify <program> [--guest <file>] [--legacy-v1]`. There is no
 /// setting that skips the attestations: without a trusted notary key the audit does not start.
 fn audit_inputs(rest: &[String]) -> Result<AuditInputs, String> {
-    let (mut dir, mut operator, mut notary, mut verify, mut legacy) = (None, None, None, None, false);
+    let (mut dir, mut operator, mut notary, mut verify, mut guest, mut legacy) = (None, None, None, None, None, false);
     let mut words = rest.iter();
     while let Some(word) = words.next() {
         match word.as_str() {
             "--operator-public" => operator = words.next(),
             "--notary-public" => notary = words.next(),
             "--verify" => verify = words.next(),
+            "--guest" => guest = words.next(),
             "--legacy-v1" => legacy = true,
             flag if flag.starts_with("--") => return Err("unknown audit option".into()),
             _ if dir.is_none() => dir = Some(word),
@@ -726,7 +729,7 @@ fn audit_inputs(rest: &[String]) -> Result<AuditInputs, String> {
         return Err("the verify program is not a file".into());
     }
     let verify = verify.to_str().ok_or("the verify program's path is not text")?.to_string();
-    Ok(AuditInputs { dir: dir.cloned(), operator: operator.cloned(), notary: notary_key(notary)?, verify, legacy })
+    Ok(AuditInputs { dir: dir.cloned(), operator: operator.cloned(), notary: notary_key(notary)?, verify, legacy, guest: guest.cloned() })
 }
 
 /// The notary's signing key from its file: one compressed secp256k1 point in lowercase hex.
@@ -753,12 +756,27 @@ fn audit_record(record: &str, inputs: &AuditInputs, stand_in: Option<(String, St
     if t.version == 1 && !inputs.legacy {
         return Err("this is a version 1 record, with no attempt budget: audit it with --legacy-v1".into());
     }
+    // Every record but a version 1 record is replayed, so none reaches the report without it.
+    let guest = if t.version == 1 {
+        None
+    } else {
+        let path = inputs.guest.as_deref().ok_or("the guest is not given: --guest <file>")?;
+        let guest = fs::read(path).map_err(|_| "the guest is not a readable file")?;
+        if sha(&guest) != t.guest_sha256 {
+            return Err("the guest is not this record's".into());
+        }
+        Some(guest)
+    };
     let salt = fs::read(format!("{record}.salt")).map_err(|_| "no salt for this record")?;
     let commitment = sha([salt.as_slice(), &serde_json::to_vec(&t).map_err(|_| "encode")?].concat().as_slice());
     let operator = inputs.operator.as_deref().ok_or("the operator's public key is not given: --operator-public <file>")?;
     let dir = inputs.dir.as_deref().unwrap_or("ledger");
     let audited = ledger::Auditor::new(dir, operator, stand_in)?.audit(&claim_of(&t, commitment)?)?;
     let answers = witnessed(&t, record, &inputs.notary, verifier, Some((&audited.intent, audited.window)))?;
+    // In this process whatever `HYALOS_KERNEL` says, so the audit opens no kernel file.
+    if let Some(guest) = &guest {
+        replay(&Backend::Process, guest, &t).map_err(|_| "the record does not replay on its guest")?;
+    }
     Ok(audit_report(&audited, answers.lines.len(), answers.test_settings))
 }
 
@@ -896,7 +914,7 @@ fn main_inner() -> Result<bool, String> {
         }
         "attested" => {
             let inputs = audit_inputs(&args[3..])?;
-            if inputs.dir.is_some() || inputs.operator.is_some() || inputs.legacy {
+            if inputs.dir.is_some() || inputs.operator.is_some() || inputs.legacy || inputs.guest.is_some() {
                 return Err("attested takes no ledger: --notary-public <file> --verify <program>".into());
             }
             let t = read_transcript(&fs::read(arg(2)?).map_err(|_| "cannot read")?)?;
