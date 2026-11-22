@@ -58,8 +58,12 @@ const MAX_QUESTION: usize = 4 * 1024;
 const MAX_SENT: usize = 1 << 13;
 const MAX_RECV: usize = 1 << 14;
 const END: &[u8] = b"\r\n\r\n";
-/// The most bytes a request may hide. Only the credential is hidden, and none is this long.
-const MAX_CREDENTIAL: usize = 256;
+/// Exactly how many bytes a request hides: the length of the provider's credential. Verify sees
+/// the hidden run's length and never its content, so a run any longer could carry a line break, a
+/// header and a body of the operator's after the credential. A credential of another length
+/// needs this number changed, and until then is refused. It is not a setting: whoever is being
+/// checked must not be able to choose it.
+const CREDENTIAL_LENGTH: usize = 106;
 /// The notary's addition to an attestation: the run it was told, as 64 lowercase hex characters,
 /// then how many attestations it had signed for that run before this one, as 8 big-endian bytes.
 const RUN_SEQUENCE: &[u8] = b"hyalos.run-sequence/1";
@@ -445,7 +449,7 @@ fn verify(bytes: &[u8], trusted_notary: &str, trust: &Trust) -> Result<Value> {
     ensure!(shown.len() == 2 && shown[0].start == 0 && shown[1].end == sent.len(), "the request is not shown as expected");
     let head_end = find(&sent, END).context("no request body")?;
     ensure!(shown[1].start == head_end, "something other than the last header's value is hidden");
-    ensure!(shown[1].start - shown[0].end <= MAX_CREDENTIAL, "more is hidden than a credential");
+    ensure!(shown[1].start - shown[0].end == CREDENTIAL_LENGTH, "the hidden bytes are not a credential's length");
     let body_bytes = &sent[head_end + END.len()..];
     let (title, intent, position) = approved(body_bytes)?;
     ensure!(written_head(&sent[..shown[0].end], &title, &binding(&intent, position)?, &trust.server), "the request's head is not the one this tool writes");
@@ -490,9 +494,10 @@ async fn run() -> Result<()> {
             std::io::stdin().take(MAX_QUESTION as u64 + 1).read_to_string(&mut title).context("the question is not text")?;
             ensure!(title.len() <= MAX_QUESTION, "the question is too large");
             let credential = credential()?;
-            ensure!(credential.len() <= MAX_CREDENTIAL, "cannot use the credential file");
             // Test settings can point anywhere, so a credential shaped like a real one never follows them.
             ensure!(!(trust.test && credential.starts_with("sk-ant-")), "refusing to send a real credential under test trust settings");
+            // Refused before anything is sent: verify would refuse the presentation anyway.
+            ensure!(credential.len() == CREDENTIAL_LENGTH, "the credential is not the length this tool is pinned to");
             // A failure inside is reported by its root cause, cut short and with the credential's bytes replaced.
             let (answer, presentation) = ask(&title, &binding, intent, &trust, &credential, notary_key()?).await.map_err(|error| {
                 anyhow!("the attested call failed: {}", error.root_cause().to_string().replace(credential.as_str(), "[hidden]").chars().take(160).collect::<String>())
@@ -583,6 +588,58 @@ mod tests {
         for value in malformed {
             assert!(read_run_sequence(&[Extension { id: RUN_SEQUENCE.to_vec(), value }]).is_err());
         }
+    }
+
+    /// A real session against the stand-in, with `credential` as the request's hidden bytes, and
+    /// what verify says about its presentation.
+    async fn session_hiding(credential: &str, position: u64) -> Result<Value> {
+        let dir = std::env::temp_dir().join(format!("hyalos-attest-hidden-{}-{position}", std::process::id()));
+        fs::create_dir_all(&dir)?;
+        let root_file = dir.join("root.der");
+        // Beside this test binary's directory, where cargo builds the crate's programs.
+        let standin = env::current_exe()?.parent().and_then(|deps| deps.parent()).context("no build directory")?.join("standin");
+        ensure!(standin.exists(), "the stand-in provider is not built");
+        let mut child = std::process::Command::new(standin)
+            .arg(&root_file)
+            .arg("provider.test")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()?;
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(child.stdout.take().context("no output")?), &mut line)?;
+        let address = line.trim().strip_prefix("listening ").context("the stand-in did not start")?.to_string();
+        let mut roots = RootCertStore::mozilla();
+        roots.roots.push(CertificateDer(fs::read(&root_file)?));
+        let trust = Trust { server: "provider.test".to_string(), roots, address, test: true };
+        let run = "a".repeat(64);
+        let carried = binding(&run, position)?;
+        let key = [7u8; 32];
+        let attested = ask("A title", &carried, &run, &trust, credential, key).await;
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = fs::remove_dir_all(&dir);
+        let (_, presentation) = attested?;
+        let public = hex::encode(Secp256k1Signer::new(&key).map_err(|_| anyhow!("bad test key"))?.verifying_key().data);
+        verify(&presentation, &public, &trust)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn issue_394_a_hidden_line_break_and_body_after_the_credential_is_refused() {
+        // The control: a credential of the pinned length passes, so the refusal below is the length's.
+        let clean = "x".repeat(CREDENTIAL_LENGTH);
+        assert_eq!(session_hiding(&clean, 0).await.unwrap()["position"], 0);
+        // A cheating operator's request: the credential, a blank line, then a body of their own.
+        // The provider would read that body, and verify would show only the approved one.
+        let smuggled = format!("{clean}\r\n\r\n{{\"model\":\"another\"}}");
+        let refusal = session_hiding(&smuggled, 1).await.unwrap_err().to_string();
+        assert!(refusal.contains("not a credential's length"), "{refusal}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn issue_394_a_hidden_run_one_byte_short_is_refused() {
+        let short = "x".repeat(CREDENTIAL_LENGTH - 1);
+        let refusal = session_hiding(&short, 2).await.unwrap_err().to_string();
+        assert!(refusal.contains("not a credential's length"), "{refusal}");
     }
 
     #[test]
