@@ -6,7 +6,7 @@
 
 ## Context
 
-Verify never sees the 106 hidden bytes of an attested request. ADR-011 showed the provider refuses a body forged inside them. It left one case untested: a junk bearer value, a line break and `x-api-key: <key>`, with the approved body unchanged. The question asked would be the one shown, but the call could run on another account or carry an added header. Testing it needs an API key, which the operator does not hold.
+Verify never sees the 106 hidden bytes of an attested request. ADR-011 showed the provider refuses a body forged inside them. That refusal is conditional, as ADR-011 states: one forged shape was sent, on one day, and the probe must be re-run before a release, where a 200 reopens the zero-knowledge option. Its named residual is one case: a junk bearer value, a line break and `x-api-key: <key>`, with the approved body unchanged. The question asked would be the one shown, but the call could run on another account or carry an added header. Testing it needs an API key, which the operator does not hold.
 
 ## Options
 
@@ -23,4 +23,4 @@ The monitor's attestation check prints this line today, from the constant `HIDDE
 ## Consequences
 
 - An audit does not claim that a call ran on a particular account, or that it carried no added header.
-- The forgery stays possible for anyone holding a short enough working API key, within what ADR-011 leaves open. A later test or proof that closes it removes this limit by a new decision.
+- The gap stays open to anyone holding a working credential, of any kind and in any header, short enough to fit in the 106 hidden bytes with its framing (ADR-010). A later test or proof that closes it removes this limit by a new decision.

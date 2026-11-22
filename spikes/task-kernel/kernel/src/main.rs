@@ -495,8 +495,6 @@ fn run_attacks(backend: &Backend, guest: &[u8], inputs: &[Vec<u8>]) -> Result<bo
     Ok(ok)
 }
 
-/// Checks that every model answer in a record is the one a notary saw the provider's server give
-/// to that exact question. It needs no network and no credential, only the notary key to trust.
 /// The fifth limit of S-04.5 (ADR-012): verify never sees the bytes a request hides.
 const HIDDEN_BYTES_LIMIT: &str = "not proven: the request's hidden bytes are not shown, so the call may have used another credential or carried an added header";
 
@@ -507,6 +505,8 @@ fn attested_report(answers: usize, test_settings: bool) -> String {
     format!("{mark}attested: {answers} of {answers} model answers match what the notary saw\n{HIDDEN_BYTES_LIMIT}")
 }
 
+/// Checks that every model answer in a record is the one a notary saw the provider's server give
+/// to that exact question. It needs no network and no credential, only the notary key to trust.
 fn attested(t: &Transcript, record: &str, notary: &str) -> Result<String, String> {
     let tool = env::var("HYALOS_ATTEST").map_err(|_| "set HYALOS_ATTEST to the attestation tool")?;
     // Set when any answer was verified under trust settings that are not the real provider's.
