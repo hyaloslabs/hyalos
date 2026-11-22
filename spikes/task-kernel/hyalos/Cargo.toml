@@ -1,0 +1,20 @@
+[package]
+name = "hyalos-kernel"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+wasmi = { version = "=2.0.2", default-features = false, features = ["stable", "validate", "memory64", "auto-dispatch", "libm"] }
+
+[features]
+selftest = []
+
+[profile.release]
+opt-level = 3
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
