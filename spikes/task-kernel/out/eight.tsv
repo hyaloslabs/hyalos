@@ -1,0 +1,8 @@
+381	Two intermittent test failures can turn a release's CI red
+378	Plugin index: bind every release's version and sign index.json
+375	Plugin updates: prevent silent rollback to older signed releases
+371	Trusted-core hardening: pack stop-check granularity, SSE [DONE] metering, and snapshot v17 migration guard
+370	Content gate: encoded credentials with character references and scheme-relative IPv6 links pass check_published
+361	Engine: a snapshot with a handle released by policy is refused on reload
+356	Idea: roll a job over to another provider or model when its provider cannot serve it
+355	Broker: a provider's out-of-credits error mid-stream is reported as this job's budget being spent

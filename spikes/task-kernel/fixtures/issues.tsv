@@ -1,0 +1,40 @@
+381	Two intermittent test failures can turn a release's CI red
+378	Plugin index: bind every release's version and sign index.json
+375	Plugin updates: prevent silent rollback to older signed releases
+371	Trusted-core hardening: pack stop-check granularity, SSE [DONE] metering, and snapshot v17 migration guard
+370	Content gate: encoded credentials with character references and scheme-relative IPv6 links pass check_published
+361	Engine: a snapshot with a handle released by policy is refused on reload
+356	Idea: roll a job over to another provider or model when its provider cannot serve it
+355	Broker: a provider's out-of-credits error mid-stream is reported as this job's budget being spent
+351	Actor prompt: Claude Code wrote a command as plain text in Markdown
+350	Actor prompt: Codex left no blank line between a code block and the paragraph it added
+349	Broker: a fix-issue pull request says Closes #N twice when the harness writes it too
+339	Trusted-core hardening from the pre-read: latent checks that hold only because of something else
+338	Content gate: variation selectors, U+061C and whitespace inside a forge link pass the checks
+337	Broker: confine the broker so it cannot read engine.key or github-app.pem
+336	Broker: one sandbox can hold about 1 GiB and stall every job's pushes through git body buffering and the global pack lock
+335	Broker: an Anthropic stream dropped after message_start is undercharged, so the token budget is not enforced
+333	Keep the threat model's code and test references checked in CI
+320	CI: the required `build, lint, test` job runs at its 20-minute limit
+313	S7.4b: As the pipeline, I run review agents on every release
+307	S7.14: As a maintainer, I create the settings check's app from a manifest and follow one runbook
+304	S7.13: As a maintainer, I am told when the marketplace's protection is loosened
+292	The second-interrupt message in hyalos run has runs of spaces in it
+290	S8.8: As a maintainer, a release runs a complete job with its own binary before it publishes
+289	S6.8: As a maintainer, the plugin runtime has a line budget before it is written
+284	A fix-issue run's pull request closes its issue: the broker adds Closes #N
+280	The v0.1.0 release binary refuses every job: Cedar misreads musl's main-thread stack
+275	S10.10: As an operator, setup asks me in my own terminal and never makes me copy a long line
+274	Setup's GitHub App step fails when the .pem is already in the config directory
+273	Planner step fails reader.bad_value with the default step model gpt-5-mini
+270	S10.9: As a maintainer, I read core/broker and core/types end to end before the independent review
+269	Split run_cmd.rs into one module per phase
+268	S10.8: As a new user, I install a prebuilt hyalos and pull a published sandbox image
+267	S10.7 Spike: As a new user, setup creates the GitHub App from a manifest
+266	S4.9: As an operator, policy releases an issue written only by people who can write to the repository
+265	set-up-hyalos: three fixes from the bot1 run
+258	The set-up-hyalos walkthrough is hard to follow: one step at a time, and hyalos setup --next
+257	Jobs started with hyalos start / start_job never show the issue to the actor, so they cannot resolve it
+256	hyalos github check passes for an App that cannot mint a job's token (it asks only contents: read)
+255	hyalos setup reports engine_key not done after hyalos init, because init does not create the event log
+253	Time a first job from a clean machine with the set-up-hyalos skill (bot1)
