@@ -131,7 +131,7 @@ impl Rig {
             links.push(link);
             Ok((links.len() - 1, hash))
         };
-        let (outcome, _) = declared_run(&mut append, &Backend::Process, &guest, inputs, mode, "salt", self.record().to_str().unwrap()).unwrap();
+        let (outcome, _) = declared_run(&mut append, &Backend::Process, &guest, inputs, mode, &random_salt(), self.record().to_str().unwrap()).unwrap();
         let reason = outcome.err().expect("the run must be refused");
         (reason, links)
     }
@@ -145,6 +145,13 @@ impl Rig {
         assert!(!self.record().exists(), "no record is written");
         assert!(!Path::new(&format!("{}.salt", self.record().display())).exists());
     }
+}
+
+/// A fresh salt for each run, as the `live` command makes one.
+fn random_salt() -> String {
+    let mut salt = [0u8; 32];
+    std::io::Read::read_exact(&mut fs::File::open("/dev/urandom").unwrap(), &mut salt).unwrap();
+    hex(&salt)
 }
 
 fn locked() -> std::sync::MutexGuard<'static, ()> {
@@ -282,7 +289,7 @@ fn t_3_3_with_no_notary_a_task_that_asks_nothing_does_not_run() {
         links.push(link);
         Ok((links.len() - 1, hash))
     };
-    let (outcome, _) = declared_run(&mut append, &Backend::Process, &guest, Vec::new(), mode, "salt", rig.record().to_str().unwrap()).unwrap();
+    let (outcome, _) = declared_run(&mut append, &Backend::Process, &guest, Vec::new(), mode, &random_salt(), rig.record().to_str().unwrap()).unwrap();
     assert_eq!(outcome.err(), Some(Reason::NotaryUnreachable));
     assert_eq!(links[1]["outcome"], "refused:NotaryUnreachable");
     assert!(!rig.record().exists());
