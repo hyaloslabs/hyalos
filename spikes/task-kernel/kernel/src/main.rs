@@ -602,10 +602,31 @@ fn check_answer(seen: &serde_json::Value, answer: &Answer, index: usize, run: &s
     Ok(())
 }
 
+/// The attempt the notary signed for a run: one exact value, carried by every answer.
+#[derive(Clone, PartialEq, Eq)]
+struct Attempt {
+    authorisation: String,
+    task: String,
+    budget: u64,
+    round: u64,
+    prior: u64,
+    ticket: u64,
+}
+
+impl Attempt {
+    fn read(seen: &serde_json::Value) -> Option<Self> {
+        let text = |key: &str| seen[key].as_str().map(str::to_string);
+        let number = |key: &str| seen[key].as_u64();
+        Some(Self { authorisation: text("authorisation")?, task: text("task")?, budget: number("budget")?, round: number("round")?, prior: number("prior")?, ticket: number("ticket")? })
+    }
+}
+
 /// What the per-answer checks found.
 struct Witnessed {
     lines: Vec<String>,
     test_settings: bool,
+    /// The run's one attempt. `None` only for a version 1 record.
+    attempt: Option<Attempt>,
 }
 
 /// Checks that every model answer in a record is the one the trusted notary saw the provider's
@@ -616,7 +637,7 @@ fn witnessed(t: &Transcript, record: &str, notary: &str, verifier: &Verifier, ch
         return Err("this record has no attested answers".into());
     }
     let mut run = chain.map(|(intent, _)| intent.to_string());
-    let (mut lines, mut test_settings) = (Vec::new(), false);
+    let (mut lines, mut test_settings, mut attempt) = (Vec::new(), false, None::<Attempt>);
     for (index, answer) in t.answers.iter().enumerate() {
         let file = format!("{record}.attest/{index:03}.presentation");
         let bytes = fs::read(&file).map_err(|_| format!("answer {index}: no attestation"))?;
@@ -641,10 +662,21 @@ fn witnessed(t: &Transcript, record: &str, notary: &str, verifier: &Verifier, ch
         if t.version == 1 && !seen["ticket"].is_null() {
             return Err(format!("answer {index}: a version 1 record cannot carry a ticket"));
         }
+        // Every record but a version 1 record must carry the one signed attempt.
+        if t.version != 1 {
+            let held = Attempt::read(&seen["ticket"]).ok_or_else(|| format!("answer {index}: the attestation carries no ticket"))?;
+            if !(1..=100).contains(&held.budget) || held.ticket >= held.budget {
+                return Err(format!("answer {index}: the ticket is not inside its budget"));
+            }
+            if attempt.as_ref().is_some_and(|first| *first != held) {
+                return Err(format!("answer {index}: the ticket is not the one answer 0 carries"));
+            }
+            attempt = Some(held);
+        }
         test_settings |= !seen["trust"].is_null();
         lines.push(format!("answer {index}: run {named} position {index} sequence {index} session {}", seen["time"]));
     }
-    Ok(Witnessed { lines, test_settings })
+    Ok(Witnessed { lines, test_settings, attempt })
 }
 
 /// One declared run: its intent link, its execution, and a result link that says how it ended.
@@ -777,20 +809,27 @@ fn audit_record(record: &str, inputs: &AuditInputs, stand_in: Option<(String, St
     let commitment = sha([salt.as_slice(), &serde_json::to_vec(&t).map_err(|_| "encode")?].concat().as_slice());
     let operator = inputs.operator.as_deref().ok_or("the operator's public key is not given: --operator-public <file>")?;
     let dir = inputs.dir.as_deref().unwrap_or("ledger");
-    let audited = ledger::Auditor::new(dir, operator, stand_in)?.audit(&claim_of(&t, commitment)?)?;
+    let claim = claim_of(&t, commitment)?;
+    let audited = ledger::Auditor::new(dir, operator, stand_in)?.audit(&claim)?;
     let answers = witnessed(&t, record, &inputs.notary, verifier, Some((&audited.intent, audited.window)))?;
+    if t.version != 1 {
+        let attempt = answers.attempt.as_ref().ok_or("the attestations carry no ticket")?;
+        if attempt.task != claim.task {
+            return Err("the ticket's task is not this record's".into());
+        }
+    }
     // In this process whatever `HYALOS_KERNEL` says, so the audit opens no kernel file.
     if let Some(guest) = &guest {
         replay(&Backend::Process, guest, &t).map_err(|_| "the record does not replay on its guest")?;
     }
-    Ok(audit_report(&audited, answers.lines.len(), answers.test_settings))
+    Ok(audit_report(&audited, answers.lines.len(), answers.test_settings, answers.attempt.as_ref()))
 }
 
 /// What a passing audit proved, then what it did not.
-fn audit_report(audited: &ledger::Audited, answers: usize, test_settings: bool) -> String {
+fn audit_report(audited: &ledger::Audited, answers: usize, test_settings: bool, attempt: Option<&Attempt>) -> String {
     let log = if audited.stand_in { "stand-in log" } else { "public log" };
     // Only a pass that checked an attempt budget may open with `audit passed` (ADR-011).
-    let first = if audited.version == 1 { "legacy audit passed: no attempt budget" } else { "interim audit passed: attempt budget not yet checked" };
+    let first = if audited.version != 1 && attempt.is_some() { "audit passed" } else { "legacy audit passed: no attempt budget" };
     let mut lines = vec![first.to_string()];
     if audited.stand_in {
         lines.push("test trust settings: the log here is a stand-in".to_string());
@@ -806,11 +845,18 @@ fn audit_report(audited: &ledger::Audited, answers: usize, test_settings: bool) 
         lines.push("test trust settings: the provider here is a stand-in".to_string());
     }
     lines.push(format!("proven: all {answers} answers were attested by the trusted notary for this run and position, inside the run's window, each with a sequence number equal to its position"));
+    if let Some(held) = attempt {
+        lines.push(format!("attempt {} of at most {} under this authorisation, {} authorised earlier, for this exact task on this notary", held.ticket + 1, held.budget, held.prior));
+    }
     lines.push("not proven: the notary's independence is the customer's own".to_string());
     lines.push("not proven: the model's name is the provider's claim".to_string());
     lines.push("not proven: the answer's correctness is not judged".to_string());
     lines.push("not proven: the log is trusted to have shown every entry under the operator's key".to_string());
     lines.push(HIDDEN_BYTES_LIMIT.to_string());
+    if attempt.is_some() {
+        lines.push("not proven: the operator may have asked the provider directly, away from the notary".to_string());
+        lines.push("not proven: the customer did not authorise this task again after this attestation".to_string());
+    }
     lines.join("\n")
 }
 

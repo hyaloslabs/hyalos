@@ -1,0 +1,52 @@
+//! A test-only notary: the real program, signing the ticket bytes `HYALOS_FORGE_TICKET` names. It
+//! exists because a real notary never signs a bad ticket, so the audit's checks on one could not
+//! otherwise be reached. The hook is defined only here, so `notary` cannot compile with the
+//! `forge-ticket` feature on.
+//!
+//! The setting is `missing`, `doubled`, `short`, or a comma-separated list of `field=value` for
+//! `authorisation`, `task`, `budget`, `round`, `prior` and `ticket`. A `later:` prefix leaves a
+//! run's first session alone.
+
+use attest::Ticket;
+
+#[path = "notary.rs"]
+mod notary;
+
+/// The ticket extensions to sign in place of the real one.
+pub(crate) fn forged_ticket(real: &Ticket, sequence: u64) -> Vec<Vec<u8>> {
+    let Ok(said) = std::env::var("HYALOS_FORGE_TICKET") else { return vec![real.bytes()] };
+    let (first, said) = said.strip_prefix("later:").map_or((0, said.as_str()), |rest| (1, rest));
+    if sequence < first {
+        return vec![real.bytes()];
+    }
+    match said {
+        "missing" => Vec::new(),
+        "doubled" => vec![real.bytes(), real.bytes()],
+        "short" => {
+            let mut bytes = real.bytes();
+            bytes.pop();
+            vec![bytes]
+        }
+        edits => {
+            let mut forged = real.clone();
+            for edit in edits.split(',') {
+                let (field, value) = edit.split_once('=').expect("a forged field");
+                let number = || value.parse::<u32>().expect("a forged number");
+                match field {
+                    "authorisation" => forged.authorisation = value.to_string(),
+                    "task" => forged.task = value.to_string(),
+                    "budget" => forged.budget = number(),
+                    "round" => forged.round = number(),
+                    "prior" => forged.prior = number(),
+                    "ticket" => forged.ticket = number(),
+                    _ => panic!("no such field"),
+                }
+            }
+            vec![forged.bytes()]
+        }
+    }
+}
+
+fn main() -> std::process::ExitCode {
+    notary::main()
+}
