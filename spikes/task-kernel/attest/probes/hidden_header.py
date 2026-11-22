@@ -47,7 +47,12 @@ def status(request):
     name = os.environ.get("HYALOS_TRUST_SERVER_NAME", "api.anthropic.com")
     host, port = os.environ.get("HYALOS_TRUST_PROVIDER_ADDRESS", name + ":443").rsplit(":", 1)
     # The stand-in's root is a DER file, as the attest tool reads it.
-    context = ssl.create_default_context(cadata=open(root, "rb").read()) if root else ssl.create_default_context()
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    if root:
+        context.load_verify_locations(cadata=open(root, "rb").read())
+    else:
+        context.load_default_certs()
     try:
         with socket.create_connection((host, int(port)), timeout=60) as raw:
             with context.wrap_socket(raw, server_hostname=name) as tls:
