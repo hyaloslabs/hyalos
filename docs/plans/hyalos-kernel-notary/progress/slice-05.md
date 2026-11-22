@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Status** | done |
+| **Status** | blocked |
 | **Issue** | #390 |
-| **PR** | this PR |
+| **PR** | #403, a draft, not merged. The stop was found in its review, after it was opened |
 | **Executor model** | Claude Opus 5.5 |
 | **Date** | 2026-11-22 |
 
@@ -24,6 +24,8 @@ Checked at `6ca93b4`. Line numbers have moved since the plan was written, so eac
 | The signed times Slice 4 verified | holds. `check_entry` now returns the time it verified |
 
 ## Acceptance
+
+**S-03.5 and S-04.4 do not hold in substance.** The rows below pass as tested, but the attack under **Blocked on** re-asks a question and passes every check.
 
 From `spikes/task-kernel`: both builds ended `Finished`. The monitor's tests passed 55 of 55 (48 unit, 7 CLI), the attestation crate's 48 of 48, and `attacks` with both kernels printed 51 `PASS` and no `FAIL`. `grep -n 'HYALOS_NOTARY' kernel/src/main.rs` printed nothing and exited 1.
 
@@ -70,3 +72,15 @@ Also: `s_04_1_the_whole_audit_passes_with_an_empty_home` (the real command, an e
 - **For Slice 6 and the operator:** the real end-to-end audit under this slice's rules has not been run. The operator's next real run, through `attest/probes/two_machines.sh`, is the first that can pass it.
 - **For the developer:** the audit does not replay the guest. It proves each answer was witnessed for this run and position, not that the guest asked those questions. `replay` checks that separately, given the guest.
 - **For the retro:** a re-ask of the last position that keeps the first answer leaves no trace in the record. It gains the operator nothing, since the kept answer is the one they would have had anyway.
+
+## Blocked on
+
+**The question.** The notary numbers attestations it signed, so a session the operator abandons spends no number. Should the number be spent when a session opens instead, which changes S-03.5, ADR-006 and `design.md` §2 and §4?
+
+**The stop conditions.** Slice 5: "Stop if any forgery in S-04.4 passes the audit. Record it and stop: do not adjust the test." README rule 6: a plan file is wrong in a way that changes a contract.
+
+**The attack.** The operator reads the provider's reply before the proof (`attest/src/main.rs:173`). The notary spends the number only in `sign` (`attest/src/bin/notary.rs:295`). So a modified `ask` can read an answer it dislikes, leave before the proof, and ask again under the same run and position. The notary logs `refused dropped`, a private line the audit never reads, and the next session still gets the number equal to the position.
+
+**Reproduced** against a test notary and the stand-in provider, with a throwaway copy of `ask`: two sessions read the reply and left, and the third was signed with position 0 and sequence 0 for the same run. The notary's lines were `refused dropped`, `refused dropped`, `attested`. The whole audit was not run over that presentation, but it carries exactly the fields each check compares.
+
+**The proposed answer, not applied.** Spend the number after the notary accepts the run and before it answers `ok`, and define the sequence as sessions opened for the run. An honest run loses nothing, because the monitor never retries a call and any failed call already refuses the run. A dropped link then makes that run unable to pass, as a lost attestation already does. It needs a new pack ADR amending ADR-006, and a regression test that drops a session after reading the reply and expects the audit to refuse.
