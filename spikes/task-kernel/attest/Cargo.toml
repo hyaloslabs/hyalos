@@ -16,6 +16,15 @@ serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util"] }
 tokio-util = { version = "0.7", features = ["compat"] }
+# The stand-in provider only: a local TLS server and a test root for it.
+rcgen = "0.13"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+
+# The stand-in has no tests of its own: the integration tests run it.
+[[bin]]
+name = "standin"
+path = "src/bin/standin.rs"
+test = false
 
 [profile.release]
 opt-level = 3

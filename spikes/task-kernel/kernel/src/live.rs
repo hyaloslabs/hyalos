@@ -22,6 +22,9 @@ pub(crate) struct Live {
     /// The attestation tool and where its presentations go, when calls are to be notarized.
     attest: Option<(String, String)>,
     asked: usize,
+    /// The run's intent hash, once its intent link is in the public log. Every attested call
+    /// names it, with the call's position, inside the attested request.
+    intent: String,
     /// The last HTTP status, for diagnosis. It says nothing about the credential's value.
     pub(crate) last_status: u16,
 }
@@ -42,7 +45,13 @@ impl Live {
             last_status: 0,
             attest,
             asked: 0,
+            intent: String::new(),
         })
+    }
+
+    /// Names the run every later attested call is made for.
+    pub(crate) fn bind(&mut self, intent: &str) {
+        self.intent = intent.to_string();
     }
 
     /// One question, one typed answer. Anything but a well-formed label is a refusal.
@@ -53,10 +62,11 @@ impl Live {
             // credential on its own, and says nothing on failure that this process would repeat.
             let no = |_| Reason::ModelUnavailable;
             fs::create_dir_all(dir).map_err(no)?;
+            let position = self.asked.to_string();
             let file = format!("{dir}/{:03}.presentation", self.asked);
             self.asked += 1;
             let mut child = Command::new(tool)
-                .args(["ask", &file])
+                .args(["ask", &file, &self.intent, &position])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())

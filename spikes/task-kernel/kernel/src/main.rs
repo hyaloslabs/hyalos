@@ -548,7 +548,7 @@ fn main_inner() -> Result<bool, String> {
             let key = format!("{}/.config/hyalos-spike/anthropic.key", env::var("HOME").map_err(|_| "no home")?);
             // `stub` as the repository runs the same committed flow with the stand-in model and no
             // real notification, so the chain can be exercised without a credential.
-            let mode = if arg(5)? == "stub" {
+            let mut mode = if arg(5)? == "stub" {
                 Mode::Record { seed: issue }
             } else {
                 // With HYALOS_ATTEST naming the attestation tool, every model call goes through a
@@ -573,6 +573,10 @@ fn main_inner() -> Result<bool, String> {
             let task = sha(format!("{}:{}", sha(&guest), sha(&inputs.concat())).as_bytes());
             let intent = serde_json::json!({"v": 1, "kind": "intent", "task": task, "guest_sha256": sha(&guest)});
             let (_, intent_hash) = ledger.append(intent).map_err(|r| format!("{r:?}"))?;
+            // The run is declared. From here every attested call names it.
+            if let Mode::Live(live) = &mut mode {
+                live.bind(&intent_hash);
+            }
             let outcome = execute(&backend, &guest, inputs, mode);
             let (state, commitment) = match &outcome {
                 Ok(t) => ("ok".to_string(), sha([salt.as_bytes(), &serde_json::to_vec(t).map_err(|_| "encode")?].concat().as_slice())),
