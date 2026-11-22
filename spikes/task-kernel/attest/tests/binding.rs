@@ -36,8 +36,9 @@ fn tool(call_home: &PathBuf, root: &PathBuf, address: Option<&str>) -> Command {
 fn call() -> &'static Call {
     static CALL: OnceLock<Call> = OnceLock::new();
     CALL.get_or_init(|| {
-        // Under the build's own scratch directory, so nothing is left in the system's.
-        let home = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("binding-home");
+        // Under the build's own scratch directory, so nothing is left in the system's, and named
+        // for this process, so two runs on one build directory do not share it.
+        let home = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("binding-home-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         let config = home.join(".config/hyalos-spike");
         std::fs::create_dir_all(&config).unwrap();
@@ -63,6 +64,15 @@ fn call() -> &'static Call {
             .spawn()
             .unwrap();
         ask.stdin.take().unwrap().write_all(b"The build fails on a clean checkout").unwrap();
+        // A stuck session fails the tests. It does not hang them.
+        let started = std::time::Instant::now();
+        while ask.try_wait().unwrap().is_none() {
+            if started.elapsed() > std::time::Duration::from_secs(120) {
+                let _ = ask.kill();
+                panic!("the attested call did not finish in 120 seconds");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         let output = ask.wait_with_output().unwrap();
         assert!(output.status.success(), "ask failed: {}", String::from_utf8_lossy(&output.stderr));
         let said = serde_json::from_slice(&output.stdout).unwrap();
@@ -92,6 +102,7 @@ fn run_at(bytes: &[u8]) -> usize {
 fn s_03_1_a_request_with_a_binding_is_answered_and_verify_reports_the_binding() {
     let call = call();
     assert_eq!(call.said["label"], 0, "the stand-in's typed label");
+    assert_eq!(call.said["trust"], "test trust settings", "ask's own line must say so too");
     let report = verify(call, &call.presentation).unwrap();
     assert_eq!(report["intent_hash"], INTENT);
     assert_eq!(report["position"], 3);
@@ -141,17 +152,60 @@ fn t_1_3_verify_reports_the_session_time_the_notary_recorded() {
     assert!(time <= now && now - time < 600, "session time {time} is not this test's, now {now}");
 }
 
+/// Verifies the shared presentation with only the trust settings given, and returns the outcome.
+fn verify_with(call: &Call, settings: &[(&str, &std::ffi::OsStr)]) -> Result<serde_json::Value, String> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_attest"));
+    command.env("HOME", &call.home);
+    for name in ["HYALOS_TRUST_SERVER_NAME", "HYALOS_TRUST_ROOT", "HYALOS_TRUST_PROVIDER_ADDRESS"] {
+        command.env_remove(name);
+    }
+    let output = command.envs(settings.iter().copied()).args(["verify", call.presentation.to_str().unwrap(), &call.notary]).output().unwrap();
+    if output.status.success() {
+        Ok(serde_json::from_slice(&output.stdout).unwrap())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).into_owned())
+    }
+}
+
 #[test]
-fn s_03_1_a_report_without_the_test_settings_refuses_the_stand_in() {
-    // With the default trust settings, the same presentation is not the real provider's.
+fn s_03_1_the_default_trust_settings_refuse_the_stand_in_by_its_certificate() {
+    // With no test root, the stand-in's certificate chain is not one this tool trusts.
+    let refusal = verify_with(call(), &[]).unwrap_err();
+    assert!(refusal.contains("does not verify"), "{refusal}");
+}
+
+#[test]
+fn s_03_1_the_test_root_alone_refuses_the_stand_in_by_its_name() {
+    // The chain now verifies, so this reaches the comparison with the approved server name.
     let call = call();
-    let output = Command::new(env!("CARGO_BIN_EXE_attest"))
-        .env("HOME", &call.home)
-        .env_remove("HYALOS_TRUST_SERVER_NAME")
-        .env_remove("HYALOS_TRUST_ROOT")
-        .env_remove("HYALOS_TRUST_PROVIDER_ADDRESS")
-        .args(["verify", call.presentation.to_str().unwrap(), &call.notary])
-        .output()
+    let refusal = verify_with(call, &[("HYALOS_TRUST_ROOT", call.root.as_os_str())]).unwrap_err();
+    assert!(refusal.contains("the session was with another server"), "{refusal}");
+}
+
+#[test]
+fn s_03_1_any_one_test_setting_marks_the_report() {
+    // An address is not used by verify at all, and still marks what it reports or refuses.
+    let call = call();
+    let both = [("HYALOS_TRUST_ROOT", call.root.as_os_str()), ("HYALOS_TRUST_SERVER_NAME", std::ffi::OsStr::new(NAME))];
+    assert_eq!(verify_with(call, &both).unwrap()["trust"], "test trust settings");
+}
+
+#[test]
+fn a_real_shaped_credential_is_never_sent_under_test_settings() {
+    let call = call();
+    let home = call.home.join("real-shaped");
+    std::fs::create_dir_all(home.join(".config/hyalos-spike")).unwrap();
+    std::fs::write(home.join(".config/hyalos-spike/anthropic.key"), "sk-ant-made-up-for-tests\n").unwrap();
+    let mut ask = tool(&home, &call.root, Some("127.0.0.1:9"))
+        .args(["ask", home.join("never.presentation").to_str().unwrap(), INTENT, POSITION])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .unwrap();
+    ask.stdin.take().unwrap().write_all(b"A title").unwrap();
+    let output = ask.wait_with_output().unwrap();
     assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("refusing to send a real credential under test trust settings"));
+    assert!(!home.join("never.presentation").exists());
 }

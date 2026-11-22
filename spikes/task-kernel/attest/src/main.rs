@@ -58,6 +58,8 @@ const MAX_QUESTION: usize = 4 * 1024;
 const MAX_SENT: usize = 1 << 13;
 const MAX_RECV: usize = 1 << 14;
 const END: &[u8] = b"\r\n\r\n";
+/// The most bytes a request may hide. Only the credential is hidden, and none is this long.
+const MAX_CREDENTIAL: usize = 256;
 /// The notary's addition to an attestation: the run it was told, as 64 lowercase hex characters,
 /// then how many attestations it had signed for that run before this one, as 8 big-endian bytes.
 const RUN_SEQUENCE: &[u8] = b"hyalos.run-sequence/1";
@@ -73,8 +75,13 @@ struct Trust {
 
 impl Trust {
     fn read() -> Result<Self> {
-        let set = |name: &str| env::var(name).ok().filter(|value| !value.is_empty());
-        let (server, root, address) = (set("HYALOS_TRUST_SERVER_NAME"), set("HYALOS_TRUST_ROOT"), set("HYALOS_TRUST_PROVIDER_ADDRESS"));
+        // A setting that is present but unreadable is a refusal, never a silent return to the defaults.
+        let set = |name: &str| match env::var(name) {
+            Ok(value) => Ok(Some(value).filter(|value| !value.is_empty())),
+            Err(env::VarError::NotPresent) => Ok(None),
+            Err(env::VarError::NotUnicode(_)) => Err(anyhow!("a trust setting is not text")),
+        };
+        let (server, root, address) = (set("HYALOS_TRUST_SERVER_NAME")?, set("HYALOS_TRUST_ROOT")?, set("HYALOS_TRUST_PROVIDER_ADDRESS")?);
         let test = server.is_some() || root.is_some() || address.is_some();
         let server = server.unwrap_or_else(|| SERVER.to_string());
         let mut roots = RootCertStore::mozilla();
@@ -155,6 +162,17 @@ fn approved(body_bytes: &[u8]) -> Result<(String, String, u64)> {
     let (intent, position) = unbind(carried)?;
     ensure!(title.len() <= MAX_QUESTION && body(title, carried).as_bytes() == body_bytes, "the request is not the approved question template");
     Ok((title.to_string(), intent, position))
+}
+
+/// Whether the shown start of a request is, byte for byte, what this tool writes before the
+/// credential for this title and binding. That fixes every header and the body's length, so the
+/// only thing a request can hide is the value of its last header.
+fn written_head(shown: &[u8], title: &str, binding: &str, server: &str) -> bool {
+    // One head per credential shape: `request` picks the header by the credential's prefix.
+    ["sk-ant-api", ""].iter().any(|shape| {
+        let (bytes, hidden) = request(title, binding, server, shape);
+        bytes[..hidden.start] == *shown
+    })
 }
 
 fn find(bytes: &[u8], needle: &[u8]) -> Option<usize> {
@@ -427,12 +445,10 @@ fn verify(bytes: &[u8], trusted_notary: &str, trust: &Trust) -> Result<Value> {
     ensure!(shown.len() == 2 && shown[0].start == 0 && shown[1].end == sent.len(), "the request is not shown as expected");
     let head_end = find(&sent, END).context("no request body")?;
     ensure!(shown[1].start == head_end, "something other than the last header's value is hidden");
-    let head = std::str::from_utf8(&sent[..shown[0].end]).context("bad request")?;
-    ensure!(head.starts_with(&format!("POST /v1/messages HTTP/1.1\r\nhost: {}\r\n", trust.server)), "not a request for a model answer");
-    let last = head.rsplit("\r\n").next().unwrap_or_default();
-    ensure!(last == "x-api-key: " || last == "authorization: Bearer ", "something other than the credential is hidden");
+    ensure!(shown[1].start - shown[0].end <= MAX_CREDENTIAL, "more is hidden than a credential");
     let body_bytes = &sent[head_end + END.len()..];
     let (title, intent, position) = approved(body_bytes)?;
+    ensure!(written_head(&sent[..shown[0].end], &title, &binding(&intent, position)?, &trust.server), "the request's head is not the one this tool writes");
 
     // Received: the status line and everything from the blank line on.
     let received = transcript.received_unsafe(transcript.len_received()).map_err(|_| anyhow!("bad transcript"))?;
@@ -474,7 +490,10 @@ async fn run() -> Result<()> {
             std::io::stdin().take(MAX_QUESTION as u64 + 1).read_to_string(&mut title).context("the question is not text")?;
             ensure!(title.len() <= MAX_QUESTION, "the question is too large");
             let credential = credential()?;
-            // Any failure inside is reported by stage only: an inner error could quote the exchange.
+            ensure!(credential.len() <= MAX_CREDENTIAL, "cannot use the credential file");
+            // Test settings can point anywhere, so a credential shaped like a real one never follows them.
+            ensure!(!(trust.test && credential.starts_with("sk-ant-")), "refusing to send a real credential under test trust settings");
+            // A failure inside is reported by its root cause, cut short and with the credential's bytes replaced.
             let (answer, presentation) = ask(&title, &binding, intent, &trust, &credential, notary_key()?).await.map_err(|error| {
                 anyhow!("the attested call failed: {}", error.root_cause().to_string().replace(credential.as_str(), "[hidden]").chars().take(160).collect::<String>())
             })?;
@@ -482,11 +501,12 @@ async fn run() -> Result<()> {
             // The sequence number is read back from the presentation, as an auditor would read it.
             let sequence = verify(&presentation, &notary_public()?, &trust)?["sequence"].clone();
             fs::write(out, &presentation).context("cannot write the presentation")?;
-            println!(
-                "{}",
-                json!({"label": answer.label, "model": answer.model, "response_id": answer.response_id,
-                       "presentation_sha256": hex::encode(Sha256::digest(&presentation)), "sequence": sequence, "notary": notary_public()?})
-            );
+            let mut said = json!({"label": answer.label, "model": answer.model, "response_id": answer.response_id,
+                                  "presentation_sha256": hex::encode(Sha256::digest(&presentation)), "sequence": sequence, "notary": notary_public()?});
+            if trust.test {
+                said["trust"] = json!("test trust settings");
+            }
+            println!("{said}");
         }
         Some("verify") => {
             let bytes = fs::read(args.get(2).context("usage: verify <presentation file> <trusted notary key>")?).context("cannot read")?;
@@ -554,6 +574,34 @@ mod tests {
         assert_eq!(read_run_sequence(std::slice::from_ref(&extension)).unwrap(), (INTENT.to_string(), 7));
         assert!(read_run_sequence(&[]).is_err());
         assert!(read_run_sequence(&[extension.clone(), extension]).is_err());
+        let malformed = [
+            run_sequence(INTENT, 7)[..71].to_vec(),
+            [run_sequence(INTENT, 7), vec![0]].concat(),
+            run_sequence(&INTENT.to_uppercase(), 7),
+            run_sequence(&INTENT.replace('5', "g"), 7),
+        ];
+        for value in malformed {
+            assert!(read_run_sequence(&[Extension { id: RUN_SEQUENCE.to_vec(), value }]).is_err());
+        }
+    }
+
+    #[test]
+    fn s_03_4_only_the_head_this_tool_writes_is_accepted() {
+        let carried = binding(INTENT, 2).unwrap();
+        for shape in ["sk-ant-api", "other"] {
+            let (bytes, hidden) = request("A title", &carried, SERVER, shape);
+            let head = &bytes[..hidden.start];
+            assert!(written_head(head, "A title", &carried, SERVER));
+            // Another header before the credential's, a body of another length, another server.
+            let text = std::str::from_utf8(head).unwrap();
+            let extra = text.replacen("connection: close\r\n", "connection: close\r\ntransfer-encoding: chunked\r\n", 1);
+            assert!(!written_head(extra.as_bytes(), "A title", &carried, SERVER));
+            let length = format!("content-length: {}", body("A title", &carried).len());
+            assert!(text.contains(&length));
+            assert!(!written_head(text.replacen(&length, "content-length: 5", 1).as_bytes(), "A title", &carried, SERVER));
+            assert!(!written_head(head, "A title", &carried, "provider.test"));
+            assert!(!written_head(head, "Another title", &carried, SERVER));
+        }
     }
 
     #[test]

@@ -499,6 +499,8 @@ fn run_attacks(backend: &Backend, guest: &[u8], inputs: &[Vec<u8>]) -> Result<bo
 /// to that exact question. It needs no network and no credential, only the notary key to trust.
 fn attested(t: &Transcript, record: &str, notary: &str) -> Result<String, String> {
     let tool = env::var("HYALOS_ATTEST").map_err(|_| "set HYALOS_ATTEST to the attestation tool")?;
+    // Set when any answer was verified under trust settings that are not the real provider's.
+    let mut test_settings = false;
     for (index, answer) in t.answers.iter().enumerate() {
         let file = format!("{record}.attest/{index:03}.presentation");
         let bytes = fs::read(&file).map_err(|_| format!("answer {index}: no attestation"))?;
@@ -517,8 +519,11 @@ fn attested(t: &Transcript, record: &str, notary: &str) -> Result<String, String
         if !same {
             return Err(format!("answer {index}: the notary saw a different question or answer than the record claims"));
         }
+        test_settings |= !seen["trust"].is_null();
     }
-    Ok(format!("attested: {} of {} model answers match what the notary saw", t.answers.len(), t.answers.len()))
+    // A check made against a stand-in says so, and so cannot be read as one about the real provider.
+    let mark = if test_settings { "test trust settings: " } else { "" };
+    Ok(format!("{mark}attested: {} of {} model answers match what the notary saw", t.answers.len(), t.answers.len()))
 }
 
 fn main_inner() -> Result<bool, String> {
