@@ -31,12 +31,12 @@ Each row is a test of that name in `attest/tests/authorise.rs`.
 | S-03.3.e1, e2 | `record_s_03_3_e1_*`, `record_s_03_3_e2_*` |
 | S-03.4.e1, e2 | `record_s_03_4_e1_*`, `record_s_03_4_e2_*` |
 | S-03.6.e1, e2 | `record_s_03_6_e1_*`, `record_s_03_6_e2_*` |
-| S-03.7.e1, e2 | `record_s_03_7_e1_*`, `record_s_03_7_e2_*` |
+| S-03.7.e1, e2, and while serving | `record_s_03_7_e1_*`, `record_s_03_7_e2_*`, `record_s_03_7_tickets_reads_a_directory_the_notary_is_serving` |
 | S-04.7.e1, e3 | `record_s_04_7_e1_*`, `record_s_04_7_e3_*` |
 | S-04.10.e1, e2, e3 | `record_s_04_10_e1_*`, `record_s_04_10_e2_*`, `record_s_04_10_e3_*` |
 | 3.1 | `record_3_1_two_authorisations_at_once_take_different_rounds` |
 
-Verify results: the release build finished. The attest tests passed (9, 2, 19, 10, 4 and 28). The monitor's tests, run against the new notary, passed (84 and 7). The test-name check was empty.
+Verify results: the release build finished. The attest tests passed (9, 2, 20, 10, 4 and 28). The monitor's tests, run against the new notary, passed (84 and 7). The test-name check was empty.
 
 ## Deviations
 

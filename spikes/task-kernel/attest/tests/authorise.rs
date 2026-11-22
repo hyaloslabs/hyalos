@@ -271,3 +271,15 @@ fn record_3_1_two_authorisations_at_once_take_different_rounds() {
     rounds.sort();
     assert_eq!(rounds, ["1".to_string(), "2".to_string()]);
 }
+
+#[test]
+fn record_s_03_7_tickets_reads_a_directory_the_notary_is_serving() {
+    let scratch = Scratch::new("r-03-7-serving");
+    let dir = old_state(&scratch, "hyalos.sequences/2\nend 0\n");
+    let identifier = "a".repeat(64);
+    plant(&dir, &identifier, &expected(TASK, 3, 0, 0));
+    let _serving = start(&scratch, &dir).unwrap();
+    let output = tickets(&dir);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), format!("{identifier} task {TASK} round 0 budget 3 prior 0 spent 0 of 3\n"));
+}
