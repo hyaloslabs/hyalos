@@ -36,7 +36,9 @@ fn tool(call_home: &PathBuf, root: &PathBuf, address: Option<&str>) -> Command {
 fn call() -> &'static Call {
     static CALL: OnceLock<Call> = OnceLock::new();
     CALL.get_or_init(|| {
-        let home = std::env::temp_dir().join(format!("hyalos-attest-test-{}", std::process::id()));
+        // Under the build's own scratch directory, so nothing is left in the system's.
+        let home = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("binding-home");
+        let _ = std::fs::remove_dir_all(&home);
         let config = home.join(".config/hyalos-spike");
         std::fs::create_dir_all(&config).unwrap();
         std::fs::write(config.join("anthropic.key"), "made-up-credential-for-tests\n").unwrap();
