@@ -28,7 +28,7 @@ Checked at `62a05ea`. `context.md` cites line numbers from `3ef845b`. Slice 1 an
 
 ## Acceptance
 
-Run from `spikes/task-kernel` with `cargo test --release --manifest-path attest/Cargo.toml`: 46 passed, 0 failed, across four test binaries (9, 2, 10, 25). No test contacts the real provider or uses a real key or credential.
+Run from `spikes/task-kernel` with `cargo test --release --manifest-path attest/Cargo.toml`: 48 passed, 0 failed, across four test binaries (9, 2, 10, 27). No test contacts the real provider or uses a real key or credential.
 
 | ID | Shown by |
 |---|---|
@@ -39,12 +39,12 @@ Run from `spikes/task-kernel` with `cargo test --release --manifest-path attest/
 | S-01.2, S-01.2.e1 | `s_01_2_e1_s_01_5_e1_a_session_is_attested_under_the_printed_key_with_one_line` |
 | S-01.3 | The rows below, and `s_01_3_a_session_with_a_server_the_notary_does_not_approve_signs_nothing`, `s_01_3_a_certificate_under_a_root_the_notary_does_not_trust_is_a_provider_refusal` |
 | S-01.3.e1 | `s_01_3_e1_a_certificate_for_another_name_is_refused` |
-| S-01.3.e2 | `s_01_3_e2_s_01_5_e2_a_dropped_session_signs_nothing_and_the_next_succeeds`, `s_01_3_e2_the_notary_serves_the_next_session_after_a_drop` |
+| S-01.3.e2 | `s_01_3_e2_s_01_5_e2_a_dropped_session_signs_nothing_and_the_next_succeeds`, `s_01_3_e2_the_notary_serves_the_next_session_after_a_drop`, `s_01_3_e2_a_link_cut_at_any_point_is_never_logged_as_a_refused_server` |
 | S-01.4, S-01.4.e1 | `s_01_4_e1_t_2_3_the_operators_program_has_no_notary_key_and_the_layout_holds`, and the Verify `grep`, which printed nothing and exited 1 |
 | S-01.4.e2 | `s_01_4_e2_with_no_notary_a_call_is_refused_and_a_key_file_there_is_not_opened` |
 | S-01.5, S-01.5.e1 | `s_01_2_e1_s_01_5_e1_…` |
 | S-01.5.e2 | `s_01_3_e2_s_01_5_e2_…` |
-| S-03.5 (notary side), S-03.5.e3 | `s_03_5_e3_sequence_numbers_survive_a_restart_and_each_run_starts_at_zero`, `s_03_5_a_number_that_cannot_be_saved_is_not_signed`, `s_03_5_a_lost_sequence_file_refuses_the_start_rather_than_reuse_numbers`, `s_03_5_unreadable_run_sequences_refuse_the_start` |
+| S-03.5 (notary side), S-03.5.e3 | `s_03_5_e3_sequence_numbers_survive_a_restart_and_each_run_starts_at_zero`, `s_03_5_a_number_that_cannot_be_saved_is_not_signed`, `s_03_5_a_lost_sequence_file_refuses_the_start_rather_than_reuse_numbers`, `s_03_5_a_second_notary_on_one_directory_refuses_to_start`, `s_03_5_unreadable_run_sequences_refuse_the_start` |
 | 2.1 | `t_2_1_an_unenrolled_transport_key_is_closed_before_the_protocol_starts` |
 | 2.2 | `t_2_2_the_stand_in_replies_chunked`, `t_2_2_an_error_status_is_a_provider_refusal_and_spends_the_number`, `t_2_2_a_quiet_provider_ends_at_the_deadline_on_both_sides`, and `--present`, `--drop` in the S-01.3 tests |
 | 2.3 | `s_01_4_e1_t_2_3_…`, `t_2_3_the_release_names_the_pinned_library_and_this_crate`, and the Verify `ls` |
@@ -64,7 +64,7 @@ S-03.5.e1, e2, e4 and e5 are the audit's checks, which Slice 5 adds.
 ## Decisions
 
 - **Notary's arguments:** `--listen`, `--dir`, `--operator-transport-public`, `--approved-server`, `--root` (repeatable), `--stop-on-stdin-close`. The last is for tests, so a notary cannot outlive the test that started it.
-- **Notary's files, all in `--dir`:** `signing.key` (32 bytes), `transport.key` (PKCS#8 DER), `sequences` (the header `hyalos.sequences/1`, then one `<run> <next number>` per line), `sessions.log`. The sequences are made before the signing key, and a key with no readable sequences refuses the start, so a lost file cannot restart a run at 0.
+- **Notary's files, all in `--dir`:** `signing.key` (32 bytes), `transport.key` (PKCS#8 DER), `sequences` (the header `hyalos.sequences/1`, one `<run> <next number>` per line, and `end <runs>`, so a file cut short is refused), `sessions.log`, and `lock`, which stops a second notary on one directory. The sequences are made before the signing key, and a key with no readable sequences refuses the start, so a lost file cannot restart a run at 0.
 - **Session line:** `<unix seconds> <server or none> <sent> <received> attested <run> <sequence>`, or `… refused <reason>`.
 - **Link libraries:** `tokio-rustls` (rustls with ring) for TLS 1.3, `rcgen` for the self-signed certificates. A public key is pinned as the hex of its DER `SubjectPublicKeyInfo`.
 - **The operator's transport key:** made by `attest link-key <file>`, which writes it owner-only if absent and prints only the public half. Where it is kept is the operator's choice.

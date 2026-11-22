@@ -174,6 +174,31 @@ fn s_01_3_e2_s_01_5_e2_a_dropped_session_signs_nothing_and_the_next_succeeds() {
 }
 
 #[test]
+fn s_01_3_e2_a_link_cut_at_any_point_is_never_logged_as_a_refused_server() {
+    use std::io::Write;
+    let _one = one_at_a_time();
+    let rig = Rig::new("s-01-3-cut", &[]);
+    for (seen, wait) in (100..=1500).step_by(100).enumerate() {
+        let mut command = rig.command();
+        let mut child = command
+            .arg("ask")
+            .arg(rig.file("cut.presentation"))
+            .args([INTENT, "0"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"A title").unwrap();
+        std::thread::sleep(Duration::from_millis(wait));
+        let _ = child.kill();
+        let _ = child.wait();
+        let line = rig.notary.line_after(seen);
+        assert!(line.ends_with("refused dropped") || line.contains(" attested "), "cut after {wait} ms: {line}");
+    }
+}
+
+#[test]
 fn s_01_3_e2_the_notary_serves_the_next_session_after_a_drop() {
     let _one = one_at_a_time();
     let scratch = Scratch::new("s-01-3-e2-next");
@@ -263,7 +288,7 @@ fn s_03_5_unreadable_run_sequences_refuse_the_start() {
     let dir = scratch.0.join("notary");
     drop(notary(&dir, &operator, &root));
     let header = "hyalos.sequences/1";
-    for bad in [String::new(), "not a sequence\n".to_string(), format!("{INTENT} 1\n"), format!("{header}\n{INTENT} 0\n"), format!("{header}\n{INTENT} +1\n"), format!("{header}\n{INTENT} 1\n{INTENT} 2\n")] {
+    for bad in [String::new(), "not a sequence\n".to_string(), format!("{INTENT} 1\n"), format!("{header}\n"), format!("{header}\n{INTENT} 1\n"), format!("{header}\n{INTENT} 7\nend 1"), format!("{header}\n{INTENT} 1\nend 2\n"), format!("{header}\n{INTENT} 0\nend 1\n"), format!("{header}\n{INTENT} +1\nend 1\n"), format!("{header}\n{INTENT} 1\n{INTENT} 2\nend 2\n")] {
         std::fs::write(dir.join("sequences"), bad).unwrap();
         let refusal = try_notary(&dir, &operator, &root).err().expect("it must refuse to start");
         assert!(refusal.contains("run sequences"), "{refusal}");
@@ -282,6 +307,20 @@ fn s_03_5_a_lost_sequence_file_refuses_the_start_rather_than_reuse_numbers() {
     let refusal = try_notary(&dir, &operator, &root).err().expect("it must refuse to start");
     assert!(refusal.contains("run sequences"), "{refusal}");
     assert!(!dir.join("sequences").exists(), "and it does not make a new one");
+}
+
+#[test]
+fn s_03_5_a_second_notary_on_one_directory_refuses_to_start() {
+    let scratch = Scratch::new("s-03-5-lock");
+    let operator = fake_operator_public(&scratch.0);
+    let root = scratch.0.join("no-root.der");
+    std::fs::write(&root, b"").unwrap();
+    let dir = scratch.0.join("notary");
+    let first = notary(&dir, &operator, &root);
+    let refusal = try_notary(&dir, &operator, &root).err().expect("it must refuse to start");
+    assert!(refusal.contains("another notary"), "{refusal}");
+    drop(first);
+    drop(notary(&dir, &operator, &root));
 }
 
 #[test]

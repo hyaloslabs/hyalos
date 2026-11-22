@@ -78,7 +78,9 @@ impl Sequences {
             Err(_) => bail!("{unreadable}"),
         };
         let mut lines = text.lines();
-        ensure!(lines.next() == Some(SEQUENCES_HEADER), "{unreadable}");
+        ensure!(text.ends_with('\n') && lines.next() == Some(SEQUENCES_HEADER), "{unreadable}");
+        // The last line counts the runs, so a file cut short is refused and cannot lower a number.
+        let end = lines.next_back().and_then(|line| line.strip_prefix("end ")).context(unreadable)?;
         let mut next = BTreeMap::new();
         for line in lines {
             let (run, written) = line.split_once(' ').context(unreadable)?;
@@ -87,6 +89,7 @@ impl Sequences {
             ensure!(count > 0 && count.to_string() == written, "{unreadable}");
             ensure!(next.insert(run.to_string(), count).is_none(), "{unreadable}");
         }
+        ensure!(end == next.len().to_string(), "{unreadable}");
         Ok(Self { path, next })
     }
 
@@ -98,6 +101,7 @@ impl Sequences {
         for (run, count) in &self.next {
             writeln!(file, "{run} {count}")?;
         }
+        writeln!(file, "end {}", self.next.len())?;
         file.sync_all()?;
         fs::rename(&fresh, &self.path)?;
         fs::File::open(self.path.parent().unwrap_or(Path::new(".")))?.sync_all()
@@ -216,12 +220,16 @@ impl Notary {
                     // The certificate did not verify. The library has already said yes, so end its
                     // protocol cleanly and keep the link until the operator leaves: a broken link
                     // would read as an unreachable notary, and this is a refused provider.
+                    // If the link itself died during the proof, the driver says so: that is a drop.
                     handle.close();
-                    if let Ok(Ok(mut socket)) = (&mut driver.0).await {
-                        let _ = link::read_bounded(&mut socket).await;
-                        let _ = futures::io::AsyncWriteExt::close(&mut socket).await;
-                    }
-                    return Err("server");
+                    return match (&mut driver.0).await {
+                        Ok(Ok(mut socket)) => {
+                            let _ = link::read_bounded(&mut socket).await;
+                            let _ = futures::io::AsyncWriteExt::close(&mut socket).await;
+                            Err("server")
+                        }
+                        _ => Err("dropped"),
+                    };
                 }
             };
             let tls_transcript = verifier.tls_transcript().clone();
@@ -235,7 +243,7 @@ impl Notary {
                 // When the operator's session with the provider fails, the operator is still
                 // deciding what to say. Keep the link until it leaves, or to the deadline, so the
                 // close does not read to it as a notary that went away.
-                if reason == "dropped" {
+                if reason == "dropped" && !driver.0.is_finished() {
                     let _ = (&mut driver.0).await;
                 }
                 return Err(reason);
@@ -348,6 +356,10 @@ fn arguments() -> Result<Start> {
 async fn run() -> Result<()> {
     let start = arguments()?;
     fs::DirBuilder::new().recursive(true).mode(0o700).create(&start.dir).context("cannot use the notary's directory")?;
+    // Two notaries on one directory would each hand out the same numbers. Held until exit.
+    let lock = fs::OpenOptions::new().write(true).create(true).truncate(false).mode(0o600).open(start.dir.join("lock")).context("cannot lock the notary's directory")?;
+    // SAFETY: `flock` takes a file descriptor that `lock` keeps open, and touches no memory.
+    ensure!(unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) } == 0, "another notary is using this directory");
     // The sequences are made before the key, so a key never exists without them.
     let signing = start.dir.join("signing.key");
     let sequences = Sequences::load(start.dir.join("sequences"), signing.symlink_metadata().is_ok())?;
@@ -381,6 +393,7 @@ async fn run() -> Result<()> {
         lines: Mutex::new(lines),
         open: Arc::new(Semaphore::new(1)),
     });
+    let _lock = lock;
     let mut pending: VecDeque<oneshot::Sender<()>> = VecDeque::new();
     loop {
         let Ok((socket, _)) = listener.accept().await else { continue };
