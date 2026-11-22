@@ -666,6 +666,14 @@ mod tests {
     }
 
     #[test]
+    fn issue_396_the_probe_carries_the_approved_body_and_the_pinned_length() {
+        let probe = include_str!("../probes/hidden_header.py");
+        let approved = body("A title", &binding(INTENT, 0).unwrap());
+        assert!(probe.contains(&format!("APPROVED = r'{approved}'\n")), "the probe's body is not the template");
+        assert!(probe.contains(&format!("HIDDEN = {CREDENTIAL_LENGTH} ")), "the probe's length is not the pinned one");
+    }
+
+    #[test]
     fn s_03_4_only_the_head_this_tool_writes_is_accepted() {
         let carried = binding(INTENT, 2).unwrap();
         // The API-key head has no measured length, so it is refused whatever it carries.
