@@ -467,6 +467,14 @@ fn adr_014_a_session_left_after_reading_the_reply_cannot_be_asked_again() {
     child.stdin.take().unwrap().write_all(QUESTIONS[0].as_bytes()).unwrap();
     let left = child.wait_with_output().unwrap();
     assert!(!left.status.success());
+    // The notary holds its one session until it sees the link close, and turns a call away as busy
+    // until then. It writes the session's line after releasing it.
+    let sessions = world.rig.root.join("notary/sessions.log");
+    let waited = std::time::Instant::now();
+    while fs::read_to_string(&sessions).unwrap_or_default().lines().next().is_none() {
+        assert!(waited.elapsed() < std::time::Duration::from_secs(30), "the notary never ended the session that left");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let kept = answer_from(&world.ask(&world.presentation(0), &intent, 0, QUESTIONS[0], None), QUESTIONS[0]);
     world.close(&intent, vec![kept], before, now() + 1);
     assert_eq!(world.refused(), "answer 0: the sequence number is not the answer's position, so an attestation is unaccounted for");
