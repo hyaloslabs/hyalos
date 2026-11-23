@@ -83,6 +83,7 @@ pub(crate) fn refusal(said: &[u8]) -> Reason {
         b"provider" => Reason::ProviderRefused,
         b"authorisation" => Reason::NoAuthorisation,
         b"spent" => Reason::AttemptsSpent,
+        b"canary" => Reason::CanaryHeld,
         _ => Reason::ModelUnavailable,
     }
 }

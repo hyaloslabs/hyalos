@@ -98,7 +98,40 @@ impl Notary {
 
 /// Starts a notary, or returns what it said when it refused to start.
 pub fn try_notary(dir: &Path, operator: &str, root: &Path) -> Result<Notary, String> {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_notary"))
+    canary_pass(dir);
+    start_notary(Command::new(env!("CARGO_BIN_EXE_notary")), dir, operator, root)
+}
+
+/// Writes the customer's provider check state, as `canary` would.
+pub fn write_canary(dir: &Path, word: &str, checked: u64) {
+    write_canary_text(dir, &format!("hyalos.canary/1\nstate {word}\nchecked {checked}\nend\n"));
+}
+
+pub fn write_canary_text(dir: &Path, text: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).unwrap();
+    let path = dir.join("canary");
+    std::fs::write(&path, text).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
+
+/// A fresh pass, unless the directory already holds a state. A path that cannot be a directory is
+/// left for the notary to refuse.
+pub fn canary_pass(dir: &Path) {
+    if std::fs::create_dir_all(dir).is_ok() && !dir.join("canary").exists() {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        write_canary(dir, "passed", unix_now());
+    }
+}
+
+/// Starts the given notary program on a directory as it stands.
+pub fn start_notary(mut program: Command, dir: &Path, operator: &str, root: &Path) -> Result<Notary, String> {
+    let mut child = program
         .args(["--listen", "127.0.0.1:0", "--approved-server", NAME, "--stop-on-stdin-close", "--operator-transport-public", operator, "--dir"])
         .arg(dir)
         .arg("--root")
@@ -127,6 +160,18 @@ pub fn try_notary(dir: &Path, operator: &str, root: &Path) -> Result<Notary, Str
 
 pub fn notary(dir: &Path, operator: &str, root: &Path) -> Notary {
     let mut started = try_notary(dir, operator, root).expect("the notary did not start");
+    started.authorisation = authorised(dir);
+    started
+}
+
+/// The test-only notary, from the release build the slice's Verify makes first, with a passing state.
+pub fn forging_notary(dir: &Path, operator: &str, root: &Path, settings: &[(&str, &str)]) -> Notary {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/release/forging-notary");
+    assert!(path.exists(), "forging-notary is not built: cargo build --release --manifest-path attest/Cargo.toml --features forge-ticket --bin forging-notary");
+    canary_pass(dir);
+    let mut program = Command::new(path);
+    program.envs(settings.iter().copied());
+    let mut started = start_notary(program, dir, operator, root).expect("the notary did not start");
     started.authorisation = authorised(dir);
     started
 }

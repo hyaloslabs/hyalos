@@ -62,6 +62,7 @@ pub(crate) enum Reason {
     ProviderRefused,
     NoAuthorisation,
     AttemptsSpent,
+    CanaryHeld,
     EffectFailed,
     LedgerFailed,
 }

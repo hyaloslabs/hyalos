@@ -464,3 +464,137 @@ async fn t_link_a_session_above_the_size_limits_is_refused() {
     driver.abort();
     assert!(rig.notary.line_after(0).ends_with("refused limits"));
 }
+
+/// A session that must be refused by the canary, spending nothing.
+fn assert_held(rig: &Rig) {
+    let seen = rig.notary.lines().len();
+    assert_eq!(word(&rig.ask("held.presentation", INTENT, 0)), "canary");
+    assert!(!rig.file("held.presentation").exists());
+    assert!(rig.notary.line_after(seen).ends_with("refused canary"));
+    assert!(!recorded(&rig.notary.dir), "a number was spent");
+}
+
+#[test]
+fn canary_s_02_1_e1_a_pass_an_hour_old_is_served() {
+    let _one = one_at_a_time();
+    let rig = Rig::new("canary-2-1-e1", &[]);
+    write_canary(&rig.notary.dir, "passed", unix_now() - 3600);
+    assert_eq!(said(&rig.ask("one.presentation", INTENT, 0))["label"], 0);
+}
+
+#[test]
+fn canary_s_02_1_e3_a_pass_past_the_window_is_refused() {
+    let _one = one_at_a_time();
+    let rig = Rig::new("canary-2-1-e3", &[]);
+    write_canary(&rig.notary.dir, "passed", unix_now() - attest::canary::CANARY_WINDOW_SECONDS - 1);
+    assert_held(&rig);
+}
+
+#[test]
+fn canary_s_02_1_e4_a_held_state_is_refused() {
+    let _one = one_at_a_time();
+    let rig = Rig::new("canary-2-1-e4", &[]);
+    write_canary(&rig.notary.dir, "held", unix_now());
+    assert_held(&rig);
+}
+
+#[test]
+fn canary_s_02_1_e5_a_latched_state_is_refused() {
+    let _one = one_at_a_time();
+    let rig = Rig::new("canary-2-1-e5", &[]);
+    write_canary(&rig.notary.dir, "latched", unix_now());
+    assert_held(&rig);
+}
+
+#[test]
+fn canary_s_02_1_e6_a_malformed_or_future_state_is_refused() {
+    let _one = one_at_a_time();
+    let rig = Rig::new("canary-2-1-e6", &[]);
+    write_canary_text(&rig.notary.dir, "hyalos.canary/1\nstate passed\n");
+    assert_held(&rig);
+    write_canary(&rig.notary.dir, "passed", unix_now() + 3600);
+    assert_held(&rig);
+}
+
+#[test]
+fn canary_s_02_1_e7_a_pass_gone_stale_mid_run_ends_the_run() {
+    let _one = one_at_a_time();
+    let rig = Rig::new("canary-2-1-e7", &[]);
+    assert_eq!(said(&rig.ask("one.presentation", INTENT, 0))["sequence"], 0);
+    let seen = rig.notary.lines().len();
+    write_canary(&rig.notary.dir, "passed", unix_now() - attest::canary::CANARY_WINDOW_SECONDS - 1);
+    assert_eq!(word(&rig.ask("two.presentation", INTENT, 1)), "canary");
+    assert!(rig.notary.line_after(seen).ends_with("refused canary"));
+    let sequences = std::fs::read_to_string(rig.notary.dir.join("sequences")).unwrap();
+    assert!(sequences.contains(&format!("{INTENT} 1 ")), "the refused session spent a number");
+}
+
+#[test]
+fn canary_s_02_1_e8_a_pass_stale_at_signing_gets_no_attestation() {
+    let _one = one_at_a_time();
+    let scratch = Scratch::new("canary-2-1-e8");
+    let who = operator(&scratch.0.join("home"));
+    let standin = standin(&scratch.0, &[]);
+    let later = (attest::canary::CANARY_WINDOW_SECONDS + 1).to_string();
+    let notary = forging_notary(&scratch.0.join("notary"), &who.public, &standin.root, &[("HYALOS_FORGE_SESSION_LATER", &later)]);
+    let rig = Rig { scratch, who, standin, notary };
+    assert!(!rig.ask("never.presentation", INTENT, 0).status.success());
+    assert!(!rig.file("never.presentation").exists());
+    assert!(rig.notary.line_after(0).ends_with("refused canary"));
+    assert!(recorded(&rig.notary.dir), "the session's number stays spent");
+}
+
+#[test]
+fn canary_s_02_2_e1_verify_reports_the_pass_time() {
+    let _one = one_at_a_time();
+    let rig = Rig::new("canary-2-2-e1", &[]);
+    let pass = unix_now() - 60;
+    write_canary(&rig.notary.dir, "passed", pass);
+    said(&rig.ask("one.presentation", INTENT, 0));
+    let report = verify(&rig.who, &rig.standin.root, &rig.file("one.presentation"), &rig.notary.signing).unwrap();
+    assert_eq!(report["canary"]["checked"], pass);
+}
+
+#[test]
+fn canary_s_02_2_e2_a_requester_canary_is_refused() {
+    let _one = one_at_a_time();
+    let rig = Rig::new("canary-2-2-e2", &[]);
+    let mut command = rig.command();
+    command.env("HYALOS_TEST_REQUEST_EXTENSION", "canary");
+    assert_eq!(word(&run_ask(command, &rig.file("never.presentation"), INTENT, 0)), "provider");
+    assert!(!rig.file("never.presentation").exists());
+    assert!(rig.notary.line_after(0).ends_with("refused dropped"), "the notary signed nothing");
+}
+
+#[test]
+fn canary_s_02_3_e1_a_credential_beside_the_notary_is_not_needed() {
+    let _one = one_at_a_time();
+    let rig = Rig::new("canary-2-3-e1", &[]);
+    let beside = rig.notary.dir.join("anthropic.key");
+    std::fs::write(&beside, format!("test-{}", "c".repeat(101))).unwrap();
+    std::fs::set_permissions(&beside, std::fs::Permissions::from_mode(0)).unwrap();
+    assert_eq!(said(&rig.ask("one.presentation", INTENT, 0))["label"], 0);
+    assert_eq!(mode(&beside), 0);
+}
+
+#[test]
+fn canary_s_02_3_e2_the_notarys_source_names_no_credential() {
+    let source = include_str!("../src/bin/notary.rs");
+    for banned in ["pinned_credential", "anthropic.key"] {
+        assert!(!source.contains(banned), "the notary names {banned}");
+    }
+}
+
+#[test]
+fn canary_2_2_an_older_tool_hears_release() {
+    let _one = one_at_a_time();
+    assert_eq!(env!("CARGO_PKG_VERSION"), "0.2.0");
+    let rig = Rig::new("canary-2-2-release", &[]);
+    let answer = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut stream = enrolled(&rig).await;
+        link::write_line(&mut stream, &format!("v0.1.0-beta.1/0.1.0 {INTENT} {}", rig.notary.authorisation)).await.unwrap();
+        link::read_line(&mut stream, 16).await.unwrap()
+    });
+    assert_eq!(answer, "release");
+    assert!(!recorded(&rig.notary.dir));
+}

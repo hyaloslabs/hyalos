@@ -134,6 +134,7 @@ impl World {
 
     /// Starts a notary of its own directory, and gives its signing key, transport key and address.
     fn notary(&mut self, dir: &str) -> (String, String, String) {
+        crate::live_tests::canary_pass(&self.rig.root.join(dir));
         let mut command = Command::new(built(if self.forge.is_some() { "forging-notary" } else { "notary" }));
         if let Some(forge) = &self.forge {
             command.env("HYALOS_FORGE_TICKET", forge);

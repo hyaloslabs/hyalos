@@ -90,7 +90,13 @@ impl Rig {
         self.set("HYALOS_TRUST_PROVIDER_ADDRESS", values[0].clone());
     }
 
+    /// A notary with a fresh pass of the customer's provider check.
     fn notary(&mut self) {
+        canary_pass(&self.dir.join("notary"));
+        self.notary_as_it_stands();
+    }
+
+    fn notary_as_it_stands(&mut self) {
         let mut command = Command::new(built("notary"));
         command
             .args(["--listen", "127.0.0.1:0", "--approved-server", NAME, "--stop-on-stdin-close", "--operator-transport-public", &self.operator, "--dir"])
@@ -157,6 +163,17 @@ impl Rig {
         assert!(!self.record().exists(), "no record is written");
         assert!(!Path::new(&format!("{}.salt", self.record().display())).exists());
     }
+}
+
+/// Writes a passing state of the customer's provider check, as `canary` would.
+pub(crate) fn canary_pass(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir_all(dir).unwrap();
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = dir.join("canary");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    fs::write(&path, format!("hyalos.canary/1\nstate passed\nchecked {now}\nend\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
 /// A fresh salt for each run, as the `live` command makes one.
@@ -452,6 +469,23 @@ fn tool_saying(rig: &Rig, word: &str) -> Attest {
 fn record_s_04_8_e1_spent_is_the_attempts_spent_reason_logged_as_refused() {
     let rig = Rig::new("r-04-8-e1");
     rig.assert_refused(Some(tool_saying(&rig, "spent")), Reason::AttemptsSpent);
+}
+
+#[test]
+fn canary_s_02_1_e2_no_state_ends_the_run_with_the_canary_reason() {
+    let _one = locked();
+    let mut rig = Rig::new("canary-2-1-e2");
+    rig.standin(&[]);
+    rig.notary_as_it_stands();
+    rig.assert_refused(Some(rig.attest()), Reason::CanaryHeld);
+    let sequences = fs::read_to_string(rig.dir.join("notary/sequences")).unwrap();
+    assert_eq!(sequences.lines().count(), 2, "no number or ticket was spent");
+}
+
+#[test]
+fn canary_the_word_is_the_canary_reason_logged_as_refused() {
+    let rig = Rig::new("canary-word");
+    rig.assert_refused(Some(tool_saying(&rig, "canary")), Reason::CanaryHeld);
 }
 
 #[test]
