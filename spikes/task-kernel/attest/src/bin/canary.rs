@@ -159,11 +159,23 @@ fn now() -> Option<u64> {
     SystemTime::now().duration_since(UNIX_EPOCH).ok().map(|since| since.as_secs())
 }
 
-/// Takes the directory's lock without waiting. It is held until the returned file closes.
-fn lock(dir: &Path) -> Option<fs::File> {
-    let file = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(dir.join("canary.lock")).ok()?;
+/// Takes the directory's lock without waiting. It is held until the returned file closes. The
+/// error is the fixed reason to refuse with.
+fn lock(dir: &Path) -> Result<fs::File, &'static str> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(dir.join("canary.lock"))
+        .map_err(|_| "the notary directory's lock file cannot be opened")?;
     // SAFETY: the descriptor belongs to `file`, which is alive for this call.
-    (unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0).then_some(file)
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err("another canary check or reset holds the lock");
+    }
+    Ok(file)
 }
 
 /// The staged files, removed however the check ends.
@@ -261,7 +273,10 @@ fn record_non_pass(dir: &Path, staged: &Staged, result: &Path, marked: bool, cod
 }
 
 async fn check(dir: &Path, credential_file: &Path) -> ExitCode {
-    let Some(_lock) = lock(dir) else { return refused("another canary check or reset holds the lock") };
+    let _lock = match lock(dir) {
+        Ok(file) => file,
+        Err(reason) => return refused(reason),
+    };
     let Ok(existing) = canary::read(dir) else { return refused("the canary state is unreadable or malformed") };
     let marker = dir.join("canary.init");
     let marked = match fs::symlink_metadata(&marker) {
@@ -322,7 +337,10 @@ async fn check(dir: &Path, credential_file: &Path) -> ExitCode {
 }
 
 fn reset(dir: &Path) -> ExitCode {
-    let Some(_lock) = lock(dir) else { return refused("another canary check or reset holds the lock") };
+    let _lock = match lock(dir) {
+        Ok(file) => file,
+        Err(reason) => return refused(reason),
+    };
     let exists = |path: PathBuf| fs::symlink_metadata(path).is_ok();
     if !exists(canary::path(dir)) && !exists(dir.join("canary.init")) {
         return refused("there is no canary state to reset");

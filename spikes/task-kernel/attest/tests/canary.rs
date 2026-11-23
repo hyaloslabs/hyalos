@@ -355,6 +355,18 @@ fn canary_1_3_a_default_build_ignores_the_rename_failure_setting() {
 }
 
 #[test]
+fn canary_a_missing_directory_is_not_called_a_held_lock() {
+    let rig = Rig::new("canary-no-dir");
+    fs::remove_dir(&rig.dir).unwrap();
+    let output = rig.check_with_no_connection();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(complained(&output).trim(), "refused: the notary directory's lock file cannot be opened");
+    let output = rig.reset();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(complained(&output).trim(), "refused: the notary directory's lock file cannot be opened");
+}
+
+#[test]
 fn canary_the_reset_needs_a_state_or_a_marker() {
     let rig = Rig::new("canary-reset-none");
     let output = rig.reset();

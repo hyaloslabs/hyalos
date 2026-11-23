@@ -40,7 +40,7 @@ Each row is a test of that name in `attest/tests/canary.rs`, unless it says othe
 | 1.2 | `canary_1_2_a_second_check_is_refused_by_the_lock` |
 | 1.3 | `canary_1_3_a_default_build_ignores_the_rename_failure_setting` |
 
-Verify results: every build finished. The attest suites passed (10, 2, 3, 41, 10, 22, 4 and 28), and the canary suite passed with `canary-test-hooks` (23). The monitor's tests passed (118 and 7). `out/live3.json` printed `replay identical`. The test-name `comm` printed nothing, and `read_private` appears in `canary.rs`. No test contacted a real provider, and the real provider path has not been run.
+Verify results: every build finished. The attest suites passed (10, 2, 3, 41, 10, 22, 4 and 28), and the canary suite passed with `canary-test-hooks` (23). After the review's change to the lock's refusal, which touched only the `canary` program and its tests, the canary suites were run again and passed (3 and 23 by default, 24 with `canary-test-hooks`). The monitor's tests passed (118 and 7). `out/live3.json` printed `replay identical`. The test-name `comm` printed nothing, and `read_private` appears in `canary.rs`. No test contacted a real provider, and the real provider path has not been run.
 
 ## Deviations
 
