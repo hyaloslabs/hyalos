@@ -9,10 +9,11 @@ all-features = true
 [advisories]
 # Fail on any RustSec advisory, including unmaintained crates. An exception needs an entry here with a reason.
 ignore = [
-    # chrono is unmaintained (no vulnerability, no upgrade). It reaches the build only through
-    # cedar-policy-core, pinned =4.14.1 to match cedar-policy-symcc; drop this once cedar no longer
-    # depends on it.
-    { id = "RUSTSEC-2026-0543", reason = "unmaintained only; transitive through pinned cedar-policy-core" },
+    # Held at 0.5.5 by elliptic-curve 0.13 under k256 and p256, which tlsn-attestation uses. No compatible
+    # fix exists. Whether it reaches the notary's signing is assessed in #451, before any verifier release.
+    { id = "RUSTSEC-2026-0387", reason = "no compatible fix for crypto-bigint 0.5.5; assessment tracked in #451" },
+    { id = "RUSTSEC-2025-0141", reason = "bincode is unmaintained with no patched version; attest uses it directly" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is unmaintained with no patched version; held by tlsn-tls-core" },
 ]
 
 [licenses]
@@ -34,12 +35,148 @@ allow = [
     # webpki-roots, the Mozilla root certificates the broker trusts (ADR-0039). The data is
     # permissively licensed; it asks for nothing beyond keeping the notice.
     "CDLA-Permissive-2.0",
+    # arrayref, under blake3 under TLSNotary's mpz crates.
+    "BSD-2-Clause",
+    # tiny-keccak, under TLSNotary.
+    "CC0-1.0",
 ]
 confidence-threshold = 0.93
 
 # Our own crates are MIT (ADR-0115) and unpublished, so the audit does not check them.
 [licenses.private]
 ignore = true
+
+# These TLSNotary crates declare no licence in their manifests. Their repositories' READMEs license all
+# their crates under MIT or Apache-2.0, at the pinned revisions in Cargo.lock.
+[[licenses.clarify]]
+crate = "clmul"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "futures-plex"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "matrix-transpose"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-circuits"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-circuits-core"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-circuits-data"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-cointoss-core"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-common"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-core"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-fields"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-garble"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-garble-core"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-hash"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-ideal-vm"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-memory-core"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-ole"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-ole-core"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-ot"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-ot-core"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-share-conversion"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-share-conversion-core"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-vm-core"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-zk"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "mpz-zk-core"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "tlsn-attestation"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+crate = "tlsn-deap"
+expression = "MIT OR Apache-2.0"
+license-files = []
 
 [bans]
 # Two versions of one crate is a warning for now: it costs build time and review attention.
@@ -52,5 +189,10 @@ allow-wildcard-paths = true
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# TLSNotary, pinned by tag in attest/Cargo.toml.
-allow-git = ["https://github.com/tlsnotary/tlsn"]
+# TLSNotary, pinned by tag in attest/Cargo.toml, and the three repositories it pins by revision.
+allow-git = [
+    "https://github.com/tlsnotary/tlsn",
+    "https://github.com/tlsnotary/mpz2",
+    "https://github.com/tlsnotary/tlsn-utils",
+    "https://github.com/tlsnotary/rs-merkle.git",
+]

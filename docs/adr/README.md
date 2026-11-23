@@ -143,3 +143,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0127](0127-a-plugin-update-is-never-older-than-the-release-it-replaces.md) | A plugin update is never older than the release it replaces | Accepted |
 | [0128](0128-a-policy-update-trusts-only-a-current-signed-index.md) | A policy update trusts only a current signed index | Accepted |
 | [0129](0129-plan-packs-live-in-docs-plans.md) | Plan packs live in `docs/plans/`, and the tracker still holds status | Accepted |
+| [0130](0130-hyalos-os-is-its-own-workspace.md) | hyalOS is its own Cargo workspace | Proposed |

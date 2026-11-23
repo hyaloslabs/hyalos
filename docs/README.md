@@ -9,6 +9,7 @@ Each kind of information has exactly one home ([ADR-0014](adr/0014-tracker-holds
 | Status (what is done, in progress) | GitHub issues (epics as parent issues, milestones M1 to M4) | The only source of status |
 | Planning-session working material | [`planning/`](planning/) | Temporary; not authoritative once filed or settled |
 | Plan packs: a piece of work specified and split into slices before it is built | [`plans/`](plans/) | Working material for the slices' issues. A pack's Status row tracks the planning flow only; what is done or in progress is the issues' to say ([ADR-0129](adr/0129-plan-packs-live-in-docs-plans.md)) |
+| hyalOS's record format and guest interface | [`../hyalos-os/`](../hyalos-os/) (`RECORD.md`, `ABI.md`) | Kept beside the code they define ([ADR-0130](adr/0130-hyalos-os-is-its-own-workspace.md)) |
 | Throwaway rigs behind a spike's evidence | [`../spikes/`](../spikes/) | Not product code; delete when the real component makes it redundant |
 | Operator procedures (setup, backup, recovery) | [`operations/`](operations/) | Steps an operator follows; the reasons live in the ADRs they link |
 | Reference docs (CLI, manifest schema, WIT) | `reference/` (later) | Generated from types, manifests and ADRs, not hand-written |

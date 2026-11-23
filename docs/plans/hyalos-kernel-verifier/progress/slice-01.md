@@ -1,8 +1,8 @@
 # Slice 1 progress
 
-- **Status:** blocked
+- **Status:** in-progress
 - **Issue:** #443
-- **PR:** none (no PR is opened)
+- **PR:** this PR
 - **Executor model:** Claude Opus 5.5
 - **Date:** 2026-11-23
 
@@ -19,22 +19,25 @@ Checked at base commit `02f66d1`.
 | `attest/build.rs` reads the `tlsn = ` line | Holds |
 | `.github/workflows/ci.yml:48`, `:59`, `:60` and the required check | Holds |
 | "Moving to one lockfile keeps every package version the spike tested" (PRD, Assumptions) | **Differs**: resolved by the developer's decision below |
-| `hyalos-os/deny.toml` "allows exactly" the `tlsn` git source (`plan.md`, Slice 1 Contracts) | **Differs**: see Blocked on |
+| `hyalos-os/deny.toml` "allows exactly" the `tlsn` git source (`plan.md`, Slice 1 Contracts) | **Differs**: resolved by the developer's decision below |
 
 ## Acceptance
 
-| ID | State |
+| ID | How it was shown |
 |---|---|
-| S-01.1, S-01.1.e1 | Shown on this branch: 285 passed, 0 failed, 0 ignored, with `attest` built first |
-| S-01.1.e2 | Not shown |
-| S-01.2, S-01.2.e1, S-01.2.e2 | Shown: SHA-256 of all 260 evidence files is identical before and after, with none added or missing |
-| S-01.3, S-01.3.e1, S-01.3.e2 | Not shown: needs a pull request |
-| S-01.4, S-01.4.e1, S-01.4.e2 | Not shown |
-| S-01.5, S-01.5.e1 | Partly shown: the `attest` unit test that pins `RELEASE` to `v0.1.0-beta.1/<version>` passes |
-| S-01.5.e2 | Not shown |
-| 1.1 | Not shown: the final `git grep` has not been run |
-| 1.2 | Written in `ci.yml`, not run |
-| 1.3 | Not done: the ADR is not written |
+| S-01.1, S-01.1.e1 | `cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace`, with `attest` built first: 285 passed, 0 failed, 0 ignored |
+| S-01.1.e2 | With the `attest` program moved aside, the monitor's tests fail: 83 failed, and 83 name `attest is not built` |
+| S-01.2, S-01.2.e1, S-01.2.e2 | SHA-256 manifest of all 260 evidence files at the base equals the moved files, `out/live3.json` included, with none added or missing |
+| S-01.3, S-01.3.e1 | PENDING_E1 |
+| S-01.3.e2 | Dry run of the `ci.yml` rule: a `docs/` change gives `hyalos_os=false`, and the gate accepts `skipped` only with `false`. A skip with `true` or an unset output fails |
+| S-01.4 | `cargo fmt --check`, clippy, `cargo xtask layout`, `lines`, `docs` and `cargo deny check` pass. `cargo test --workspace --locked` passes 1,018 tests with a short target directory |
+| S-01.4.e1 | `cargo xtask lines`: 28,594, the base's count |
+| S-01.4.e2 | A temporary `task-kernel` path dependency in `core/types` makes `cargo xtask layout` exit 1, naming the crate |
+| S-01.5, S-01.5.e1 | The `attest` unit test pins `RELEASE` to `v0.1.0-beta.1/<version>`, and the crate is still 0.2.0 |
+| S-01.5.e2 | A notary built from the base commit served a client built after the move: `s_01_2_e1...` passed against it, with no `release` refusal |
+| 1.1 | `spikes/task-kernel` is gone, and `git grep -n 'spikes/task-kernel' -- ':!docs/plans'` prints nothing |
+| 1.2 | `ci.yml` adds the output, the job and the gate. The classification and gate dry runs above cover both cases |
+| 1.3 | `docs/adr/0130-hyalos-os-is-its-own-workspace.md`, with its README row |
 
 ## Deviations
 
@@ -45,37 +48,17 @@ Checked at base commit `02f66d1`.
 | Other shared crates | The monitor takes `attest`'s versions of 23 non-cryptographic crates, such as `serde`, `libc` and `log` | The lockfile is seeded from `attest` | n |
 | `cargo deny --manifest-path ... check --config ...` | `--config` must come before `check` | cargo-deny 0.20.2 takes it as a global option | n |
 | `context.md` §2 lists the paths that break | More break: the `source()` helpers, `include_bytes!` in `forgery_tests.rs`, `committed()` and the fixture paths in `live_tests.rs`, the probe's paths and `attest/tests/canary.rs`'s stub layout | The list was not exhaustive | n |
-| `hyalos-os/deny.toml` allows exactly the `tlsn` git source and `cargo deny` passes | It fails on three more git sources, licences and advisories | See Blocked on | **y** |
+| `hyalos-os/deny.toml` allows exactly the `tlsn` git source | It allows TLSNotary's four repositories, adds two licences, states the licence of 26 crates and accepts three advisories | The audit cannot pass otherwise, and the developer chose this | y, approved |
+| Keep `attest`'s other locked versions | `anyhow`, `crossbeam-epoch`, `crypto-bigint` 0.7 (0.7.5 to 0.7.11), `ctutils`, `tokio` and `webpki-root-certs` move to fixed versions | Published advisories, approved by the developer. `crypto-bigint` 0.7.6 was yanked, so 0.7.11 is used | y, approved |
 
 ## Decisions
 
 - **Lockfile (developer, 2026-11-23):** use the newer versions of the five crates and keep every other version `attest` locks. `tlsn` and `wasmi` are unchanged.
+- **Dependency audit (developer, 2026-11-23):** apply the compatible advisory fixes, allow TLSNotary's sources and licences, and record reasoned exceptions for `bincode`, `rustls-pemfile` and `crypto-bigint` 0.5.5, with #451 to assess the last against notary signing before any verifier release.
 
 ## Discoveries
 
-`cargo deny` findings on the merged lockfile. Every advisory is on a version `attest` already locked at the base commit, so the move did not introduce it, but CI has never run this audit on the spike.
-
-| Advisory | Crate | Kind | Fix |
-|---|---|---|---|
-| RUSTSEC-2026-0387 | `crypto-bigint` 0.7.5 | Timing | 0.7.6 resolves in a dry run, and moves `ctutils` to 0.4.8 |
-| RUSTSEC-2026-0387 | `crypto-bigint` 0.5.5 | Timing | **None in range.** Held by `elliptic-curve` 0.13 under `k256` and `p256`, which `tlsn-attestation` uses |
-| RUSTSEC-2026-0385 | `ctutils` 0.4.2 | Timing | 0.4.4 resolves in a dry run |
-| RUSTSEC-2026-0383 | `webpki-root-certs` 1.0.7 | Distrusted roots | 1.0.10 resolves in a dry run |
-| RUSTSEC-2026-0204 | `crossbeam-epoch` 0.9.18 | Vulnerability | 0.9.20 resolves in a dry run |
-| RUSTSEC-2026-0386 | `tokio` 1.52.1 | Unsound | 1.53.3 resolves in a dry run |
-| RUSTSEC-2026-0190 | `anyhow` 1.0.102 | Unsound | 1.0.103 resolves in a dry run |
-| RUSTSEC-2025-0141 | `bincode` 1.3.3 | Unmaintained | None. A direct dependency of `attest` |
-| RUSTSEC-2025-0134 | `rustls-pemfile` 1.0.4 | Unmaintained | None. Held by `tlsn-tls-core` |
-
-- Other git sources TLSNotary needs: `tlsnotary/mpz2`, `tlsnotary/tlsn-utils` and `tlsnotary/rs-merkle`.
-- Licences: `arrayref` and `tiny-keccak` are rejected by the copied policy, and 25 TLSNotary git crates declare no licence.
-- Whether the `crypto-bigint` 0.5.5 timing advisory reaches the notary's secp256k1 signing has not been assessed.
-- None of the dry-run updates has been applied, built or tested.
-
-## Blocked on
-
-**Question:** `cargo deny` cannot pass under the slice's contract. Should `hyalos-os/deny.toml` allow TLSNotary's three other git sources and its licences, which crates should be updated, and how should the advisories with no available fix be handled, above all `crypto-bigint` 0.5.5?
-
-**Stop conditions:** README rule 6 (the contract "Allows exactly the git source in `attest/Cargo.toml`" cannot hold with Verify's passing `deny`), and "Stop if the shared lockfile changes the resolved version of `tlsn`, `wasmi` or any cryptographic crate (R1)" for the `crypto-bigint` and `ctutils` fixes.
-
-**Partial work:** the tree is moved, the workspace and merged lockfile build, paths are fixed, and all 285 tests pass. The `ci.yml` job, CODEOWNERS and a failing `hyalos-os/deny.toml` are in place. The ADR and the `CLAUDE.md` and `docs/README.md` wording are not done.
+- **#451 must close before a verifier release.** The timing advisory on `crypto-bigint` 0.5.5 is held by TLSNotary's `k256` and `p256`, and its reach into notary signing is unassessed.
+- `aes` 0.9.0 and `der` 0.8.0 are yanked on crates.io and held by TLSNotary. They are unchanged, and `cargo deny` reports them as warnings.
+- 12 `broker_channel` tests in the main workspace fail with `Io(InvalidInput)` when the target directory is on a deep path, at the base commit too. They pass with a short `CARGO_TARGET_DIR`.
+- `context.md`'s list of paths that break was incomplete, and Slice 2 onward should read paths under `hyalos-os/`.
