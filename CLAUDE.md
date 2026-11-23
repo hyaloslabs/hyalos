@@ -1,6 +1,6 @@
 # Hyalos
 
-Clean-room Rust rewrite of hivrr: one `hyalos` binary (engine and broker) that runs coding agents in sandboxes holding no secrets, with every decision in a signed, hash-chained event log. Spike rigs under `spikes/` are not part of the workspace and not trusted core.
+Clean-room Rust rewrite of hivrr: one `hyalos` binary (engine and broker) that runs coding agents in sandboxes holding no secrets, with every decision in a signed, hash-chained event log. Spike rigs under `spikes/` are not part of the workspace and not trusted core. hyalOS is a separate Cargo workspace in `hyalos-os/` (ADR-0130).
 
 This file holds the rules. The design is in the ADRs: start at [`docs/adr/README.md`](docs/adr/README.md) and read the ADRs for the code you touch (the map below). Operator procedures are in `docs/operations/`.
 
@@ -46,6 +46,7 @@ Tests that need a tool skip without it unless CI's variable is set: `HYALOS_REQU
 ## Code layout (ADR-0017)
 
 - `core/` is the trusted core: everything that runs in the engine or broker process, the CLI included. It has a 30,000-line budget, and parts have their own in `PART_BUDGETS` (`crates/xtask`). Trusted-core paths need code-owner review (`.github/CODEOWNERS`).
+- `hyalos-os/` is its own workspace, with its own lockfile and `deny.toml`. Nothing in `core/` depends on it (ADR-0130).
 - `crates/` holds the rest: checks, the simulator, test kits, sandbox tools. It is not counted, and `core/` uses it only as dev-dependencies, so none of it is in the binary.
 - Dependency edges are a table in `crates/xtask`: only the engine and the `hyalos` crate (the engine process) depend on `hyalos-log`; the broker never depends on the engine, log or substrate crates; the engine never depends on the broker; only the `hyalos` crate depends on the plugin runtime (`hyalos-plugin`), which depends only on `hyalos-types` (ADR-0086). A new `core/` crate or edge edits that table and the ADR.
 - `hyalos-types`, `hyalos-log`, `hyalos-policy` and `hyalos-engine` are deterministic (ADR-0013). Time comes from `hyalos_types::Clock` and randomness from `hyalos_types::Entropy`. Their `clippy.toml` bans `SystemTime`, `Instant`, `HashMap`, `HashSet`, `RandomState` and `fs::read_dir`, and any external dependency needs an entry in `EXTERNAL_ALLOWED`.
@@ -76,6 +77,7 @@ These are pinned by tests. A change to one bumps its version (except where noted
 | `.github/workflows/ci.yml` | CI's jobs, their time budget, the required check that gathers them, build caching and the specialised jobs run by path | 0104, 0105, 0108, 0119, 0124 |
 | `.github/workflows/release.yml`, `.github/scripts/release-evidence.sh`, `.github/scripts/tag-release.sh` | A release: the evidence its commit needs, the operator's tag, the static binary, the image by digest, provenance, the complete job it runs before publishing, the red-team reach it must record | 0081, 0107, 0110, 0111 |
 | `site/setup`, `.github/workflows/pages.yml` | The setup page that creates the GitHub App from a manifest, and the marketplace settings check's App page | 0084, 0096 |
+| `hyalos-os/` | hyalOS: the monitor, `attest`, the kernel image, the guest and their evidence, tested by CI's `hyalos-os` job | 0130 |
 | `crates/xtask` | `layout` and `lines`; `docs`, the check that `docs/security` cites code that exists; the release gate's check on the workflows | 0017, 0111 |
 | `crates/sim`, `crates/world` | Deterministic simulation, the simulated world, fault schedules the `sim` sweep, and the spec's invariants on every run | 0013, 0036, 0104, 0108 |
 | `spec/Job.tla`, `.github/scripts/check-spec.sh` | The job state machine's TLA+ spec, its invariants and mutants, and the model check | 0013, 0108 |

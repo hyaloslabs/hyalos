@@ -1,0 +1,9 @@
+[workspace]
+resolver = "3"
+members = ["monitor", "attest"]
+# The kernel image needs `panic = "abort"` and the guest builds for WebAssembly, so each keeps its own
+# manifest and lockfile.
+exclude = ["kernel-image", "guest"]
+
+[profile.release]
+opt-level = 3

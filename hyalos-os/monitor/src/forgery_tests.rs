@@ -467,6 +467,14 @@ fn adr_014_a_session_left_after_reading_the_reply_cannot_be_asked_again() {
     child.stdin.take().unwrap().write_all(QUESTIONS[0].as_bytes()).unwrap();
     let left = child.wait_with_output().unwrap();
     assert!(!left.status.success());
+    // The notary holds its one session until it sees the link close, and turns a call away as busy
+    // until then. It writes the session's line after releasing it.
+    let sessions = world.rig.root.join("notary/sessions.log");
+    let waited = std::time::Instant::now();
+    while fs::read_to_string(&sessions).unwrap_or_default().lines().next().is_none() {
+        assert!(waited.elapsed() < std::time::Duration::from_secs(30), "the notary never ended the session that left");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let kept = answer_from(&world.ask(&world.presentation(0), &intent, 0, QUESTIONS[0], None), QUESTIONS[0]);
     world.close(&intent, vec![kept], before, now() + 1);
     assert_eq!(world.refused(), "answer 0: the sequence number is not the answer's position, so an attestation is unaccounted for");
@@ -982,7 +990,7 @@ fn record_s_06_1_e1_an_answer_with_no_proof_has_no_slot_in_its_bytes() {
 #[test]
 fn record_s_06_1_e2_a_version_1_record_replays_byte_identically() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let bytes = fs::read(root.join("out/live3.json")).unwrap();
+    let bytes = fs::read(root.join("evidence/out/live3.json")).unwrap();
     let t = crate::read_transcript(&bytes).unwrap();
     assert_eq!(t.version, 1);
     assert!(!serde_json::to_string(&t).unwrap().contains("provider_proofs"));
@@ -1130,7 +1138,7 @@ fn canary_s_03_2_e2_a_pass_keeps_the_hidden_bytes_limit_and_adds_its_own() {
 #[test]
 fn canary_s_03_3_e1_a_version_2_record_states_it_has_no_canary() {
     let _one = locked();
-    let committed = include_bytes!("../../out/two-machines-record/record.json");
+    let committed = include_bytes!("../../evidence/out/two-machines-record/record.json");
     assert_eq!(crate::read_transcript(committed).unwrap().version, 2, "the committed record");
     let report = one_answer("canary-3-3-e1", 2).audit().unwrap();
     assert!(report.starts_with("audit passed"), "{report}");

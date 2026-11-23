@@ -36,12 +36,12 @@ impl Rig {
     /// Copies of the first four real links and replies, with the real pinned key and operator key.
     fn real(&self) -> Auditor {
         for seq in 0..REAL_LINKS {
-            fs::copy(source(&format!("ledger/{seq:05}.json")), self.root.join(format!("ledger/{seq:05}.json"))).unwrap();
+            fs::copy(source(&format!("evidence/ledger/{seq:05}.json")), self.root.join(format!("ledger/{seq:05}.json"))).unwrap();
             for dir in ["ledger", "log"] {
-                fs::copy(source(&format!("ledger/{seq:05}.rekor.json")), self.root.join(format!("{dir}/{seq:05}.rekor.json"))).unwrap();
+                fs::copy(source(&format!("evidence/ledger/{seq:05}.rekor.json")), self.root.join(format!("{dir}/{seq:05}.rekor.json"))).unwrap();
             }
         }
-        let reply: Value = serde_json::from_slice(&fs::read(source("ledger/00000.rekor.json")).unwrap()).unwrap();
+        let reply: Value = serde_json::from_slice(&fs::read(source("evidence/ledger/00000.rekor.json")).unwrap()).unwrap();
         let body: Value = serde_json::from_slice(&B64.decode(reply.as_object().unwrap().values().next().unwrap()["body"].as_str().unwrap()).unwrap()).unwrap();
         let operator = B64.decode(body["spec"]["signature"]["publicKey"]["content"].as_str().unwrap()).unwrap();
         fs::write(self.path("operator.pub"), operator).unwrap();
@@ -145,21 +145,21 @@ fn test_claim(commitment: &str) -> Claim {
     Claim { commitment: commitment.to_string(), task: "one task".to_string(), guest: "one guest".to_string(), version: 1 }
 }
 
-/// The real record's claim, recomputed from `out/live2.json`.
+/// The real record's claim, recomputed from `evidence/out/live2.json`.
 fn real_claim() -> Claim {
-    let t: crate::Transcript = serde_json::from_slice(&fs::read(source("out/live2.json")).unwrap()).unwrap();
+    let t: crate::Transcript = serde_json::from_slice(&fs::read(source("evidence/out/live2.json")).unwrap()).unwrap();
     crate::claim_of(&t, real_commitment()).unwrap()
 }
 
 /// The commitment of the real record that the second real link names.
 fn real_commitment() -> String {
-    let link: Value = serde_json::from_slice(&fs::read(source("ledger/00001.json")).unwrap()).unwrap();
+    let link: Value = serde_json::from_slice(&fs::read(source("evidence/ledger/00001.json")).unwrap()).unwrap();
     link["transcript"].as_str().unwrap().to_string()
 }
 
 #[test]
 fn t_4_the_pinned_key_is_the_one_in_the_trusted_root_and_hashes_to_the_log_id() {
-    let root = fs::read_to_string(source("../../core/hyalos/tests/fixtures/marketplace-r10/trusted-root.json")).unwrap();
+    let root = fs::read_to_string(source("../core/hyalos/tests/fixtures/marketplace-r10/trusted-root.json")).unwrap();
     assert_eq!(root.lines().nth(106).unwrap().split('"').nth(3), Some(REKOR_KEY));
     assert_eq!(sha(&B64.decode(REKOR_KEY).unwrap()), "c0d23d6ad406973f9559f3ba2d1ca01f84147d8ffc5b8445c224f98b9591801d");
 }
@@ -387,7 +387,7 @@ fn t_4_a_record_whose_result_link_says_refused_is_refused() {
 
 #[test]
 fn t_4_a_field_the_commitment_does_not_cover_is_refused() {
-    let mut record: Value = serde_json::from_slice(&fs::read(source("out/live2.json")).unwrap()).unwrap();
+    let mut record: Value = serde_json::from_slice(&fs::read(source("evidence/out/live2.json")).unwrap()).unwrap();
     record["reviewed_by"] = json!("someone");
     assert!(serde_json::from_value::<crate::Transcript>(record).is_err());
 }

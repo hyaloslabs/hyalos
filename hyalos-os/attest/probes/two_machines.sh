@@ -4,22 +4,22 @@
 #
 #   bash attest/probes/two_machines.sh <ssh host> <owner/repo> <issue number>
 #
-# Run from spikes/task-kernel. It starts a notary on the other machine under keys kept there,
+# Run from hyalos-os. It starts a notary on the other machine under keys kept there,
 # reached through an SSH tunnel, and stops it when this script ends.
 set -euo pipefail
 [ $# -eq 3 ] || { echo "usage: two_machines.sh <ssh host> <owner/repo> <issue number>"; exit 2; }
 host=$1 repo=$2 issue=$3
-port=7047 remote=.hyalos-notary out=out/two-machines
-attest=$PWD/attest/target/release/attest
+port=7047 remote=.hyalos-notary out=evidence/out/two-machines
+attest=$PWD/target/release/attest
 monitor=$PWD/target/release/task-kernel
 key=$HOME/.config/hyalos-spike/operator-transport.key
-[ -x "$attest" ] && [ -x "$monitor" ] && [ -x attest/target/release/notary ] && [ -x attest/target/release/canary ] || { echo "build both programs first"; exit 2; }
+[ -x "$attest" ] && [ -x "$monitor" ] && [ -x target/release/notary ] && [ -x target/release/canary ] || { echo "build both programs first"; exit 2; }
 [ ! -e "$out" ] || { echo "$out already exists: move it away first"; exit 2; }
 
 operator_public=$("$attest" link-key "$key")
 ssh "$host" "mkdir -p -m 700 $remote"
-scp -q attest/target/release/notary "$host:$remote/notary"
-scp -q attest/target/release/canary "$host:$remote/canary"
+scp -q target/release/notary "$host:$remote/notary"
+scp -q target/release/canary "$host:$remote/canary"
 
 # The customer runs `canary check` on that machine with their own credential. This script never
 # reads it. Without a fresh pass it stops here, before the notary starts or anything is published.
@@ -40,7 +40,7 @@ echo "notary signing public key: $signer"
 
 # The customer's side authorises this task for two runs: the timing call and the real task. A state
 # directory from an earlier probe already holds a round for it, so that case takes a new round.
-task=$("$monitor" task guest/digest.wasm fixtures/issues.tsv)
+task=$("$monitor" task guest/digest.wasm evidence/fixtures/issues.tsv)
 authorize="$remote/notary authorize --dir $remote/state --task $task --attempts 2"
 authorisation=$(ssh "$host" "$authorize 2>/dev/null || $authorize --again")
 
@@ -69,6 +69,6 @@ printf 'The build fails on a clean checkout' > "$out/question.txt"
     "$attest" ask "$out/timing.presentation" "$timing_run" 0 < "$out/question.txt" | sed 's/"response_id":"[^"]*"/"response_id":"…"/'
 
 # 3.1: one real task through the notary. This posts one comment on the issue named.
-"$monitor" live guest/digest.wasm fixtures/issues.tsv "$out/record.json" "$repo" "$issue"
+"$monitor" live guest/digest.wasm evidence/fixtures/issues.tsv "$out/record.json" "$repo" "$issue"
 printf '%s\n' "$signer" > "$out/notary.pub"
 "$monitor" attested "$out/record.json" --notary-public "$out/notary.pub" --verify "$attest"

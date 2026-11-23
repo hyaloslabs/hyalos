@@ -4,8 +4,6 @@ version = "0.2.0"
 edition = "2024"
 publish = false
 
-[workspace]
-
 [lib]
 path = "src/lib.rs"
 doctest = false
@@ -48,6 +46,3 @@ name = "forging-notary"
 path = "src/bin/forging-notary.rs"
 required-features = ["forge-ticket"]
 test = false
-
-[profile.release]
-opt-level = 3

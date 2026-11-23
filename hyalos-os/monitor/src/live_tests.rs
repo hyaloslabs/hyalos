@@ -1,5 +1,5 @@
 //! The monitor's attested path, against the built notary and stand-in provider. They are found in
-//! `attest/target/release`, and a test fails when they are missing. No test contacts the real
+//! `target/release`, and a test fails when they are missing. No test contacts the real
 //! provider or the public log, and every key and credential is made up in a temporary directory.
 
 use super::*;
@@ -18,9 +18,9 @@ const NAME: &str = "provider.test";
 static ONE: Mutex<()> = Mutex::new(());
 
 pub(crate) fn built(program: &str) -> PathBuf {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../attest/target/release").join(program);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/release").join(program);
     let features = if program == "forging-notary" { " --features forge-ticket --bin forging-notary" } else { "" };
-    assert!(path.exists(), "{program} is not built: run cargo build --release --manifest-path attest/Cargo.toml{features}");
+    assert!(path.exists(), "{program} is not built: run cargo build --release --manifest-path hyalos-os/Cargo.toml -p attest{features}");
     path
 }
 
@@ -108,7 +108,7 @@ impl Rig {
         self.set("HYALOS_NOTARY_TRANSPORT_PUBLIC", values[1].clone());
         self.set("HYALOS_NOTARY_ADDRESS", values[2].clone());
         let guest = sha(&fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest/digest.wasm")).unwrap());
-        let inputs = read_inputs(Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/issues.tsv").to_str().unwrap()).unwrap();
+        let inputs = read_inputs(Path::new(env!("CARGO_MANIFEST_DIR")).join("../evidence/fixtures/issues.tsv").to_str().unwrap()).unwrap();
         let made = Command::new(built("notary"))
             .args(["authorize", "--dir"])
             .arg(self.dir.join("notary"))
@@ -141,7 +141,7 @@ impl Rig {
     /// the first model call in every test that uses it, so no notification can be sent.
     fn refused_run(&self, attest: Option<Attest>) -> (Reason, Vec<serde_json::Value>) {
         let guest = fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest/digest.wasm")).unwrap();
-        let inputs = read_inputs(Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/issues.tsv").to_str().unwrap()).unwrap();
+        let inputs = read_inputs(Path::new(env!("CARGO_MANIFEST_DIR")).join("../evidence/fixtures/issues.tsv").to_str().unwrap()).unwrap();
         let mode = Mode::Live(Live::new("test.invalid/none", 0, attest).unwrap());
         let mut links = Vec::new();
         let mut append = |link: serde_json::Value| {
@@ -388,21 +388,21 @@ fn committed(path: &str) -> Vec<u8> {
 
 #[test]
 fn record_s_01_5_e1_a_committed_version_1_record_replays_identically() {
-    let t = read_transcript(&committed("out/live3.json")).unwrap();
+    let t = read_transcript(&committed("evidence/out/live3.json")).unwrap();
     assert_eq!(t.version, 1);
     assert_eq!(replay(&Backend::Process, &committed("guest/digest.wasm"), &t), Ok(()));
 }
 
 #[test]
 fn record_s_01_5_e2_that_record_relabelled_as_version_2_never_replays() {
-    let mut t = read_transcript(&committed("out/live3.json")).unwrap();
+    let mut t = read_transcript(&committed("evidence/out/live3.json")).unwrap();
     t.version = 2;
     assert!(read_transcript(&serde_json::to_vec(&t).unwrap()).is_err());
     assert_eq!(replay(&Backend::Process, &committed("guest/digest.wasm"), &t), Err(Reason::ReplayDiverged));
 }
 
 fn version_2_run() -> Transcript {
-    let inputs = read_inputs(Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/issues.tsv").to_str().unwrap()).unwrap();
+    let inputs = read_inputs(Path::new(env!("CARGO_MANIFEST_DIR")).join("../evidence/fixtures/issues.tsv").to_str().unwrap()).unwrap();
     crate::execute_as(2, &Backend::Process, &committed("guest/digest.wasm"), inputs, Mode::Record { seed: 0 }).unwrap()
 }
 
@@ -426,7 +426,7 @@ fn record_s_01_9_e2_a_version_2_transcript_naming_another_task_is_refused() {
 fn record_s_02_3_e1_the_task_command_prints_what_the_run_logs() {
     let rig = Rig::new("r-02-3-e1");
     let guest_file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest/digest.wasm");
-    let inputs_file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/issues.tsv");
+    let inputs_file = Path::new(env!("CARGO_MANIFEST_DIR")).join("../evidence/fixtures/issues.tsv");
     let program = env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("task-kernel");
     assert!(program.exists(), "the monitor is not built");
     let printed = Command::new(program).arg("task").arg(&guest_file).arg(&inputs_file).env_clear().output().unwrap();

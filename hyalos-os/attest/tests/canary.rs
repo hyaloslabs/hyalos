@@ -428,7 +428,7 @@ fn probe(label: &str, canary_exit: u8) -> Option<(Output, String, bool, bool)> {
     }
     let scratch = Scratch::new(label);
     let (work, stubs, home) = (scratch.0.join("work"), scratch.0.join("stubs"), scratch.0.join("home"));
-    for dir in [work.join("attest/target/release"), work.join("target/release"), stubs.clone(), home.clone()] {
+    for dir in [work.join("target/release"), stubs.clone(), home.clone()] {
         fs::create_dir_all(dir).unwrap();
     }
     let (log, live) = (scratch.0.join("ssh.log"), scratch.0.join("live.log"));
@@ -443,15 +443,15 @@ fn probe(label: &str, canary_exit: u8) -> Option<(Output, String, bool, bool)> {
         log.display()
     ));
     write(stubs.join("scp"), "exit 0".to_string());
-    write(work.join("attest/target/release/attest"), "case \"$1\" in\nlink-key) echo an-operator-key ;;\nask) cat > /dev/null; echo '{}' ;;\nesac".to_string());
-    write(work.join("attest/target/release/notary"), "exit 0".to_string());
-    write(work.join("attest/target/release/canary"), "exit 0".to_string());
+    write(work.join("target/release/attest"), "case \"$1\" in\nlink-key) echo an-operator-key ;;\nask) cat > /dev/null; echo '{}' ;;\nesac".to_string());
+    write(work.join("target/release/notary"), "exit 0".to_string());
+    write(work.join("target/release/canary"), "exit 0".to_string());
     write(work.join("target/release/task-kernel"), format!("case \"$1\" in\ntask) echo a-task ;;\nlive) echo live >> '{}' ;;\nesac", live.display()));
     let path = format!("{}:{}", stubs.display(), std::env::var("PATH").unwrap());
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/probes/two_machines.sh");
     let output = Command::new("bash").arg(script).args(["a-host", "owner/repo", "1"]).current_dir(&work).env("PATH", path).env("HOME", &home).output().unwrap();
     drop(listener);
-    Some((output, fs::read_to_string(&log).unwrap_or_default(), live.exists(), work.join("out/two-machines").exists()))
+    Some((output, fs::read_to_string(&log).unwrap_or_default(), live.exists(), work.join("evidence/out/two-machines").exists()))
 }
 
 #[test]
