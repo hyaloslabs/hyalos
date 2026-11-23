@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | executing |
+| **Status** | done |
 | **Type** | Feature |
 | **Size** | M — 4 slices |
 | **Modifiers** | security, integration, public-api |
@@ -84,3 +84,8 @@ diverged, using the deviations in every progress file._
 
 | Cold read predicted | What diverged | Slice | Lesson for the next pack |
 |---|---|---|---|
+| Failure-state staging, the marker and the latch needed many rounds to get right | They held in code with no contract change. The one review finding was a misleading message for a missing directory | 1 | A long cold read on failure paths pays off when each path has a named example |
+| S-02.1.e8 could be tested as written | Real time cannot make a pass go stale between open and signing, so `forging-notary` shifts the session time its signing check judges | 2 | For a check between two moments, plan the test's clock hook with the check |
+| The attest tool's tests were not listed as starting a notary | Its own unit-test rig started one with no pass and failed | 2 | When a new gate refuses by default, search for every process that starts the gated program |
+| `HYALOS_FORGE_CANARY` needed only absolute times | The window's boundary rows need a time relative to a session that a test cannot know, so it gained `before=<seconds>` | 3 | Write boundary examples against the value the code compares, then check the hook can produce it |
+| The suggested path named `read_transcript` and the ledger for the new version | `execute_as` has its own version match, so 23 monitor tests failed until it took version 3 | 3 | When a plan raises a version, search for every match on it |

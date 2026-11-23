@@ -13,13 +13,21 @@ port=7047 remote=.hyalos-notary out=out/two-machines
 attest=$PWD/attest/target/release/attest
 monitor=$PWD/target/release/task-kernel
 key=$HOME/.config/hyalos-spike/operator-transport.key
-[ -x "$attest" ] && [ -x "$monitor" ] && [ -x attest/target/release/notary ] || { echo "build both programs first"; exit 2; }
+[ -x "$attest" ] && [ -x "$monitor" ] && [ -x attest/target/release/notary ] && [ -x attest/target/release/canary ] || { echo "build both programs first"; exit 2; }
 [ ! -e "$out" ] || { echo "$out already exists: move it away first"; exit 2; }
 mkdir -p "$out"
 
 operator_public=$("$attest" link-key "$key")
 ssh "$host" "mkdir -p -m 700 $remote"
 scp -q attest/target/release/notary "$host:$remote/notary"
+scp -q attest/target/release/canary "$host:$remote/canary"
+
+# The customer runs `canary check` on that machine with their own credential. This script never
+# reads it. Without a fresh pass it stops here, before the notary starts or anything is published.
+ssh "$host" "$remote/canary status --dir $remote/state" >/dev/null || {
+    echo "no fresh customer canary pass on $host: the customer must run canary check there first"
+    exit 2
+}
 
 coproc NOTARY { ssh -o ExitOnForwardFailure=yes -L "$port:127.0.0.1:$port" "$host" \
     "$remote/notary --listen 127.0.0.1:$port --dir $remote/state --operator-transport-public $operator_public --stop-on-stdin-close"; }

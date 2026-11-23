@@ -373,3 +373,101 @@ fn canary_the_reset_needs_a_state_or_a_marker() {
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(rig.state(), None);
 }
+
+fn status(rig: &Rig) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_canary")).arg("status").arg("--dir").arg(&rig.dir).env_remove("HYALOS_TRUST_SERVER_NAME").output().unwrap()
+}
+
+#[test]
+fn canary_4_1_status_is_fresh_only_on_a_fresh_pass() {
+    let rig = Rig::new("canary-4-1");
+    rig.put(&state_text("passed", now() - 60));
+    let output = status(&rig);
+    assert_eq!((output.status.code(), said(&output).trim()), (Some(0), "fresh"));
+    assert!(!rig.dir.join("canary.lock").exists(), "status takes no lock");
+    let window = attest::canary::CANARY_WINDOW_SECONDS;
+    for text in [state_text("passed", now() - window - 1), state_text("passed", now() + 3600), state_text("held", now()), state_text("latched", now()), "not a state".to_string()] {
+        rig.put(&text);
+        let output = status(&rig);
+        assert_eq!((output.status.code(), said(&output).trim()), (Some(1), "not fresh"), "{text}");
+    }
+    fs::remove_file(rig.dir.join("canary")).unwrap();
+    let output = status(&rig);
+    assert_eq!((output.status.code(), said(&output).trim()), (Some(1), "not fresh"));
+}
+
+#[test]
+fn canary_4_1_status_names_no_credential() {
+    let source = include_str!("../src/bin/canary.rs");
+    let body = source.split("fn status(dir: &Path)").nth(1).unwrap().split("#[tokio::main]").next().unwrap();
+    assert!(!body.contains("credential"), "{body}");
+}
+
+const RECORD: &str = include_str!("../../RECORD.md");
+
+#[test]
+fn canary_s_04_1_e1_the_format_names_the_canary() {
+    for named in ["hyalos.canary/1", "Version 3", "| `canary` |", "24 hours"] {
+        assert!(RECORD.contains(named), "RECORD.md does not name {named}");
+    }
+}
+
+#[test]
+fn canary_s_04_1_e2_the_format_states_the_latch_and_the_limit() {
+    for named in ["canary reset", "does not close the hidden API-key case", "the state was not updated"] {
+        assert!(RECORD.contains(named), "RECORD.md does not state {named}");
+    }
+}
+
+/// The operator's script in a temporary directory, with every program it calls a stub on `PATH`
+/// or at its `$PWD` path. Nothing real is contacted. `None` when this host cannot run it.
+fn probe(label: &str, canary_exit: u8) -> Option<(Output, String, bool)> {
+    if !std::path::Path::new("/usr/bin/time").exists() {
+        eprintln!("skipped: this host has no /usr/bin/time");
+        return None;
+    }
+    let scratch = Scratch::new(label);
+    let (work, stubs, home) = (scratch.0.join("work"), scratch.0.join("stubs"), scratch.0.join("home"));
+    for dir in [work.join("attest/target/release"), work.join("target/release"), stubs.clone(), home.clone()] {
+        fs::create_dir_all(dir).unwrap();
+    }
+    let (log, live) = (scratch.0.join("ssh.log"), scratch.0.join("live.log"));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let write = |path: PathBuf, body: String| {
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    };
+    write(stubs.join("ssh"), format!(
+        "echo \"$*\" >> '{}'\ncase \"$*\" in\n-G*) printf 'hostname 127.0.0.1\\nport {port}\\n' ;;\n*'canary status'*) exit {canary_exit} ;;\n*'-L '*) printf 'signing aa\\ntransport bb\\nlistening 127.0.0.1:7047\\n'; exec 2>/dev/null; exec sleep 3 ;;\n*authorize*) echo an-authorisation ;;\nesac",
+        log.display()
+    ));
+    write(stubs.join("scp"), "exit 0".to_string());
+    write(work.join("attest/target/release/attest"), "case \"$1\" in\nlink-key) echo an-operator-key ;;\nask) cat > /dev/null; echo '{}' ;;\nesac".to_string());
+    write(work.join("attest/target/release/notary"), "exit 0".to_string());
+    write(work.join("attest/target/release/canary"), "exit 0".to_string());
+    write(work.join("target/release/task-kernel"), format!("case \"$1\" in\ntask) echo a-task ;;\nlive) echo live >> '{}' ;;\nesac", live.display()));
+    let path = format!("{}:{}", stubs.display(), std::env::var("PATH").unwrap());
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/probes/two_machines.sh");
+    let output = Command::new("bash").arg(script).args(["a-host", "owner/repo", "1"]).current_dir(&work).env("PATH", path).env("HOME", &home).output().unwrap();
+    drop(listener);
+    Some((output, fs::read_to_string(&log).unwrap_or_default(), live.exists()))
+}
+
+#[test]
+fn canary_s_04_2_e1_with_a_fresh_pass_the_probe_reaches_the_run() {
+    let Some((output, calls, ran)) = probe("canary-4-2-e1", 0) else { return };
+    assert!(output.status.success(), "{}", complained(&output));
+    assert!(ran, "the run was not reached");
+    let (gate, notary) = (calls.find("canary status").unwrap(), calls.find("--listen").unwrap());
+    assert!(gate < notary, "the gate comes before the notary starts: {calls}");
+}
+
+#[test]
+fn canary_s_04_2_e2_without_a_pass_the_probe_stops_before_anything_public() {
+    let Some((output, calls, ran)) = probe("canary-4-2-e2", 1) else { return };
+    assert_eq!(output.status.code(), Some(2), "{}", complained(&output));
+    assert!(said(&output).contains("no fresh customer canary pass"));
+    assert!(!ran, "the run went ahead");
+    assert!(!calls.contains("--listen") && !calls.contains("authorize"), "{calls}");
+}

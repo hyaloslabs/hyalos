@@ -1,6 +1,6 @@
 # hyalOS record format
 
-This defines what a run leaves behind and how a verifier reads it. It covers record versions 1 and 2. New runs write version 2. The code that enforces it is `kernel/src/main.rs`, `kernel/src/ledger.rs` and `attest/src/`.
+This defines what a run leaves behind and how a verifier reads it. It covers record versions 1, 2 and 3. New runs write version 3. The code that enforces it is `kernel/src/main.rs`, `kernel/src/ledger.rs` and `attest/src/`.
 
 ## What a run leaves
 
@@ -13,7 +13,9 @@ This defines what a run leaves behind and how a verifier reads it. It covers rec
 
 ## Record versions
 
-A reader refuses any `version` other than 1 or 2, and names it. A record cannot change version: its links carry the same version, and a version 1 record relabelled as 2 has no valid `task`.
+A reader refuses any `version` other than 1, 2 or 3, and names it. A record cannot change version: its links carry the same version, and a version 1 record relabelled as 2 has no valid `task`.
+
+Version 3 has the same fields as version 2, with `version: 3` and links of `v: 3`. Its task identity, operator field and provider-proof slot are version 2's. What it adds is in its attestations: every answer must carry one signed canary.
 
 | Field | Version 1 | Version 2 |
 |---|---|---|
@@ -39,10 +41,10 @@ Each link is one signed JSON entry in the public log. A link's hash is the SHA-2
 
 | Link | Fields |
 |---|---|
-| Intent | `v`, `kind: "intent"`, `task`, `guest_sha256`. Version 2 adds `operator`, the SHA-256 of the operator public key's DER bytes in lowercase hex |
+| Intent | `v`, `kind: "intent"`, `task`, `guest_sha256`. Versions 2 and 3 add `operator`, the SHA-256 of the operator public key's DER bytes in lowercase hex |
 | Result | `v`, `kind: "result"`, `intent` (the intent link's hash), `outcome` (`ok` or `refused:<reason>`), `transcript` |
 
-`transcript` is the SHA-256 of the salt followed by the transcript's compact JSON, and is empty for a refused run. A result's `v` equals its intent's, and both equal the record's version. Because a version 2 intent names the operator key, the same run under another key has another hash.
+`transcript` is the SHA-256 of the salt followed by the transcript's compact JSON, and is empty for a refused run. A result's `v` equals its intent's, and both equal the record's version. Because a version 2 or 3 intent names the operator key, the same run under another key has another hash.
 
 ## The customer's authorisation
 
@@ -73,6 +75,37 @@ A run from before tickets is written with `- -` and is refused any further sessi
 
 **Restoring a notary directory is the customer's responsibility.** Restoring a whole directory from a backup returns the tickets spent since that backup, and the notary cannot detect it (ADR-009).
 
+## The customer's provider check
+
+The attestation hides the credential's bytes, so it depends on the provider refusing a request whose real body is not the one shown. The customer checks that this still holds, with their own credential, from a separate `canary` program. The notary never holds a credential.
+
+- `canary check --dir <d> --credential <file>` makes a control, the forged shape and a second control, each on its own connection. Only 200, 400, 200 is a pass. Exit 0 is a pass, 1 an accepted forgery or a latch, and 2 inconclusive or refused to start.
+- `canary status --dir <d>` prints `fresh` and exits 0 on a pass from the last 24 hours, and otherwise prints `not fresh` and exits 1.
+- `canary reset --dir <d>` writes `held`.
+
+For example, from the customer's crontab:
+
+```text
+0 */6 * * * /path/to/canary check --dir <notary-dir> --credential <credential-file>
+```
+
+`<d>/canary`, mode 600, is replaced by a durable rename:
+
+```text
+hyalos.canary/1
+state <passed, held or latched>
+checked <unix seconds>
+end
+```
+
+Anything else reads as no pass. **A 200 on the forged shape latches the state**, and no later pass clears it. Only the customer's `canary reset` does, and it also clears a damaged or lost state. The marker `<d>/canary.init` lets a check tell a lost state from a first check.
+
+The notary opens a session only on a pass at most 24 hours old, judged before anything is spent, and judges it again at signing against the signed session time. A pass that goes stale between the two gets no attestation, and that session's number stays spent.
+
+**One limit of the check itself.** If the directory refuses both the rename and the removal of a non-pass result, for example on a failing disk, the check exits 2 and prints that the state was not updated and the notary must be stopped. The earlier pass may be served until its 24 hours end (ADR-007 of the canary pack).
+
+The gate in the operator's `attest/probes/two_machines.sh` guards that run and proves no independence: the operator runs it. The notary's own refusal and the audit are the checks that count.
+
 ## The link
 
 The operator's first message is `<release> <run> <authorisation>`. The notary answers one word:
@@ -84,19 +117,21 @@ The operator's first message is `<release> <run> <authorisation>`. The notary an
 | `sequence` | The notary could not save, so nothing was spent |
 | `authorisation` | The identifier is unknown, unreadable, not this run's, or not the task's newest round |
 | `spent` | No ticket is left for a new run |
+| `canary` | The notary holds no fresh pass, so nothing was spent |
 
 ## The notary's signed extensions
 
-Every attestation carries two, under the notary's one signature. A requester's own extension is refused.
+Every attestation carries three, under the notary's one signature. A requester's own extension is refused.
 
 | Extension | Bytes |
 |---|---|
 | `hyalos.run-sequence/1` | The run as 64 ASCII hex characters, then the session's sequence number as 8 big-endian bytes |
 | `hyalos.ticket/1` | 144 bytes: the authorisation and the task as 64 ASCII hex characters each, then the budget, round, prior total and ticket as 4 big-endian bytes each |
+| `hyalos.canary/1` | 8 bytes: the pass's unix seconds, big-endian |
 
 ## The audit
 
-**Version 2.** The audit needs `--guest` and `--operator-public`. It refuses unless all of these hold:
+**Versions 2 and 3.** The audit needs `--guest` and `--operator-public`. It refuses unless all of these hold:
 
 - The record, its links and the chain agree on the version, and the intent names the audited key.
 - Each answer's attestation verifies under the trusted notary, for this run and position, inside the run's window, with a sequence number equal to its position.
@@ -106,7 +141,11 @@ Every attestation carries two, under the notary's one signature. A requester's o
 
 A pass opens with `audit passed` and states `attempt {ticket + 1} of at most {budget} under this authorisation, {prior} authorised earlier, for this exact task on this notary`.
 
-**Version 1.** Audited only with `--legacy-v1`. Any attestation carrying a ticket is refused. A pass opens with `legacy audit passed: no attempt budget`.
+**Version 3** also refuses unless every answer carries exactly one canary, no later than its session and at most 24 hours before it. A pass states `provider canary: forged body refused at <YYYY-MM-DD HH:MM:SS> UTC, the oldest pass in this record, checked by the customer on this notary`.
+
+**Version 2** refuses any attestation carrying a canary, and a pass states `not proven: this record has no provider canary`.
+
+**Version 1.** Audited only with `--legacy-v1`. Any attestation carrying a ticket or a canary is refused. A pass opens with `legacy audit passed: no attempt budget`.
 
 ### What a pass does not prove
 
@@ -117,12 +156,13 @@ A pass opens with `audit passed` and states `attempt {ticket + 1} of at most {bu
 - The request's hidden bytes are not shown, so the call may have used another credential or carried an added header.
 - The operator may have asked the provider directly, away from the notary.
 - The customer did not authorise this task again after this attestation.
+- On version 3, the canary tested one forged shape, with the customer's credential, at the time stated. It does not close the hidden API-key case: a request may still have used another credential.
 
 Run counts are stated `under this log key only`.
 
 ## The provider-proof slot
 
-A version 2 answer may hold `provider_proofs`, a list of entries:
+A version 2 or 3 answer may hold `provider_proofs`, a list of entries:
 
 | Field | Rule |
 |---|---|
