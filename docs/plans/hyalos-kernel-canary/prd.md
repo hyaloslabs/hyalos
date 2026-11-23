@@ -145,6 +145,8 @@ Rule S-01.4: a latch is the customer's to clear.
 | S-01.4.e3 | a malformed state file | a check runs | refused with a fixed message, exits 2, no provider connection, file unchanged |
 | S-01.4.e4 | a malformed state file | the customer runs the reset | state `held` |
 | S-01.4.e5 | the state file was removed after an earlier check, so the marker remains | a check runs | refused with exit 2, no provider connection, until the customer's reset |
+| S-01.4.e6 | a `passed` state with no marker, the forged shape gets 200, and the rename of the staged result fails | the check ends, then a passing check runs | the state is removed, the marker remains, and the later check is refused with exit 2 and no provider connection |
+| S-01.4.e7 | a state file with no marker, and the marker cannot be made | a check starts | refused with exit 2, no provider connection, state unchanged |
 
 ### S-02 The notary holds runs without a fresh pass
 
