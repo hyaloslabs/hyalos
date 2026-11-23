@@ -48,7 +48,7 @@ A request's 106 hidden bytes could hold a forged body. We treat that forgery as 
 | Quality | Target |
 |---|---|
 | Performance | One check makes at most 3 small provider calls. Reading the state adds no network call to a session |
-| Reliability | Any unreadable, malformed, stale or future state refuses the session. A failed write records no new pass and leaves the file as it was |
+| Reliability | Any unreadable, malformed, stale or future state refuses the session. A failed write of a pass records no new pass and leaves the file as it was. A failed write of a non-pass result removes the state |
 | Security | The notary never opens the credential. The operator cannot write the state or choose the window |
 | Privacy | No credential, reply body or provider error text is printed, stored or signed |
 | Accessibility | none: command-line tools with plain text output |
@@ -132,7 +132,7 @@ Rule S-01.3: the credential is checked before any provider call and never echoed
 
 | ID | Given credential file | When | Then |
 |---|---|---|---|
-| S-01.3.e1 | valid, holding a marker value | a check runs to any verdict | the marker is in neither stdout, stderr nor the state file |
+| S-01.3.e1 | valid, holding a test value | a check runs to any verdict | the test value is in neither stdout, stderr nor the state file |
 | S-01.3.e2 | length 105 | the check starts | refused with a fixed message, no provider connection, state unchanged |
 | S-01.3.e3 | mode 644 | the check starts | refused with a fixed message, no provider connection, state unchanged |
 
@@ -174,7 +174,7 @@ Rule S-02.3: the notary holds no credential.
 
 | ID | Given | When | Then |
 |---|---|---|---|
-| S-02.3.e1 | a marker credential file in the notary's directory | sessions are served | the notary does not open it, shown by its access time or by removing read permission |
+| S-02.3.e1 | a credential file holding a test value in the notary's directory | sessions are served | the notary does not open it, shown by its access time or by removing read permission |
 | S-02.3.e2 | the notary's source | searched | it references no credential path or `pinned_credential` |
 
 ### S-03 The audit checks and states the canary

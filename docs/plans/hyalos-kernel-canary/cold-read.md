@@ -4,8 +4,8 @@
 |---|---|
 | **Model** | Haiku (Agent tool, model: haiku, Explore) |
 | **Input** | Pack path and repository read access only; no conversation context |
-| **Rounds** | 7 |
-| **Result** | pass |
+| **Rounds** | 8 |
+| **Result** | COLD READ BLOCKED: 1 blocking question left after round 8, resolved and not yet checked by a cold reader |
 
 ## Round 1 — 2026-11-22
 
@@ -308,6 +308,47 @@ The reader thought through Slice 1 and said it has no blocking questions of its 
 | `standin.rs` `serve` | partly: `--statuses` is Slice 1's work |
 | `kernel/src/main.rs`, `ledger.rs`, `authorise.rs`, `two_machines.sh`, the Verify inputs | yes |
 
+## Round 8 — 2026-11-22
+
+Record only: the pack is `published`, so the reader saw it as `origin/main` has it (`3d63a1c`) and no other pack file was edited. The reader, Haiku (Agent tool, model: haiku, Explore), thought through Slice 1, including the two fixes made in the review of #431. It checked 22 citations: 20 held and 2 held partly. It flagged the allowed fences as code.
+
+### Questions
+
+| Id | Blocking | File | Gap | Resolution |
+|---|---|---|---|---|
+| Q1, Q2 | n (re-classed) | `context.md` §4, `design.md` | `bash` under the verification section, and `mermaid` diagrams | Stand, as in earlier rounds. `pack-format.md` §6 allows both |
+| Q3 | n | `design.md` §2 | Exit code for a latched state with an inconclusive result | Answered by the `canary check` row: a latched state exits 1 whatever the result. Proposed: add "including an inconclusive one" to the exit-code list |
+| Q4 | n | `plan.md` 1.1 | The test reads the literals but not the head | Proposed: criterion 1.1 also compares the head with transcribed bytes from `head` in `hidden_header.py` |
+| Q5 | n | `prd.md` S-01.2.e5 | How a test drops the connection | Answered by the repository: `standin --drop` closes with no reply. Proposed: name it in Slice 1 |
+| Q6 | n | `design.md` §2 | A first pass whose marker rename fails | Proposed, the reader's default: the pass stands, the check exits 2 and says the marker was not made, and the next check makes it |
+| Q7 | n | `design.md` §2 | Which settings select test mode | Proposed: name the three in `SETTINGS`, the same three `Trust::read` uses |
+| Q8 | n | `design.md` §2 | The marker's contents and mode | Proposed, the reader's default: an empty file, mode 600, removed by no command |
+| Q9 | n | `plan.md` Slice 1 Verify | `comm` proves the tests exist, not that they pass | Stands: the test runs in the same Verify prove that |
+
+### Contradictions
+
+| Item | Resolution |
+|---|---|
+| K1: exit codes for a latched state | Non-blocking, with Q3 |
+| K2: the Reliability NFR says a failed write leaves the file as it was, while S-01.2.e7 removes it (blocking) | Proposed: the NFR reads "A failed write of a pass records no new pass and leaves the file as it was. A failed write of a non-pass result removes the state" |
+| K3: "marker" names both a test credential value and `canary.init` | Proposed: S-01.3.e1 and S-02.3.e1 say "test value" |
+| K4: the probe's comment names the wrong file | Not a pack defect |
+| K5: `two_machines.sh` names an older pack's Slice 3 | Not a pack defect |
+
+### Citations checked
+
+| Citation | Holds |
+|---|---|
+| `attest/src/bin/notary.rs` `spend`, `save`, forging hook | yes |
+| `attest/src/lib.rs` `read_private`, `pinned_credential`, `CREDENTIAL_LENGTH`, `TICKET`, `read_ticket`, `answer`, `Trust::read`, probe test | yes |
+| `attest/src/main.rs` `credential`, `hidden_header.py`, `two_machines.sh`, `authorise.rs`, `RECORD.md` | yes |
+| `kernel/src/main.rs` `CURRENT_VERSION`, `HIDDEN_BYTES_LIMIT`, `kernel/src/ledger.rs` | yes |
+| `kernel/src/main.rs` `read_transcript` version gate | partly: two lines into the cited function |
+| `attest/src/bin/standin.rs` `serve` | partly: the status is chosen at line 106 |
+| Earlier packs' ADRs, and commit `fc063a2` with no spike drift since | yes |
+
 ## Result
 
-Pass after 7 rounds.
+COLD READ BLOCKED: 1 blocking question(s) left after round 8.
+
+- K2, the Reliability NFR against S-01.2.e7: resolved, not yet checked by a cold reader. The NFR now reads "A failed write of a pass records no new pass and leaves the file as it was. A failed write of a non-pass result removes the state". The round's other proposals were applied in the same change.
