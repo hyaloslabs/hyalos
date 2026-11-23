@@ -6,6 +6,9 @@
 //! The setting is `missing`, `doubled`, `short`, or a comma-separated list of `field=value` for
 //! `authorisation`, `task`, `budget`, `round`, `prior` and `ticket`. A `later:` prefix leaves a
 //! run's first session alone.
+//!
+//! `HYALOS_FORGE_SESSION_LATER` adds that many seconds to the session time the signing check judges,
+//! so a pass can go stale between a session's open and its signing.
 
 use attest::Ticket;
 
@@ -45,6 +48,11 @@ pub(crate) fn forged_ticket(real: &Ticket, sequence: u64) -> Vec<Vec<u8>> {
             vec![forged.bytes()]
         }
     }
+}
+
+/// The session time the signing check judges.
+pub(crate) fn forged_session_time(real: u64) -> u64 {
+    std::env::var("HYALOS_FORGE_SESSION_LATER").map_or(real, |later| real + later.parse::<u64>().expect("a number of seconds"))
 }
 
 fn main() -> std::process::ExitCode {

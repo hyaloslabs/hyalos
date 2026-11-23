@@ -38,6 +38,9 @@ pub const RUN_SEQUENCE: &[u8] = b"hyalos.run-sequence/1";
 /// The notary's record of the attempt: the authorisation and task as 64 ASCII hex characters each,
 /// then the budget, round, prior total and ticket as 4 big-endian bytes each.
 pub const TICKET: &[u8] = b"hyalos.ticket/1";
+/// The notary's record of the customer's provider check: the pass's unix seconds, as 8 big-endian
+/// bytes.
+pub const CANARY: &[u8] = b"hyalos.canary/1";
 
 /// One numbered attempt under a customer's authorisation, as the notary signs it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -259,6 +262,17 @@ pub fn read_ticket(extensions: &[Extension]) -> Result<Option<Ticket>> {
     Ok(Some(Ticket { authorisation: hash(&extension.value[..64])?, task: hash(&extension.value[64..128])?, budget: number(128)?, round: number(132)?, prior: number(136)?, ticket: number(140)? }))
 }
 
+/// Reads the pass time from a verified attestation's extensions. `None` when it carries none. A
+/// second one, or one of another length, is a refusal.
+pub fn read_canary(extensions: &[Extension]) -> Result<Option<u64>> {
+    let mut ours = extensions.iter().filter(|e| e.id == CANARY);
+    let (first, second) = (ours.next(), ours.next());
+    ensure!(second.is_none(), "the attestation carries more than one canary");
+    let Some(extension) = first else { return Ok(None) };
+    let bytes: [u8; 8] = extension.value.as_slice().try_into().map_err(|_| anyhow!("the canary is not in its one form"))?;
+    Ok(Some(u64::from_be_bytes(bytes)))
+}
+
 /// The customer's provider check, as the notary's directory holds it. This reads and writes the
 /// state and holds no credential code, so the notary can share it (ADR-002).
 pub mod canary {
@@ -267,6 +281,22 @@ pub mod canary {
 
     const HEADER: &str = "hyalos.canary/1";
     const MAX_STATE: u64 = 128;
+    /// How old a pass may be at a session's time. The monitor's copy is pinned to this by a test.
+    pub const CANARY_WINDOW_SECONDS: u64 = 86_400;
+
+    /// A pass counts for a session at or after it, up to the window, with no tolerance.
+    pub fn fresh(pass: u64, session: u64) -> bool {
+        pass <= session && session - pass <= CANARY_WINDOW_SECONDS
+    }
+
+    /// The time of a pass fresh at `now`. No file, anything malformed, a held or latched state and a
+    /// pass from the future are all no pass.
+    pub fn fresh_pass(dir: &Path, now: u64) -> Option<u64> {
+        match read(dir) {
+            Ok(Some(State { standing: Standing::Passed, checked })) if fresh(checked, now) => Some(checked),
+            _ => None,
+        }
+    }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Standing {
@@ -532,6 +562,8 @@ pub mod link {
         Authorisation,
         /// The authorisation has no ticket left.
         Spent,
+        /// The notary holds no fresh pass of the customer's provider check.
+        Canary,
     }
 
     /// The operator's side of the handshake, accepting only the configured notary's key.
@@ -589,6 +621,7 @@ pub mod link {
             "sequence" => Err(LinkFailure::Sequence),
             "authorisation" => Err(LinkFailure::Authorisation),
             "spent" => Err(LinkFailure::Spent),
+            "canary" => Err(LinkFailure::Canary),
             _ => Err(LinkFailure::Unreachable),
         }
     }
@@ -623,6 +656,25 @@ mod tests {
         let mut upper = good;
         upper.value[0] = b'A';
         assert!(read_ticket(&[upper]).is_err(), "not lowercase hex");
+    }
+
+    #[test]
+    fn canary_2_1_a_canary_is_read_only_in_its_one_form() {
+        let good = Extension { id: CANARY.to_vec(), value: 1_700_000_000u64.to_be_bytes().to_vec() };
+        assert_eq!(read_canary(std::slice::from_ref(&good)).unwrap(), Some(1_700_000_000));
+        assert_eq!(read_canary(&[]).unwrap(), None);
+        assert!(read_canary(&[good.clone(), good.clone()]).is_err(), "two canaries");
+        for length in [0, 7, 9] {
+            assert!(read_canary(&[Extension { id: CANARY.to_vec(), value: vec![0; length] }]).is_err());
+        }
+    }
+
+    #[test]
+    fn canary_freshness_has_no_tolerance() {
+        assert!(canary::fresh(100, 100));
+        assert!(canary::fresh(100, 100 + canary::CANARY_WINDOW_SECONDS));
+        assert!(!canary::fresh(100, 101 + canary::CANARY_WINDOW_SECONDS));
+        assert!(!canary::fresh(101, 100), "a pass from the future");
     }
 
     const INTENT: &str = "5f1d0c7a9b3e4f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8";

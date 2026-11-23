@@ -18,7 +18,7 @@
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use attest::{
-    DEADLINE, MAX_RECV, MAX_SENT, RELEASE, RUN_SEQUENCE, SERVER, TICKET, Ticket, binding,
+    CANARY, DEADLINE, MAX_RECV, MAX_SENT, RELEASE, RUN_SEQUENCE, SERVER, TICKET, Ticket, binding, canary,
     link::{self, Identity},
     run_sequence,
 };
@@ -466,6 +466,8 @@ struct Notary {
     acceptor: TlsAcceptor,
     approved: String,
     roots: RootCertStore,
+    /// Where the customer's provider check keeps its state.
+    dir: PathBuf,
     sequences: Mutex<Sequences>,
     books: Mutex<Books>,
     open: Arc<Semaphore>,
@@ -542,6 +544,14 @@ impl Notary {
         let (run, authorisation) = rest.split_once(' ').unwrap_or((rest, ""));
         binding(run, 0).map_err(|_| "dropped")?;
         let run = run.to_string();
+        // Before anything is spent, so a held notary costs the customer nothing. The pass read here
+        // is the one signed.
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok().map(|since| since.as_secs());
+        let Some(pass) = now.and_then(|now| canary::fresh_pass(&self.dir, now)) else {
+            let _ = link::write_line(&mut tls, "canary").await;
+            let _ = tokio::io::AsyncWriteExt::shutdown(&mut tls).await;
+            return Err("canary");
+        };
         // Spent before the operator can see any reply, so leaving a session it dislikes cannot give
         // the number or the ticket back (ADR-014).
         let spent = self.sequences.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).spend(&run, authorisation);
@@ -624,7 +634,7 @@ impl Notary {
         } else if sent > MAX_SENT || received > MAX_RECV {
             Err("limits")
         } else {
-            self.sign(&request, &tls_transcript, transcript_commitments, &run, sequence, &ticket, sent as u32, received as u32)
+            self.sign(&request, &tls_transcript, transcript_commitments, &run, sequence, &ticket, pass, sent as u32, received as u32)
         };
         match decided {
             Ok((sequence, attestation)) => {
@@ -642,7 +652,15 @@ impl Notary {
 
     /// Checks the request and signs it under the number this session spent when it opened.
     #[allow(clippy::too_many_arguments)]
-    fn sign(&self, request: &[u8], transcript: &tlsn::transcript::TlsTranscript, commitments: Vec<TranscriptCommitment>, run: &str, sequence: u64, ticket: &Ticket, sent: u32, received: u32) -> Result<(u64, Vec<u8>), Reason> {
+    fn sign(&self, request: &[u8], transcript: &tlsn::transcript::TlsTranscript, commitments: Vec<TranscriptCommitment>, run: &str, sequence: u64, ticket: &Ticket, pass: u64, sent: u32, received: u32) -> Result<(u64, Vec<u8>), Reason> {
+        // Judged again on the time being signed, so the notary never signs what the audit refuses.
+        #[cfg(feature = "forge-ticket")]
+        let session = crate::forged_session_time(transcript.time());
+        #[cfg(not(feature = "forge-ticket"))]
+        let session = transcript.time();
+        if !canary::fresh(pass, session) {
+            return Err("canary");
+        }
         let request: AttestationRequest = bincode::deserialize(request).map_err(|_| "dropped")?;
         let mut provider = CryptoProvider::default();
         provider.signer.set_signer(Box::new(Secp256k1Signer::new(&self.key).map_err(|_| "dropped")?));
@@ -666,6 +684,7 @@ impl Notary {
         for value in tickets {
             builder.extension(Extension { id: TICKET.to_vec(), value });
         }
+        builder.extension(Extension { id: CANARY.to_vec(), value: pass.to_be_bytes().to_vec() });
         let attestation = builder.build(&provider).map_err(|_| "dropped")?;
         Ok((sequence, bincode::serialize(&attestation).map_err(|_| "dropped")?))
     }
@@ -866,6 +885,7 @@ async fn run() -> Result<()> {
         acceptor,
         approved: start.approved,
         roots,
+        dir: start.dir,
         sequences: Mutex::new(sequences),
         books: Mutex::new(Books { lines, usage, usage_path }),
         open: Arc::new(Semaphore::new(1)),

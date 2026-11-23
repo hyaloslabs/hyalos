@@ -62,6 +62,7 @@ enum Word {
     Provider,
     Authorisation,
     Spent,
+    Canary,
 }
 
 impl std::fmt::Display for Word {
@@ -74,6 +75,7 @@ impl std::fmt::Display for Word {
             Word::Provider => "provider",
             Word::Authorisation => "authorisation",
             Word::Spent => "spent",
+            Word::Canary => "canary",
         })
     }
 }
@@ -155,6 +157,7 @@ async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &
         LinkFailure::Sequence => Word::Provider,
         LinkFailure::Authorisation => Word::Authorisation,
         LinkFailure::Spent => Word::Spent,
+        LinkFailure::Canary => Word::Canary,
     };
     let mut stream = link::connect(&notary.address, &notary.me, &notary.transport).await.map_err(said)?;
     if !link::open(&mut stream, run, &notary.authorisation).await.map_err(said)? {
@@ -206,8 +209,9 @@ async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &
     request_config.transcript_commit(commit.build()?);
     // For the test of an operator who asks the notary to sign an extension of its own. It is no
     // door: a forger can change this program the same way, and the notary refuses the request.
-    if env::var_os("HYALOS_TEST_REQUEST_EXTENSION").is_some() {
-        request_config.extension(tlsn::attestation::Extension { id: attest::TICKET.to_vec(), value: vec![0; 144] });
+    if let Some(which) = env::var_os("HYALOS_TEST_REQUEST_EXTENSION") {
+        let (id, length) = if which == "canary" { (attest::CANARY, 8) } else { (attest::TICKET, 144) };
+        request_config.extension(tlsn::attestation::Extension { id: id.to_vec(), value: vec![0; length] });
     }
     let request_config = request_config.build()?;
     let mut prove = ProveConfig::builder(prover.transcript());
@@ -275,6 +279,7 @@ fn verify(bytes: &[u8], trusted_notary: &str, trust: &Trust) -> Result<Value> {
     ensure!(server == trust.server, "the session was with another server");
     let (run, sequence) = read_run_sequence(&extensions)?;
     let ticket = read_ticket(&extensions)?;
+    let canary = attest::read_canary(&extensions)?;
     let transcript = transcript.context("no transcript")?;
 
     // Sent: everything is shown except one run of bytes, which must be the credential's value.
@@ -301,6 +306,7 @@ fn verify(bytes: &[u8], trusted_notary: &str, trust: &Trust) -> Result<Value> {
         "run": run,
         "sequence": sequence,
         "ticket": ticket.map(|held| json!({"authorisation": held.authorisation, "task": held.task, "budget": held.budget, "round": held.round, "prior": held.prior, "ticket": held.ticket})),
+        "canary": canary.map(|checked| json!({"checked": checked})),
         "intent_hash": intent,
         "position": position,
         "question_sha256": hex::encode(Sha256::digest(title.as_bytes())),
@@ -417,7 +423,7 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{io::BufRead, process::{Child, Command, Stdio}, time::Duration};
+    use std::{io::BufRead, os::unix::fs::DirBuilderExt, process::{Child, Command, Stdio}, time::{Duration, SystemTime, UNIX_EPOCH}};
 
     /// Removes a test's directory and ends its programs however the test ends.
     struct Rig(std::path::PathBuf, Vec<Child>);
@@ -448,6 +454,11 @@ mod tests {
         rig.1.push(standin);
         let address = line.trim().strip_prefix("listening ").context("the stand-in did not start")?.to_string();
         let me = Identity::make_or_load(&dir.join("operator.key"))?;
+        // The notary holds every session without a fresh pass of the customer's provider check.
+        let notary_dir = dir.join("notary");
+        fs::DirBuilder::new().recursive(true).mode(0o700).create(&notary_dir)?;
+        let passed = attest::canary::State { standing: attest::canary::Standing::Passed, checked: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() };
+        attest::canary::write_new(&attest::canary::path(&notary_dir), passed.text().as_bytes())?;
         let mut child = Command::new(built.join("notary"))
             .args(["--listen", "127.0.0.1:0", "--approved-server", "provider.test", "--stop-on-stdin-close", "--operator-transport-public", &me.public, "--dir"])
             .arg(dir.join("notary"))
