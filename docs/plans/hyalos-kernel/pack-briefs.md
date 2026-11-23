@@ -43,9 +43,37 @@ v1 and hyalOS are converging, so the boundary between them is settled before cap
 ## Python guest spike
 
 - **Question:** can a task be a signed Python script, run by an interpreter compiled into the guest, on hyalOS's four calls?
-- **Method:** rewrite the issue-triage task in Python and run it under MicroPython and Monty as guests.
+- **Method:** generate a small Python SDK from a draft contract, write the issue-triage task against it, and run it under MicroPython and Monty as guests.
 - **Measure:** guest size, cold start, run time and fuel under `wasmi`, byte-identical replay on both backends, and hostile scripts and hostile inputs.
-- **Out:** CPython on WASI, because it needs a new deterministic WASI layer in the monitor, and Muru, which is a server for long-running web apps and not a capsule runtime.
+- **Out:** CPython on WASI, because it needs a new deterministic WASI layer in the monitor, Muru, which is a server for long-running web apps and not a capsule runtime, and the real provider SDKs, which need libraries neither runtime can load.
+
+### The generated SDK
+
+The script gets only the methods its contract grants. It has no client, key, model setting, URL or tool list. For a contract that grants one classification schema and one notification:
+
+```python
+from hyalos import task
+
+issues = task.read_inputs()
+labels = [task.ask.classify(issue.title) for issue in issues]
+task.notify.team(render(labels))
+task.finish(summary(labels))
+```
+
+- **The SDK is not the boundary.** It makes the allowed calls easy and removes the others from the script's view. The monitor is what refuses a call the contract does not grant.
+- **The monitor needs a contract first.** Today it enforces only fixed limits: schema `0`, one effect, and size limits (`spikes/task-kernel/kernel/src/main.rs:26`). A guest that omits `notify` from its SDK can still call `effect`. The spike adds a minimal contract check for `asks` and `may_touch` to the spike's monitor, on both backends.
+- **Generation is deterministic.** The same contract gives the same SDK bytes.
+- **The SDK is part of what is signed and replayed.** Its bytes are bound into the task identity with the script, so a changed SDK is a different task.
+- **Each runtime exposes it its own way.** Monty through host functions, and MicroPython through a native module over the `hyalos` imports. The Python surface stays the same.
+
+**The spike passes when:**
+
+1. The same triage script and generated SDK run unchanged under each runtime that builds, and each run replays byte-identically.
+2. A script that calls a method its contract omits fails, and no ungranted call reaches the host.
+3. A hostile guest that calls the raw `hyalos` imports directly, bypassing the SDK, is refused by the monitor for any schema or effect its contract does not grant.
+4. Changing the contract changes the SDK's bytes and the task identity.
+5. Monty's type checking, if it can be used, rejects a script that calls an ungranted method before it is signed. A failure here is recorded and does not fail the spike.
+6. The result names which runtime capsules should adopt, or states that neither is ready.
 
 What the candidates need, from reading their source at Monty `v1.6.0` and MicroPython's current tree. Neither has been built for hyalOS yet:
 
@@ -70,6 +98,7 @@ The spike must therefore test hostile inputs as well as hostile scripts, and the
 - **Conflict to settle:** a customer's authorisation names one exact task, including its inputs (record ADR-002). A contract meant to run on new inputs needs a looser authorisation under a new extension version, without reopening the re-roll attack that the attempt budget closed. Python makes the split concrete: the runtime and script stay fixed and signed, and only the data varies.
 - **Interface limit:** the input loader splits files on newlines (`kernel/src/main.rs:441`), so a multi-line script cannot be one input today. The contract needs a separate script field or a framed input.
 - **Decide in the pack:** whether to allow floats, and a higher per-task memory limit. Each is a new execution profile (ADR-002), so neither changes quietly.
+- **Generated SDK:** if the spike succeeds, this pack owns the generator, and the monitor's contract enforcement replaces the spike's minimal check.
 
 Draft shape, to expose conflicts early. It is not a contract:
 

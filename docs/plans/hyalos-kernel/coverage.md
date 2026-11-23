@@ -53,6 +53,8 @@ Every item a pack deferred, excluded or left open has one row. When a pack defer
 | Authorising a contract on new inputs | Record ADR-002 | Owned | `capsules` |
 | Python as a guest runtime | Python review, 2026-11-22 | Owned | Python guest spike, then `capsules` |
 | A runtime bug letting hostile input steer a task | This pass | Owned | Python guest spike tests it, and the report states it |
+| A small SDK generated from the contract | Developer, 2026-11-22 | Owned | Python guest spike, then `capsules` |
+| Monitor enforcing a per-task contract | This pass | Owned | Minimal check in the Python guest spike, then `capsules` |
 | Floats and a higher memory limit | Python review | Owned | `capsules`, each as a new execution profile |
 | Multi-line script as a task input | This pass | Owned | `capsules` |
 | More than one model provider | Notary non-goal | Owned | `capsules` declares it, and each provider needs its own canary |
