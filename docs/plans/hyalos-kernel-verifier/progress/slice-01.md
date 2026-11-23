@@ -1,6 +1,6 @@
 # Slice 1 progress
 
-- **Status:** in-progress
+- **Status:** done
 - **Issue:** #443
 - **PR:** this PR
 - **Executor model:** Claude Opus 5.5
@@ -28,7 +28,7 @@ Checked at base commit `02f66d1`.
 | S-01.1, S-01.1.e1 | `cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace`, with `attest` built first: 285 passed, 0 failed, 0 ignored |
 | S-01.1.e2 | With the `attest` program moved aside, the monitor's tests fail: 83 failed, and 83 name `attest is not built` |
 | S-01.2, S-01.2.e1, S-01.2.e2 | SHA-256 manifest of all 260 evidence files at the base equals the moved files, `out/live3.json` included, with none added or missing |
-| S-01.3, S-01.3.e1 | PENDING_E1 |
+| S-01.3, S-01.3.e1 | A temporary failing test on this PR (commit `e47e594`) failed the `hyalos-os` job, and `build, lint, test` went red: [run 45244084495](https://github.com/hyaloslabs/hyalos/actions/runs/45244084495). The next commit removes it |
 | S-01.3.e2 | Dry run of the `ci.yml` rule: a `docs/` change gives `hyalos_os=false`, and the gate accepts `skipped` only with `false`. A skip with `true` or an unset output fails |
 | S-01.4 | `cargo fmt --check`, clippy, `cargo xtask layout`, `lines`, `docs` and `cargo deny check` pass. `cargo test --workspace --locked` passes 1,018 tests with a short target directory |
 | S-01.4.e1 | `cargo xtask lines`: 28,594, the base's count |
