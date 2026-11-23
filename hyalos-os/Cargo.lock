@@ -1071,6 +1071,7 @@ name = "hyalos-verify"
 version = "0.1.0"
 dependencies = [
  "hyalos-audit",
+ "libc",
 ]
 
 [[package]]

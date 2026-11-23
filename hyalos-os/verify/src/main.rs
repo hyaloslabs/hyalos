@@ -10,6 +10,7 @@ use hyalos_audit::{
 use std::{
     fs::{self, File},
     io::{ErrorKind, Read},
+    os::unix::fs::OpenOptionsExt,
     path::Path,
     process::ExitCode,
 };
@@ -35,7 +36,12 @@ impl Files for BoundedFiles {
             ErrorKind::NotFound => FileError::Missing,
             _ => FileError::Unreadable,
         };
-        let file = File::open(path).map_err(opened)?;
+        // Without blocking, so a FIFO among the evidence reaches the check below and cannot hang this.
+        let file = File::options()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .map_err(opened)?;
         let meta = file.metadata().map_err(|_| FileError::Unreadable)?;
         if !meta.is_file() {
             return Err(FileError::Unreadable);

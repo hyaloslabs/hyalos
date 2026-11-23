@@ -425,6 +425,31 @@ fn s_03_6_every_local_input_over_its_limit_is_refused_before_parsing() {
     }
 }
 
+/// Runs a check that must end by itself, so a read that blocks fails here instead of hanging.
+fn run_bounded(one: Check) -> Output {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || done.send(one.run()));
+    finished
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the verifier hung on a FIFO")
+}
+
+#[test]
+fn local_3_3_a_fifo_among_the_evidence_is_inconclusive_and_does_not_hang() {
+    let temp = Temp::new("local-3-3-fifo");
+    let mkfifo = |path: &str| assert!(Command::new("mkfifo").arg(path).status().unwrap().success());
+    let record = temp.path("fifo-record");
+    mkfifo(&record);
+    let mut one = Check::canary();
+    one.record = record;
+    expect(&run_bounded(one), 2, "cannot read");
+    let copy = temp.canary();
+    fs::remove_file(temp.path("record.json.salt")).unwrap();
+    mkfifo(&temp.path("record.json.salt"));
+    let salted = Check::of(copy, at("evidence/ledger"));
+    expect(&run_bounded(salted), 2, "the salt cannot be read");
+}
+
 /// Every way the audit can stop, with the exit code the design gives it.
 #[test]
 fn local_3_3_every_audit_failure_is_refused_or_inconclusive() {

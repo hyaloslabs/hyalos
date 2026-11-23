@@ -48,13 +48,13 @@ Tests are in `verify/tests/cli.rs` unless named.
 | S-03.7.e2 | `monitor/src/forgery_tests.rs`'s `s_03_7_e2_a_release_build_refuses_a_stand_in_providers_record`, and `s_03_7_e2_provider_settings_never_reach_the_child_in_a_release_build`, which runs `audit/tests/no_stand_in.rs` without the feature |
 | 3.1 | `monitor/tests/audit_cli.rs`'s `local_3_1_the_monitors_audit_gives_every_golden_report` and `local_3_1_the_monitors_links_directory_still_defaults_to_ledger`, and the monitor's existing tests |
 | 3.2 | `local_3_2_no_release_selection_enables_test_trust`, and the slice's `cargo tree` command printed nothing |
-| 3.3 | `local_3_3_every_audit_failure_is_refused_or_inconclusive`. An error with no stated kind is a refusal (`audit/src/failure.rs`) |
+| 3.3 | `local_3_3_every_audit_failure_is_refused_or_inconclusive`, and `local_3_3_a_fifo_among_the_evidence_is_inconclusive_and_does_not_hang`. An error with no stated kind is a refusal (`audit/src/failure.rs`) |
 | 3.4 | `local_3_4_the_verify_program_is_required_until_slice_5`, and the unlaunchable rows of the 3.3 table |
 | 3.5 | `LogSource::from_env` and `Verifier::from_env` read no setting without `test-trust`, shown by the S-03.7 tests |
 | 3.6 | `audit/tests/golden/`, with each record's inputs listed above |
 | 3.7 | `local_3_7_an_altered_chain_or_answer_is_refused` |
 
-Locally: 326 `hyalos-os` tests passed with `test-trust` and `HYALOS_REQUIRE_KVM=1`, none failed and none skipped. All 260 evidence files are unchanged.
+Locally: 327 `hyalos-os` tests passed with `test-trust` and `HYALOS_REQUIRE_KVM=1`, none failed and none skipped. All 260 evidence files are unchanged.
 
 ## Deviations
 

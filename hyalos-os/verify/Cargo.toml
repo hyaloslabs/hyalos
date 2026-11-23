@@ -11,3 +11,4 @@ doctest = false
 
 [dependencies]
 hyalos-audit = { path = "../audit" }
+libc = "0.2"
