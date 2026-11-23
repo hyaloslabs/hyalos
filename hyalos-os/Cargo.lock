@@ -1049,6 +1049,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyalos-profile"
+version = "0.1.0"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2468,6 +2472,7 @@ name = "task-kernel"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "hyalos-profile",
  "kvm-bindings",
  "kvm-ioctls",
  "libc",

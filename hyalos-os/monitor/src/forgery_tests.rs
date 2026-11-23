@@ -157,7 +157,7 @@ impl World {
             .arg("--root")
             .arg(self.rig.root.join("root.der"));
         let mut values = start(&mut self.children, command, &["signing", "transport", "listening"]);
-        let task = crate::task_v2(&sha(&self.guest), &[self.input.clone()]).unwrap();
+        let task = if self.version == 1 { crate::task_v2(&sha(&self.guest), &[self.input.clone()]).unwrap() } else { crate::task_for(self.version, self.profile(), &sha(&self.guest), &[self.input.clone()]).unwrap() };
         let made = Command::new(built("notary")).args(["authorize", "--dir"]).arg(self.rig.root.join(dir)).args(["--task", &task, "--attempts", "100"]).output().unwrap();
         assert!(made.status.success());
         self.authorisation = String::from_utf8(made.stdout).unwrap().trim().to_string();
@@ -210,12 +210,18 @@ impl World {
         self.rig.path(&format!("asked-{name}"))
     }
 
+    /// The profile this world's record names, which only version 4 does.
+    fn profile(&self) -> Option<&'static str> {
+        (self.version >= 4).then_some(hyalos_profile::CURRENT.name)
+    }
+
     /// The transcript's frame, before a run's answers and what the guest did with them.
     fn frame(&self) -> Transcript {
         let guest_sha256 = sha(&self.guest);
-        let task = if self.version == 1 { String::new() } else { crate::task_v2(&guest_sha256, &[self.input.clone()]).unwrap() };
+        let task = if self.version == 1 { String::new() } else { crate::task_for(self.version, self.profile(), &guest_sha256, &[self.input.clone()]).unwrap() };
         Transcript {
             version: self.version,
+            profile: self.profile().map(str::to_string),
             task,
             guest_sha256,
             inputs_hex: vec![crate::hex(&self.input)],
@@ -605,9 +611,9 @@ fn record_of_version(rig: &Rig, version: u32) -> String {
 #[test]
 fn record_s_01_1_e1_an_unknown_version_is_refused_and_named() {
     let rig = Rig::new("r-01-1-e1");
-    let record = record_of_version(&rig, 4);
-    assert_eq!(audit_file(&record, false).unwrap_err(), "record version 4 is not known");
-    assert_eq!(crate::read_transcript(&fs::read(&record).unwrap()).unwrap_err(), "record version 4 is not known");
+    let record = record_of_version(&rig, 5);
+    assert_eq!(audit_file(&record, false).unwrap_err(), "record version 5 is not known");
+    assert_eq!(crate::read_transcript(&fs::read(&record).unwrap()).unwrap_err(), "record version 5 is not known");
 }
 
 #[test]
@@ -1189,4 +1195,46 @@ fn canary_utc_dates_are_the_calendars() {
     assert_eq!(crate::utc(951_782_400), "2000-02-29 00:00:00");
     assert_eq!(crate::utc(1_795_305_600), "2026-11-22 00:00:00");
     assert_eq!(crate::utc(1_795_305_600 + 86_399), "2026-11-22 23:59:59");
+}
+
+/// Rewrites one field of a world's record on disk.
+fn with_record_field(world: &World, field: &str, value: Value) {
+    let mut record: Value = serde_json::from_slice(&fs::read(world.record()).unwrap()).unwrap();
+    record[field] = value;
+    fs::write(world.record(), serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+}
+
+#[test]
+fn s_02_2_a_version_4_record_passes_the_whole_audit_with_its_canary() {
+    let _one = locked();
+    let report = one_answer("p-02-2", 4).audit().unwrap();
+    assert!(report.starts_with("audit passed"), "{report}");
+    assert!(report.contains("provider canary: forged body refused"), "{report}");
+}
+
+#[test]
+fn s_02_6_e1_a_version_4_record_relabelled_version_3_is_refused() {
+    let _one = locked();
+    let world = one_answer("p-02-6-e1", 4);
+    with_record_field(&world, "version", json!(3));
+    assert_eq!(world.refused(), "unknown field `profile` in a version 3 record");
+    let mut record: Value = serde_json::from_slice(&fs::read(world.record()).unwrap()).unwrap();
+    record.as_object_mut().unwrap().remove("profile");
+    fs::write(world.record(), serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+    assert_eq!(world.refused(), "this record's task is not the one its guest and inputs give");
+}
+
+#[test]
+fn s_02_6_e2_a_version_4_record_with_its_profile_changed_is_refused() {
+    let _one = locked();
+    let world = one_answer("p-02-6-e2", 4);
+    let t = crate::read_transcript(&fs::read(world.record()).unwrap()).unwrap();
+    let inputs = vec![world.input.clone()];
+    // Even a task recomputed for the new name names a task no authorisation covers.
+    let other = crate::task_v4("hyalos.profile/9", &t.guest_sha256, &inputs).unwrap();
+    assert_ne!(other, t.task);
+    with_record_field(&world, "profile", json!("hyalos.profile/9"));
+    assert_eq!(world.refused(), "unknown profile hyalos.profile/9");
+    with_record_field(&world, "task", json!(other));
+    assert_eq!(world.refused(), "unknown profile hyalos.profile/9");
 }

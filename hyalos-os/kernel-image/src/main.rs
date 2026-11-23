@@ -15,14 +15,14 @@ use core::{
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
+use hyalos_profile::{PROFILE_1, Profile};
 use wasmi::{
     Caller, Config, Engine, Error, Extern, ExternType, Linker, Module, Store, StoreLimits,
     StoreLimitsBuilder, TrapCode,
 };
 
-// These must match the process kernel, or the two would not produce the same transcript.
-const FUEL: u64 = 200_000_000;
-const MAX_MEMORY: usize = 4 * 1024 * 1024;
+// The one definition both backends build from, so the two produce the same transcript.
+const PROFILE: Profile = PROFILE_1;
 
 const HEAP_START: usize = 0x80_0000;
 const HEAP_END: usize = 0x180_0000;
@@ -165,19 +165,25 @@ fn linker(engine: &Engine) -> Result<Linker<Host>, u64> {
     Ok(linker)
 }
 
-fn run(guest: &[u8]) -> u64 {
+/// This backend's one mapping from a profile to its interpreter configuration.
+fn config(profile: &Profile) -> Config {
     let mut config = Config::default();
     config
-        .consume_fuel(true)
-        .floats(false)
-        .allow_start_fn(false)
-        .ignore_custom_sections(true)
-        .wasm_memory64(false)
-        .wasm_multi_memory(false)
-        .wasm_tail_call(false)
-        .wasm_wide_arithmetic(false)
-        .wasm_custom_page_sizes(false);
-    let engine = Engine::new(&config);
+        .consume_fuel(profile.consume_fuel)
+        .floats(profile.floats)
+        .allow_start_fn(profile.start_function)
+        .ignore_custom_sections(profile.ignore_custom_sections)
+        .wasm_memory64(profile.memory64)
+        .wasm_multi_memory(profile.multi_memory)
+        .wasm_tail_call(profile.tail_call)
+        .wasm_wide_arithmetic(profile.wide_arithmetic)
+        .wasm_custom_page_sizes(profile.custom_page_sizes);
+    config
+}
+
+fn run(guest: &[u8]) -> u64 {
+    let profile = &PROFILE;
+    let engine = Engine::new(&config(profile));
     let Ok(module) = Module::new(&engine, guest) else {
         return INVALID_MODULE;
     };
@@ -199,16 +205,16 @@ fn run(guest: &[u8]) -> u64 {
         return BAD_EXPORT;
     }
     let limits = StoreLimitsBuilder::new()
-        .memory_size(MAX_MEMORY)
-        .memories(1)
-        .tables(1)
-        .table_elements(4096)
-        .instances(1)
-        .trap_on_grow_failure(true)
+        .memory_size(profile.max_memory)
+        .memories(profile.memories)
+        .tables(profile.tables)
+        .table_elements(profile.table_elements)
+        .instances(profile.instances)
+        .trap_on_grow_failure(profile.trap_on_grow_failure)
         .build();
     let mut store = Store::new(&engine, Host { limits, result: None });
     store.limiter(|h| &mut h.limits);
-    if store.set_fuel(FUEL).is_err() {
+    if store.set_fuel(profile.fuel).is_err() {
         return INVALID_MODULE;
     }
     let linker = match linker(&engine) {
@@ -236,7 +242,7 @@ fn run(guest: &[u8]) -> u64 {
     let data = memory.data(&store);
     let inside = (ptr as usize).checked_add(len as usize).is_some_and(|end| end <= data.len());
     let address = if inside { data.as_ptr() as u64 + u64::from(ptr) } else { 0 };
-    hypercall(RETURN, address, u64::from(len), u64::from(inside), FUEL - left);
+    hypercall(RETURN, address, u64::from(len), u64::from(inside), profile.fuel - left);
     NO_RESULT
 }
 

@@ -11,6 +11,7 @@ mod kvm;
 mod ledger;
 mod live;
 
+use hyalos_profile::Profile;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -23,8 +24,6 @@ use wasmi::{
     StoreLimitsBuilder, TrapCode,
 };
 
-const FUEL: u64 = 200_000_000;
-const MAX_MEMORY: usize = 4 * 1024 * 1024;
 const MAX_QUESTION: usize = 4 * 1024;
 const MAX_BODY: usize = 64 * 1024;
 pub(crate) const MAX_RESULT: usize = 4 * 1024;
@@ -32,7 +31,7 @@ const MAX_EFFECTS: usize = 1;
 const LABELS: i32 = 4; // schema 0: 0 bug, 1 feature, 2 security, 3 other
 const NOTIFY: i32 = 0;
 /// The record and link version new runs write.
-const CURRENT_VERSION: u32 = 3;
+const CURRENT_VERSION: u32 = 4;
 /// How old a signed pass may be at its session. Pinned to the notary's by a test.
 const CANARY_WINDOW_SECONDS: u64 = 86_400;
 
@@ -113,6 +112,9 @@ struct EffectRecord {
 #[serde(deny_unknown_fields)]
 struct Transcript {
     version: u32,
+    /// The execution profile's name. Required in version 4, and absent from older versions' bytes.
+    #[serde(default, deserialize_with = "present_string", skip_serializing_if = "Option::is_none")]
+    profile: Option<String>,
     /// The framed task identity. Required in version 2, and absent from version 1's bytes.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     task: String,
@@ -122,6 +124,11 @@ struct Transcript {
     effects: Vec<EffectRecord>,
     result_hex: String,
     fuel_used: u64,
+}
+
+/// A field that is present must hold a string: `null` is not the same as leaving it out.
+fn present_string<'de, D: serde::Deserializer<'de>>(reader: D) -> Result<Option<String>, D::Error> {
+    String::deserialize(reader).map(Some)
 }
 
 enum Mode {
@@ -308,23 +315,24 @@ fn linker(engine: &Engine) -> Result<Linker<Process>, Reason> {
     Ok(linker)
 }
 
-fn engine() -> Engine {
+/// This backend's one mapping from a profile to its interpreter configuration.
+fn engine(profile: &Profile) -> Engine {
     let mut config = Config::default();
     config
-        .consume_fuel(true)
-        .floats(false)
-        .allow_start_fn(false)
-        .ignore_custom_sections(true)
-        .wasm_memory64(false)
-        .wasm_multi_memory(false)
-        .wasm_tail_call(false)
-        .wasm_wide_arithmetic(false)
-        .wasm_custom_page_sizes(false);
+        .consume_fuel(profile.consume_fuel)
+        .floats(profile.floats)
+        .allow_start_fn(profile.start_function)
+        .ignore_custom_sections(profile.ignore_custom_sections)
+        .wasm_memory64(profile.memory64)
+        .wasm_multi_memory(profile.multi_memory)
+        .wasm_tail_call(profile.tail_call)
+        .wasm_wide_arithmetic(profile.wide_arithmetic)
+        .wasm_custom_page_sizes(profile.custom_page_sizes);
     Engine::new(&config)
 }
 
-fn in_process(guest: &[u8], host: Host) -> Result<(Host, Vec<u8>, u64), Reason> {
-    let engine = engine();
+fn in_process(guest: &[u8], host: Host, profile: &Profile) -> Result<(Host, Vec<u8>, u64), Reason> {
+    let engine = engine(profile);
     let module = Module::new(&engine, guest).map_err(|_| Reason::InvalidModule)?;
     for import in module.imports() {
         let allowed = import.module() == "hyalos"
@@ -344,16 +352,16 @@ fn in_process(guest: &[u8], host: Host) -> Result<(Host, Vec<u8>, u64), Reason> 
         return Err(Reason::BadExport);
     }
     let limits = StoreLimitsBuilder::new()
-        .memory_size(MAX_MEMORY)
-        .memories(1)
-        .tables(1)
-        .table_elements(4096)
-        .instances(1)
-        .trap_on_grow_failure(true)
+        .memory_size(profile.max_memory)
+        .memories(profile.memories)
+        .tables(profile.tables)
+        .table_elements(profile.table_elements)
+        .instances(profile.instances)
+        .trap_on_grow_failure(profile.trap_on_grow_failure)
         .build();
     let mut store = Store::new(&engine, Process { host, result: None, refused: None, limits });
     store.limiter(|p| &mut p.limits);
-    store.set_fuel(FUEL).map_err(|_| Reason::InvalidModule)?;
+    store.set_fuel(profile.fuel).map_err(|_| Reason::InvalidModule)?;
     let linker = linker(&engine)?;
     let instance = linker.instantiate_and_start(&mut store, &module).map_err(|_| Reason::BadImport)?;
     let run = instance.get_typed_func::<(), ()>(&store, "run").map_err(|_| Reason::BadExport)?;
@@ -367,7 +375,7 @@ fn in_process(guest: &[u8], host: Host) -> Result<(Host, Vec<u8>, u64), Reason> 
         Err(error) if error.as_trap_code() == Some(TrapCode::OutOfFuel) => return Err(Reason::OutOfFuel),
         Err(_) => return Err(Reason::GuestTrap),
     }
-    let fuel_used = FUEL - store.get_fuel().map_err(|_| Reason::GuestTrap)?;
+    let fuel_used = profile.fuel - store.get_fuel().map_err(|_| Reason::GuestTrap)?;
     let process = store.into_data();
     Ok((process.host, process.result.ok_or(Reason::NoResult)?, fuel_used))
 }
@@ -379,19 +387,28 @@ fn execute(backend: &Backend, guest: &[u8], inputs: Vec<Vec<u8>>, mode: Mode) ->
 
 /// A run written at `version`, so a replay rebuilds the bytes of the version it was given.
 fn execute_as(version: u32, backend: &Backend, guest: &[u8], inputs: Vec<Vec<u8>>, mode: Mode) -> Result<Transcript, Reason> {
+    let named = (version >= 4).then_some(hyalos_profile::CURRENT.name);
+    execute_named(version, named, backend, guest, inputs, mode)
+}
+
+/// A run at `version` under the profile it names, which only version 4 does.
+fn execute_named(version: u32, named: Option<&str>, backend: &Backend, guest: &[u8], inputs: Vec<Vec<u8>>, mode: Mode) -> Result<Transcript, Reason> {
+    let profile = profile_for(version, named).map_err(|_| Reason::ReplayDiverged)?;
     let inputs_hex = inputs.iter().map(|i| hex(i)).collect();
     let task = match version {
         1 => String::new(),
-        2 | 3 => task_v2(&sha(guest), &inputs).ok_or(Reason::ReplayDiverged)?,
-        _ => return Err(Reason::ReplayDiverged),
+        _ => task_for(version, named, &sha(guest), &inputs).ok_or(Reason::ReplayDiverged)?,
     };
     let host = Host { mode, inputs, answers: vec![], effects: vec![] };
     let (host, result, fuel_used) = match backend {
-        Backend::Process => in_process(guest, host)?,
+        Backend::Process => in_process(guest, host, profile)?,
+        // The kernel image is built with this one profile, so it cannot run under another.
+        Backend::Kvm { .. } if profile.name != hyalos_profile::PROFILE_1.name => return Err(Reason::ReplayDiverged),
         Backend::Kvm { kernel, limit } => kvm::run(kernel, guest, host, *limit)?,
     };
     Ok(Transcript {
         version,
+        profile: named.map(str::to_string),
         task,
         guest_sha256: sha(guest),
         inputs_hex,
@@ -408,7 +425,7 @@ fn replay(backend: &Backend, guest: &[u8], recorded: &Transcript) -> Result<(), 
     }
     let inputs = recorded.inputs_hex.iter().map(|i| unhex(i)).collect::<Option<Vec<_>>>().ok_or(Reason::ReplayDiverged)?;
     let mode = Mode::Replay { answers: recorded.answers.clone(), effects: recorded.effects.clone() };
-    let again = execute_as(recorded.version, backend, guest, inputs, mode)?;
+    let again = execute_named(recorded.version, recorded.profile.as_deref(), backend, guest, inputs, mode)?;
     let same = serde_json::to_vec(&again).map_err(|_| Reason::ReplayDiverged)?
         == serde_json::to_vec(recorded).map_err(|_| Reason::ReplayDiverged)?;
     if same { Ok(()) } else { Err(Reason::ReplayDiverged) }
@@ -418,7 +435,8 @@ fn replay(backend: &Backend, guest: &[u8], recorded: &Transcript) -> Result<(), 
 /// its own guest and inputs give. Every command that takes a record reads it here.
 fn read_transcript(bytes: &[u8]) -> Result<Transcript, String> {
     let t: Transcript = serde_json::from_slice(bytes).map_err(|_| "cannot parse")?;
-    if matches!(t.version, 1..=3) {
+    if matches!(t.version, 1..=4) {
+        profile_for(t.version, t.profile.as_deref())?;
         let mut proofs = t.answers.iter().flat_map(|answer| &answer.provider_proofs).peekable();
         if t.version == 1 && proofs.peek().is_some() {
             return Err("a version 1 record cannot carry a provider proof".into());
@@ -430,10 +448,10 @@ fn read_transcript(bytes: &[u8]) -> Result<Transcript, String> {
     match t.version {
         1 if t.task.is_empty() => Ok(t),
         1 => Err("a version 1 record cannot carry a task".into()),
-        version @ (2 | 3) if t.task.is_empty() => Err(format!("this version {version} record has no task")),
-        2 | 3 => {
+        version @ 2..=4 if t.task.is_empty() => Err(format!("this version {version} record has no task")),
+        2..=4 => {
             let inputs = t.inputs_hex.iter().map(|i| unhex(i)).collect::<Option<Vec<_>>>().ok_or("the record's inputs are unreadable")?;
-            if task_v2(&t.guest_sha256, &inputs).as_deref() == Some(t.task.as_str()) { Ok(t) } else { Err("this record's task is not the one its guest and inputs give".into()) }
+            if task_for(t.version, t.profile.as_deref(), &t.guest_sha256, &inputs).as_deref() == Some(t.task.as_str()) { Ok(t) } else { Err("this record's task is not the one its guest and inputs give".into()) }
         }
         other => Err(format!("record version {other} is not known")),
     }
@@ -709,7 +727,7 @@ fn witnessed(t: &Transcript, record: &str, notary: &str, verifier: &Verifier, ch
             }
             attempt = Some(held);
         }
-        // Optional on an older version, a canary could be removed unseen, so only version 3 has one.
+        // Optional on an older version, a canary could be removed unseen, so only version 3 and later have one.
         if t.version < 3 {
             if !seen["canary"].is_null() {
                 return Err(format!("answer {index}: a version {} record cannot carry a canary", t.version));
@@ -741,7 +759,7 @@ fn declared_run(
     operator: &str,
     signed_time: &dyn Fn(usize) -> Option<u64>,
 ) -> Result<(Result<Transcript, Reason>, usize), String> {
-    let task = task_v2(&sha(guest), &inputs).ok_or("the guest's hash is unreadable")?;
+    let task = current_task(&sha(guest), &inputs).ok_or("the guest's hash is unreadable")?;
     let intent = serde_json::json!({"v": CURRENT_VERSION, "kind": "intent", "task": task, "guest_sha256": sha(guest), "operator": operator});
     let (intent_seq, intent_hash) = append(intent).map_err(|r| format!("{r:?}"))?;
     // The run is declared. From here every attested call names it.
@@ -953,9 +971,56 @@ fn task_of(guest_sha256: &str, inputs: &[Vec<u8>]) -> String {
 /// each input with its length, so two different input lists can never give the same bytes.
 /// `None` when the guest hash is not 32 bytes of hex.
 fn task_v2(guest_sha256: &str, inputs: &[Vec<u8>]) -> Option<String> {
+    framed_task(b"hyalos.task/2", None, guest_sha256, inputs)
+}
+
+/// The version 4 task identity: version 2's frame under its own tag, with the profile's name and
+/// length before the guest, so one authorisation covers one task under one profile.
+fn task_v4(profile: &str, guest_sha256: &str, inputs: &[Vec<u8>]) -> Option<String> {
+    framed_task(b"hyalos.task/4", Some(profile), guest_sha256, inputs)
+}
+
+/// The identity a new run has, which is what a customer authorises.
+fn current_task(guest_sha256: &str, inputs: &[Vec<u8>]) -> Option<String> {
+    task_v4(hyalos_profile::CURRENT.name, guest_sha256, inputs)
+}
+
+/// The framed identity of a version 2 or later record. `None` for any other version, or a version 4
+/// record that names no profile.
+fn task_for(version: u32, profile: Option<&str>, guest_sha256: &str, inputs: &[Vec<u8>]) -> Option<String> {
+    match version {
+        2 | 3 => task_v2(guest_sha256, inputs),
+        4 => task_v4(profile?, guest_sha256, inputs),
+        _ => None,
+    }
+}
+
+/// The profile a record of this version runs under. Versions 1 to 3 imply profile 1 and may not
+/// name one, and version 4 must name a known one.
+fn profile_for(version: u32, named: Option<&str>) -> Result<&'static Profile, String> {
+    match (version, named) {
+        (1..=3, None) => Ok(&hyalos_profile::PROFILE_1),
+        (1..=3, Some(_)) => Err(format!("unknown field `profile` in a version {version} record")),
+        (4, None) => Err("version 4 record names no profile".into()),
+        (4, Some(name)) => hyalos_profile::lookup(name).ok_or_else(|| format!("unknown profile {}", shown_profile(name))),
+        _ => Err(format!("record version {version} is not known")),
+    }
+}
+
+/// A record's profile name for a refusal. It is the operator's text, so only a plain name is echoed.
+fn shown_profile(name: &str) -> &str {
+    let plain = !name.is_empty() && name.len() <= 64 && name.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'-' | b'/'));
+    if plain { name } else { "<not a profile name>" }
+}
+
+fn framed_task(tag: &[u8], profile: Option<&str>, guest_sha256: &str, inputs: &[Vec<u8>]) -> Option<String> {
     let guest = unhex(guest_sha256).filter(|g| g.len() == 32)?;
     let mut framed = Sha256::new();
-    framed.update(b"hyalos.task/2");
+    framed.update(tag);
+    if let Some(name) = profile {
+        framed.update((name.len() as u64).to_be_bytes());
+        framed.update(name.as_bytes());
+    }
     framed.update(&guest);
     framed.update((inputs.len() as u64).to_be_bytes());
     for input in inputs {
@@ -968,7 +1033,7 @@ fn task_v2(guest_sha256: &str, inputs: &[Vec<u8>]) -> Option<String> {
 /// What the record itself says it is, for the audit to hold the chain to.
 fn claim_of(t: &Transcript, commitment: String) -> Result<ledger::Claim, String> {
     let inputs = t.inputs_hex.iter().map(|i| unhex(i)).collect::<Option<Vec<_>>>().ok_or("the record's inputs are unreadable")?;
-    let task = if t.version == 1 { task_of(&t.guest_sha256, &inputs) } else { task_v2(&t.guest_sha256, &inputs).ok_or("the record's guest hash is unreadable")? };
+    let task = if t.version == 1 { task_of(&t.guest_sha256, &inputs) } else { task_for(t.version, t.profile.as_deref(), &t.guest_sha256, &inputs).ok_or("the record's guest hash is unreadable")? };
     Ok(ledger::Claim { commitment, task, guest: t.guest_sha256.clone(), version: t.version })
 }
 
@@ -1088,7 +1153,7 @@ fn main_inner() -> Result<bool, String> {
             // Reads a guest and its inputs only: no key, no network.
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
             let inputs = read_inputs(arg(3)?)?;
-            println!("{}", task_v2(&sha(&guest), &inputs).ok_or("the guest's hash is unreadable")?);
+            println!("{}", current_task(&sha(&guest), &inputs).ok_or("the guest's hash is unreadable")?);
             Ok(true)
         }
         "attacks" => {
@@ -1127,6 +1192,9 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod live_tests;
+
+#[cfg(test)]
+mod profile_tests;
 
 #[cfg(test)]
 mod report_tests {

@@ -112,7 +112,7 @@ impl Rig {
         let made = Command::new(built("notary"))
             .args(["authorize", "--dir"])
             .arg(self.dir.join("notary"))
-            .args(["--task", &crate::task_v2(&guest, &inputs).unwrap(), "--attempts", "100"])
+            .args(["--task", &crate::current_task(&guest, &inputs).unwrap(), "--attempts", "100"])
             .output()
             .unwrap();
         assert!(made.status.success());
@@ -440,7 +440,7 @@ fn record_s_02_3_e1_the_task_command_prints_what_the_run_logs() {
     let inputs = read_inputs(inputs_file.to_str().unwrap()).unwrap();
     declared_run(&mut append, &Backend::Process, &fs::read(&guest_file).unwrap(), inputs, Mode::Record { seed: 0 }, &random_salt(), rig.record().to_str().unwrap(), &"ab".repeat(32), &|_| Some(0)).unwrap();
     assert_eq!(links[0]["task"], String::from_utf8(printed.stdout).unwrap().trim());
-    assert_eq!((links[0]["v"].as_u64(), links[1]["v"].as_u64()), (Some(3), Some(3)));
+    assert_eq!((links[0]["v"].as_u64(), links[1]["v"].as_u64()), (Some(4), Some(4)));
 }
 
 #[test]
