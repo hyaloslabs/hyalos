@@ -108,6 +108,16 @@ Confirmed by the developer on 2026-11-21.
 | 5 | `docs/plans/hyalos-kernel-connectors` | Sources and channels held outside the kernel, one credential per task, and the outsider rule on what may run | 4 |
 | 6 | `docs/plans/hyalos-kernel-engine` | Joining the existing engine, policy, signed log and broker, and what happens to the v1 coding workflow | 3, 4 |
 
+### Parent-level pass (2026-11-22)
+
+ADR-001, ADR-002 and the pack order are accepted by the developer. ADR-003 is proposed. Where this differs from the table above, this section governs: the order is canary, verifier, core, a Python guest spike, the v1 boundary (ADR-003), capsules, connectors, engine integration.
+
+- [`pack-briefs.md`](pack-briefs.md): a short brief for each unplanned pack and the order, adding `hyalos-kernel-verifier` (#434) and the Python guest spike.
+- [`coverage.md`](coverage.md): every deferred item and open question, with an owner or an explicit outcome.
+- [`ADR-001`](decisions/ADR-001-hyalos-is-its-own-workspace-in-this-repository.md): hyalOS is its own Cargo workspace in this repository.
+- [`ADR-002`](decisions/ADR-002-keep-wasmi-and-name-the-execution-profile.md): keep the pinned `wasmi`, and make each record name its execution profile.
+- [`ADR-003`](decisions/ADR-003-v1-is-the-control-plane-and-hyalos-runs-bounded-steps.md) (proposed): v1 is the control plane, and hyalOS runs its bounded steps.
+
 ## Route
 
 Confirmed by the developer on 2026-11-21.
