@@ -421,7 +421,7 @@ fn canary_s_04_1_e2_the_format_states_the_latch_and_the_limit() {
 
 /// The operator's script in a temporary directory, with every program it calls a stub on `PATH`
 /// or at its `$PWD` path. Nothing real is contacted. `None` when this host cannot run it.
-fn probe(label: &str, canary_exit: u8) -> Option<(Output, String, bool)> {
+fn probe(label: &str, canary_exit: u8) -> Option<(Output, String, bool, bool)> {
     if !std::path::Path::new("/usr/bin/time").exists() {
         eprintln!("skipped: this host has no /usr/bin/time");
         return None;
@@ -451,12 +451,12 @@ fn probe(label: &str, canary_exit: u8) -> Option<(Output, String, bool)> {
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/probes/two_machines.sh");
     let output = Command::new("bash").arg(script).args(["a-host", "owner/repo", "1"]).current_dir(&work).env("PATH", path).env("HOME", &home).output().unwrap();
     drop(listener);
-    Some((output, fs::read_to_string(&log).unwrap_or_default(), live.exists()))
+    Some((output, fs::read_to_string(&log).unwrap_or_default(), live.exists(), work.join("out/two-machines").exists()))
 }
 
 #[test]
 fn canary_s_04_2_e1_with_a_fresh_pass_the_probe_reaches_the_run() {
-    let Some((output, calls, ran)) = probe("canary-4-2-e1", 0) else { return };
+    let Some((output, calls, ran, _)) = probe("canary-4-2-e1", 0) else { return };
     assert!(output.status.success(), "{}", complained(&output));
     assert!(ran, "the run was not reached");
     let (gate, notary) = (calls.find("canary status").unwrap(), calls.find("--listen").unwrap());
@@ -465,9 +465,10 @@ fn canary_s_04_2_e1_with_a_fresh_pass_the_probe_reaches_the_run() {
 
 #[test]
 fn canary_s_04_2_e2_without_a_pass_the_probe_stops_before_anything_public() {
-    let Some((output, calls, ran)) = probe("canary-4-2-e2", 1) else { return };
+    let Some((output, calls, ran, made)) = probe("canary-4-2-e2", 1) else { return };
     assert_eq!(output.status.code(), Some(2), "{}", complained(&output));
     assert!(said(&output).contains("no fresh customer canary pass"));
     assert!(!ran, "the run went ahead");
     assert!(!calls.contains("--listen") && !calls.contains("authorize"), "{calls}");
+    assert!(!made, "a stopped run left its output directory, which would block the retry");
 }
