@@ -1,6 +1,6 @@
 # ADR-002: Keep the pinned wasmi, and make each record name its execution profile
 
-**Status:** accepted (developer, 2026-11-22)
+**Status:** accepted (developer, 2026-11-22); amended by hyalos-kernel-verifier ADR-007, which moves ownership of the profile to that pack
 
 **Proposed by:** author (parent-level pass); accepted by the developer
 
