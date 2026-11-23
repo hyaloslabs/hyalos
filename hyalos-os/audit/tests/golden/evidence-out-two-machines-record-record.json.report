@@ -1,0 +1,19 @@
+audit passed
+test trust settings: the log here is a stand-in
+proven: every link's signature verifies under the operator's public key
+proven: every entry's inclusion proof and signed time verify under the stand-in log's key
+proven: the chain is unbroken and is the same list as the stand-in log's entries under the operator's key
+proven: this record is at link 9 of 12, with one result for its run
+the task was run 2 times under this log key only, as the intent links name the task
+the chain holds 6 run(s) of any task under this log key only
+proven: all 40 answers were attested by the trusted notary for this run and position, inside the run's window, each with a sequence number equal to its position
+attempt 2 of at most 2 under this authorisation, 0 authorised earlier, for this exact task on this notary
+unchecked provider proofs: 0, which prove nothing
+not proven: the notary's independence is the customer's own
+not proven: the model's name is the provider's claim
+not proven: the answer's correctness is not judged
+not proven: the log is trusted to have shown every entry under the operator's key
+not proven: the request's hidden bytes are not shown, so the call may have used another credential or carried an added header
+not proven: the operator may have asked the provider directly, away from the notary
+not proven: the customer did not authorise this task again after this attestation
+not proven: this record has no provider canary

@@ -245,9 +245,16 @@ jobs:
             sudo udevadm trigger --name-match=kvm
           fi
       - name: Test the workspace
-        run: cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace
+        run: cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace --features task-kernel/test-trust,hyalos-audit/test-trust
         env:
           HYALOS_REQUIRE_KVM: "1"
+      # The new crates hold to fmt and clippy. The moved monitor and attest code does not yet.
+      - name: Format and lint the new crates
+        run: |
+          for crate in profile audit verify; do
+            cargo fmt --manifest-path "hyalos-os/$crate/Cargo.toml" --check
+          done
+          cargo clippy --locked --manifest-path hyalos-os/Cargo.toml -p hyalos-profile -p hyalos-audit -p hyalos-verify --all-targets -- -D warnings
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           manifest-path: hyalos-os/Cargo.toml

@@ -1,0 +1,14 @@
+[package]
+name = "hyalos-verify"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "hyalos-verify"
+path = "src/main.rs"
+doctest = false
+
+[dependencies]
+hyalos-audit = { path = "../audit" }
+libc = "0.2"
