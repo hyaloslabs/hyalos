@@ -59,7 +59,7 @@ Every item a pack deferred, excluded or left open has one row. When a pack defer
 | Multi-line script as a task input | This pass | Owned | `capsules` |
 | More than one model provider | Notary non-goal | Owned | `capsules` declares it, and each provider needs its own canary |
 | A second, non-GitHub job | Parent | Owned | `connectors` |
-| How v1 and hyalOS join | Parent, developer 2026-11-22 | Decide | ADR-003, before capsules |
+| How v1 and hyalOS join | Parent, developer 2026-11-22 | Decided | ADR-003 |
 | One credential store across v1 and hyalOS | This pass | Owned | ADR-003, built by `engine` |
 | Linking the event log to a hyalOS record | This pass | Owned | ADR-003, built by `engine` |
 | The v1 workflow alongside hyalOS | Parent | Owned | ADR-003, built by `engine`. Coding jobs stay on the microVM substrate |

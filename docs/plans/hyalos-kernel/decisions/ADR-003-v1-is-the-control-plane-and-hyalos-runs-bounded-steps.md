@@ -1,8 +1,8 @@
 # ADR-003: v1 is the control plane, and hyalOS runs its bounded steps
 
-**Status:** proposed (2026-11-22), awaiting the developer
+**Status:** accepted (developer, 2026-11-22)
 
-**Proposed by:** author (parent-level pass), after the developer confirmed that v1 and hyalOS are converging
+**Proposed by:** author (parent-level pass), after the developer confirmed that v1 and hyalOS are converging; accepted by the developer
 
 ## Context
 

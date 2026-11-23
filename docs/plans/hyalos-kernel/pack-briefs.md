@@ -9,7 +9,7 @@ canary (in progress)
   -> verifier
   -> core
   -> Python guest spike
-  -> v1 boundary settled (ADR-003, proposed)
+  -> v1 boundary applied to the contract (ADR-003)
   -> capsules
   -> connectors
   -> engine integration
@@ -17,7 +17,7 @@ canary (in progress)
 
 The verifier moves ahead of core because it needs no kernel work and delivers the promise that a stranger can check a run alone. Core may run alongside it once ADR-002's execution profile exists, because both depend on that one definition. The Python spike must finish before the capsule contract is fixed, and it may start earlier because it uses the existing spike.
 
-v1 and hyalOS are converging, so the boundary between them is settled before capsules. Only that decision moves earlier. The integration build stays last because it needs core and capsules.
+v1 and hyalOS are converging, so ADR-003 sets the boundary between them before capsules. Only that decision moves earlier. The integration build stays last because it needs core and capsules.
 
 ## `hyalos-kernel-verifier` (#434)
 
