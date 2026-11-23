@@ -259,6 +259,84 @@ pub fn read_ticket(extensions: &[Extension]) -> Result<Option<Ticket>> {
     Ok(Some(Ticket { authorisation: hash(&extension.value[..64])?, task: hash(&extension.value[64..128])?, budget: number(128)?, round: number(132)?, prior: number(136)?, ticket: number(140)? }))
 }
 
+/// The customer's provider check, as the notary's directory holds it. This reads and writes the
+/// state and holds no credential code, so the notary can share it (ADR-002).
+pub mod canary {
+    use super::*;
+    use std::{io::Write as _, os::unix::fs::OpenOptionsExt, path::{Path, PathBuf}};
+
+    const HEADER: &str = "hyalos.canary/1";
+    const MAX_STATE: u64 = 128;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Standing {
+        Passed,
+        Held,
+        Latched,
+    }
+
+    impl Standing {
+        fn word(self) -> &'static str {
+            match self {
+                Standing::Passed => "passed",
+                Standing::Held => "held",
+                Standing::Latched => "latched",
+            }
+        }
+    }
+
+    /// One recorded result. `checked` is a pass's verdict time, or a staged result's start time.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct State {
+        pub standing: Standing,
+        pub checked: u64,
+    }
+
+    impl State {
+        pub fn text(&self) -> String {
+            format!("{HEADER}\nstate {}\nchecked {}\nend\n", self.standing.word(), self.checked)
+        }
+
+        /// Only the exact text `text` writes is a state.
+        pub fn parse(bytes: &[u8]) -> Option<Self> {
+            let text = std::str::from_utf8(bytes).ok()?;
+            let rest = text.strip_prefix(HEADER)?.strip_prefix("\nstate ")?;
+            let (word, rest) = rest.split_once('\n')?;
+            let standing = [Standing::Passed, Standing::Held, Standing::Latched].into_iter().find(|s| s.word() == word)?;
+            let (number, rest) = rest.strip_prefix("checked ")?.split_once('\n')?;
+            let checked: u64 = number.parse().ok()?;
+            let state = Self { standing, checked };
+            (rest == "end\n" && state.text() == text).then_some(state)
+        }
+    }
+
+    pub fn path(dir: &Path) -> PathBuf {
+        dir.join("canary")
+    }
+
+    /// The state in `dir`, or `None` when there is no file. Anything unreadable or not in its one
+    /// form is a refusal, because it could be hiding a latch.
+    pub fn read(dir: &Path) -> Result<Option<State>> {
+        let Some(bytes) = link::read_private(&path(dir), MAX_STATE).map_err(|_| anyhow!("the canary state cannot be read"))? else {
+            return Ok(None);
+        };
+        State::parse(&bytes).map(Some).context("the canary state is malformed")
+    }
+
+    /// Writes a new private file and syncs it. Whatever was at the path is replaced, unless it is a
+    /// directory, which is an error.
+    pub fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let _ = fs::remove_file(path);
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+        file.write_all(bytes)?;
+        file.sync_all()
+    }
+
+    pub fn sync_dir(dir: &Path) -> std::io::Result<()> {
+        fs::File::open(dir)?.sync_all()
+    }
+}
+
 /// The encrypted link: TLS 1.3 with one pinned peer on each side (ADR-004, ADR-009).
 pub mod link {
     use super::*;

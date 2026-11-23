@@ -1,13 +1,14 @@
 //! A stand-in for the model provider, for tests only. It never contacts the real provider.
 //!
 //! `standin <root file> <server name> [--present <name>] [--reply plain|chunked] [--status <code>]
-//! [--quiet] [--drop]` makes a test root and a certificate, writes the root's DER bytes to the
+//! [--statuses <code,code,...>] [--quiet] [--drop]` makes a test root and a certificate, writes the root's DER bytes to the
 //! file, listens on a local port, and prints `listening <address>`. It answers every request with
 //! one fixed typed reply, and exits when its standard input closes, so it cannot outlive the test
 //! that started it.
 //!
 //! `--present` puts another name on the certificate. `--reply` sends the body plain or chunked.
-//! `--status` answers with that error status. `--quiet` reads the request and never answers.
+//! `--status` answers with that error status. `--statuses` answers one status per request, in the
+//! order the connections arrive, then 500 after the list ends, and overrides `--status`. `--quiet` reads the request and never answers.
 //! `--drop` reads the request and closes the connection with no reply.
 //!
 //! `standin other-release <directory> <operator's transport public key>` is a peer on the link
@@ -15,7 +16,7 @@
 //! every enrolled first message with `release`.
 
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
-use std::{io::Read, sync::Arc};
+use std::{io::Read, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::{
     TlsAcceptor,
@@ -35,6 +36,8 @@ struct Controls {
     present: Option<String>,
     chunked: bool,
     status: Option<u16>,
+    /// The list of statuses and the position in it, shared by every connection.
+    statuses: Option<Arc<(Vec<u16>, AtomicUsize)>>,
     quiet: bool,
     drop: bool,
 }
@@ -50,6 +53,11 @@ fn controls(mut args: impl Iterator<Item = String>) -> Result<Controls, Failure>
                 _ => return Err("--reply is plain or chunked".into()),
             },
             "--status" => controls.status = Some(args.next().ok_or("--status needs a code")?.parse()?),
+            "--statuses" => {
+                let list = args.next().ok_or("--statuses needs a list")?;
+                let codes = list.split(',').map(str::parse).collect::<Result<Vec<u16>, _>>()?;
+                controls.statuses = Some(Arc::new((codes, AtomicUsize::new(0))));
+            }
             "--quiet" => controls.quiet = true,
             "--drop" => controls.drop = true,
             _ => return Err("unknown control".into()),
@@ -103,7 +111,11 @@ async fn serve(acceptor: TlsAcceptor, socket: tokio::net::TcpStream, controls: C
     if controls.drop {
         return Ok(());
     }
-    let status = controls.status.map_or("200 OK".to_string(), |code| format!("{code} Refused"));
+    let code = match &controls.statuses {
+        Some(listed) => Some(listed.0.get(listed.1.fetch_add(1, Ordering::SeqCst)).copied().unwrap_or(500)),
+        None => controls.status,
+    };
+    let status = code.filter(|code| *code != 200).map_or("200 OK".to_string(), |code| format!("{code} Refused"));
     let reply = if controls.chunked {
         let (first, rest) = REPLY.split_at(REPLY.len() / 2);
         format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n{:x}\r\n{first}\r\n{:x}\r\n{rest}\r\n0\r\n\r\n", first.len(), rest.len())

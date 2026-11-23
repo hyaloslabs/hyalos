@@ -40,6 +40,8 @@ test = false
 # Signs bad tickets for the audit's tests. Off by default, and `notary` does not compile with it on.
 [features]
 forge-ticket = []
+# Lets a test fail the rename of a staged canary result. A default build ignores the setting.
+canary-test-hooks = []
 
 [[bin]]
 name = "forging-notary"
