@@ -384,7 +384,7 @@ impl Auditor {
         }
         // A link of a version this program does not know could mean anything, so none is read past.
         for (seq, link) in parsed.iter().enumerate() {
-            if !matches!(link["v"].as_u64(), Some(1 | 2)) {
+            if !matches!(link["v"].as_u64(), Some(1..=3)) {
                 return Err(format!("link {seq}: its version is not known"));
             }
         }
@@ -430,9 +430,10 @@ impl Auditor {
             return Err("this record's result link says the run was refused".into());
         }
         let intent = links.iter().position(|l| json!(sha(l)) == result["intent"]).ok_or("the result names an intent that is not in the chain")?;
-        // A run hash belongs to one log key, so no version 2 intent may name another (ADR-010).
+        // A run hash belongs to one log key, so no intent of version 2 or later may name another
+        // (ADR-010).
         let fingerprint = sha(&self.operator);
-        if let Some(seq) = parsed.iter().position(|l| l["kind"] == "intent" && l["v"] == 2 && l["operator"] != json!(fingerprint)) {
+        if let Some(seq) = parsed.iter().position(|l| l["kind"] == "intent" && matches!(l["v"].as_u64(), Some(2 | 3)) && l["operator"] != json!(fingerprint)) {
             return Err(format!("link {seq}: the intent names another operator key"));
         }
         if parsed[intent]["v"].as_u64() != Some(u64::from(claim.version)) {

@@ -684,7 +684,13 @@ impl Notary {
         for value in tickets {
             builder.extension(Extension { id: TICKET.to_vec(), value });
         }
-        builder.extension(Extension { id: CANARY.to_vec(), value: pass.to_be_bytes().to_vec() });
+        #[cfg(feature = "forge-ticket")]
+        let canaries = crate::forged_canary(pass, transcript.time());
+        #[cfg(not(feature = "forge-ticket"))]
+        let canaries = [pass.to_be_bytes().to_vec()];
+        for value in canaries {
+            builder.extension(Extension { id: CANARY.to_vec(), value });
+        }
         let attestation = builder.build(&provider).map_err(|_| "dropped")?;
         Ok((sequence, bincode::serialize(&attestation).map_err(|_| "dropped")?))
     }
