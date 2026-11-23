@@ -1,6 +1,6 @@
 # ADR-0130: hyalOS is its own Cargo workspace
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
