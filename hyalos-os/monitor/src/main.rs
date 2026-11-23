@@ -113,7 +113,7 @@ struct EffectRecord {
 struct Transcript {
     version: u32,
     /// The execution profile's name. Required in version 4, and absent from older versions' bytes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "present_string", skip_serializing_if = "Option::is_none")]
     profile: Option<String>,
     /// The framed task identity. Required in version 2, and absent from version 1's bytes.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -124,6 +124,11 @@ struct Transcript {
     effects: Vec<EffectRecord>,
     result_hex: String,
     fuel_used: u64,
+}
+
+/// A field that is present must hold a string: `null` is not the same as leaving it out.
+fn present_string<'de, D: serde::Deserializer<'de>>(reader: D) -> Result<Option<String>, D::Error> {
+    String::deserialize(reader).map(Some)
 }
 
 enum Mode {

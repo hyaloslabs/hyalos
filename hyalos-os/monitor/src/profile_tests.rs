@@ -163,6 +163,14 @@ fn s_02_3_e2_a_version_3_record_holding_a_profile_is_refused() {
 }
 
 #[test]
+fn s_02_3_e2_a_profile_field_holding_null_is_refused_on_any_version() {
+    let older = read_transcript(&committed("evidence/out/two-machines-canary/record.json")).unwrap();
+    for t in [&older, &v4_run()] {
+        assert_eq!(read_transcript(&with_field(t, "profile", serde_json::Value::Null)).unwrap_err(), "cannot parse", "version {}", t.version);
+    }
+}
+
+#[test]
 fn s_02_4_e1_an_unknown_profile_is_refused_and_named() {
     let bytes = with_field(&v4_run(), "profile", "hyalos.profile/9".into());
     assert_eq!(read_transcript(&bytes).unwrap_err(), "unknown profile hyalos.profile/9");
