@@ -21,7 +21,7 @@ impl Drop for Rig {
 
 impl Rig {
     pub(super) fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("hyalos-audit-test-{label}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("hyalos-audit-test-{}{label}-{}", super::fixture_tests::rig_prefix(), std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("ledger")).unwrap();
         fs::create_dir_all(root.join("log")).unwrap();
@@ -133,16 +133,36 @@ impl Rig {
     }
 }
 
+/// The guest named by the chains below. A chain refusal comes before it is run.
+const CHAIN_GUEST: &[u8] = b"\0asm\x01\0\0\0";
+
+/// The one record a test chain's results commit to, under a salt of the result's label, so that
+/// the built verifier can reach the same chain check from a real file.
+fn chain_record(version: u32) -> crate::Transcript {
+    let guest_sha256 = sha(CHAIN_GUEST);
+    let task = if version == 1 { String::new() } else { crate::task_for(version, None, &guest_sha256, &[]).unwrap() };
+    crate::Transcript { version, profile: None, task, guest_sha256, inputs_hex: Vec::new(), answers: Vec::new(), effects: Vec::new(), result_hex: String::new(), fuel_used: 1 }
+}
+
+fn commit(label: &str, version: u32) -> String {
+    sha([label.as_bytes(), &serde_json::to_vec(&chain_record(version)).unwrap()].concat().as_slice())
+}
+
+fn claim_for(version: u32, label: &str) -> Claim {
+    crate::claim_of(&chain_record(version), commit(label, version)).unwrap()
+}
+
 fn intent_link() -> Value {
-    json!({"v": 1, "kind": "intent", "task": "one task", "guest_sha256": "one guest"})
+    let claim = claim_for(1, "");
+    json!({"v": 1, "kind": "intent", "task": claim.task, "guest_sha256": claim.guest})
 }
 
-fn result_link(intent: &str, commitment: &str) -> Value {
-    json!({"v": 1, "kind": "result", "intent": intent, "outcome": "ok", "transcript": commitment})
+fn result_link(intent: &str, label: &str) -> Value {
+    json!({"v": 1, "kind": "result", "intent": intent, "outcome": "ok", "transcript": commit(label, 1), "label": label})
 }
 
-fn test_claim(commitment: &str) -> Claim {
-    Claim { commitment: commitment.to_string(), task: "one task".to_string(), guest: "one guest".to_string(), version: 1 }
+fn test_claim(label: &str) -> Claim {
+    claim_for(1, label)
 }
 
 /// The real record's claim, recomputed from `evidence/out/live2.json`.
@@ -190,7 +210,7 @@ fn s_04_2_e2_an_altered_inclusion_proof_is_refused_naming_the_link() {
     let flipped = if hash.starts_with('0') { "1" } else { "0" };
     reply[&id]["verification"]["inclusionProof"]["hashes"][3] = json!(format!("{flipped}{}", &hash[1..]));
     fs::write(&file, serde_json::to_vec(&reply).unwrap()).unwrap();
-    assert_eq!(auditor.audit(&real_claim()).err().unwrap(), "link 2: the inclusion proof does not verify");
+    assert_eq!(refused_real(&rig, &auditor), "link 2: the inclusion proof does not verify");
 }
 
 #[test]
@@ -201,7 +221,7 @@ fn s_04_2_e3_a_link_signed_with_a_test_key_is_refused_naming_the_link() {
     let (log, stranger) = (rig.key("test-log"), rig.key("stranger"));
     let link = fs::read(rig.root.join("ledger/00001.json")).unwrap();
     fs::write(rig.root.join("ledger/00001.rekor.json"), rig.entry(&log, &stranger, &link, 7)).unwrap();
-    assert_eq!(auditor.audit(&real_claim()).err().unwrap(), "link 1: the reply is not from the log's key");
+    assert_eq!(refused_real(&rig, &auditor), "link 1: the reply is not from the log's key");
 
     // Under a log that accepts it: only the operator's key can fail it.
     let rig = Rig::new("s-04-2-e3-log");
@@ -209,8 +229,7 @@ fn s_04_2_e3_a_link_signed_with_a_test_key_is_refused_naming_the_link() {
     let commitment = rig.chain(&["intent", "result"], &log, &operator);
     let link = fs::read(rig.root.join("ledger/00001.json")).unwrap();
     fs::write(rig.root.join("ledger/00001.rekor.json"), rig.entry(&log, &stranger, &link, 101)).unwrap();
-    let auditor = rig.auditor("operator.pub", "test-log.pub");
-    assert_eq!(auditor.audit(&test_claim(&commitment)).err().unwrap(), "link 1: the link is not signed by the operator's key");
+    assert_eq!(audit_of(&rig, &test_claim(&commitment)).err().unwrap(), "link 1: the link is not signed by the operator's key");
 }
 
 #[test]
@@ -218,7 +237,7 @@ fn t_4_a_reply_for_another_link_is_refused() {
     let rig = Rig::new("t-4-other");
     let auditor = rig.real();
     fs::copy(rig.root.join("ledger/00000.rekor.json"), rig.root.join("ledger/00001.rekor.json")).unwrap();
-    assert_eq!(auditor.audit(&real_claim()).err().unwrap(), "link 1: the reply is for another link");
+    assert_eq!(refused_real(&rig, &auditor), "link 1: the reply is for another link");
 }
 
 #[test]
@@ -230,7 +249,7 @@ fn t_4_an_altered_signed_time_is_refused() {
     let id = reply.as_object().unwrap().keys().next().unwrap().clone();
     reply[&id]["integratedTime"] = json!(reply[&id]["integratedTime"].as_u64().unwrap() + 1);
     fs::write(&file, serde_json::to_vec(&reply).unwrap()).unwrap();
-    assert_eq!(auditor.audit(&real_claim()).err().unwrap(), "link 3: the signed time does not verify");
+    assert_eq!(refused_real(&rig, &auditor), "link 3: the signed time does not verify");
 }
 
 #[test]
@@ -266,7 +285,7 @@ fn t_4_an_entry_the_chain_does_not_show_is_refused() {
     let (log, operator) = (rig.key("test-log"), rig.key("operator"));
     let commitment = rig.chain(&["intent", "result"], &log, &operator);
     fs::write(rig.root.join("log/00099.rekor.json"), rig.entry(&log, &operator, b"a hidden link", 500)).unwrap();
-    let refused = rig.auditor("operator.pub", "test-log.pub").audit(&test_claim(&commitment)).err().unwrap();
+    let refused = audit_of(&rig, &test_claim(&commitment)).err().unwrap();
     assert!(refused.contains("the log lists 3 entries") && refused.contains("has 2"), "{refused}");
 }
 
@@ -290,7 +309,46 @@ fn forged(label: &str) -> (Rig, String, String) {
 }
 
 fn audit_of(rig: &Rig, claim: &Claim) -> Result<Audited, String> {
-    rig.auditor("operator.pub", "test-log.pub").audit(claim).map_err(|failure| failure.message)
+    let audited = rig.auditor("operator.pub", "test-log.pub").audit(claim).map_err(|failure| failure.message);
+    if let Err(said) = &audited {
+        keep_chain(rig, claim, said);
+    }
+    audited
+}
+
+/// Keeps this refused chain as a case, over the real record file its result commits to.
+fn keep_chain(rig: &Rig, claim: &Claim, said: &str) {
+    let links = read_links(&rig.root.join("ledger"));
+    let label = links.iter().filter_map(|link| serde_json::from_slice::<Value>(link).ok()).find(|link| link["transcript"] == claim.commitment.as_str()).and_then(|link| link["label"].as_str().map(str::to_string)).expect("a chain case names its record");
+    let record = rig.root.join("chain-record");
+    fs::write(&record, serde_json::to_vec(&chain_record(claim.version)).unwrap()).unwrap();
+    fs::write(rig.root.join("chain-record.salt"), &label).unwrap();
+    let guest = rig.root.join("chain-guest.wasm");
+    fs::write(&guest, CHAIN_GUEST).unwrap();
+    let (ledger, log, log_key, operator) = (rig.root.join("ledger"), rig.root.join("log"), rig.root.join("test-log.pub"), rig.root.join("operator.pub"));
+    super::fixture_tests::keep(super::fixture_tests::Spec { record: &record, attest: false, links: Some(&ledger), log: Some(&log), log_key: Some(&log_key), operator: Some(&operator), notary: "021111111111111111111111111111111111111111111111111111111111111111", guest: (claim.version != 1).then_some(guest.as_path()), root: None, legacy: claim.version == 1 }, said, true);
+}
+
+/// The refusal of a changed copy of the real chain, kept as a case over the whole committed chain
+/// and the committed record its later links name, whose salt is committed.
+fn refused_real(rig: &Rig, auditor: &Auditor) -> String {
+    let said = auditor.audit(&real_claim()).err().unwrap().message;
+    let (links, log) = (rig.root.join("whole-ledger"), rig.root.join("whole-log"));
+    for (dir, over) in [(&links, "ledger"), (&log, "log")] {
+        fs::create_dir_all(dir).unwrap();
+        for entry in fs::read_dir(source("evidence/ledger")).unwrap() {
+            let entry = entry.unwrap();
+            fs::copy(entry.path(), dir.join(entry.file_name())).unwrap();
+        }
+        for entry in fs::read_dir(rig.root.join(over)).unwrap() {
+            let entry = entry.unwrap();
+            fs::copy(entry.path(), dir.join(entry.file_name())).unwrap();
+        }
+    }
+    let notary = fs::read_to_string(source("evidence/out/two-machines-slice5/notary.pub")).unwrap();
+    let (record, log_key, operator) = (source("evidence/out/two-machines/record.json"), rig.root.join("log.pub"), rig.root.join("operator.pub"));
+    super::fixture_tests::keep(super::fixture_tests::Spec { record: &record, attest: false, links: Some(&links), log: Some(&log), log_key: Some(&log_key), operator: Some(&operator), notary: notary.trim(), guest: None, root: None, legacy: true }, &said, true);
+    said
 }
 
 #[test]
@@ -384,28 +442,34 @@ fn t_4_a_record_whose_result_link_says_refused_is_refused() {
 fn t_4_a_field_the_commitment_does_not_cover_is_refused() {
     let mut record: Value = serde_json::from_slice(&fs::read(source("evidence/out/live2.json")).unwrap()).unwrap();
     record["reviewed_by"] = json!("someone");
-    assert!(serde_json::from_value::<crate::Transcript>(record).is_err());
+    assert!(serde_json::from_value::<crate::Transcript>(record.clone()).is_err());
+    super::fixture_tests::parse_refused(&serde_json::to_vec(&record).unwrap());
 }
 
 /// A version 2 intent naming the test operator's key.
 fn intent_v2(rig: &Rig) -> Value {
     let key = public_der(&fs::read_to_string(rig.path("operator.pub")).unwrap()).unwrap();
-    json!({"v": 2, "kind": "intent", "task": "one task", "guest_sha256": "one guest", "operator": sha(&key)})
+    let claim = claim_for(2, "");
+    json!({"v": 2, "kind": "intent", "task": claim.task, "guest_sha256": claim.guest, "operator": sha(&key)})
 }
 
-fn result_v2(intent: &str, commitment: &str) -> Value {
-    json!({"v": 2, "kind": "result", "intent": intent, "outcome": "ok", "transcript": commitment})
+fn result_v2(intent: &str, label: &str) -> Value {
+    json!({"v": 2, "kind": "result", "intent": intent, "outcome": "ok", "transcript": commit(label, 2), "label": label})
 }
 
-fn claim_v2(commitment: &str) -> Claim {
-    Claim { version: 2, ..test_claim(commitment) }
+fn claim_v2(label: &str) -> Claim {
+    claim_for(2, label)
 }
 
 #[test]
 fn record_s_01_4_e1_a_version_2_record_whose_intent_says_1_is_refused() {
     let (rig, log, operator) = forged("r-01-4-e1");
-    let intent = rig.push(&log, &operator, intent_link());
-    rig.push(&log, &operator, result_link(&intent, "kept"));
+    let mut old = intent_link();
+    old["task"] = json!(claim_v2("kept").task);
+    let intent = rig.push(&log, &operator, old);
+    let mut result = result_link(&intent, "kept");
+    result["transcript"] = json!(commit("kept", 2));
+    rig.push(&log, &operator, result);
     assert_eq!(audit_of(&rig, &claim_v2("kept")).err().unwrap(), "link 0: the run's links are not this record's version");
 }
 
@@ -413,7 +477,9 @@ fn record_s_01_4_e1_a_version_2_record_whose_intent_says_1_is_refused() {
 fn record_s_01_4_e2_a_version_2_record_whose_result_says_1_is_refused() {
     let (rig, log, operator) = forged("r-01-4-e2");
     let intent = rig.push(&log, &operator, intent_v2(&rig));
-    rig.push(&log, &operator, result_link(&intent, "kept"));
+    let mut result = result_link(&intent, "kept");
+    result["transcript"] = json!(commit("kept", 2));
+    rig.push(&log, &operator, result);
     assert_eq!(audit_of(&rig, &claim_v2("kept")).err().unwrap(), "link 1: its version is not its intent's");
 }
 
@@ -528,10 +594,35 @@ fn canary_3_3_a_version_3_intent_naming_another_key_is_refused() {
     let (rig, log, operator) = forged("canary-3-3");
     let mut other = intent_v2(&rig);
     other["v"] = json!(3);
+    other["task"] = json!(claim_for(3, "kept").task);
     other["operator"] = json!("ab".repeat(32));
     let intent = rig.push(&log, &operator, other);
     let mut result = result_v2(&intent, "kept");
     result["v"] = json!(3);
+    result["transcript"] = json!(commit("kept", 3));
     rig.push(&log, &operator, result);
-    assert_eq!(audit_of(&rig, &Claim { version: 3, ..test_claim("kept") }).err().unwrap(), "link 0: the intent names another operator key");
+    assert_eq!(audit_of(&rig, &claim_for(3, "kept")).err().unwrap(), "link 0: the intent names another operator key");
 }
+
+/// The refusing tests whose audit calls `local_4_2_generate` keeps as fixtures.
+pub(super) const CORPUS: &[(&str, fn())] = &[
+    ("s_04_2_e2_an_altered_inclusion_proof_is_refused_naming_the_link", s_04_2_e2_an_altered_inclusion_proof_is_refused_naming_the_link),
+    ("s_04_2_e3_a_link_signed_with_a_test_key_is_refused_naming_the_link", s_04_2_e3_a_link_signed_with_a_test_key_is_refused_naming_the_link),
+    ("t_4_a_reply_for_another_link_is_refused", t_4_a_reply_for_another_link_is_refused),
+    ("t_4_an_altered_signed_time_is_refused", t_4_an_altered_signed_time_is_refused),
+    ("t_4_an_entry_the_chain_does_not_show_is_refused", t_4_an_entry_the_chain_does_not_show_is_refused),
+    ("t_4_a_discarded_result_with_its_intent_respelled_is_refused", t_4_a_discarded_result_with_its_intent_respelled_is_refused),
+    ("t_4_a_link_of_another_kind_is_refused", t_4_a_link_of_another_kind_is_refused),
+    ("t_4_a_second_result_for_one_run_is_refused_whichever_record_is_shown", t_4_a_second_result_for_one_run_is_refused_whichever_record_is_shown),
+    ("t_4_one_record_claimed_by_two_runs_is_refused", t_4_one_record_claimed_by_two_runs_is_refused),
+    ("t_4_a_result_naming_a_link_that_is_not_an_intent_is_refused", t_4_a_result_naming_a_link_that_is_not_an_intent_is_refused),
+    ("t_4_an_intent_labelled_with_another_task_or_guest_is_refused", t_4_an_intent_labelled_with_another_task_or_guest_is_refused),
+    ("t_4_a_record_whose_result_link_says_refused_is_refused", t_4_a_record_whose_result_link_says_refused_is_refused),
+    ("t_4_a_field_the_commitment_does_not_cover_is_refused", t_4_a_field_the_commitment_does_not_cover_is_refused),
+    ("record_s_01_4_e1_a_version_2_record_whose_intent_says_1_is_refused", record_s_01_4_e1_a_version_2_record_whose_intent_says_1_is_refused),
+    ("record_s_01_4_e2_a_version_2_record_whose_result_says_1_is_refused", record_s_01_4_e2_a_version_2_record_whose_result_says_1_is_refused),
+    ("record_s_01_8_e1_another_link_of_an_unknown_version_is_refused", record_s_01_8_e1_another_link_of_an_unknown_version_is_refused),
+    ("record_s_01_8_e2_a_result_differing_from_its_intent_is_refused_for_any_record", record_s_01_8_e2_a_result_differing_from_its_intent_is_refused_for_any_record),
+    ("record_s_05_9_e1_an_intent_naming_another_key_is_refused", record_s_05_9_e1_an_intent_naming_another_key_is_refused),
+    ("canary_3_3_a_version_3_intent_naming_another_key_is_refused", canary_3_3_a_version_3_intent_naming_another_key_is_refused),
+];

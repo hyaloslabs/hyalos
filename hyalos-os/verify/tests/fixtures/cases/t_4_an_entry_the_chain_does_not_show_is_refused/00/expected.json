@@ -1,0 +1,4 @@
+{
+  "check": "the log lists 3 entries under this key and the chain shown has 2: they must be the same list",
+  "verdict": "refused"
+}

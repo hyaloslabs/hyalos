@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "task": "c022702319058db73280125cb69d1637d830f8e8c2569104740fa40db754dcc1",
+  "guest_sha256": "4313c8f981555e7a608fd7c701058499e7575f2e5640c77259ea30cf2f14e41b",
+  "inputs_hex": [
+    "6f6e6520696e707574"
+  ],
+  "answers": [
+    {
+      "schema": 0,
+      "question_sha256": "f5693264c3570b496b03a4325adfe3078abcc83d6e7ea889a809698371e7c75c",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin",
+      "attestation": "3475fb6f95963f6d97c1c1a7e2f12c1c4184cb5848fddb88e7bd9c483d6138f2"
+    }
+  ],
+  "effects": [],
+  "result_hex": "",
+  "fuel_used": 1
+}

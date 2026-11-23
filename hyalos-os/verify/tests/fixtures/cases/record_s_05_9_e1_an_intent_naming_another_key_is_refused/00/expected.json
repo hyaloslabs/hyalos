@@ -1,0 +1,4 @@
+{
+  "check": "link 0: the intent names another operator key",
+  "verdict": "refused"
+}

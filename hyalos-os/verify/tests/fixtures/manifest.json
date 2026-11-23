@@ -1,0 +1,668 @@
+{
+  "corpus": [
+    {
+      "cases": [
+        {
+          "check": "link 2: the inclusion proof does not verify",
+          "id": "s_04_2_e2_an_altered_inclusion_proof_is_refused_naming_the_link/00"
+        }
+      ],
+      "test": "s_04_2_e2_an_altered_inclusion_proof_is_refused_naming_the_link"
+    },
+    {
+      "cases": [
+        {
+          "check": "link 1: the reply is not from the log's key",
+          "id": "s_04_2_e3_a_link_signed_with_a_test_key_is_refused_naming_the_link/00"
+        },
+        {
+          "check": "link 1: the link is not signed by the operator's key",
+          "id": "s_04_2_e3_a_link_signed_with_a_test_key_is_refused_naming_the_link/01"
+        }
+      ],
+      "test": "s_04_2_e3_a_link_signed_with_a_test_key_is_refused_naming_the_link"
+    },
+    {
+      "cases": [
+        {
+          "check": "link 1: the reply is for another link",
+          "id": "t_4_a_reply_for_another_link_is_refused/00"
+        }
+      ],
+      "test": "t_4_a_reply_for_another_link_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "link 3: the signed time does not verify",
+          "id": "t_4_an_altered_signed_time_is_refused/00"
+        }
+      ],
+      "test": "t_4_an_altered_signed_time_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "the log lists 3 entries under this key and the chain shown has 2: they must be the same list",
+          "id": "t_4_an_entry_the_chain_does_not_show_is_refused/00"
+        }
+      ],
+      "test": "t_4_an_entry_the_chain_does_not_show_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "link 1: the result names no earlier intent",
+          "id": "t_4_a_discarded_result_with_its_intent_respelled_is_refused/00"
+        }
+      ],
+      "test": "t_4_a_discarded_result_with_its_intent_respelled_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "link 1: it is neither an intent nor a result",
+          "id": "t_4_a_link_of_another_kind_is_refused/00"
+        }
+      ],
+      "test": "t_4_a_link_of_another_kind_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "link 2: a second result was logged for one run",
+          "id": "t_4_a_second_result_for_one_run_is_refused_whichever_record_is_shown/00"
+        },
+        {
+          "check": "link 2: a second result was logged for one run",
+          "id": "t_4_a_second_result_for_one_run_is_refused_whichever_record_is_shown/01"
+        }
+      ],
+      "test": "t_4_a_second_result_for_one_run_is_refused_whichever_record_is_shown"
+    },
+    {
+      "cases": [
+        {
+          "check": "2 results claim this record",
+          "id": "t_4_one_record_claimed_by_two_runs_is_refused/00"
+        }
+      ],
+      "test": "t_4_one_record_claimed_by_two_runs_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "link 2: the result names no earlier intent",
+          "id": "t_4_a_result_naming_a_link_that_is_not_an_intent_is_refused/00"
+        }
+      ],
+      "test": "t_4_a_result_naming_a_link_that_is_not_an_intent_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "link 0: the intent names another task than this record's",
+          "id": "t_4_an_intent_labelled_with_another_task_or_guest_is_refused/00"
+        },
+        {
+          "check": "link 0: the intent names another task than this record's",
+          "id": "t_4_an_intent_labelled_with_another_task_or_guest_is_refused/01"
+        }
+      ],
+      "test": "t_4_an_intent_labelled_with_another_task_or_guest_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "this record's result link says the run was refused",
+          "id": "t_4_a_record_whose_result_link_says_refused_is_refused/00"
+        }
+      ],
+      "test": "t_4_a_record_whose_result_link_says_refused_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "cannot parse",
+          "id": "t_4_a_field_the_commitment_does_not_cover_is_refused/00"
+        }
+      ],
+      "test": "t_4_a_field_the_commitment_does_not_cover_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "link 0: the run's links are not this record's version",
+          "id": "record_s_01_4_e1_a_version_2_record_whose_intent_says_1_is_refused/00"
+        }
+      ],
+      "test": "record_s_01_4_e1_a_version_2_record_whose_intent_says_1_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "link 1: its version is not its intent's",
+          "id": "record_s_01_4_e2_a_version_2_record_whose_result_says_1_is_refused/00"
+        }
+      ],
+      "test": "record_s_01_4_e2_a_version_2_record_whose_result_says_1_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "link 2: its version is not known",
+          "id": "record_s_01_8_e1_another_link_of_an_unknown_version_is_refused/00"
+        }
+      ],
+      "test": "record_s_01_8_e1_another_link_of_an_unknown_version_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "link 3: its version is not its intent's",
+          "id": "record_s_01_8_e2_a_result_differing_from_its_intent_is_refused_for_any_record/00"
+        }
+      ],
+      "test": "record_s_01_8_e2_a_result_differing_from_its_intent_is_refused_for_any_record"
+    },
+    {
+      "cases": [
+        {
+          "check": "link 0: the intent names another operator key",
+          "id": "record_s_05_9_e1_an_intent_naming_another_key_is_refused/00"
+        }
+      ],
+      "test": "record_s_05_9_e1_an_intent_naming_another_key_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "link 0: the intent names another operator key",
+          "id": "canary_3_3_a_version_3_intent_naming_another_key_is_refused/00"
+        }
+      ],
+      "test": "canary_3_3_a_version_3_intent_naming_another_key_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the session is not later than the run's intent",
+          "id": "s_03_2_e1_s_03_3_e1_s_03_5_e1_s_04_3_e1_an_honest_record_of_eight_passes_and_others_are_refused/00"
+        },
+        {
+          "check": "answer 0: the session is not later than the run's intent",
+          "id": "s_03_2_e1_s_03_3_e1_s_03_5_e1_s_04_3_e1_an_honest_record_of_eight_passes_and_others_are_refused/01"
+        },
+        {
+          "check": "answer 7: the session is later than the run's result",
+          "id": "s_03_2_e1_s_03_3_e1_s_03_5_e1_s_04_3_e1_an_honest_record_of_eight_passes_and_others_are_refused/02"
+        },
+        {
+          "check": "answer 5: the binding names another position",
+          "id": "s_03_2_e1_s_03_3_e1_s_03_5_e1_s_04_3_e1_an_honest_record_of_eight_passes_and_others_are_refused/03"
+        },
+        {
+          "check": "answer 3: the attestation is not the one the record names",
+          "id": "s_03_2_e1_s_03_3_e1_s_03_5_e1_s_04_3_e1_an_honest_record_of_eight_passes_and_others_are_refused/04"
+        },
+        {
+          "check": "answer 1: the notary saw a different question or answer than the record claims",
+          "id": "s_03_2_e1_s_03_3_e1_s_03_5_e1_s_04_3_e1_an_honest_record_of_eight_passes_and_others_are_refused/05"
+        },
+        {
+          "check": "this record has no attested answers",
+          "id": "s_03_2_e1_s_03_3_e1_s_03_5_e1_s_04_3_e1_an_honest_record_of_eight_passes_and_others_are_refused/06"
+        }
+      ],
+      "test": "s_03_2_e1_s_03_3_e1_s_03_5_e1_s_04_3_e1_an_honest_record_of_eight_passes_and_others_are_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the binding names another run",
+          "id": "s_03_2_e2_s_04_4_e2_a_real_presentation_from_another_run_is_refused/00"
+        }
+      ],
+      "test": "s_03_2_e2_s_04_4_e2_a_real_presentation_from_another_run_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 3: the sequence number is not the answer's position, so an attestation is unaccounted for",
+          "id": "s_03_5_e2_a_question_asked_twice_with_the_first_answer_discarded_is_refused/00"
+        }
+      ],
+      "test": "s_03_5_e2_a_question_asked_twice_with_the_first_answer_discarded_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the sequence number is not the answer's position, so an attestation is unaccounted for",
+          "id": "s_03_5_e4_the_first_question_asked_three_times_is_refused/00"
+        }
+      ],
+      "test": "s_03_5_e4_the_first_question_asked_three_times_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the sequence number is not the answer's position, so an attestation is unaccounted for",
+          "id": "adr_014_a_session_left_after_reading_the_reply_cannot_be_asked_again/00"
+        }
+      ],
+      "test": "adr_014_a_session_left_after_reading_the_reply_cannot_be_asked_again"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the notary was told another run",
+          "id": "s_03_5_e5_an_operator_who_tells_the_notary_another_run_is_refused/00"
+        }
+      ],
+      "test": "s_03_5_e5_an_operator_who_tells_the_notary_another_run_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: not attested by the trusted notary",
+          "id": "s_04_4_e1_an_answer_attested_by_the_forgers_own_notary_is_refused/00"
+        }
+      ],
+      "test": "s_04_4_e1_an_answer_attested_by_the_forgers_own_notary_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the session is not later than the run's intent",
+          "id": "s_04_4_e3_an_attestation_obtained_before_the_intent_was_logged_is_refused/00"
+        }
+      ],
+      "test": "s_04_4_e3_an_attestation_obtained_before_the_intent_was_logged_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "record version 5 is not known",
+          "id": "record_s_01_1_e1_an_unknown_version_is_refused_and_named/00"
+        }
+      ],
+      "test": "record_s_01_1_e1_an_unknown_version_is_refused_and_named"
+    },
+    {
+      "cases": [
+        {
+          "check": "record version 0 is not known",
+          "id": "record_s_01_1_e2_version_0_is_refused_even_with_the_legacy_option/00"
+        }
+      ],
+      "test": "record_s_01_1_e2_version_0_is_refused_even_with_the_legacy_option"
+    },
+    {
+      "cases": [
+        {
+          "check": "this is a version 1 record, with no attempt budget: audit it with --legacy-v1",
+          "id": "record_s_01_2_e1_a_version_1_record_without_the_option_is_refused_naming_it/00"
+        }
+      ],
+      "test": "record_s_01_2_e1_a_version_1_record_without_the_option_is_refused_naming_it"
+    },
+    {
+      "cases": [
+        {
+          "check": "the guest is not this record's",
+          "id": "record_s_05_8_e2_a_guest_with_one_byte_changed_is_refused/00"
+        }
+      ],
+      "test": "record_s_05_8_e2_a_guest_with_one_byte_changed_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "the record does not replay on its guest",
+          "id": "record_s_05_7_e6_extra_sessions_written_into_the_record_diverge/00"
+        }
+      ],
+      "test": "record_s_05_7_e6_extra_sessions_written_into_the_record_diverge"
+    },
+    {
+      "cases": [
+        {
+          "check": "the record does not replay on its guest",
+          "id": "record_s_05_7_e7_a_reworded_question_diverges/00"
+        }
+      ],
+      "test": "record_s_05_7_e7_a_reworded_question_diverges"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: a version 1 record cannot carry a ticket",
+          "id": "record_s_01_6_e1_a_ticketed_attestation_in_a_version_1_record_is_refused/00"
+        }
+      ],
+      "test": "record_s_01_6_e1_a_ticketed_attestation_in_a_version_1_record_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the attestation carries no ticket",
+          "id": "record_s_05_1_e1_no_ticket_extension_is_refused/00"
+        }
+      ],
+      "test": "record_s_05_1_e1_no_ticket_extension_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the attestation does not verify",
+          "id": "record_s_05_1_e2_two_ticket_extensions_are_refused/00"
+        }
+      ],
+      "test": "record_s_05_1_e2_two_ticket_extensions_are_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the attestation does not verify",
+          "id": "record_s_05_1_e3_a_ticket_one_byte_short_is_refused/00"
+        }
+      ],
+      "test": "record_s_05_1_e3_a_ticket_one_byte_short_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 1: the ticket is not the one answer 0 carries",
+          "id": "record_s_05_2_e1_another_ticket_on_a_later_answer_is_refused/00"
+        }
+      ],
+      "test": "record_s_05_2_e1_another_ticket_on_a_later_answer_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 1: the ticket is not the one answer 0 carries",
+          "id": "record_s_05_2_e2_another_authorisation_on_a_later_answer_is_refused/00"
+        }
+      ],
+      "test": "record_s_05_2_e2_another_authorisation_on_a_later_answer_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "the ticket's task is not this record's",
+          "id": "record_s_05_3_e1_a_ticket_for_another_task_is_refused/00"
+        }
+      ],
+      "test": "record_s_05_3_e1_a_ticket_for_another_task_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the ticket is not inside its budget",
+          "id": "record_s_05_4_e1_ticket_2_of_budget_2_is_refused/00"
+        }
+      ],
+      "test": "record_s_05_4_e1_ticket_2_of_budget_2_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the ticket is not inside its budget",
+          "id": "record_s_05_4_e2_budget_0_is_refused/00"
+        }
+      ],
+      "test": "record_s_05_4_e2_budget_0_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the ticket is not inside its budget",
+          "id": "record_s_05_4_e3_budget_101_is_refused/00"
+        }
+      ],
+      "test": "record_s_05_4_e3_budget_101_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the attestation carries no ticket",
+          "id": "record_s_05_6_e2_a_failing_record_states_no_proof/00"
+        }
+      ],
+      "test": "record_s_05_6_e2_a_failing_record_states_no_proof"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the binding names another run",
+          "id": "record_s_05_7_e1_an_attestation_from_another_run_is_refused/00"
+        }
+      ],
+      "test": "record_s_05_7_e1_an_attestation_from_another_run_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "the ticket's task is not this record's",
+          "id": "record_s_05_7_e2_a_varied_input_under_the_original_authorisation_is_refused/00"
+        }
+      ],
+      "test": "record_s_05_7_e2_a_varied_input_under_the_original_authorisation_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "this is a version 1 record, with no attempt budget: audit it with --legacy-v1",
+          "id": "record_s_05_7_e3_presenting_work_as_version_1_avoids_no_budget/00"
+        },
+        {
+          "check": "answer 0: a version 1 record cannot carry a ticket",
+          "id": "record_s_05_7_e3_presenting_work_as_version_1_avoids_no_budget/01"
+        }
+      ],
+      "test": "record_s_05_7_e3_presenting_work_as_version_1_avoids_no_budget"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the attestation does not verify",
+          "id": "record_s_05_7_e5_an_edited_budget_in_a_stored_attestation_is_refused/00"
+        }
+      ],
+      "test": "record_s_05_7_e5_an_edited_budget_in_a_stored_attestation_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the binding names another run",
+          "id": "record_s_05_7_e8_a_run_under_another_log_key_cannot_back_this_chain/00"
+        }
+      ],
+      "test": "record_s_05_7_e8_a_run_under_another_log_key_cannot_back_this_chain"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the notary saw a different question or answer than the record claims",
+          "id": "record_s_06_2_e2_a_proof_does_not_rescue_a_record_that_fails_another_check/00"
+        }
+      ],
+      "test": "record_s_06_2_e2_a_proof_does_not_rescue_a_record_that_fails_another_check"
+    },
+    {
+      "cases": [
+        {
+          "check": "a provider proof is malformed",
+          "id": "record_s_06_3_e1_a_proof_with_a_bad_kind_or_shape_is_refused/00"
+        },
+        {
+          "check": "a provider proof is malformed",
+          "id": "record_s_06_3_e1_a_proof_with_a_bad_kind_or_shape_is_refused/01"
+        },
+        {
+          "check": "a provider proof is malformed",
+          "id": "record_s_06_3_e1_a_proof_with_a_bad_kind_or_shape_is_refused/02"
+        },
+        {
+          "check": "a provider proof is malformed",
+          "id": "record_s_06_3_e1_a_proof_with_a_bad_kind_or_shape_is_refused/03"
+        },
+        {
+          "check": "a provider proof is malformed",
+          "id": "record_s_06_3_e1_a_proof_with_a_bad_kind_or_shape_is_refused/04"
+        },
+        {
+          "check": "cannot parse",
+          "id": "record_s_06_3_e1_a_proof_with_a_bad_kind_or_shape_is_refused/05"
+        },
+        {
+          "check": "a version 1 record cannot carry a provider proof",
+          "id": "record_s_06_3_e1_a_proof_with_a_bad_kind_or_shape_is_refused/06"
+        }
+      ],
+      "test": "record_s_06_3_e1_a_proof_with_a_bad_kind_or_shape_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "a provider proof is malformed",
+          "id": "record_s_06_3_e2_a_proof_whose_digest_is_not_64_lowercase_hex_is_refused/00"
+        },
+        {
+          "check": "a provider proof is malformed",
+          "id": "record_s_06_3_e2_a_proof_whose_digest_is_not_64_lowercase_hex_is_refused/01"
+        },
+        {
+          "check": "a provider proof is malformed",
+          "id": "record_s_06_3_e2_a_proof_whose_digest_is_not_64_lowercase_hex_is_refused/02"
+        },
+        {
+          "check": "a provider proof is malformed",
+          "id": "record_s_06_3_e2_a_proof_whose_digest_is_not_64_lowercase_hex_is_refused/03"
+        }
+      ],
+      "test": "record_s_06_3_e2_a_proof_whose_digest_is_not_64_lowercase_hex_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the attestation carries no canary",
+          "id": "canary_s_03_1_e2_no_canary_is_refused_naming_the_answer/00"
+        }
+      ],
+      "test": "canary_s_03_1_e2_no_canary_is_refused_naming_the_answer"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the attestation does not verify",
+          "id": "canary_s_03_1_e3_two_canaries_are_refused/00"
+        }
+      ],
+      "test": "canary_s_03_1_e3_two_canaries_are_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the attestation does not verify",
+          "id": "canary_s_03_1_e4_a_canary_of_the_wrong_length_is_refused/00"
+        }
+      ],
+      "test": "canary_s_03_1_e4_a_canary_of_the_wrong_length_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the canary is not fresh at its session",
+          "id": "canary_s_03_1_e5_a_pass_after_its_session_is_refused/00"
+        }
+      ],
+      "test": "canary_s_03_1_e5_a_pass_after_its_session_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: the canary is not fresh at its session",
+          "id": "canary_s_03_1_e6_a_pass_a_second_past_the_window_is_refused/00"
+        }
+      ],
+      "test": "canary_s_03_1_e6_a_pass_a_second_past_the_window_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: a version 2 record cannot carry a canary",
+          "id": "canary_s_03_3_e2_a_version_2_record_cannot_carry_a_canary/00"
+        }
+      ],
+      "test": "canary_s_03_3_e2_a_version_2_record_cannot_carry_a_canary"
+    },
+    {
+      "cases": [
+        {
+          "check": "answer 0: a version 1 record cannot carry a canary",
+          "id": "canary_a_version_1_record_cannot_carry_a_canary/00"
+        }
+      ],
+      "test": "canary_a_version_1_record_cannot_carry_a_canary"
+    },
+    {
+      "cases": [
+        {
+          "check": "a provider proof is malformed",
+          "id": "canary_3_2_provider_proofs_are_checked_on_version_3/00"
+        }
+      ],
+      "test": "canary_3_2_provider_proofs_are_checked_on_version_3"
+    },
+    {
+      "cases": [
+        {
+          "check": "unknown field `profile` in a version 3 record",
+          "id": "s_02_6_e1_a_version_4_record_relabelled_version_3_is_refused/00"
+        },
+        {
+          "check": "this record's task is not the one its guest and inputs give",
+          "id": "s_02_6_e1_a_version_4_record_relabelled_version_3_is_refused/01"
+        }
+      ],
+      "test": "s_02_6_e1_a_version_4_record_relabelled_version_3_is_refused"
+    },
+    {
+      "cases": [
+        {
+          "check": "unknown profile hyalos.profile/9",
+          "id": "s_02_6_e2_a_version_4_record_with_its_profile_changed_is_refused/00"
+        },
+        {
+          "check": "unknown profile hyalos.profile/9",
+          "id": "s_02_6_e2_a_version_4_record_with_its_profile_changed_is_refused/01"
+        }
+      ],
+      "test": "s_02_6_e2_a_version_4_record_with_its_profile_changed_is_refused"
+    }
+  ],
+  "outside": [
+    {
+      "reason": "the notary refuses during a live run, before any record exists",
+      "test": "record_s_05_7_e4_a_second_log_key_gets_no_more_attempts"
+    },
+    {
+      "reason": "it calls the answer check directly on a verify report, with no record",
+      "test": "s_03_2_e4_an_attestation_whose_request_carries_no_binding_is_refused"
+    },
+    {
+      "reason": "a missing option and no forged input: the verifier is inconclusive, shown by local_3_3",
+      "test": "record_s_05_8_e1_a_version_2_audit_with_no_guest_is_refused"
+    },
+    {
+      "reason": "it reads a key and no record, and a fixture would commit a private key",
+      "test": "t_4_1_a_private_key_given_as_the_operator_key_is_refused"
+    },
+    {
+      "reason": "an unreachable log and no forged input: the verifier is inconclusive, shown by S-03.3.e1",
+      "test": "t_4_2_the_proofs_need_no_network_and_a_log_that_cannot_be_asked_refuses_the_audit"
+    }
+  ]
+}

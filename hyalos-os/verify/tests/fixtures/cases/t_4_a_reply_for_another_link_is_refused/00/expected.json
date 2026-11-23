@@ -1,0 +1,4 @@
+{
+  "check": "link 1: the reply is for another link",
+  "verdict": "refused"
+}

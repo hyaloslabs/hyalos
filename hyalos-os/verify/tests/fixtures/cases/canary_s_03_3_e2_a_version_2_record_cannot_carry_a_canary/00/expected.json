@@ -1,0 +1,4 @@
+{
+  "check": "answer 0: a version 2 record cannot carry a canary",
+  "verdict": "refused"
+}

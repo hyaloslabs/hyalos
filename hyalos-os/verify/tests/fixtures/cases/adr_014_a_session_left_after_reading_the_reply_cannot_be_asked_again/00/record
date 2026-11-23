@@ -1,0 +1,22 @@
+{
+  "version": 4,
+  "profile": "hyalos.profile/1",
+  "task": "a09db9b9e246780091e44bfb9267363c9b909ddb9288cb34c38e9f65c30fecbb",
+  "guest_sha256": "f2e8ee668b5b320a13e14f47667269a7ea866877c0b86cd6621ca18db1cdd168",
+  "inputs_hex": [
+    "6f6e6520696e707574"
+  ],
+  "answers": [
+    {
+      "schema": 0,
+      "question_sha256": "d16846b2e7d654c22d9138b6ebb9e1314a916ad72b768bb18dc1dc2deb807b45",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin",
+      "attestation": "860ddd6d0d61797cafef5b11daee53b939487b4540736bedbba1a0d723af0492"
+    }
+  ],
+  "effects": [],
+  "result_hex": "",
+  "fuel_used": 1
+}

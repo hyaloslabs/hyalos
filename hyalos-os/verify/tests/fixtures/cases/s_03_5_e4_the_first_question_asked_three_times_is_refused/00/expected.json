@@ -1,0 +1,4 @@
+{
+  "check": "answer 0: the sequence number is not the answer's position, so an attestation is unaccounted for",
+  "verdict": "refused"
+}

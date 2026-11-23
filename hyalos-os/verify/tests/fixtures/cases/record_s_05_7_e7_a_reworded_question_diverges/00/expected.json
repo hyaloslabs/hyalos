@@ -1,0 +1,4 @@
+{
+  "check": "the record does not replay on its guest",
+  "verdict": "refused"
+}

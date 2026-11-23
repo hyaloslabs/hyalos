@@ -1,0 +1,46 @@
+{
+  "version": 4,
+  "profile": "hyalos.profile/1",
+  "task": "a09db9b9e246780091e44bfb9267363c9b909ddb9288cb34c38e9f65c30fecbb",
+  "guest_sha256": "f2e8ee668b5b320a13e14f47667269a7ea866877c0b86cd6621ca18db1cdd168",
+  "inputs_hex": [
+    "6f6e6520696e707574"
+  ],
+  "answers": [
+    {
+      "schema": 0,
+      "question_sha256": "d16846b2e7d654c22d9138b6ebb9e1314a916ad72b768bb18dc1dc2deb807b45",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin",
+      "attestation": "16d47200a297009f82d70c32d5f28dfecf0c977570ea17e7587d687990c28df6"
+    },
+    {
+      "schema": 0,
+      "question_sha256": "dbc1d833fe1ef964141015b4dc76b0a8788ae8c4f23e8689c84fe77efb3829cd",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin",
+      "attestation": "2848956549a988880208e1b95b7fb64d701a8c56080845ef6b231f6292da930d"
+    },
+    {
+      "schema": 0,
+      "question_sha256": "9f12496a63be70e003e3800a6924d07e61ff7db6776fa424177e85e3e1533eea",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin",
+      "attestation": "5b98dbfbe2fd7c23d1f4eb730acf65ada162566fa89a97ed7d1da9a879e160b4"
+    },
+    {
+      "schema": 0,
+      "question_sha256": "34068373b8bb3522f0d6087de015a6668f6e1228328dfce96f60a01d52658e44",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin",
+      "attestation": "06bd0db70adfa2c77163a674c89874b6a11c54df5791f3034b36c6913d7f87f1"
+    }
+  ],
+  "effects": [],
+  "result_hex": "",
+  "fuel_used": 1
+}

@@ -1,0 +1,4 @@
+{
+  "check": "link 1: the link is not signed by the operator's key",
+  "verdict": "refused"
+}

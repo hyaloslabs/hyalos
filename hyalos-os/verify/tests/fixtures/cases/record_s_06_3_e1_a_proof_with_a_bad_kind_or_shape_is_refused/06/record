@@ -1,0 +1,1 @@
+{"answers":[{"label":0,"model":"m","provider_proofs":[{"kind":"a.kind","sha256":"abababababababababababababababababababababababababababababababab"}],"question_sha256":"q","response_id":"r","schema":0}],"effects":[],"fuel_used":1,"guest_sha256":"d20abaadbe8b30600c6488d7a63be8c82b4837d6692d8ae0fc1072aa2d885bae","inputs_hex":[],"result_hex":"","version":1}

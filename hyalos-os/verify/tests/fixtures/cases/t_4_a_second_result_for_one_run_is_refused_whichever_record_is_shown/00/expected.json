@@ -1,0 +1,4 @@
+{
+  "check": "link 2: a second result was logged for one run",
+  "verdict": "refused"
+}

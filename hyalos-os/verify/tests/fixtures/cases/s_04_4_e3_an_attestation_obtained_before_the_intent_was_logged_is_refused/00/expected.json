@@ -1,0 +1,4 @@
+{
+  "check": "answer 0: the session is not later than the run's intent",
+  "verdict": "refused"
+}
