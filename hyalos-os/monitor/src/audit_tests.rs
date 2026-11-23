@@ -145,7 +145,7 @@ fn test_claim(commitment: &str) -> Claim {
     Claim { commitment: commitment.to_string(), task: "one task".to_string(), guest: "one guest".to_string(), version: 1 }
 }
 
-/// The real record's claim, recomputed from `out/live2.json`.
+/// The real record's claim, recomputed from `evidence/out/live2.json`.
 fn real_claim() -> Claim {
     let t: crate::Transcript = serde_json::from_slice(&fs::read(source("evidence/out/live2.json")).unwrap()).unwrap();
     crate::claim_of(&t, real_commitment()).unwrap()
