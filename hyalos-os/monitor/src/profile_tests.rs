@@ -85,18 +85,18 @@ fn kvm_backend(test: &str) -> Option<Backend> {
 
 /// The lines of a backend's mapping from a profile to its `wasmi` settings.
 fn mapping(source: &str) -> Vec<&str> {
-    let lines = source.lines().map(str::trim).filter(|l| l.starts_with('.') && l.contains("(profile.")).collect::<Vec<_>>();
+    let lines = source.lines().map(str::trim).filter(|l| l.starts_with('.') && !l.starts_with(".set_fuel") && l.contains("(profile.")).collect::<Vec<_>>();
     assert_eq!(lines.len(), 15, "{lines:?}");
     lines
 }
 
 #[test]
 fn s_02_1_e1_both_backends_map_one_profile_the_same_way() {
-    let monitor = include_str!("main.rs");
+    let process = include_str!("../../audit/src/replay.rs");
     let kernel = include_str!("../../kernel-image/src/main.rs");
-    assert_eq!(mapping(monitor), mapping(kernel));
+    assert_eq!(mapping(process), mapping(kernel));
     assert!(kernel.contains("const PROFILE: Profile = PROFILE_1;"));
-    for source in [monitor, kernel] {
+    for source in [process, include_str!("main.rs"), kernel] {
         for literal in [concat!("200_", "000_000"), concat!("4 * 1024", " * 1024"), concat!(".floats(", "false)")] {
             assert!(!source.contains(literal), "a setting is defined outside the profile: {literal}");
         }

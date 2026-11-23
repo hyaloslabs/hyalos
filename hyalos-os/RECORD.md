@@ -1,6 +1,6 @@
 # hyalOS record format
 
-This defines what a run leaves behind and how a verifier reads it. It covers record versions 1, 2, 3 and 4. New runs write version 4. The code that enforces it is `monitor/src/main.rs`, `monitor/src/ledger.rs` and `attest/src/`.
+This defines what a run leaves behind and how a verifier reads it. It covers record versions 1, 2, 3 and 4. New runs write version 4. The code that enforces it is `audit/src/` and `attest/src/`, and `hyalos-verify` is the customer's program for it.
 
 ## What a run leaves
 

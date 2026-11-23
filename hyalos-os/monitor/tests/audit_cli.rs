@@ -1,6 +1,8 @@
 //! The `audit` command as an auditor runs it: public keys, an empty home directory, and a stand-in
 //! log holding copies of the real stored replies. Nothing here contacts the network.
 
+#![cfg(feature = "test-trust")]
+
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
 use serde_json::Value;
 use std::{
@@ -192,4 +194,53 @@ fn local_2_1_task_prints_the_version_4_identity() {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_task-kernel")).arg("task").arg(&guest_file).arg(&inputs_file).output().unwrap();
     assert!(out.status.success());
     assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), want);
+}
+
+/// The monitor's `audit` still gives each golden report, through the library.
+#[test]
+fn local_3_1_the_monitors_audit_gives_every_golden_report() {
+    let slice5 = "evidence/out/two-machines-slice5";
+    for (dir, keys, legacy) in [("two-machines", slice5, true), ("two-machines-slice5", slice5, true), ("two-machines-record", "evidence/out/two-machines-record", false), ("two-machines-canary", "evidence/out/two-machines-canary", false)] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_task-kernel"));
+        command
+            .arg("audit")
+            .arg(format!("evidence/out/{dir}/record.json"))
+            .args(["evidence/ledger", "--operator-public"])
+            .arg(format!("{slice5}/operator.pub"))
+            .arg("--notary-public")
+            .arg(format!("{keys}/notary.pub"))
+            .args(["--verify", "target/release/attest", "--guest", "guest/digest.wasm"])
+            .current_dir(source(""))
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap())
+            .env("HYALOS_TRUST_LOG_DIR", "evidence/ledger")
+            .env("HYALOS_TRUST_LOG_KEY", "audit/tests/golden/log.pub");
+        if legacy {
+            command.arg("--legacy-v1");
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{dir}: {}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(output.stdout, fs::read(source(&format!("audit/tests/golden/evidence-out-{dir}-record.json.report"))).unwrap(), "{dir}");
+    }
+}
+
+/// With no links directory the monitor still reads `ledger`, which the verifier has no default for.
+#[test]
+fn local_3_1_the_monitors_links_directory_still_defaults_to_ledger() {
+    let rig = Rig::new("local-3-1-default");
+    let keys = rig.keys();
+    let output = Command::new(env!("CARGO_BIN_EXE_task-kernel"))
+        .arg("audit")
+        .arg(source("evidence/out/live2.json"))
+        .args(&keys)
+        .arg("--legacy-v1")
+        .current_dir(&rig.0)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap())
+        .env("HOME", rig.path("home"))
+        .env("HYALOS_TRUST_LOG_DIR", rig.path("log"))
+        .env("HYALOS_TRUST_LOG_KEY", rig.path("log.pub"))
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "refused: answer 0: no attestation");
 }

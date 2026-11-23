@@ -50,7 +50,7 @@ impl Rig {
     }
 
     pub(super) fn auditor(&self, operator: &str, log_key: &str) -> Auditor {
-        Auditor::new(&self.path("ledger"), &self.path(operator), Some((self.path("log"), self.path(log_key)))).unwrap()
+        Auditor::new(&self.path("ledger"), &self.path(operator), LogSource::StandIn(self.path("log"), self.path(log_key)), &crate::PlainFiles).unwrap()
     }
 
     /// Makes a P-256 key pair and returns the private key's path. The public key is `<name>.pub`.
@@ -168,7 +168,7 @@ fn t_4_the_pinned_key_is_the_one_in_the_trusted_root_and_hashes_to_the_log_id() 
 fn t_4_1_a_private_key_given_as_the_operator_key_is_refused() {
     let rig = Rig::new("t-4-1");
     let private = rig.key("someone");
-    let refused = Auditor::new(&rig.path("ledger"), &private, None);
+    let refused = Auditor::new(&rig.path("ledger"), &private, LogSource::Public, &crate::PlainFiles);
     assert!(refused.err().is_some_and(|e| e.contains("not a readable public key")));
 }
 
@@ -277,12 +277,7 @@ fn t_4_2_the_proofs_need_no_network_and_a_log_that_cannot_be_asked_refuses_the_a
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", closed.local_addr().unwrap());
     drop(closed);
-    let auditor = Auditor {
-        dir: rig.root.join("ledger"),
-        operator: public_der(&fs::read_to_string(rig.path("operator.pub")).unwrap()).unwrap(),
-        log_key: B64.decode(REKOR_KEY).unwrap(),
-        log: Log::Public { base, agent: ureq::AgentBuilder::new().timeout(Duration::from_secs(2)).build() },
-    };
+    let auditor = Auditor::new(&rig.path("ledger"), &rig.path("operator.pub"), LogSource::PublicAt(base), &crate::PlainFiles).unwrap();
     let refused = auditor.audit(&real_claim()).err().unwrap();
     assert_eq!(refused, "the public log could not be asked which entries it holds under the operator's key");
 }
@@ -295,7 +290,7 @@ fn forged(label: &str) -> (Rig, String, String) {
 }
 
 fn audit_of(rig: &Rig, claim: &Claim) -> Result<Audited, String> {
-    rig.auditor("operator.pub", "test-log.pub").audit(claim)
+    rig.auditor("operator.pub", "test-log.pub").audit(claim).map_err(|failure| failure.message)
 }
 
 #[test]

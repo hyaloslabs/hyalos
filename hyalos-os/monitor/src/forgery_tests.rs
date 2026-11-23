@@ -294,7 +294,7 @@ impl World {
         };
         let trust = self.settings.iter().filter(|(name, _)| name.starts_with("HYALOS_TRUST_")).map(|(n, v)| (n.clone(), v.into())).collect();
         let verifier = Verifier { program: inputs.verify.clone(), trust };
-        crate::audit_record(&self.record(), &inputs, Some((self.rig.path("log"), self.rig.path("test-log.pub"))), &verifier)
+        crate::audit_record(&self.record(), &inputs, LogSource::StandIn(self.rig.path("log"), self.rig.path("test-log.pub")), &verifier, &crate::PlainFiles).map_err(|failure| failure.message)
     }
 
     fn refused(&self) -> String {
@@ -599,7 +599,7 @@ fn one_answer(label: &str, version: u32) -> World {
 /// The audit of a record file that its version check refuses, so no key or log is reached.
 fn audit_file(record: &str, legacy: bool) -> Result<String, String> {
     let inputs = AuditInputs { dir: None, operator: Some("/nonexistent".into()), notary: format!("02{}", "11".repeat(32)), verify: "/nonexistent".into(), legacy, guest: None };
-    crate::audit_record(record, &inputs, None, &Verifier { program: "/nonexistent".into(), trust: Vec::new() })
+    crate::audit_record(record, &inputs, LogSource::Public, &Verifier { program: "/nonexistent".into(), trust: Vec::new() }, &crate::PlainFiles).map_err(|failure| failure.message)
 }
 
 fn record_of_version(rig: &Rig, version: u32) -> String {
@@ -1237,4 +1237,42 @@ fn s_02_6_e2_a_version_4_record_with_its_profile_changed_is_refused() {
     assert_eq!(world.refused(), "unknown profile hyalos.profile/9");
     with_record_field(&world, "task", json!(other));
     assert_eq!(world.refused(), "unknown profile hyalos.profile/9");
+}
+
+/// A real stand-in provider's attested record, with every stand-in setting in the environment of a
+/// build that cannot read them: it is refused at the pinned log key and states no pass.
+#[test]
+fn s_03_7_e2_a_release_build_refuses_a_stand_in_providers_record() {
+    let _one = locked();
+    let world = one_answer("s-03-7-e2", 4);
+    assert!(world.audit().is_ok(), "the record passes under the stand-in");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let target = root.join("target/no-test-trust");
+    let mut build = std::process::Command::new(std::env::var_os("CARGO").unwrap());
+    build.current_dir(&root).args(["build", "--release", "--locked", "-p", "hyalos-verify", "--target-dir"]).arg(&target);
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(|n| n.starts_with("CARGO") && n != "CARGO_HOME" || n == "RUSTFLAGS") {
+            build.env_remove(name);
+        }
+    }
+    assert!(build.status().unwrap().success());
+    let notary = world.rig.path("notary.key");
+    fs::write(&notary, format!("{}\n", world.signer)).unwrap();
+    let mut command = std::process::Command::new(target.join("release/hyalos-verify"));
+    command
+        .arg(world.record())
+        .arg(world.rig.path("ledger"))
+        .args(["--operator-public", &world.rig.path("operator.pub"), "--notary-public", &notary, "--guest", &world.rig.path("guest.wasm"), "--verify"])
+        .arg(built("attest"))
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap())
+        .env("HYALOS_TRUST_LOG_DIR", world.rig.path("log"))
+        .env("HYALOS_TRUST_LOG_KEY", world.rig.path("test-log.pub"));
+    for (name, value) in world.settings.iter().filter(|(name, _)| name.starts_with("HYALOS_TRUST_")) {
+        command.env(name, value);
+    }
+    let output = command.output().unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(output.stdout.is_empty(), "no pass line");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("the reply is not from the log's key"));
 }
