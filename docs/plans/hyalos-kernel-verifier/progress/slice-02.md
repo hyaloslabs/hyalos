@@ -33,7 +33,7 @@ Tests are in `monitor/src/profile_tests.rs` unless named.
 | S-02.2, S-02.2.e1 | `s_02_2_e1_a_new_run_is_version_4_and_names_profile_1`, and `forgery_tests.rs`'s `s_02_2_a_version_4_record_passes_the_whole_audit_with_its_canary` |
 | S-02.2.e2 | `s_02_2_e2_two_profile_names_give_two_task_identities`, and `s_02_2_the_version_4_identity_is_the_documented_frame` |
 | S-02.3, S-02.3.e1 | `s_02_3_e1_every_committed_older_record_replays_byte_identically`. All 260 evidence files hash the same before and after |
-| S-02.3.e2 | `s_02_3_e2_a_version_3_record_holding_a_profile_is_refused` |
+| S-02.3.e2 | `s_02_3_e2_a_version_3_record_holding_a_profile_is_refused`, and `s_02_3_e2_a_profile_field_holding_null_is_refused_on_any_version` |
 | S-02.4, S-02.4.e1 | `s_02_4_e1_an_unknown_profile_is_refused_and_named` |
 | S-02.4.e2 | `s_02_4_e2_a_version_4_record_with_no_profile_is_refused` |
 | S-02.5, S-02.5.e1 | `s_02_5_e1_both_backends_write_byte_identical_records`, run locally on KVM with `HYALOS_REQUIRE_KVM=1` |
@@ -44,7 +44,7 @@ Tests are in `monitor/src/profile_tests.rs` unless named.
 | 2.2 | `local_2_2_the_kernel_images_wasmi_is_the_workspaces_and_the_profiles` |
 | 2.3 | The `hyalos-os` job sets `HYALOS_REQUIRE_KVM`, opens KVM and adds the kernel image's target. `CLAUDE.md` lists `_KVM` |
 
-Locally: 304 `hyalos-os` tests and 1,018 root tests passed, none failed. `cargo fmt`, clippy, `cargo xtask layout`, `lines`, `docs` and both `cargo deny` audits pass.
+Locally: 305 `hyalos-os` tests and 1,018 root tests passed, none failed. `cargo fmt`, clippy, `cargo xtask layout`, `lines`, `docs` and both `cargo deny` audits pass.
 
 ## Deviations
 
