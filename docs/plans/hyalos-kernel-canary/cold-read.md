@@ -351,4 +351,4 @@ Record only: the pack is `published`, so the reader saw it as `origin/main` has 
 
 COLD READ BLOCKED: 1 blocking question(s) left after round 8.
 
-- K2, the Reliability NFR against S-01.2.e7: resolved, not yet checked by a cold reader. The NFR now reads "A failed write of a pass records no new pass and leaves the file as it was. A failed write of a non-pass result removes the state". The round's other proposals were applied in the same change.
+- K2, the Reliability NFR against S-01.2.e7: resolved, not yet checked by a cold reader. The NFR now reads "A failed write of a pass records no new pass and leaves the file as it was. A failed write of a non-pass result removes the state, unless the directory also refuses the removal (ADR-007)". The round's other proposals were applied in the same change.

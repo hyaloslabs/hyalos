@@ -48,7 +48,7 @@ A request's 106 hidden bytes could hold a forged body. We treat that forgery as 
 | Quality | Target |
 |---|---|
 | Performance | One check makes at most 3 small provider calls. Reading the state adds no network call to a session |
-| Reliability | Any unreadable, malformed, stale or future state refuses the session. A failed write of a pass records no new pass and leaves the file as it was. A failed write of a non-pass result removes the state |
+| Reliability | Any unreadable, malformed, stale or future state refuses the session. A failed write of a pass records no new pass and leaves the file as it was. A failed write of a non-pass result removes the state, unless the directory also refuses the removal (ADR-007) |
 | Security | The notary never opens the credential. The operator cannot write the state or choose the window |
 | Privacy | No credential, reply body or provider error text is printed, stored or signed |
 | Accessibility | none: command-line tools with plain text output |
