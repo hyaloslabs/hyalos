@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+hyalos-profile = { path = "../profile" }
 wasmi = "=2.0.2"
 wat = "1"
 sha2 = "0.10"

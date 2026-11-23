@@ -235,8 +235,19 @@ jobs:
         run: |
           cargo build --release --locked --manifest-path hyalos-os/Cargo.toml -p attest --bins
           cargo build --release --locked --manifest-path hyalos-os/Cargo.toml -p attest --features forge-ticket --bin forging-notary
+      # The two backends are compared on the runner's KVM, so the kernel image's target is needed.
+      - name: Open KVM and add the kernel image's target
+        run: |
+          rustup target add x86_64-unknown-none
+          if ! [ -r /dev/kvm ] || ! [ -w /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
       - name: Test the workspace
         run: cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace
+        env:
+          HYALOS_REQUIRE_KVM: "1"
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           manifest-path: hyalos-os/Cargo.toml

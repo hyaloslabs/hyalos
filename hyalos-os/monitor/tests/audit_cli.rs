@@ -167,3 +167,29 @@ fn s_04_5_e2_a_failing_audit_names_the_first_check_and_prints_no_proof() {
     assert!(output.stdout.is_empty(), "no statement of proof");
     assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "refused: link 2: no stored log reply");
 }
+
+/// Framed here from the documented format, so the test does not trust the code it checks.
+#[test]
+fn local_2_1_task_prints_the_version_4_identity() {
+    use sha2::{Digest, Sha256};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let guest_file = root.join("guest/digest.wasm");
+    let inputs_file = root.join("evidence/fixtures/issues.tsv");
+    let inputs = std::fs::read(&inputs_file).unwrap();
+    let inputs: Vec<&[u8]> = inputs.split(|b| *b == b'\n').filter(|l| !l.is_empty()).collect();
+    let name = b"hyalos.profile/1";
+    let mut frame = Sha256::new();
+    frame.update(b"hyalos.task/4");
+    frame.update((name.len() as u64).to_be_bytes());
+    frame.update(name);
+    frame.update(Sha256::digest(std::fs::read(&guest_file).unwrap()));
+    frame.update((inputs.len() as u64).to_be_bytes());
+    for input in inputs {
+        frame.update((input.len() as u64).to_be_bytes());
+        frame.update(input);
+    }
+    let want: String = frame.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_task-kernel")).arg("task").arg(&guest_file).arg(&inputs_file).output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), want);
+}
