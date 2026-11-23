@@ -403,7 +403,7 @@ fn record_s_01_5_e2_that_record_relabelled_as_version_2_never_replays() {
 
 fn version_2_run() -> Transcript {
     let inputs = read_inputs(Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/issues.tsv").to_str().unwrap()).unwrap();
-    execute(&Backend::Process, &committed("guest/digest.wasm"), inputs, Mode::Record { seed: 0 }).unwrap()
+    crate::execute_as(2, &Backend::Process, &committed("guest/digest.wasm"), inputs, Mode::Record { seed: 0 }).unwrap()
 }
 
 #[test]
@@ -440,7 +440,7 @@ fn record_s_02_3_e1_the_task_command_prints_what_the_run_logs() {
     let inputs = read_inputs(inputs_file.to_str().unwrap()).unwrap();
     declared_run(&mut append, &Backend::Process, &fs::read(&guest_file).unwrap(), inputs, Mode::Record { seed: 0 }, &random_salt(), rig.record().to_str().unwrap(), &"ab".repeat(32), &|_| Some(0)).unwrap();
     assert_eq!(links[0]["task"], String::from_utf8(printed.stdout).unwrap().trim());
-    assert_eq!((links[0]["v"].as_u64(), links[1]["v"].as_u64()), (Some(2), Some(2)));
+    assert_eq!((links[0]["v"].as_u64(), links[1]["v"].as_u64()), (Some(3), Some(3)));
 }
 
 #[test]

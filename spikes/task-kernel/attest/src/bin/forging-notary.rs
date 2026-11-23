@@ -9,6 +9,9 @@
 //!
 //! `HYALOS_FORGE_SESSION_LATER` adds that many seconds to the session time the signing check judges,
 //! so a pass can go stale between a session's open and its signing.
+//!
+//! `HYALOS_FORGE_CANARY` is what it signs in place of the pass: `missing`, `doubled`, `malformed` (7
+//! bytes), `at=<unix seconds>`, or `before=<seconds>` before the signed session time.
 
 use attest::Ticket;
 
@@ -46,6 +49,25 @@ pub(crate) fn forged_ticket(real: &Ticket, sequence: u64) -> Vec<Vec<u8>> {
                 }
             }
             vec![forged.bytes()]
+        }
+    }
+}
+
+/// The canary extensions to sign in place of the real one.
+pub(crate) fn forged_canary(real: u64, session: u64) -> Vec<Vec<u8>> {
+    let pass = real.to_be_bytes().to_vec();
+    let Ok(said) = std::env::var("HYALOS_FORGE_CANARY") else { return vec![pass] };
+    match said.as_str() {
+        "missing" => Vec::new(),
+        "doubled" => vec![pass.clone(), pass],
+        "malformed" => vec![pass[..7].to_vec()],
+        other => {
+            let at = match other.split_once('=').expect("a forged canary") {
+                ("at", value) => value.parse::<u64>().expect("a forged time"),
+                ("before", value) => session - value.parse::<u64>().expect("a forged age"),
+                _ => panic!("no such canary"),
+            };
+            vec![at.to_be_bytes().to_vec()]
         }
     }
 }
