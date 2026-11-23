@@ -19,9 +19,9 @@ Every item a pack deferred, excluded or left open has one row. When a pack defer
 | Packaged standalone verifier | Parent, record non-goal | Owned | `verifier`, #434 |
 | Bitcoin timestamp check | Notary ADR-005, record non-goal | Parked | An auditor who needs a second time source |
 | Task data private during verification | Parent, record non-goal | Parked | A buyer whose data requires it |
-| Other forged request shapes | Canary non-goal | Decide | Recommended: a follow-up issue, since the canary tests one shape |
+| Other forged request shapes | Canary non-goal | Owned | #441, planned apart from the verifier |
 | Hidden API-key case | Notary ADR-012 | Limit | Stays in every report until the proof below exists |
-| Zero-knowledge proof of the hidden bytes | Notary ADR-011, #409 | Decide | Needs its own issue once #409 closes, or the idea is lost |
+| Zero-knowledge proof of the hidden bytes | Notary ADR-011, #409 | Owned | #442, which decides it |
 | Model's identity | Parent | Limit | Reopens if a provider ships a checkable proof (the record's provider-proof slot) |
 | Operator asking the provider off the notary | Record non-goal | Limit | Stated in every report. It can inform whether to start an attempt, but a started attempt spends a ticket (record ADR-004) |
 | Colluding notary | Notary ADR-001 | Limit | Stated in every report |
