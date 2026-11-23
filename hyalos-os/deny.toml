@@ -1,0 +1,56 @@
+# Dependency policy for the hyalOS workspace (ADR-0130). Checked by CI's `hyalos-os` job.
+# It starts from the main workspace's policy and differs by naming the TLSNotary git source.
+# The trusted core has a size budget, and every third-party crate is code we run but do not count,
+# so what we allow in is deliberate: known licenses, a known registry, and no known vulnerabilities.
+
+[graph]
+all-features = true
+
+[advisories]
+# Fail on any RustSec advisory, including unmaintained crates. An exception needs an entry here with a reason.
+ignore = [
+    # chrono is unmaintained (no vulnerability, no upgrade). It reaches the build only through
+    # cedar-policy-core, pinned =4.14.1 to match cedar-policy-symcc; drop this once cedar no longer
+    # depends on it.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained only; transitive through pinned cedar-policy-core" },
+]
+
+[licenses]
+# Only the licenses in use today. A dependency under another license fails CI, and allowing it is a reviewed change here.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    # ed25519-dalek, curve25519-dalek and subtle, for event signatures (ADR-0018).
+    "BSD-3-Clause",
+    # foldhash, via rusqlite's statement cache.
+    "Zlib",
+    # unicode-ident, a build-time dependency of the proc-macro crates under curve25519-dalek.
+    "Unicode-3.0",
+    # ar_archive_writer, a build dependency of psm under stacker under cedar-policy-core (ADR-0008).
+    # The exception only relaxes the license for use as part of LLVM-derived code; it is Apache-2.0.
+    "Apache-2.0 WITH LLVM-exception",
+    # ring (Apache-2.0 AND ISC), rustls-webpki and untrusted, for the broker's TLS (ADR-0039).
+    "ISC",
+    # webpki-roots, the Mozilla root certificates the broker trusts (ADR-0039). The data is
+    # permissively licensed; it asks for nothing beyond keeping the notice.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+
+# Our own crates are MIT (ADR-0115) and unpublished, so the audit does not check them.
+[licenses.private]
+ignore = true
+
+[bans]
+# Two versions of one crate is a warning for now: it costs build time and review attention.
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace members depend on each other by path, which has no version.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# TLSNotary, pinned by tag in attest/Cargo.toml.
+allow-git = ["https://github.com/tlsnotary/tlsn"]

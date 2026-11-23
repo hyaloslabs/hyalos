@@ -18,48 +18,64 @@ Checked at base commit `02f66d1`.
 | `attest/probes/two_machines.sh:7`, `:13`, `:14` | Holds |
 | `attest/build.rs` reads the `tlsn = ` line | Holds |
 | `.github/workflows/ci.yml:48`, `:59`, `:60` and the required check | Holds |
-| "Moving to one lockfile keeps every package version the spike tested" (PRD, Assumptions) | **Differs**: see Blocked on |
+| "Moving to one lockfile keeps every package version the spike tested" (PRD, Assumptions) | **Differs**: resolved by the developer's decision below |
+| `hyalos-os/deny.toml` "allows exactly" the `tlsn` git source (`plan.md`, Slice 1 Contracts) | **Differs**: see Blocked on |
 
 ## Acceptance
 
 | ID | State |
 |---|---|
-| S-01.2, S-01.2.e1, S-01.2.e2 | Shown for the partial move: SHA-256 of all 260 evidence files is identical before and after, with none added or missing |
-| S-01.1, S-01.3, S-01.4, S-01.5 and their examples | Not shown: the workspace is not finished |
-| 1.1, 1.2, 1.3 | Not shown |
+| S-01.1, S-01.1.e1 | Shown on this branch: 285 passed, 0 failed, 0 ignored, with `attest` built first |
+| S-01.1.e2 | Not shown |
+| S-01.2, S-01.2.e1, S-01.2.e2 | Shown: SHA-256 of all 260 evidence files is identical before and after, with none added or missing |
+| S-01.3, S-01.3.e1, S-01.3.e2 | Not shown: needs a pull request |
+| S-01.4, S-01.4.e1, S-01.4.e2 | Not shown |
+| S-01.5, S-01.5.e1 | Partly shown: the `attest` unit test that pins `RELEASE` to `v0.1.0-beta.1/<version>` passes |
+| S-01.5.e2 | Not shown |
+| 1.1 | Not shown: the final `git grep` has not been run |
+| 1.2 | Written in `ci.yml`, not run |
+| 1.3 | Not done: the ADR is not written |
 
 ## Deviations
 
 | Plan said | Reality | Why | Contract affected |
 |---|---|---|---|
-| Merge the lockfiles, "keeping the version each lockfile resolves today" | Impossible for five cryptographic or TLS crates | The monitor and `attest` lock different semver-compatible versions, and a trial resolve keeps only one of each | **y** |
-| `context.md` §2 lists the paths that break | More break: the `source()` helpers, `include_bytes!` in `forgery_tests.rs`, `committed()` and the fixture paths in `live_tests.rs`, the probe's `guest/` and `fixtures/` paths and `attest/tests/canary.rs`'s stub layout | The list was not exhaustive | n |
+| Merge the lockfiles, "keeping the version each lockfile resolves today" | `rustls`, `rustls-webpki`, `rustls-pki-types`, `webpki-roots` and `zeroize` take the monitor's newer versions for `attest` | Cargo keeps one semver-compatible version, and the developer chose this | y, approved |
+| The five crates above | `zeroize_derive` also moves, 1.4.3 to 1.5.0 | `zeroize` 1.9.2 requires it, and pinning 1.4.3 fails to resolve | y, follows from the approved `zeroize` version |
+| Other shared crates | The monitor takes `attest`'s versions of 23 non-cryptographic crates, such as `serde`, `libc` and `log` | The lockfile is seeded from `attest` | n |
+| `cargo deny --manifest-path ... check --config ...` | `--config` must come before `check` | cargo-deny 0.20.2 takes it as a global option | n |
+| `context.md` §2 lists the paths that break | More break: the `source()` helpers, `include_bytes!` in `forgery_tests.rs`, `committed()` and the fixture paths in `live_tests.rs`, the probe's paths and `attest/tests/canary.rs`'s stub layout | The list was not exhaustive | n |
+| `hyalos-os/deny.toml` allows exactly the `tlsn` git source and `cargo deny` passes | It fails on three more git sources, licences and advisories | See Blocked on | **y** |
 
 ## Decisions
 
-None. The lockfile choice belongs to the developer.
+- **Lockfile (developer, 2026-11-23):** use the newer versions of the five crates and keep every other version `attest` locks. `tlsn` and `wasmi` are unchanged.
 
 ## Discoveries
 
-Trial resolves ran in a scratch copy with the workspace manifest from ADR-001.
+`cargo deny` findings on the merged lockfile. Every advisory is on a version `attest` already locked at the base commit, so the move did not introduce it, but CI has never run this audit on the spike.
 
-| Crate | Monitor | `attest` | Seeded from `attest` | Seeded from monitor |
-|---|---|---|---|---|
-| `rustls` | 0.23.46 | 0.23.40 | 0.23.40 | 0.23.46 |
-| `rustls-webpki` | 0.103.17 | 0.103.13 | 0.103.13 | 0.103.17 |
-| `rustls-pki-types` | 1.16.0 | 1.14.1 | 1.14.1 | 1.16.0 |
-| `webpki-roots` (1.x) | 1.0.12 | 1.0.7 | 1.0.7 | 1.0.12 |
-| `zeroize` | 1.9.2 | 1.8.2 | 1.8.2 | 1.9.2 |
+| Advisory | Crate | Kind | Fix |
+|---|---|---|---|
+| RUSTSEC-2026-0387 | `crypto-bigint` 0.7.5 | Timing | 0.7.6 resolves in a dry run, and moves `ctutils` to 0.4.8 |
+| RUSTSEC-2026-0387 | `crypto-bigint` 0.5.5 | Timing | **None in range.** Held by `elliptic-curve` 0.13 under `k256` and `p256`, which `tlsn-attestation` uses |
+| RUSTSEC-2026-0385 | `ctutils` 0.4.2 | Timing | 0.4.4 resolves in a dry run |
+| RUSTSEC-2026-0383 | `webpki-root-certs` 1.0.7 | Distrusted roots | 1.0.10 resolves in a dry run |
+| RUSTSEC-2026-0204 | `crossbeam-epoch` 0.9.18 | Vulnerability | 0.9.20 resolves in a dry run |
+| RUSTSEC-2026-0386 | `tokio` 1.52.1 | Unsound | 1.53.3 resolves in a dry run |
+| RUSTSEC-2026-0190 | `anyhow` 1.0.102 | Unsound | 1.0.103 resolves in a dry run |
+| RUSTSEC-2025-0141 | `bincode` 1.3.3 | Unmaintained | None. A direct dependency of `attest` |
+| RUSTSEC-2025-0134 | `rustls-pemfile` 1.0.4 | Unmaintained | None. Held by `tlsn-tls-core` |
 
-- Seeding from `attest` keeps every version `attest` locks and moves the monitor on these five crates. In total, 28 package names lose a version from one side.
-- Seeding from the monitor also moves `aes`, `blake3`, `rand`, `getrandom`, `crypto-common`, `crypto-bigint` and `cpufeatures` for `attest`. In total, 104 package names lose a version.
-- `tlsn` and `wasmi` did not change in either trial.
-- Neither trial was built or tested.
+- Other git sources TLSNotary needs: `tlsnotary/mpz2`, `tlsnotary/tlsn-utils` and `tlsnotary/rs-merkle`.
+- Licences: `arrayref` and `tiny-keccak` are rejected by the copied policy, and 25 TLSNotary git crates declare no licence.
+- Whether the `crypto-bigint` 0.5.5 timing advisory reaches the notary's secp256k1 signing has not been assessed.
+- None of the dry-run updates has been applied, built or tested.
 
 ## Blocked on
 
-**Question:** one lockfile cannot keep both resolved versions of `rustls`, `rustls-webpki`, `rustls-pki-types`, `webpki-roots` and `zeroize`. Which should the workspace do: accept a named version change for these crates, or keep the monitor and `attest` on separate lockfiles, which changes ADR-001?
+**Question:** `cargo deny` cannot pass under the slice's contract. Should `hyalos-os/deny.toml` allow TLSNotary's three other git sources and its licences, which crates should be updated, and how should the advisories with no available fix be handled, above all `crypto-bigint` 0.5.5?
 
-**Stop condition:** "Stop if the shared lockfile changes the resolved version of `tlsn`, `wasmi` or any cryptographic crate (R1)."
+**Stop conditions:** README rule 6 (the contract "Allows exactly the git source in `attest/Cargo.toml`" cannot hold with Verify's passing `deny`), and "Stop if the shared lockfile changes the resolved version of `tlsn`, `wasmi` or any cryptographic crate (R1)" for the `crypto-bigint` and `ctutils` fixes.
 
-**Partial work:** the tree is moved by `git mv` to the layout in `design.md` §1. The workspace manifest, lockfile, path fixes, CI, `deny.toml`, CODEOWNERS, ADR and `CLAUDE.md` wording are not done, so this branch does not build as it stands.
+**Partial work:** the tree is moved, the workspace and merged lockfile build, paths are fixed, and all 285 tests pass. The `ci.yml` job, CODEOWNERS and a failing `hyalos-os/deny.toml` are in place. The ADR and the `CLAUDE.md` and `docs/README.md` wording are not done.

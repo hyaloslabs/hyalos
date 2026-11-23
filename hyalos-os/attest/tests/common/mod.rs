@@ -166,7 +166,7 @@ pub fn notary(dir: &Path, operator: &str, root: &Path) -> Notary {
 
 /// The test-only notary, from the release build the slice's Verify makes first, with a passing state.
 pub fn forging_notary(dir: &Path, operator: &str, root: &Path, settings: &[(&str, &str)]) -> Notary {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/release/forging-notary");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/release/forging-notary");
     assert!(path.exists(), "forging-notary is not built: cargo build --release --manifest-path attest/Cargo.toml --features forge-ticket --bin forging-notary");
     canary_pass(dir);
     let mut program = Command::new(path);

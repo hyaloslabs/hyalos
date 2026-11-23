@@ -31,6 +31,7 @@ jobs:
       sigstore: ${{ steps.classify.outputs.sigstore }}
       sigstore_library: ${{ steps.classify.outputs.sigstore_library }}
       mcp: ${{ steps.classify.outputs.mcp }}
+      hyalos_os: ${{ steps.classify.outputs.hyalos_os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'pull_request'
@@ -63,6 +64,8 @@ jobs:
             echo "sigstore=$(touches '^(core/plugin/|core/types/|crates/sigstore-testkit/)')"
             echo "sigstore_library=$(touches '^Cargo\.lock$')"
             echo "mcp=$(touches '^(core/|crates/mcp-conformance/)')"
+            # hyalOS is its own workspace (ADR-0130), so the main workspace's manifests do not reach it.
+            echo "hyalos_os=$(grep -qE '^(hyalos-os/|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)' <<<"$changed" && echo true || echo false)"
           } | tee -a "$GITHUB_OUTPUT"
 
   # The time budget (#320). Every job has a 20-minute limit and should finish in 15. The test run is
@@ -163,7 +166,7 @@ jobs:
   # failure, a cancellation or a job that never ran, fails it, so splitting a job never makes it optional.
   rust:
     name: build, lint, test
-    needs: [changes, lint, test, simulation, spec]
+    needs: [changes, lint, test, simulation, spec, hyalos-os]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -173,6 +176,8 @@ jobs:
           DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
           LINT: ${{ needs.lint.result }}
           RESULTS: ${{ needs.test.result }} ${{ needs.simulation.result }} ${{ needs.spec.result }}
+          HYALOS_OS: ${{ needs.hyalos-os.result }}
+          HYALOS_OS_CHANGED: ${{ needs.changes.outputs.hyalos_os }}
         run: |
           echo "docs only: ${DOCS_ONLY:-unknown}; lint: ${LINT}; test, simulation, spec: ${RESULTS}"
           # Lint runs on every change, documentation only included (ADR-0119).
@@ -188,6 +193,12 @@ jobs:
               exit 1
             fi
           done
+          # hyalOS may be skipped only when the change was classified as not touching it (ADR-0130).
+          echo "hyalos-os: ${HYALOS_OS}; changed: ${HYALOS_OS_CHANGED:-unknown}"
+          if [ "${HYALOS_OS}" != "success" ] && { [ "${HYALOS_OS}" != "skipped" ] || [ "${HYALOS_OS_CHANGED}" != "false" ]; }; then
+            echo "::error::hyalos-os ended '${HYALOS_OS}' with its change output '${HYALOS_OS_CHANGED:-unset}'"
+            exit 1
+          fi
 
   deny:
     name: dependency audit
@@ -202,6 +213,35 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
+
+  # hyalOS's own workspace (ADR-0130). The monitor's tests run the attest programs, so those build first.
+  hyalos-os:
+    name: hyalos-os
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.hyalos_os != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: hyalos-os
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the attest programs
+        run: |
+          cargo build --release --locked --manifest-path hyalos-os/Cargo.toml -p attest --bins
+          cargo build --release --locked --manifest-path hyalos-os/Cargo.toml -p attest --features forge-ticket --bin forging-notary
+      - name: Test the workspace
+        run: cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: hyalos-os/Cargo.toml
+          command: check
+          arguments: --all-features --config hyalos-os/deny.toml
 
   # Ten thousand simulated jobs, each under the fault schedule its seed draws (ADR-0013, ADR-0104). The
   # seeds are fixed, so a failure is the change's and not luck, and the log names the one command that

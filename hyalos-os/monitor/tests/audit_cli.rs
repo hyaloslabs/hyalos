@@ -29,16 +29,16 @@ impl Rig {
             fs::create_dir_all(root.join(dir)).unwrap();
         }
         for seq in 0..4 {
-            fs::copy(source(&format!("ledger/{seq:05}.json")), root.join(format!("ledger/{seq:05}.json"))).unwrap();
+            fs::copy(source(&format!("evidence/ledger/{seq:05}.json")), root.join(format!("ledger/{seq:05}.json"))).unwrap();
             for dir in ["ledger", "log"] {
-                fs::copy(source(&format!("ledger/{seq:05}.rekor.json")), root.join(format!("{dir}/{seq:05}.rekor.json"))).unwrap();
+                fs::copy(source(&format!("evidence/ledger/{seq:05}.rekor.json")), root.join(format!("{dir}/{seq:05}.rekor.json"))).unwrap();
             }
         }
-        let reply: Value = serde_json::from_slice(&fs::read(source("ledger/00000.rekor.json")).unwrap()).unwrap();
+        let reply: Value = serde_json::from_slice(&fs::read(source("evidence/ledger/00000.rekor.json")).unwrap()).unwrap();
         let entry = reply.as_object().unwrap().values().next().unwrap();
         let body: Value = serde_json::from_slice(&B64.decode(entry["body"].as_str().unwrap()).unwrap()).unwrap();
         fs::write(root.join("operator.pub"), B64.decode(body["spec"]["signature"]["publicKey"]["content"].as_str().unwrap()).unwrap()).unwrap();
-        let trusted = fs::read_to_string(source("../../core/hyalos/tests/fixtures/marketplace-r10/trusted-root.json")).unwrap();
+        let trusted = fs::read_to_string(source("../core/hyalos/tests/fixtures/marketplace-r10/trusted-root.json")).unwrap();
         let key = trusted.lines().nth(106).unwrap().split('"').nth(3).unwrap().to_string();
         fs::write(root.join("log.pub"), format!("-----BEGIN PUBLIC KEY-----\n{key}\n-----END PUBLIC KEY-----\n")).unwrap();
         fs::write(root.join("notary.pub"), format!("02{}\n", "11".repeat(32))).unwrap();
@@ -58,7 +58,7 @@ impl Rig {
         let mut command = Command::new(env!("CARGO_BIN_EXE_task-kernel"));
         command
             .arg("audit")
-            .arg(source("out/live2.json"))
+            .arg(source("evidence/out/live2.json"))
             .arg(self.path("ledger"))
             .args(extra)
             .arg("--legacy-v1")
@@ -76,7 +76,7 @@ impl Rig {
 }
 
 // The whole audit passing from an empty home is `s_04_1_the_whole_audit_passes_with_an_empty_home`
-// in `kernel/src/forgery_tests.rs`, over a record with real presentations.
+// in `monitor/src/forgery_tests.rs`, over a record with real presentations.
 
 #[test]
 fn t_5_a_record_made_before_this_pack_is_refused_at_its_attestations() {
@@ -112,12 +112,12 @@ fn t_5_1_no_notary_setting_replaces_the_key_and_no_verify_program_is_taken_from_
     let rig = Rig::new("t-5-1");
     let keys = rig.keys();
     let mut no_key = Command::new(env!("CARGO_BIN_EXE_task-kernel"));
-    no_key.arg("audit").arg(source("out/live2.json")).arg(rig.path("ledger")).args(&keys[..2]).args(&keys[4..]);
+    no_key.arg("audit").arg(source("evidence/out/live2.json")).arg(rig.path("ledger")).args(&keys[..2]).args(&keys[4..]);
     let refused = no_key.env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", rig.path("home")).env("HYALOS_NOTARY", "02").output().unwrap();
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("notary's public key is not given"));
     let mut no_verify = Command::new(env!("CARGO_BIN_EXE_task-kernel"));
-    no_verify.arg("audit").arg(source("out/live2.json")).arg(rig.path("ledger")).args(&keys[..4]);
+    no_verify.arg("audit").arg(source("evidence/out/live2.json")).arg(rig.path("ledger")).args(&keys[..4]);
     let refused = no_verify.env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", rig.path("home")).env("HYALOS_ATTEST", rig.path("verify")).output().unwrap();
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("verify program is not given"));

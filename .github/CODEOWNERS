@@ -9,6 +9,9 @@
 # The trusted core: everything that runs in the engine or broker process (ADR-0017).
 /core/                  @retroboot
 
+# hyalOS: the monitor, the attestation programs and the evidence they are checked against (ADR-0130).
+/hyalos-os/             @retroboot
+
 # The workspace, the toolchain and the policies that every crate is built and checked under.
 /Cargo.toml             @retroboot
 /Cargo.lock             @retroboot
