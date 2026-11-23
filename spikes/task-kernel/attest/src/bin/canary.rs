@@ -8,6 +8,9 @@
 //! `canary reset --dir <notary directory>` writes `held`. It is the only way out of a latch and of
 //! a damaged or lost state, because that is the customer's decision (ADR-004).
 //!
+//! `canary status --dir <notary directory>` prints `fresh` and exits 0 on a pass from the last 24
+//! hours, and otherwise prints `not fresh` and exits 1. It reads only the state file.
+//!
 //! It prints case names, status codes and a verdict, and never the credential or a reply's body.
 
 use attest::{
@@ -358,13 +361,25 @@ fn reset(dir: &Path) -> ExitCode {
     ExitCode::from(PASSED)
 }
 
+/// Whether the notary would serve a session now. Reads the state file and nothing else.
+fn status(dir: &Path) -> ExitCode {
+    if now().and_then(|at| canary::fresh_pass(dir, at)).is_some() {
+        println!("fresh");
+        ExitCode::SUCCESS
+    } else {
+        println!("not fresh");
+        ExitCode::from(1)
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
-    const USAGE: &str = "usage: canary check --dir <directory> --credential <file> | canary reset --dir <directory>";
+    const USAGE: &str = "usage: canary check --dir <directory> --credential <file> | canary status --dir <directory> | canary reset --dir <directory>";
     let args: Vec<String> = std::env::args().skip(1).collect();
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     match words.as_slice() {
         ["check", "--dir", dir, "--credential", file] | ["check", "--credential", file, "--dir", dir] => check(Path::new(dir), Path::new(file)).await,
+        ["status", "--dir", dir] => status(Path::new(dir)),
         ["reset", "--dir", dir] => reset(Path::new(dir)),
         _ => {
             eprintln!("{USAGE}");
