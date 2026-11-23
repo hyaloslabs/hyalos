@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | executing |
+| **Status** | published |
 | **Type** | Feature |
 | **Size** | L — 7 slices |
 | **Modifiers** | security, data, public-api, integration, infra |
