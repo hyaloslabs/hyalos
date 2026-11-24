@@ -65,7 +65,7 @@ jobs:
             echo "sigstore_library=$(touches '^Cargo\.lock$')"
             echo "mcp=$(touches '^(core/|crates/mcp-conformance/)')"
             # hyalOS is its own workspace (ADR-0130), so the main workspace's manifests do not reach it.
-            echo "hyalos_os=$(grep -qE '^(hyalos-os/|rust-toolchain\.toml$|\.github/workflows/ci\.yml$)' <<<"$changed" && echo true || echo false)"
+            echo "hyalos_os=$(grep -qE '^(hyalos-os/|rust-toolchain\.toml$|\.github/workflows/ci\.yml$|\.github/scripts/(build-verifier|check-verifier-rebuild)\.sh$)' <<<"$changed" && echo true || echo false)"
           } | tee -a "$GITHUB_OUTPUT"
 
   # The time budget (#320). Every job has a 20-minute limit and should finish in 15. The test run is
@@ -260,6 +260,9 @@ jobs:
           manifest-path: hyalos-os/Cargo.toml
           command: check
           arguments: --all-features --config hyalos-os/deny.toml
+      # The published verifier must be rebuildable from its source in any directory (ADR-0131).
+      - name: Build the verifier twice and compare
+        run: .github/scripts/check-verifier-rebuild.sh
 
   # Ten thousand simulated jobs, each under the fault schedule its seed draws (ADR-0013, ADR-0104). The
   # seeds are fixed, so a failure is the change's and not luck, and the log names the one command that

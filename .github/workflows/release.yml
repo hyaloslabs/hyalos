@@ -17,7 +17,8 @@ name: release
 # the image and the binary as a release would, and runs the same job with them.
 on:
   push:
-    tags: ["v*"]
+    # Digits first, so a `verifier-v*` tag never starts this release (ADR-0131).
+    tags: ["v[0-9]*"]
   pull_request:
     paths:
       - ".github/workflows/release.yml"

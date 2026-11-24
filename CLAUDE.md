@@ -17,7 +17,7 @@ This file holds the rules. The design is in the ADRs: start at [`docs/adr/README
 
 The driving agent and the operator are different principals, and an agent working on this repository is held to the same split:
 - Never read, print or ask for a secret: `engine.key`, `operator.key`, `provider.keys`, `github-app.pem`, the operator's passphrase, an agent credential.
-- Never run a decision: `hyalos approve`, `cancel`, `release`, `merge`, `policy approve`, `agent issue|revoke`, `plugin install`, `plugin policy set`, `run --release-issue`. Nor tag a release (`.github/scripts/tag-release.sh`, or pushing a `v*` tag, ADR-0111). The operator runs them in a terminal of their own (`tools_cmd::DECISIONS`).
+- Never run a decision: `hyalos approve`, `cancel`, `release`, `merge`, `policy approve`, `agent issue|revoke`, `plugin install`, `plugin policy set`, `run --release-issue`. Nor tag a release (`.github/scripts/tag-release.sh`, or pushing a `v*` or `verifier-v*` tag, ADR-0111, ADR-0131). The operator runs them in a terminal of their own (`tools_cmd::DECISIONS`).
 - No MCP tool decides. A new MCP tool needs its thin-CLI command in the same change (`tools_cmd::COMMANDS`, ADR-0075).
 
 ## Rules for the code
@@ -76,6 +76,7 @@ These are pinned by tests. A change to one bumps its version (except where noted
 | `core/hyalos` | The binary: keys, log commands, the broker process, its channel and its confinement, doctor, GitHub App, `hyalos run`, the fix-issue workflow, MCP server and its learnings, drafting skills from runs and trusting them after replay, operator commands and merge, thin CLI, setup, the capability diff | 0018, 0021, 0022, 0026–0028, 0030, 0035, 0038, 0043, 0044, 0045, 0050, 0052, 0053, 0058, 0062, 0063, 0067–0075, 0078, 0080, 0081, 0082, 0083, 0084, 0088, 0089, 0090, 0091, 0092, 0093, 0097, 0098, 0099, 0101, 0102, 0103, 0106, 0112, 0113, 0114, 0118, 0121, 0126, 0127, 0128 |
 | `.github/workflows/ci.yml` | CI's jobs, their time budget, the required check that gathers them, build caching and the specialised jobs run by path | 0104, 0105, 0108, 0119, 0124 |
 | `.github/workflows/release.yml`, `.github/scripts/release-evidence.sh`, `.github/scripts/tag-release.sh` | A release: the evidence its commit needs, the operator's tag, the static binary, the image by digest, provenance, the complete job it runs before publishing, the red-team reach it must record | 0081, 0107, 0110, 0111 |
+| `.github/workflows/release-verifier.yml`, `.github/scripts/build-verifier.sh`, `.github/scripts/check-verifier-rebuild.sh` | A verifier release: its evidence, the reproducible static build, its check in CI, provenance | 0111, 0131 |
 | `site/setup`, `.github/workflows/pages.yml` | The setup page that creates the GitHub App from a manifest, and the marketplace settings check's App page | 0084, 0096 |
 | `hyalos-os/` | hyalOS: the monitor, `attest`, the kernel image, the guest and their evidence, tested by CI's `hyalos-os` job | 0130 |
 | `crates/xtask` | `layout` and `lines`; `docs`, the check that `docs/security` cites code that exists; the release gate's check on the workflows | 0017, 0111 |
