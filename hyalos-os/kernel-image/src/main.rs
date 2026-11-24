@@ -262,6 +262,15 @@ pub extern "C" fn _start(guest: *const u8, len: usize) -> ! {
     halt(run(guest))
 }
 
+/// Page tables the self-test kernel's `CR3` probe builds for itself: a PML4, a PDPT and a page
+/// directory. The kernel is loaded at its physical address, so their addresses are physical too.
+#[cfg(feature = "selftest")]
+#[repr(C, align(4096))]
+struct Tables([[u64; 512]; 3]);
+
+#[cfg(feature = "selftest")]
+static mut TABLES: Tables = Tables([[0; 512]; 3]);
+
 /// Built only for the monitor's tests: tries one thing the address space or ring 3 must stop,
 /// chosen by the first input byte, then sends a request the monitor calls unknown. Dying first is
 /// the pass. The monitor's `PROBES` names each one by its byte.
@@ -289,7 +298,19 @@ fn probe(guest: &[u8]) {
                 hypercall(9, 0, 0, 0, 0);
                 asm!("rdtsc", out("eax") _, out("edx") _, options(nomem, nostack));
             }
-            11 => asm!("mov cr3, {}", in(reg) 0x2000u64, options(nostack)), // load other page tables
+            11 => {
+                // Load page tables of its own that map all 32 MiB writable and executable. They
+                // map this code and the stack, so were the load allowed, the unknown request below
+                // would end the run. A fault here is at the load.
+                let tables = &raw mut TABLES as *mut [u64; 512];
+                let base = tables as u64;
+                (*tables)[0] = (base + 0x1000) | 3;
+                (*tables.add(1))[0] = (base + 0x2000) | 3;
+                for (index, entry) in (*tables.add(2)).iter_mut().take(16).enumerate() {
+                    *entry = ((index as u64) << 21) | 0x83;
+                }
+                asm!("mov cr3, {}", in(reg) base, options(nostack));
+            }
             12 => asm!("mov cr0, {}", in(reg) 0x8004_0033u64, options(nostack)), // turn write protect off
             13 => asm!("lgdt [{}]", in(reg) table.as_ptr(), options(nostack)),
             14 => asm!("lidt [{}]", in(reg) table.as_ptr(), options(nostack)),

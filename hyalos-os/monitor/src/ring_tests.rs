@@ -94,6 +94,8 @@ fn core_s_02_2_e2_clearing_cr4_tsd_faults_at_the_write() {
     faults("core_s_02_2_e2", &["privilege: clear CR4.TSD, then read the time counter"]);
 }
 
+/// The probe loads page tables of its own that map all memory writable and executable, then
+/// sends an unknown request, so a load that went through would end the run with `BadHypercall`.
 #[test]
 fn core_s_02_3_e1_loading_other_page_tables_faults() {
     faults("core_s_02_3_e1", &["privilege: load other page tables (CR3)"]);

@@ -42,7 +42,7 @@ Tests are in `hyalos-os/monitor/src/ring_tests.rs`, plus two unit tests at the e
 | S-02.2.e1 | `core_s_02_2_e1_reading_the_time_counter_faults` |
 | S-02.2.e2 | `core_s_02_2_e2_clearing_cr4_tsd_faults_at_the_write`. The probe sends an unknown request between the write and `RDTSC`, so a write that went through would end with `BadHypercall`. On the base's ring 0 machine it does end with `BadHypercall`, so the write was allowed there |
 | S-02.3 | `core_s_02_3_control_registers_descriptor_tables_msrs_and_hlt_fault`: `CR4`, `CR3`, `CR0`, `LGDT`, `LIDT`, `WRMSR` and `HLT` |
-| S-02.3.e1 | `core_s_02_3_e1_loading_other_page_tables_faults` |
+| S-02.3.e1 | `core_s_02_3_e1_loading_other_page_tables_faults`. The probe builds page tables of its own that map all 32 MiB writable and executable, loads them, then sends the unknown request, so a load that went through would end with `BadHypercall`. On the base's ring 0 machine it does end with `BadHypercall` |
 | S-02.3.e2 | `core_s_02_3_e2_writing_a_model_specific_register_faults` |
 | S-02.4 | `core_s_02_4_every_memory_probe_still_faults`: the seven memory probes fault and the control survives. `core_s_02_every_probe_ends_as_listed` runs the whole list. Dry run: `attacks` with the self-test kernel, 60 of 60 lines `PASS` (the base's 51 and the 9 new probes) |
 | S-02.4.e1 | `core_s_02_4_e1_changing_its_own_code_faults` |
@@ -51,7 +51,7 @@ Tests are in `hyalos-os/monitor/src/ring_tests.rs`, plus two unit tests at the e
 
 The start-state contract is also held by unit tests: `core_s_02_the_machine_starts_in_ring_3_with_tsd_and_iopl_3` checks the segments, `CR4`, `RFLAGS` and the empty descriptor tables against `design.md` §2, and `core_s_02_every_reachable_page_is_a_user_page_and_the_tables_are_unmapped` checks the user bit on every level, the unchanged rights and that the page tables stay unmapped.
 
-**The probes test ring 3, not something else.** The new self-test kernel's probes were run on the base's ring 0 machine (this branch's monitor with `kvm.rs` from `9c6706b`): `RDTSC`, `RDTSCP`, clearing `CR4.TSD`, `CR0`, `LGDT`, `LIDT` and `WRMSR` all survived to the unknown request (`BadHypercall`). Only the ring 3 machine faults on them.
+**The probes test ring 3, not something else.** The new self-test kernel's probes were run on the base's ring 0 machine (this branch's monitor with `kvm.rs` from `9c6706b`): `RDTSC`, `RDTSCP`, clearing `CR4.TSD`, `CR3`, `CR0`, `LGDT`, `LIDT` and `WRMSR` all survived to the unknown request (`BadHypercall`). Only the ring 3 machine faults on them. `HLT` is the one probe that cannot discriminate: the monitor reports both a `Hlt` exit and a shutdown as `KernelFault`.
 
 Verify, run locally on KVM: Verify's two builds and `run` as written (the `run` output above); the `core_s_02` filter, 16 passed; the whole `hyalos-os` workspace with `HYALOS_REQUIRE_KVM=1` and `--no-fail-fast`, after the two `attest` builds, passed 391 tests (Slice 1's 375 and these 16), none failed, ignored or skipped. CI's `fmt` and `clippy` steps for the new crates, `cargo deny` on the `hyalos-os` workspace, and `cargo xtask layout`, `lines` and `docs` pass. The root workspace is not touched.
 
@@ -61,7 +61,7 @@ Verify, run locally on KVM: Verify's two builds and `run` as written (the `run` 
 |---|---|---|---|
 | Files: modify `kvm.rs`, `main.rs`, `kernel-image/src/main.rs` | Also creates `monitor/src/ring_tests.rs` and changes `monitor/src/profile_tests.rs` | The tests need their own file, as Slice 1's do. The KVM gate now also builds the self-test kernel, into the kernel image's ignored `target-selftest` directory, so it never replaces the real image while another test reads it | n |
 | `design.md` §2 lists no descriptor table values | The start state sets the GDT and IDT to base 0, limit 0 | Before, they kept KVM's reset values (limit `0xffff` at address 0), which only faulted because address 0 is unmapped. An empty table makes "no handlers" explicit and independent of the memory map. Transcripts are unchanged | n |
-| S-02.3.e1 and `HLT` as evidence of privilege | On the ring 0 machine both also end in `KernelFault`: the `CR3` probe loads tables that do not map its code, and `HLT` was already reported as `KernelFault` | The other seven probes discriminate. The `CR3` probe is kept as the example states it | n |
+| `HLT` as evidence of privilege | On the ring 0 machine it also ends in `KernelFault`, since the monitor already reported a `Hlt` exit as `KernelFault` | S-02.3 asks only that the run end with `KernelFault`, which holds either way, and a halt wins the kernel nothing. The `CR3` probe first loaded `0x2000`, tables that did not map its own code, so it faulted on ring 0 too; after review it loads tables of its own that map everything, and now discriminates | n |
 | Verify's whole-workspace run passes on its own | It needs the two `attest` builds first, as Slice 1 found | Unchanged from Slice 1 | n |
 
 ## Decisions
