@@ -500,3 +500,85 @@ fn record_s_04_8_e3_an_unknown_word_is_model_unavailable() {
     let rig = Rig::new("r-04-8-e3");
     rig.assert_refused(Some(tool_saying(&rig, "anything")), Reason::ModelUnavailable);
 }
+
+/// The built monitor's `live` command on the committed guest and fixture inputs, from a fresh
+/// directory with an empty environment. No home is given, so a run that got past the checks this
+/// tests would stop before the ledger opens and never reach the public log.
+fn live_command(label: &str, repo: &str, kernel: Option<&Path>, record_in_use: bool) -> (std::process::Output, PathBuf) {
+    let dir = env::temp_dir().join(format!("hyalos-live-guard-{label}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let record = dir.join("record.json");
+    if record_in_use {
+        fs::write(&record, b"an earlier run").unwrap();
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let program = env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("task-kernel");
+    assert!(program.exists(), "the monitor is not built");
+    let mut command = Command::new(program);
+    command
+        .arg("live")
+        .arg(root.join("guest/digest.wasm"))
+        .arg(root.join("evidence/fixtures/issues.tsv"))
+        .arg(&record)
+        .arg(repo)
+        .arg("1")
+        .current_dir(&dir)
+        .env_clear()
+        .stdin(Stdio::null());
+    if let Some(kernel) = kernel {
+        command.env("HYALOS_KERNEL", kernel);
+    }
+    (command.output().unwrap(), dir)
+}
+
+const NEEDS_KERNEL: &str = "refused: a live run on a real repository needs the KVM kernel: set HYALOS_KERNEL";
+const IN_USE: &str = "refused: the record path is already in use";
+
+fn refusal_of(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr).trim().to_string()
+}
+
+#[test]
+fn core_s_04_5_e1_a_real_repository_without_a_kernel_is_refused_with_no_chain_link() {
+    let (output, dir) = live_command("e1", "octo/real", None, false);
+    assert!(!output.status.success(), "the run is refused");
+    assert!(refusal_of(&output) == NEEDS_KERNEL, "the refusal names HYALOS_KERNEL");
+    assert!(output.stdout.is_empty(), "nothing is committed");
+    assert!(!dir.join("ledger").exists(), "the ledger is not opened, so no chain link is written");
+    let left: Vec<_> = fs::read_dir(&dir).unwrap().collect();
+    assert!(left.is_empty(), "no record, salt or pending file is written");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn core_s_04_5_e1_the_refusal_comes_before_the_record_path_is_checked() {
+    let (output, dir) = live_command("e1-order", "octo/real", None, true);
+    assert!(!output.status.success(), "the run is refused");
+    assert!(refusal_of(&output) == NEEDS_KERNEL, "the backend is checked before the record path");
+    assert!(!dir.join("ledger").exists(), "the ledger is not opened");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn core_s_04_5_e2_stub_as_the_repository_runs_without_a_kernel() {
+    // The record path in use stops the run at the next check, so passing the guard is shown
+    // without writing to the public log. The whole stub flow on the process backend is
+    // `declared_run` with `Mode::Record`, which the tests above run.
+    let (output, dir) = live_command("e2", "stub", None, true);
+    assert!(!output.status.success());
+    assert!(refusal_of(&output) == IN_USE, "stub passes the backend check and reaches the next one");
+    assert!(!dir.join("ledger").exists(), "the ledger is not opened");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn core_s_04_5_a_configured_kernel_lets_a_real_repository_through() {
+    // Any readable file makes the KVM backend; the run stops at the record path before it boots.
+    let kernel = Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest/digest.wasm");
+    let (output, dir) = live_command("kvm", "octo/real", Some(&kernel), true);
+    assert!(!output.status.success());
+    assert!(refusal_of(&output) == IN_USE, "with a kernel configured the backend check passes");
+    assert!(!dir.join("ledger").exists(), "the ledger is not opened");
+    let _ = fs::remove_dir_all(&dir);
+}
