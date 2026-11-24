@@ -62,7 +62,7 @@ fn built_kernel() -> Option<Vec<u8>> {
 }
 
 /// The KVM backend, or `None` when this host reports the comparison as skipped.
-fn kvm_backend(test: &str) -> Option<Backend> {
+pub(crate) fn kvm_backend(test: &str) -> Option<Backend> {
     let usable = fs::OpenOptions::new().read(true).write(true).open("/dev/kvm").is_ok();
     let required = env::var_os("HYALOS_REQUIRE_KVM").is_some();
     match kvm_gate(usable, required) {

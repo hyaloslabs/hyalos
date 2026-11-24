@@ -4,6 +4,8 @@ use hyalos_profile::Profile;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// The guest interface both backends implement, as `ABI.md` states it. A record does not carry it.
+pub const ABI: &str = "hyalos.abi/1";
 pub const MAX_QUESTION: usize = 4 * 1024;
 pub const MAX_BODY: usize = 64 * 1024;
 pub const MAX_RESULT: usize = 4 * 1024;

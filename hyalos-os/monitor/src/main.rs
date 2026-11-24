@@ -483,6 +483,9 @@ fn main() -> ExitCode {
 }
 
 #[cfg(test)]
+mod abi_tests;
+
+#[cfg(test)]
 mod live_tests;
 
 #[cfg(test)]
