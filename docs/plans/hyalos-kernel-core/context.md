@@ -2,7 +2,7 @@
 
 Every citation below was checked on 2026-11-23 at commit `63a75ec`, after the verifier pack's Slices 1 to 3 (#443, #444, #445) merged. Preflight (README rule 2) means re-checking the ones your slice touches.
 
-**Older citations.** ADR-004 cites `spikes/task-kernel/ABI.md`, now `hyalos-os/ABI.md`. ADR-001's last bullet predates the 64-bit ring 3 run recorded in §2. Accepted ADRs are not edited.
+**Older citations.** ADR-004 cites `spikes/task-kernel/ABI.md`, now `hyalos-os/ABI.md`. ADR-001's last bullet predates the 64-bit ring 3 run recorded in §2. ADR-006 says publishing this pack adds the separate hyalOS review issue, but Slice 12 (#468) files it, and no such issue exists before then. Accepted ADRs are not edited.
 
 **Line counts.** ADR-007's figures are an estimate from 2026-11-23 and omit `hyalos-os/profile`. The check in Slice 10 is what counts.
 
