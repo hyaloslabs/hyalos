@@ -4,7 +4,8 @@
 //! The self-test kernel reads CPUID from inside the machine and returns what it saw as the run's
 //! result, so these tests check the list the kernel really sees, not only the one the monitor
 //! builds. They then run `RDRAND` and `RDPID`, which KVM makes fault once their bits are clear on
-//! a host that can trap them, and which run elsewhere (ADR-009 of the same pack).
+//! a host that can trap them, and which run elsewhere (ADR-009 of the same pack). Which of the two
+//! this host is, the host probe measures (S-03.3).
 //! `HYALOS_REQUIRE_KVM` turns a host without KVM into a failure.
 
 use super::*;
@@ -105,32 +106,58 @@ fn core_s_03_1_e2_the_brand_leaves_hold_no_host_name() {
     assert!(!brand.iter().any(u8::is_ascii_alphanumeric), "the brand leaves spell something: {brand:x?}");
 }
 
-/// Writes the host's CPU to the test output, past the harness's capture, so a CI log shows which
-/// host a randomness probe ran on.
-pub(crate) fn note_host(test: &str) -> Option<bool> {
-    use std::io::Write;
-    let (vendor, module) = host_cpu();
-    let traps = traps_randomness(&vendor, module);
-    let brand: String = BRAND_LEAVES.iter().flat_map(|&n| host(n)).flat_map(u32::to_le_bytes).filter(|&b| b != 0).map(char::from).collect();
-    let claim = match traps {
-        Some(true) => "RDRAND and RDPID must fault",
-        Some(false) => "KVM cannot trap RDRAND or RDPID here",
-        None => "cannot tell whether KVM traps RDRAND or RDPID, so a run is not a failure and nothing is proven",
+/// The CPU vendor string (CPUID leaf 0) and the KVM module that is loaded, as this process sees
+/// them, for the test output only: what a host traps is measured, not predicted from these.
+fn host_cpu() -> (String, &'static str) {
+    let r = host(0);
+    let vendor = [r[1], r[3], r[2]].iter().flat_map(|w| w.to_le_bytes()).map(char::from).collect();
+    let loaded = |m: &str| fs::metadata(format!("/sys/module/{m}")).is_ok();
+    let module = match (loaded("kvm_intel"), loaded("kvm_amd")) {
+        (true, false) => "kvm_intel",
+        (false, true) => "kvm_amd",
+        _ => "KVM module unknown",
     };
-    let module = module.unwrap_or("KVM module unknown");
-    let _ = writeln!(std::io::stderr(), "{test}: host {vendor} ({}), {module}: {claim}", brand.trim());
-    traps
+    (vendor, module)
 }
 
-/// Runs a randomness probe and judges it on this host: a fault where the host traps it, and
-/// otherwise a fault or the stated limit (ADR-009). Returns whether the fault was shown.
-fn randomness(test: &str, name: &str) -> Option<bool> {
+/// Measures this host with the host probe, and writes the host's CPU and what the probe found to
+/// the test output, past the harness's capture, so a CI log shows which host a randomness probe
+/// ran on. A host the gate let through must be measurable.
+pub(crate) fn measured_host(test: &str) -> probe_host::Found {
+    use std::io::Write;
+    let (vendor, module) = host_cpu();
+    let brand: String = BRAND_LEAVES.iter().flat_map(|&n| host(n)).flat_map(u32::to_le_bytes).filter(|&b| b != 0).map(char::from).collect();
+    let found = probe_host::on_host(probe_host::KVM_DEVICE).unwrap_or_else(|_| panic!("{test}: the host probe could not test a host with KVM"));
+    let shown: Vec<String> = found.iter().map(|&(name, blocked)| format!("{name} {}", if blocked { "blocked" } else { "reachable" })).collect();
+    let _ = writeln!(std::io::stderr(), "{test}: host {vendor} ({}), {module}; the host probe found {}", brand.trim(), shown.join(", "));
+    found
+}
+
+/// The in-machine CPUID bit for a host-dependent instruction: leaf, word and bit.
+fn hidden_bit(instruction: &str) -> (u32, usize, u32) {
+    match instruction {
+        "RDRAND" => (1, 2, RDRAND),
+        "RDSEED" => (7, 1, RDSEED),
+        "RDPID" => (7, 2, RDPID),
+        _ => panic!("no CPUID bit for {instruction}"),
+    }
+}
+
+/// Runs a randomness probe and judges it on this host: a fault where the host probe measured the
+/// instruction blocked, and otherwise a fault or the stated limit (ADR-009). The machine's CPUID
+/// must hide the instruction either way, so a filter that offered it would fail here on every
+/// host. Returns whether the fault was shown.
+pub(crate) fn randomness(test: &str, name: &str) -> Option<bool> {
     let got = probe(test, name)?;
-    let traps = note_host(test);
-    match judge(name, got, Reason::KernelFault, traps) {
+    let seen = seen(test)?;
+    let (_, instruction) = HOST_DEPENDENT.iter().find(|(probe, _)| *probe == name).unwrap();
+    let (number, word, bit) = hidden_bit(instruction);
+    assert_eq!(leaf(&seen, number)[word] & bit, 0, "{name}: the machine's CPUID offers it");
+    let found = measured_host(test);
+    match judge(name, got, Reason::KernelFault, blocked_here(name, Some(&found))) {
         Verdict::Pass => Some(true),
         Verdict::Reachable => Some(false),
-        Verdict::Fail => panic!("{name}: {got:?} on a host where KVM traps it"),
+        Verdict::Fail => panic!("{name}: {got:?} on a host the host probe measured as blocking it"),
     }
 }
 
@@ -151,33 +178,38 @@ fn core_s_03_2_e2_rdpid_faults_where_the_host_traps_it() {
     randomness("core_s_03_2_e2", "randomness: read the processor ID (RDPID)");
 }
 
-/// Only Intel with `kvm_intel` is claimed to trap; AMD with `kvm_amd` is known not to; anything
-/// else, including a vendor and module that disagree, claims nothing.
+/// A host-dependent probe takes the host probe's measurement of its own instruction, and any other
+/// probe, or a host that could not be measured, takes none.
 #[test]
-fn core_s_03_2_only_intel_kvm_is_claimed_to_trap() {
-    assert_eq!(traps_randomness("GenuineIntel", Some("kvm_intel")), Some(true));
-    assert_eq!(traps_randomness("AuthenticAMD", Some("kvm_amd")), Some(false));
-    assert_eq!(traps_randomness("HygonGenuine", Some("kvm_amd")), Some(false));
-    for (vendor, module) in [("GenuineIntel", None), ("GenuineIntel", Some("kvm_amd")), ("AuthenticAMD", Some("kvm_intel")), ("AuthenticAMD", None), ("", None), ("VIA VIA VIA ", Some("kvm_intel"))] {
-        assert_eq!(traps_randomness(vendor, module), None, "{vendor} {module:?}");
+fn core_s_03_2_each_randomness_probe_takes_its_own_instructions_measurement() {
+    let found = [("RDTSC", true), ("RDTSCP", true), ("RDRAND", true), ("RDSEED", false), ("RDPID", false)];
+    assert_eq!(blocked_here("randomness: hardware randomness (RDRAND)", Some(&found)), Some(true));
+    assert_eq!(blocked_here("randomness: read the processor ID (RDPID)", Some(&found)), Some(false));
+    assert_eq!(blocked_here("randomness: hardware seed (RDSEED)", Some(&found)), Some(false));
+    assert_eq!(blocked_here("randomness: hardware randomness (RDRAND)", None), None);
+    assert_eq!(blocked_here("privilege: read the time counter (RDTSC)", Some(&found)), None);
+    for (_, instruction) in HOST_DEPENDENT {
+        assert!(probe_host::INSTRUCTIONS.iter().any(|(name, _)| name == instruction), "{instruction}");
     }
 }
 
-/// A randomness probe that runs fails on a host that traps it, and is the stated limit elsewhere.
+/// A randomness probe that runs fails on a host measured to block it, and is the stated limit
+/// elsewhere.
 /// Every other probe, and any other ending, still fails on every host.
 #[test]
 fn core_s_03_2_a_run_is_reachable_only_where_the_host_cannot_trap_it() {
     let rdrand = "randomness: hardware randomness (RDRAND)";
     let ran = Err(Reason::BadHypercall);
     assert_eq!(judge(rdrand, Err(Reason::KernelFault), Reason::KernelFault, Some(true)), Verdict::Pass);
+    assert_eq!(judge(rdrand, Err(Reason::KernelFault), Reason::KernelFault, Some(false)), Verdict::Pass);
     assert_eq!(judge(rdrand, ran, Reason::KernelFault, Some(true)), Verdict::Fail);
     assert_eq!(judge(rdrand, ran, Reason::KernelFault, Some(false)), Verdict::Reachable);
     assert_eq!(judge(rdrand, ran, Reason::KernelFault, None), Verdict::Reachable);
     assert_eq!(judge(rdrand, Err(Reason::Timeout), Reason::KernelFault, None), Verdict::Fail);
     assert_eq!(judge(rdrand, Ok(()), Reason::KernelFault, None), Verdict::Fail);
     assert_eq!(judge("privilege: halt (HLT)", ran, Reason::KernelFault, Some(false)), Verdict::Fail);
-    assert_eq!(HOST_DEPENDENT.len(), 2);
-    for name in HOST_DEPENDENT {
+    assert_eq!(HOST_DEPENDENT.len(), 3);
+    for (name, _) in HOST_DEPENDENT {
         assert!(PROBES.iter().any(|(n, want)| n == name && *want == Reason::KernelFault), "{name}");
     }
 }

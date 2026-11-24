@@ -10,6 +10,7 @@
 mod kvm;
 mod ledger;
 mod live;
+mod probe_host;
 
 #[allow(unused_imports)]
 pub(crate) use hyalos_audit::{
@@ -201,37 +202,23 @@ const PROBES: &[(&str, Reason)] = &[
     ("privilege: halt (HLT)", Reason::KernelFault),
     ("randomness: hardware randomness (RDRAND)", Reason::KernelFault),
     ("randomness: read the processor ID (RDPID)", Reason::KernelFault),
+    ("randomness: hardware seed (RDSEED)", Reason::KernelFault),
 ];
 
 /// The probes that fault only where the host's KVM can trap them (ADR-002 and ADR-009 of
-/// `docs/plans/hyalos-kernel-core`). Elsewhere they run and reach the unknown request, a stated
-/// limit, and the host probe reports them.
-const HOST_DEPENDENT: &[&str] = &["randomness: hardware randomness (RDRAND)", "randomness: read the processor ID (RDPID)"];
+/// `docs/plans/hyalos-kernel-core`), each with the instruction the host probe measures for it.
+/// Elsewhere they run and reach the unknown request, a stated limit.
+const HOST_DEPENDENT: &[(&str, &str)] = &[
+    ("randomness: hardware randomness (RDRAND)", "RDRAND"),
+    ("randomness: read the processor ID (RDPID)", "RDPID"),
+    ("randomness: hardware seed (RDSEED)", "RDSEED"),
+];
 
-/// The CPU vendor string (CPUID leaf 0) and the KVM module that is loaded, as this process sees
-/// them. `None` for a module when neither or both are present.
-fn host_cpu() -> (String, Option<&'static str>) {
-    let r = std::arch::x86_64::__cpuid(0);
-    let vendor = [r.ebx, r.edx, r.ecx].iter().flat_map(|w| w.to_le_bytes()).map(char::from).collect();
-    let loaded = |m: &str| fs::metadata(format!("/sys/module/{m}")).is_ok();
-    let module = match (loaded("kvm_intel"), loaded("kvm_amd")) {
-        (true, false) => Some("kvm_intel"),
-        (false, true) => Some("kvm_amd"),
-        _ => None,
-    };
-    (vendor, module)
-}
-
-/// Whether this host's KVM makes `RDRAND` and `RDPID` fault once their CPUID bits are clear.
-/// `Some(true)` only on Intel with `kvm_intel`: KVM's VMX backend sets `RDRAND` exiting and clears
-/// the `RDTSCP` enable, which also covers `RDPID`. `Some(false)` on AMD with `kvm_amd`: SVM has
-/// no intercept for either. `None` for anything else, so nothing is claimed.
-fn traps_randomness(vendor: &str, module: Option<&str>) -> Option<bool> {
-    match (vendor, module) {
-        ("GenuineIntel", Some("kvm_intel")) => Some(true),
-        ("AuthenticAMD" | "HygonGenuine", Some("kvm_amd")) => Some(false),
-        _ => None,
-    }
+/// Whether the host probe measured a host-dependent probe's instruction as blocked on this host.
+/// `None` for any other probe, and when the host could not be measured, so nothing is claimed.
+fn blocked_here(name: &str, measured: Option<&[(&str, bool)]>) -> Option<bool> {
+    let (_, instruction) = HOST_DEPENDENT.iter().find(|(probe, _)| *probe == name)?;
+    measured?.iter().find(|(measured, _)| measured == instruction).map(|&(_, blocked)| blocked)
 }
 
 /// How a probe ended, judged on a host.
@@ -239,15 +226,17 @@ fn traps_randomness(vendor: &str, module: Option<&str>) -> Option<bool> {
 enum Verdict {
     /// It ended as `PROBES` says.
     Pass,
-    /// A host-dependent probe ran on a host not known to trap it: the stated limit, not a pass.
+    /// A host-dependent probe ran on a host the host probe did not measure as blocking it: the
+    /// stated limit, not a pass.
     Reachable,
     Fail,
 }
 
-fn judge(name: &str, got: Result<(), Reason>, want: Reason, traps: Option<bool>) -> Verdict {
+/// `blocked` is the host probe's measurement of the probe's instruction (`blocked_here`).
+fn judge(name: &str, got: Result<(), Reason>, want: Reason, blocked: Option<bool>) -> Verdict {
     if got == Err(want) {
         Verdict::Pass
-    } else if HOST_DEPENDENT.contains(&name) && traps != Some(true) && got == Err(Reason::BadHypercall) {
+    } else if HOST_DEPENDENT.iter().any(|(probe, _)| *probe == name) && blocked != Some(true) && got == Err(Reason::BadHypercall) {
         Verdict::Reachable
     } else {
         Verdict::Fail
@@ -274,12 +263,12 @@ fn run_attacks(backend: &Backend, guest: &[u8], inputs: &[Vec<u8>]) -> Result<bo
     if let Ok(path) = env::var("HYALOS_SELFTEST_KERNEL") {
         let kernel = fs::read(path).map_err(|_| "cannot read the self-test kernel")?;
         let probing = Backend::Kvm { kernel, limit: Duration::from_secs(2) };
-        let (vendor, module) = host_cpu();
-        let traps = traps_randomness(&vendor, module);
+        let measured = probe_host::on_host(probe_host::KVM_DEVICE).ok();
         for (index, &(name, want)) in PROBES.iter().enumerate() {
             let got = execute(&probing, &[index as u8], vec![], Mode::Record { seed: 0 }).map(|_| ());
-            if judge(name, got, want, traps) == Verdict::Reachable {
-                println!("REACHABLE {name}: {got:?} (host {vendor}, {}: not trapped, ADR-009)", module.unwrap_or("KVM module unknown"));
+            if judge(name, got, want, blocked_here(name, measured.as_deref())) == Verdict::Reachable {
+                let why = if measured.is_some() { "the host probe measured it reachable" } else { "the host probe could not test this host" };
+                println!("REACHABLE {name}: {got:?} ({why}, ADR-009)");
             } else {
                 check(name, got, want);
             }
@@ -406,7 +395,7 @@ fn load_backend() -> Result<Backend, String> {
 
 fn main_inner() -> Result<bool, String> {
     let args: Vec<String> = env::args().collect();
-    let arg = |i: usize| args.get(i).map(String::as_str).ok_or_else(|| "usage: run|replay|task|attacks|bench ...".to_string());
+    let arg = |i: usize| args.get(i).map(String::as_str).ok_or_else(|| "usage: run|replay|task|attacks|bench|probe-host ...".to_string());
     match arg(1)? {
         "run" => {
             let backend = load_backend()?;
@@ -548,11 +537,15 @@ fn main_inner() -> Result<bool, String> {
             println!("{n} runs, {inferences} inferences each, {:.1} us per run including start-up, {:.1} us per inference", per_run * 1e6, per_run * 1e6 / inferences.max(1) as f64);
             Ok(true)
         }
-        _ => Err("usage: run|replay|task|attacks|bench ...".into()),
+        _ => Err("usage: run|replay|task|attacks|bench|probe-host ...".into()),
     }
 }
 
 fn main() -> ExitCode {
+    // The host probe has three endings, not two (S-03.3).
+    if env::args().nth(1).as_deref() == Some("probe-host") {
+        return ExitCode::from(probe_host::command());
+    }
     match main_inner() {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
@@ -577,6 +570,9 @@ mod cpuid_tests;
 
 #[cfg(test)]
 mod profile_tests;
+
+#[cfg(test)]
+mod probe_host_tests;
 
 #[cfg(test)]
 mod report_tests {

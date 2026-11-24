@@ -4,11 +4,12 @@
 //! has only the five requests below, each checked here. The kernel runs in ring 3 with no ring 0
 //! code beneath it (ADR-001 of `docs/plans/hyalos-kernel-core`), so it has no clock and no
 //! privileged instruction, and any fault ends the machine. CPUID shows it only an allowed list, so
-//! it learns nothing of the host and `RDRAND` and `RDPID` fault.
+//! it learns nothing of the host. Whether `RDRAND`, `RDSEED` and `RDPID` then fault depends on the
+//! host's KVM, and `probe` is how the host probe measures it (ADR-002 and ADR-009 of that pack).
 
 use crate::{Host, MAX_RESULT, Reason};
 use kvm_bindings::{CpuId, KVM_MAX_CPUID_ENTRIES, Msrs, kvm_cpuid_entry2, kvm_dtable, kvm_msr_entry, kvm_regs, kvm_segment, kvm_sregs, kvm_userspace_memory_region};
-use kvm_ioctls::{Kvm, VcpuExit};
+use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use std::{
     ptr,
     time::{Duration, Instant},
@@ -212,7 +213,8 @@ fn start_state(sregs: &mut kvm_sregs, entry: u64, guest_len: u64) -> kvm_regs {
 /// feature bits the start state needs, `PAE`, long mode and `NX`, each only if the host has it.
 /// Every other bit and leaf reads as zero, or as leaf `1`'s filtered data where KVM answers a leaf
 /// past the highest one with it. So the vendor, model, brand and topology stay hidden, and with the
-/// `RDRAND`, `RDSEED`, `RDTSCP` and `RDPID` bits clear, KVM makes `RDRAND` and `RDPID` fault.
+/// `RDRAND`, `RDSEED`, `RDTSCP` and `RDPID` bits clear, a host whose KVM can trap them makes them
+/// fault.
 fn allowed_cpuid(supported: &[kvm_cpuid_entry2]) -> Vec<kvm_cpuid_entry2> {
     const PAE: u32 = 1 << 6; // leaf 1, EDX
     const NX: u32 = 1 << 20; // leaf 0x8000_0001, EDX
@@ -289,6 +291,72 @@ fn answer(ram: &Ram, host: &mut Host, at: u64) -> Result<Step, Reason> {
     }
 }
 
+/// A machine with `ram` as its memory, the CPUID allow-list, the APIC base off and the start
+/// state, ready to run from `entry`. `ram` must outlive both handles it returns.
+fn machine(kvm: &Kvm, ram: &Ram, entry: u64, guest_len: u64) -> Result<(VmFd, VcpuFd), Reason> {
+    let no = |_| Reason::NoKvm;
+    let vm = kvm.create_vm().map_err(no)?;
+    let region = kvm_userspace_memory_region {
+        slot: 0,
+        flags: 0,
+        guest_phys_addr: 0,
+        memory_size: RAM,
+        userspace_addr: ram.0 as u64,
+    };
+    // SAFETY: the mapping outlives the machine: every caller drops `ram` after `vm` and `vcpu`.
+    unsafe { vm.set_user_memory_region(region) }.map_err(no)?;
+    let vcpu = vm.create_vcpu(0).map_err(no)?;
+    let supported = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).map_err(no)?;
+    let cpuid = CpuId::from_entries(&allowed_cpuid(supported.as_slice())).map_err(|_| Reason::NoKvm)?;
+    vcpu.set_cpuid2(&cpuid).map_err(no)?;
+    // KVM shows leaf 1's `APIC` bit while the APIC base says enabled, though the machine has no
+    // interrupt controller. Disabling it keeps the bit clear, so CPUID holds only the list.
+    let apic_off = Msrs::from_entries(&[kvm_msr_entry { index: APIC_BASE, data: 0, ..Default::default() }]).map_err(|_| Reason::NoKvm)?;
+    if vcpu.set_msrs(&apic_off).map_err(no)? != 1 {
+        return Err(Reason::NoKvm);
+    }
+
+    // Start in 64-bit ring 3: no firmware, no boot loader, no 16-bit code, no ring 0 code.
+    let mut sregs = vcpu.get_sregs().map_err(no)?;
+    let regs = start_state(&mut sregs, entry, guest_len);
+    vcpu.set_sregs(&sregs).map_err(no)?;
+    vcpu.set_regs(&regs).map_err(no)?;
+    Ok((vm, vcpu))
+}
+
+/// How a host-probe machine ended (`design.md` §2 of `docs/plans/hyalos-kernel-core`, the host
+/// probe).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ending {
+    /// It reached the monitor's port, so everything before the `out` ran.
+    Port,
+    /// It shut down first: something before the port faulted.
+    Fault,
+}
+
+/// Runs `code` alone on a fresh machine with the real start state and CPUID list, as the kernel
+/// image would run. This loader places the code itself, read-only and executable at the kernel's
+/// base, so the probe never runs an image from outside. `Err` says why the machine could not tell.
+pub(crate) fn probe(kvm: &Kvm, code: &[u8]) -> Result<Ending, &'static str> {
+    let ram = Ram::new().ok_or("no memory for a probe machine")?;
+    ram.write(KERNEL_LOW, code).ok_or("a probe sequence does not fit")?;
+    map(&ram, &[(KERNEL_LOW, KERNEL_LOW + code.len() as u64, 5)], 0).ok_or("a probe sequence does not fit")?;
+    let (_vm, mut vcpu) = machine(kvm, &ram, KERNEL_LOW, 0).map_err(|_| "KVM refused the machine")?;
+    let (start, _ticker) = (Instant::now(), Ticker::start());
+    loop {
+        if start.elapsed() > Duration::from_secs(2) {
+            return Err("a probe machine did not end in time");
+        }
+        match vcpu.run() {
+            Ok(VcpuExit::IoOut(PORT, _)) => return Ok(Ending::Port),
+            Ok(VcpuExit::Hlt | VcpuExit::Shutdown) => return Ok(Ending::Fault),
+            Ok(_) => return Err("a probe machine ended neither at the port nor in a fault"),
+            Err(error) if error.errno() == libc::EINTR => continue,
+            Err(_) => return Err("KVM failed to run a probe machine"),
+        }
+    }
+}
+
 pub(crate) fn run(kernel: &[u8], guest: &[u8], mut host: Host, limit: Duration) -> Result<(Host, Vec<u8>, u64), Reason> {
     let no = |_| Reason::NoKvm;
     let trace = std::env::var_os("HYALOS_TRACE").is_some();
@@ -303,32 +371,7 @@ pub(crate) fn run(kernel: &[u8], guest: &[u8], mut host: Host, limit: Duration) 
 
     let t_mem = t0.elapsed();
     let kvm = Kvm::new().map_err(no)?;
-    let vm = kvm.create_vm().map_err(no)?;
-    let region = kvm_userspace_memory_region {
-        slot: 0,
-        flags: 0,
-        guest_phys_addr: 0,
-        memory_size: RAM,
-        userspace_addr: ram.0 as u64,
-    };
-    // SAFETY: the mapping outlives the machine: `ram` is dropped after `vm` and `vcpu`.
-    unsafe { vm.set_user_memory_region(region) }.map_err(no)?;
-    let mut vcpu = vm.create_vcpu(0).map_err(no)?;
-    let supported = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).map_err(no)?;
-    let cpuid = CpuId::from_entries(&allowed_cpuid(supported.as_slice())).map_err(|_| Reason::NoKvm)?;
-    vcpu.set_cpuid2(&cpuid).map_err(no)?;
-    // KVM shows leaf 1's `APIC` bit while the APIC base says enabled, though the machine has no
-    // interrupt controller. Disabling it keeps the bit clear, so CPUID holds only the list.
-    let apic_off = Msrs::from_entries(&[kvm_msr_entry { index: APIC_BASE, data: 0, ..Default::default() }]).map_err(|_| Reason::NoKvm)?;
-    if vcpu.set_msrs(&apic_off).map_err(no)? != 1 {
-        return Err(Reason::NoKvm);
-    }
-
-    // Start in 64-bit ring 3: no firmware, no boot loader, no 16-bit code, no ring 0 code.
-    let mut sregs = vcpu.get_sregs().map_err(no)?;
-    let regs = start_state(&mut sregs, entry, guest.len() as u64);
-    vcpu.set_sregs(&sregs).map_err(no)?;
-    vcpu.set_regs(&regs).map_err(no)?;
+    let (vm, mut vcpu) = machine(&kvm, &ram, entry, guest.len() as u64)?;
 
     let t_vm = t0.elapsed();
     let (start, _ticker) = (Instant::now(), Ticker::start());

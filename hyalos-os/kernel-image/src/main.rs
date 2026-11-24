@@ -299,10 +299,54 @@ fn report_cpuid() {
     hypercall(RETURN, HEAP_START as u64, (REPORTED_LEAVES.len() * 16) as u64, 1, 0);
 }
 
+/// The bytes that ask the self-test kernel to read `RDSEED` and then ask one question: one whose
+/// bytes hold the value read, and one whose bytes do not (S-03.4).
+#[cfg(feature = "selftest")]
+const SEED_VARIES_QUESTION: u8 = 0x81;
+#[cfg(feature = "selftest")]
+const SEED_IGNORED: u8 = 0x82;
+
+/// Reads `RDSEED` until it gives a value, as a taken-over kernel could. Where the host blocks it,
+/// the first read faults and ends the machine. A host that never gives a value ends the run too.
+#[cfg(feature = "selftest")]
+fn rdseed() -> u64 {
+    for _ in 0..1_000_000 {
+        let (value, ready): (u64, u8);
+        // SAFETY: reads a register and the carry flag, and touches no memory.
+        unsafe { asm!("rdseed {v}", "setc {r}", v = out(reg) value, r = out(reg_byte) ready, options(nomem, nostack)) };
+        if ready != 0 {
+            return value;
+        }
+    }
+    halt(KERNEL_PANIC)
+}
+
+/// Asks one question of schema 0 and ends the run with a fixed result, so the question is the
+/// only thing `RDSEED` can change. With `vary`, the question holds the value read in hex.
+#[cfg(feature = "selftest")]
+fn ask_after_rdseed(vary: bool) {
+    let seed = core::hint::black_box(rdseed());
+    let mut question = *b"rdseed 0000000000000000";
+    if vary {
+        for (at, byte) in question[7..].iter_mut().enumerate() {
+            *byte = b"0123456789abcdef"[((seed >> (60 - 4 * at)) & 0xf) as usize];
+        }
+    }
+    let at = HEAP_START as *mut u8;
+    // SAFETY: the question and the result are a few bytes at the start of the heap, which is mapped
+    // writable for the kernel, and nothing else uses it: the run ends with these requests.
+    unsafe {
+        ptr::copy_nonoverlapping(question.as_ptr(), at, question.len());
+        hypercall(INFER, 0, HEAP_START as u64, question.len() as u64, 1);
+        ptr::copy_nonoverlapping(b"done".as_ptr(), at, 4);
+    }
+    hypercall(RETURN, HEAP_START as u64, 4, 1, 0);
+}
+
 /// Built only for the monitor's tests: tries one thing the address space or ring 3 must stop,
 /// chosen by the first input byte, then sends a request the monitor calls unknown. Dying first is
 /// the pass. The monitor's `PROBES` names each one by its byte. `CPUID_REPORT` instead ends the
-/// run with what CPUID shows.
+/// run with what CPUID shows, and `SEED_VARIES_QUESTION` and `SEED_IGNORED` with one question.
 #[cfg(feature = "selftest")]
 fn probe(guest: &[u8]) {
     let table = [0u64; 2]; // an empty descriptor table to load
@@ -348,7 +392,10 @@ fn probe(guest: &[u8]) {
             16 => asm!("hlt", options(nomem, nostack)),
             17 => asm!("rdrand rax", out("rax") _, options(nomem, nostack)), // hardware randomness
             18 => asm!("rdpid rax", out("rax") _, options(nomem, nostack)), // read the processor ID
+            19 => asm!("rdseed rax", out("rax") _, options(nomem, nostack)), // hardware seed
             CPUID_REPORT => report_cpuid(),
+            SEED_VARIES_QUESTION => ask_after_rdseed(true),
+            SEED_IGNORED => ask_after_rdseed(false),
             _ => {}
         }
     }
