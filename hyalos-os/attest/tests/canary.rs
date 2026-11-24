@@ -455,7 +455,7 @@ fn probe(label: &str, canary_exit: u8, kernel_builds: bool) -> Option<(Output, S
     write(stubs.join("cargo"), built.to_string());
     let path = format!("{}:{}", stubs.display(), std::env::var("PATH").unwrap());
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/probes/two_machines.sh");
-    let output = Command::new("bash").arg(script).args(["a-host", "owner/repo", "1"]).current_dir(&work).env("PATH", path).env("HOME", &home).output().unwrap();
+    let output = Command::new("bash").arg(script).args(["a-host", "owner/repo", "1"]).current_dir(&work).env("PATH", path).env("HOME", &home).env_remove("HYALOS_KERNEL").output().unwrap();
     drop(listener);
     Some((output, fs::read_to_string(&log).unwrap_or_default(), fs::read_to_string(&live).unwrap_or_default(), work.join("evidence/out/two-machines").exists()))
 }

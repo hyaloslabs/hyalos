@@ -16,7 +16,7 @@ key=$HOME/.config/hyalos-spike/operator-transport.key
 # A live run on a real repository needs the KVM kernel (S-04.5 of docs/plans/hyalos-kernel-core), so
 # the kernel image is built from this tree, as the monitor's tests build it, before anything starts.
 kernel=$PWD/kernel-image/target/x86_64-unknown-none/release/hyalos-kernel
-(cd kernel-image && cargo build --release --locked) || { echo "the kernel image did not build: rustup target add x86_64-unknown-none"; exit 2; }
+(cd kernel-image && cargo build --release --locked) || { echo "the kernel image did not build (if the target is missing: rustup target add x86_64-unknown-none)"; exit 2; }
 [ -x "$attest" ] && [ -x "$monitor" ] && [ -x target/release/notary ] && [ -x target/release/canary ] && [ -s "$kernel" ] || { echo "build both programs and the kernel image first"; exit 2; }
 [ ! -e "$out" ] || { echo "$out already exists: move it away first"; exit 2; }
 
