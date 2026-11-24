@@ -6,11 +6,16 @@
 //! privileged instruction, and any fault ends the machine. CPUID shows it only an allowed list, so
 //! it learns nothing of the host. Whether `RDRAND`, `RDSEED` and `RDPID` then fault depends on the
 //! host's KVM, and `probe` is how the host probe measures it (ADR-002 and ADR-009 of that pack).
+//!
+//! A run's machine is built and run only in the machine runner (`runner.rs`, ADR-003 of that
+//! pack), which asks the holder for every answer through `Calls`. The host probe's fixed sequences
+//! are the one machine built in the monitor's own process.
 
-use crate::{Host, MAX_RESULT, Reason};
+use crate::{MAX_RESULT, Reason};
 use kvm_bindings::{CpuId, KVM_MAX_CPUID_ENTRIES, Msrs, kvm_cpuid_entry2, kvm_dtable, kvm_msr_entry, kvm_regs, kvm_segment, kvm_sregs, kvm_userspace_memory_region};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use std::{
+    io::Write as _,
     ptr,
     time::{Duration, Instant},
 };
@@ -19,7 +24,7 @@ const RAM: u64 = 32 << 20;
 const KERNEL_LOW: u64 = 0x10_0000;
 const KERNEL_HIGH: u64 = 0x70_0000;
 const GUEST_AT: u64 = 0x70_0000;
-const GUEST_MAX: u64 = 0x10_0000;
+pub(crate) const GUEST_MAX: u64 = 0x10_0000;
 const PORT: u16 = 0x1000;
 const APIC_BASE: u32 = 0x1b; // the `IA32_APIC_BASE` model-specific register
 // The only memory the monitor reads or writes on the kernel's behalf. A request block lives on the
@@ -234,7 +239,41 @@ enum Step {
     Done(Vec<u8>, u64),
 }
 
-fn answer(ram: &Ram, host: &mut Host, at: u64) -> Result<Step, Reason> {
+/// The heap's size: the most bytes a record written into the kernel's memory can have.
+pub(crate) const RECORD_MAX: u64 = HEAP.end - HEAP.start;
+
+/// The host side of the five requests, as `answer` asks it. In the machine runner every call is a
+/// message to the holder (`runner.rs`), which keeps `Host` and its rules; the fuzzer calls a `Host`
+/// directly.
+pub(crate) trait Calls {
+    /// A record's length and its bytes, or `None` when there is no record. The bytes may be left out
+    /// only when the record is longer than `RECORD_MAX`, since then it cannot be written anyway.
+    fn input(&mut self, index: i32) -> Result<Option<(u64, Vec<u8>)>, Reason>;
+    fn pre_infer(&mut self, schema: i32) -> Result<usize, Reason>;
+    fn infer(&mut self, schema: i32, question: &[u8]) -> Result<i32, Reason>;
+    fn pre_effect(&mut self, kind: i32) -> Result<usize, Reason>;
+    fn effect(&mut self, kind: i32, body: &[u8]) -> Result<(), Reason>;
+}
+
+impl<S: hyalos_audit::Source> Calls for hyalos_audit::Host<S> {
+    fn input(&mut self, index: i32) -> Result<Option<(u64, Vec<u8>)>, Reason> {
+        Ok(hyalos_audit::Host::input(self, index).map(|record| (record.len() as u64, record.to_vec())))
+    }
+    fn pre_infer(&mut self, schema: i32) -> Result<usize, Reason> {
+        hyalos_audit::Host::pre_infer(self, schema)
+    }
+    fn infer(&mut self, schema: i32, question: &[u8]) -> Result<i32, Reason> {
+        hyalos_audit::Host::infer(self, schema, question)
+    }
+    fn pre_effect(&mut self, kind: i32) -> Result<usize, Reason> {
+        hyalos_audit::Host::pre_effect(self, kind)
+    }
+    fn effect(&mut self, kind: i32, body: &[u8]) -> Result<(), Reason> {
+        hyalos_audit::Host::effect(self, kind, body)
+    }
+}
+
+fn answer(ram: &Ram, host: &mut impl Calls, at: u64) -> Result<Step, Reason> {
     if !within(&HEAP, at, 48) && !within(&STACK, at, 48) {
         return Err(Reason::BadPointer);
     }
@@ -252,17 +291,17 @@ fn answer(ram: &Ram, host: &mut Host, at: u64) -> Result<Step, Reason> {
     };
     match op {
         1 => {
-            let Some(record) = host.input(a as u32 as i32) else {
+            let Some((len, record)) = host.input(a as u32 as i32)? else {
                 return Ok(Step::Reply(-1));
             };
-            if c < record.len() as u64 {
+            if c < len {
                 return Ok(Step::Reply(-2));
             }
-            if d < record.len() as u64 || !within(&HEAP, b, record.len() as u64) {
+            if d < len || !within(&HEAP, b, len) || record.len() as u64 != len {
                 return Err(Reason::BadPointer);
             }
-            ram.write(b, record).ok_or(Reason::BadPointer)?;
-            Ok(Step::Reply(record.len() as i64))
+            ram.write(b, &record).ok_or(Reason::BadPointer)?;
+            Ok(Step::Reply(len as i64))
         }
         2 => {
             let schema = a as u32 as i32;
@@ -357,9 +396,24 @@ pub(crate) fn probe(kvm: &Kvm, code: &[u8]) -> Result<Ending, &'static str> {
     }
 }
 
-pub(crate) fn run(kernel: &[u8], guest: &[u8], mut host: Host, limit: Duration) -> Result<(Host, Vec<u8>, u64), Reason> {
-    let no = |_| Reason::NoKvm;
-    let trace = std::env::var_os("HYALOS_TRACE").is_some();
+/// A built machine: its virtual CPU, the machine, and the memory both use, dropped in that order.
+type Held = (VcpuFd, VmFd, Ram);
+
+/// Boots `kernel` with `guest` and runs it to its end, asking `calls` for every request, then
+/// hands the outcome to `ended`. This is the machine runner's half of a run (`runner.rs`): it holds
+/// no deadline, since the holder kills the runner when the run's time is up. `kvm` was opened
+/// before any byte of the run arrived, and its failure is reported only after the image is checked,
+/// so every reason stays the one a run gave when the monitor ran the machine itself. Tearing a
+/// machine down takes the host tens of milliseconds, so it happens only after `ended` has reported.
+/// `trace` prints the timings `HYALOS_TRACE` asks for, in the fields the monitor printed before.
+pub(crate) fn machine_run<C: Calls>(kvm: Option<Kvm>, kernel: &[u8], guest: &[u8], calls: &mut C, trace: bool, ended: impl FnOnce(&mut C, Result<(Vec<u8>, u64), Reason>)) {
+    let mut held = None;
+    let outcome = boot_and_run(kvm, kernel, guest, calls, trace, &mut held);
+    ended(calls, outcome);
+    drop(held);
+}
+
+fn boot_and_run(kvm: Option<Kvm>, kernel: &[u8], guest: &[u8], calls: &mut impl Calls, trace: bool, held: &mut Option<Held>) -> Result<(Vec<u8>, u64), Reason> {
     let t0 = Instant::now();
     if guest.len() as u64 > GUEST_MAX {
         return Err(Reason::TooLarge);
@@ -368,18 +422,13 @@ pub(crate) fn run(kernel: &[u8], guest: &[u8], mut host: Host, limit: Duration) 
     let (entry, segments) = load(kernel, &ram).ok_or(Reason::KernelFault)?;
     ram.write(GUEST_AT, guest).ok_or(Reason::TooLarge)?;
     map(&ram, &segments, guest.len() as u64).ok_or(Reason::KernelFault)?;
-
     let t_mem = t0.elapsed();
-    let kvm = Kvm::new().map_err(no)?;
-    let (vm, mut vcpu) = machine(&kvm, &ram, entry, guest.len() as u64)?;
-
+    let kvm = kvm.ok_or(Reason::NoKvm)?;
+    let (vm, vcpu) = machine(&kvm, &ram, entry, guest.len() as u64)?;
     let t_vm = t0.elapsed();
-    let (start, _ticker) = (Instant::now(), Ticker::start());
-    let (mut first, mut exits, mut in_host) = (None, 0u32, Duration::ZERO);
+    let (vcpu, _, ram) = held.insert((vcpu, vm, ram));
+    let mut first = true;
     loop {
-        if start.elapsed() > limit {
-            return Err(Reason::Timeout);
-        }
         let at = match vcpu.run() {
             Ok(VcpuExit::IoOut(PORT, data)) => match <[u8; 4]>::try_from(&*data) {
                 Ok(bytes) => u64::from(u32::from_le_bytes(bytes)),
@@ -392,42 +441,22 @@ pub(crate) fn run(kernel: &[u8], guest: &[u8], mut host: Host, limit: Duration) 
             Err(error) if error.errno() == libc::EINTR => continue,
             Err(_) => return Err(Reason::KernelFault),
         };
-        first.get_or_insert_with(|| t0.elapsed());
-        exits += 1;
-        let before = Instant::now();
-        let step = answer(&ram, &mut host, at)?;
-        in_host += before.elapsed();
-        match step {
+        if trace && first {
+            let ms = |d: Duration| d.as_secs_f64() * 1e3;
+            // The holder reads this line back and prints it only if it has this exact form.
+            let _ = writeln!(std::io::stderr(), "trace ms: memory+load {:.2}, vm setup {:.2}, boot to first call {:.2}", ms(t_mem), ms(t_vm - t_mem), ms(t0.elapsed() - t_vm));
+        }
+        first = false;
+        match answer(ram, calls, at)? {
             Step::Reply(value) => ram.write(at + 40, &value.to_le_bytes()).ok_or(Reason::BadPointer)?,
-            Step::Done(result, fuel) => {
-                if trace {
-                    let ms = |d: Duration| d.as_secs_f64() * 1e3;
-                    eprintln!(
-                        "trace ms: memory+load {:.2}, vm setup {:.2}, boot to first call {:.2}, calls {:.2} ({exits} exits, {:.2} in host), total {:.2}",
-                        ms(t_mem), ms(t_vm - t_mem), ms(first.unwrap_or_default() - t_vm), ms(t0.elapsed() - first.unwrap_or_default()), ms(in_host), ms(t0.elapsed())
-                    );
-                }
-                // Tearing a machine down takes the host tens of milliseconds, so it is not waited for.
-                std::thread::spawn(move || {
-                    // The deadline's signal must reach the thread running a virtual CPU, not this one.
-                    // SAFETY: plain libc calls on a local, zeroed signal set.
-                    unsafe {
-                        let mut set: libc::sigset_t = std::mem::zeroed();
-                        libc::sigemptyset(&mut set);
-                        libc::sigaddset(&mut set, libc::SIGALRM);
-                        libc::pthread_sigmask(libc::SIG_BLOCK, &set, ptr::null_mut());
-                    }
-                    drop((vcpu, vm, kvm, ram));
-                });
-                return Ok((host, result, fuel));
-            }
+            Step::Done(result, fuel) => return Ok((result, fuel)),
         }
     }
 }
 
 /// Throws random requests at the monitor's request handler, as a kernel under an attacker's
 /// control would, and counts what came back. A panic or a crash here is a bug in the wall itself.
-pub(crate) fn fuzz(mut host: impl FnMut() -> Host, rounds: u64) -> Option<(u64, u64)> {
+pub(crate) fn fuzz(mut host: impl FnMut() -> crate::Host, rounds: u64) -> Option<(u64, u64)> {
     let ram = Ram::new()?;
     let mut state = 0x9e37_79b9_7f4a_7c15u64;
     let mut next = move || {
