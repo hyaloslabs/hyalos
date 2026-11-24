@@ -463,8 +463,11 @@ fn program() -> Option<PathBuf> {
 }
 
 /// Starts a machine runner with `args` after the command. It inherits nothing but its channel.
-/// With `--trace` alone its standard error is this program's, for `HYALOS_TRACE`'s timings.
 pub(crate) fn start(args: &[&str]) -> Option<Runner> {
+    spawn(args, Stdio::null())
+}
+
+fn spawn(args: &[&str], stderr: Stdio) -> Option<Runner> {
     let (holder, runner) = UnixStream::pair().ok()?;
     let child = Command::new(program()?)
         .arg("machine-runner")
@@ -473,11 +476,7 @@ pub(crate) fn start(args: &[&str]) -> Option<Runner> {
         .current_dir("/")
         .stdin(Stdio::from(OwnedFd::from(runner)))
         .stdout(Stdio::null())
-        .stderr(if args == ["--trace"] {
-            Stdio::inherit()
-        } else {
-            Stdio::null()
-        })
+        .stderr(stderr)
         .spawn()
         .ok()?;
     Some(Runner {
@@ -486,9 +485,53 @@ pub(crate) fn start(args: &[&str]) -> Option<Runner> {
     })
 }
 
+/// Starts a machine runner with `--trace`, whose standard error is a socket of its own. Nothing
+/// it writes there reaches this program's output: `read_trace` reads its timings back.
+pub(crate) fn start_traced() -> Option<(Runner, UnixStream)> {
+    let (holder, runner) = UnixStream::pair().ok()?;
+    let started = spawn(&["--trace"], Stdio::from(OwnedFd::from(runner)))?;
+    Some((started, holder))
+}
+
+/// The most bytes read back from a tracing runner's standard error.
+const TRACE_MAX: usize = 256;
+
+/// The runner's three timings, read without waiting from its trace socket, when what it wrote is
+/// exactly the one line `kvm::machine_run` prints. Anything else, from a runner the holder trusts
+/// with nothing, gives `None`, so no byte of it is printed.
+pub(crate) fn read_trace(stream: &mut UnixStream) -> Option<[f64; 3]> {
+    stream.set_nonblocking(true).ok()?;
+    let mut got = Vec::new();
+    let mut buf = [0u8; TRACE_MAX];
+    while got.len() < TRACE_MAX {
+        match stream.read(&mut buf[..TRACE_MAX - got.len()]) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+        }
+    }
+    runner_trace(&got)
+}
+
+/// Parses `trace ms: memory+load <ms>, vm setup <ms>, boot to first call <ms>` and its newline.
+pub(crate) fn runner_trace(bytes: &[u8]) -> Option<[f64; 3]> {
+    let line = std::str::from_utf8(bytes).ok()?.strip_suffix('\n')?;
+    let rest = line.strip_prefix("trace ms: memory+load ")?;
+    let (load, rest) = rest.split_once(", vm setup ")?;
+    let (setup, boot) = rest.split_once(", boot to first call ")?;
+    let ms = |field: &str| {
+        let digits = !field.is_empty() && field.bytes().all(|b| b.is_ascii_digit() || b == b'.');
+        digits.then(|| field.parse::<f64>().ok()).flatten()
+    };
+    Some([ms(load)?, ms(setup)?, ms(boot)?])
+}
+
 /// The threads reaping runners that have been killed, for `wait_for_runners`.
 static REAPERS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
     std::sync::Mutex::new(Vec::new());
+
+/// How long `wait_for_runners` waits for every runner to be gone. A teardown takes tens of
+/// milliseconds; a runner that outlives this is left to init, which reaps it once this exits.
+const REAP_BOUND: Duration = Duration::from_secs(5);
 
 impl Runner {
     /// Kills the runner and reaps it on another thread: tearing a machine down takes the host
@@ -496,24 +539,39 @@ impl Runner {
     pub(crate) fn end(mut self) {
         let _ = self.child.kill();
         drop(self.stream);
-        let reaper = std::thread::spawn(move || {
+        add_reaper(std::thread::spawn(move || {
             let _ = self.child.wait();
-        });
-        if let Ok(mut reapers) = REAPERS.lock() {
-            reapers.push(reaper);
-        }
+        }));
     }
 }
 
-/// Waits until every runner this program started is gone, so the program never exits while one
-/// of its machines is still being torn down.
+/// Waits until every runner this program started is gone, so the program does not exit while one
+/// of its machines is still being torn down, but no longer than `REAP_BOUND`: a teardown that is
+/// stuck must not hang the program after its outcome is decided.
 pub(crate) fn wait_for_runners() {
+    wait_for_runners_within(REAP_BOUND);
+}
+
+pub(crate) fn wait_for_runners_within(bound: Duration) {
+    let until = Instant::now() + bound;
     let reapers = REAPERS
         .lock()
         .map(|mut reapers| std::mem::take(&mut *reapers))
         .unwrap_or_default();
     for reaper in reapers {
-        let _ = reaper.join();
+        while !reaper.is_finished() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if reaper.is_finished() {
+            let _ = reaper.join();
+        }
+    }
+}
+
+/// Adds a reaper to the ones `wait_for_runners` waits for.
+pub(crate) fn add_reaper(reaper: std::thread::JoinHandle<()>) {
+    if let Ok(mut reapers) = REAPERS.lock() {
+        reapers.push(reaper);
     }
 }
 
@@ -532,12 +590,23 @@ pub(crate) fn run<S: Source>(
         return Err(Reason::TooLarge);
     }
     let boot = boot(kernel, guest).ok_or(Reason::KernelFault)?;
-    let mut runner = start(if trace { &["--trace"] } else { &[] }).ok_or(Reason::KernelFault)?;
+    let (mut runner, mut traced) = if trace {
+        let (runner, traced) = start_traced().ok_or(Reason::KernelFault)?;
+        (runner, Some(traced))
+    } else {
+        (start(&[]).ok_or(Reason::KernelFault)?, None)
+    };
     let started = t0.elapsed();
     let mut timing = Timing::default();
     let outcome = serve(&mut runner.stream, &boot, host, deadline, &mut timing);
     runner.end();
-    if trace && outcome.is_ok() {
+    if let (Some(traced), true) = (traced.as_mut(), outcome.is_ok()) {
+        // The runner wrote its line before its first request, so it is there to read now.
+        if let Some([load, setup, boot]) = read_trace(traced) {
+            eprintln!(
+                "trace ms: memory+load {load:.2}, vm setup {setup:.2}, boot to first call {boot:.2}"
+            );
+        }
         let ms = |d: Duration| d.as_secs_f64() * 1e3;
         let first = timing.first.map_or(Duration::ZERO, |first| first - t0);
         eprintln!(

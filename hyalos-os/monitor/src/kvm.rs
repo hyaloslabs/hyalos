@@ -15,6 +15,7 @@ use crate::{MAX_RESULT, Reason};
 use kvm_bindings::{CpuId, KVM_MAX_CPUID_ENTRIES, Msrs, kvm_cpuid_entry2, kvm_dtable, kvm_msr_entry, kvm_regs, kvm_segment, kvm_sregs, kvm_userspace_memory_region};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use std::{
+    io::Write as _,
     ptr,
     time::{Duration, Instant},
 };
@@ -442,7 +443,8 @@ fn boot_and_run(kvm: Option<Kvm>, kernel: &[u8], guest: &[u8], calls: &mut impl 
         };
         if trace && first {
             let ms = |d: Duration| d.as_secs_f64() * 1e3;
-            eprintln!("trace ms: memory+load {:.2}, vm setup {:.2}, boot to first call {:.2}", ms(t_mem), ms(t_vm - t_mem), ms(t0.elapsed() - t_vm));
+            // The holder reads this line back and prints it only if it has this exact form.
+            let _ = writeln!(std::io::stderr(), "trace ms: memory+load {:.2}, vm setup {:.2}, boot to first call {:.2}", ms(t_mem), ms(t_vm - t_mem), ms(t0.elapsed() - t_vm));
         }
         first = false;
         match answer(ram, calls, at)? {

@@ -907,6 +907,75 @@ fn core_s_04_1_a_live_run_checks_the_runner_before_its_chain() {
     }
 }
 
+/// S-04.4: a tracing runner's standard error never reaches the holder's. The holder prints the
+/// runner's timings only from the exact line the runner prints, parsed into numbers, and anything
+/// else, such as a terminal escape or a second line, prints nothing of it.
+#[test]
+fn core_s_04_4_the_holder_reprints_only_a_well_formed_trace_line() {
+    let line = b"trace ms: memory+load 0.95, vm setup 0.71, boot to first call 2.03\n";
+    assert_eq!(runner::runner_trace(line), Some([0.95, 0.71, 2.03]));
+    for hostile in [
+        &b"trace ms: memory+load 0.95, vm setup 0.71, boot to first call 2.03"[..],
+        b"trace ms: memory+load 0.95, vm setup 0.71, boot to first call 2.03\n\x1b]0;owned\x07\n",
+        b"trace ms: memory+load \x1b[2J, vm setup 0.71, boot to first call 2.03\n",
+        b"trace ms: memory+load -1, vm setup 0.71, boot to first call 2.03\n",
+        b"trace ms: memory+load 1e9, vm setup 0.71, boot to first call 2.03\n",
+        b"trace ms: memory+load , vm setup 0.71, boot to first call 2.03\n",
+        b"trace ms: memory+load 0.95, vm setup 0.71, boot to first call 2.03, extra 1\n",
+        b"\xff\n",
+        b"",
+    ] {
+        assert_eq!(
+            runner::runner_trace(hostile),
+            None,
+            "{:?}",
+            String::from_utf8_lossy(hostile)
+        );
+    }
+
+    // A real tracing runner's line is read back from its own socket and parses.
+    let Some(Backend::Kvm { kernel, .. }) = kvm_backend("core_s_04_4 trace") else {
+        return;
+    };
+    let guest = fs::read(root().join("guest/digest.wasm")).unwrap();
+    let (mut started, mut traced) = runner::start_traced().unwrap();
+    let counts = Counts::default();
+    let outcome = runner::serve(
+        &mut started.stream,
+        &runner::boot(&kernel, &guest).unwrap(),
+        hyalos_audit::Host::new(Counting::new(&counts), fixture_inputs()),
+        Instant::now() + Duration::from_secs(30),
+        &mut Timing::default(),
+    );
+    started.end();
+    assert!(outcome.is_ok());
+    let [load, setup, boot] = runner::read_trace(&mut traced).unwrap();
+    assert!(load > 0.0 && setup > 0.0 && boot > 0.0);
+}
+
+/// The holder waits for killed runners to be reaped before it exits, but not for ever: a reaper
+/// that is stuck is left after the bound, and one that ends in time is joined.
+#[test]
+fn runner_waiting_for_reapers_is_bounded() {
+    let (release, stuck) = std::sync::mpsc::channel::<()>();
+    runner::add_reaper(std::thread::spawn(move || {
+        let _ = stuck.recv();
+    }));
+    runner::add_reaper(std::thread::spawn(|| {}));
+    let started = Instant::now();
+    runner::wait_for_runners_within(Duration::from_millis(100));
+    let waited = started.elapsed();
+    assert!(
+        waited >= Duration::from_millis(100),
+        "it waited for the stuck reaper: {waited:?}"
+    );
+    assert!(
+        waited < Duration::from_secs(2),
+        "then it returned: {waited:?}"
+    );
+    release.send(()).unwrap();
+}
+
 /// 6.1: every line of the `attacks` command's output is the previous commit's, where the machine
 /// ran in the monitor's own process. The three host-dependent probes print the line that commit
 /// printed for this host's measurement.

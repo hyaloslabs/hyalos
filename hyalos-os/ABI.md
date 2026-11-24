@@ -77,7 +77,7 @@ interface names them.
 
 | Reason | When |
 |---|---|
-| `KernelFault` | The kernel image faulted, halted or panicked, or the machine could not be built |
+| `KernelFault` | The kernel image faulted, halted or panicked, or the machine could not be built, or the machine runner died, closed its channel or broke `hyalos.runner/1` |
 | `BadHypercall` | The kernel image used a port, request or exit the monitor does not answer |
 | `Timeout` | The KVM backend's deadline passed. The process backend has no deadline |
 | `NoKvm` | The KVM backend could not open or set up KVM |
