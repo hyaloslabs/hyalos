@@ -316,6 +316,8 @@ fn local_6_6_the_verifier_build_is_pinned_and_checked_in_ci() -> Res {
     assert!(build.contains("x86_64-unknown-linux-musl"));
     assert!(build.contains("CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS"));
     assert!(build.contains("--remap-path-prefix=/src="));
+    // A source tree inside another checkout must not take that checkout's commit.
+    assert!(build.contains("git rev-parse --show-toplevel"));
     let ci = read(".github/workflows/ci.yml")?;
     assert!(job_text(&ci, "hyalos-os")?.contains(".github/scripts/check-verifier-rebuild.sh"));
     let check = read(".github/scripts/check-verifier-rebuild.sh")?;

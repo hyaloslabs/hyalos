@@ -10,8 +10,12 @@ musl="1.2.3-1"
 target="x86_64-unknown-linux-musl"
 binary="hyalos-verify-x86_64-linux"
 
-# Outside a git clone the binary says its commit is unknown, and a release refuses it.
-commit="$(git rev-parse HEAD 2>/dev/null || true)"
+# Only when this directory is the top of a clone: inside another repository, HEAD is not this source's
+# commit. Otherwise the binary says its commit is unknown, and a release refuses it.
+commit=""
+if [ "$(git rev-parse --show-toplevel 2>/dev/null)" = "$(pwd -P)" ]; then
+  commit="$(git rev-parse HEAD)"
+fi
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 
