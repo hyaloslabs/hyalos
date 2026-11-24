@@ -271,9 +271,38 @@ struct Tables([[u64; 512]; 3]);
 #[cfg(feature = "selftest")]
 static mut TABLES: Tables = Tables([[0; 512]; 3]);
 
+/// The byte that asks the self-test kernel to report what CPUID shows it, not to probe.
+#[cfg(feature = "selftest")]
+const CPUID_REPORT: u8 = 0x80;
+
+/// The CPUID leaves the report reads, each at subleaf 0: the allowed ones, and those that would
+/// show the host's features, topology, brand, address size or hypervisor. The monitor's tests hold
+/// the same list.
+#[cfg(feature = "selftest")]
+const REPORTED_LEAVES: [u32; 14] = [
+    0, 1, 4, 7, 0xb, 0xd, 0x4000_0000, 0x4000_0001, 0x8000_0000, 0x8000_0001, 0x8000_0002, 0x8000_0003,
+    0x8000_0004, 0x8000_0008,
+];
+
+/// Returns, as the run's result, `EAX`, `EBX`, `ECX` and `EDX` of each reported leaf, little-endian.
+#[cfg(feature = "selftest")]
+fn report_cpuid() {
+    let out = HEAP_START as *mut u32;
+    for (at, &leaf) in REPORTED_LEAVES.iter().enumerate() {
+        let r = core::arch::x86_64::__cpuid_count(leaf, 0);
+        for (word, value) in [r.eax, r.ebx, r.ecx, r.edx].into_iter().enumerate() {
+            // SAFETY: 14 leaves of 16 bytes stay inside the heap (`HEAP_START..HEAP_END`), which is
+            // mapped writable for the kernel, and nothing else uses it: the run ends with this report.
+            unsafe { ptr::write_volatile(out.add(at * 4 + word), value) };
+        }
+    }
+    hypercall(RETURN, HEAP_START as u64, (REPORTED_LEAVES.len() * 16) as u64, 1, 0);
+}
+
 /// Built only for the monitor's tests: tries one thing the address space or ring 3 must stop,
 /// chosen by the first input byte, then sends a request the monitor calls unknown. Dying first is
-/// the pass. The monitor's `PROBES` names each one by its byte.
+/// the pass. The monitor's `PROBES` names each one by its byte. `CPUID_REPORT` instead ends the
+/// run with what CPUID shows.
 #[cfg(feature = "selftest")]
 fn probe(guest: &[u8]) {
     let table = [0u64; 2]; // an empty descriptor table to load
@@ -317,6 +346,9 @@ fn probe(guest: &[u8]) {
             // Write the time counter's model-specific register.
             15 => asm!("wrmsr", in("ecx") 0x10u32, in("eax") 0u32, in("edx") 0u32, options(nostack)),
             16 => asm!("hlt", options(nomem, nostack)),
+            17 => asm!("rdrand rax", out("rax") _, options(nomem, nostack)), // hardware randomness
+            18 => asm!("rdpid rax", out("rax") _, options(nomem, nostack)), // read the processor ID
+            CPUID_REPORT => report_cpuid(),
             _ => {}
         }
     }

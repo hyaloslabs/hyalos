@@ -93,6 +93,7 @@ folder and the repository.
 
 - Who performs the independent review. This does not block the pack (ADR-006).
 - Whether `RDSEED` stays reachable on bare-metal Intel and on AMD. It was measured only on one nested Intel host, and the host probe (S-03.3) is how to find out (ADR-002).
+- Which hosts trap `RDRAND` and `RDPID`. They ran on one CI run, whose CPU the log did not name (likely AMD), and faulted on a later one on Intel (Xeon 6975P-C, `kvm_intel`); the host probe (S-03.3) is how to find out (ADR-009).
 
 ## Retro
 

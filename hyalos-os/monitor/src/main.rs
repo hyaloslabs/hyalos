@@ -199,7 +199,60 @@ const PROBES: &[(&str, Reason)] = &[
     ("privilege: load an interrupt table (LIDT)", Reason::KernelFault),
     ("privilege: write a model-specific register (WRMSR)", Reason::KernelFault),
     ("privilege: halt (HLT)", Reason::KernelFault),
+    ("randomness: hardware randomness (RDRAND)", Reason::KernelFault),
+    ("randomness: read the processor ID (RDPID)", Reason::KernelFault),
 ];
+
+/// The probes that fault only where the host's KVM can trap them (ADR-002 and ADR-009 of
+/// `docs/plans/hyalos-kernel-core`). Elsewhere they run and reach the unknown request, a stated
+/// limit, and the host probe reports them.
+const HOST_DEPENDENT: &[&str] = &["randomness: hardware randomness (RDRAND)", "randomness: read the processor ID (RDPID)"];
+
+/// The CPU vendor string (CPUID leaf 0) and the KVM module that is loaded, as this process sees
+/// them. `None` for a module when neither or both are present.
+fn host_cpu() -> (String, Option<&'static str>) {
+    let r = std::arch::x86_64::__cpuid(0);
+    let vendor = [r.ebx, r.edx, r.ecx].iter().flat_map(|w| w.to_le_bytes()).map(char::from).collect();
+    let loaded = |m: &str| fs::metadata(format!("/sys/module/{m}")).is_ok();
+    let module = match (loaded("kvm_intel"), loaded("kvm_amd")) {
+        (true, false) => Some("kvm_intel"),
+        (false, true) => Some("kvm_amd"),
+        _ => None,
+    };
+    (vendor, module)
+}
+
+/// Whether this host's KVM makes `RDRAND` and `RDPID` fault once their CPUID bits are clear.
+/// `Some(true)` only on Intel with `kvm_intel`: KVM's VMX backend sets `RDRAND` exiting and clears
+/// the `RDTSCP` enable, which also covers `RDPID`. `Some(false)` on AMD with `kvm_amd`: SVM has
+/// no intercept for either. `None` for anything else, so nothing is claimed.
+fn traps_randomness(vendor: &str, module: Option<&str>) -> Option<bool> {
+    match (vendor, module) {
+        ("GenuineIntel", Some("kvm_intel")) => Some(true),
+        ("AuthenticAMD" | "HygonGenuine", Some("kvm_amd")) => Some(false),
+        _ => None,
+    }
+}
+
+/// How a probe ended, judged on a host.
+#[derive(Debug, PartialEq)]
+enum Verdict {
+    /// It ended as `PROBES` says.
+    Pass,
+    /// A host-dependent probe ran on a host not known to trap it: the stated limit, not a pass.
+    Reachable,
+    Fail,
+}
+
+fn judge(name: &str, got: Result<(), Reason>, want: Reason, traps: Option<bool>) -> Verdict {
+    if got == Err(want) {
+        Verdict::Pass
+    } else if HOST_DEPENDENT.contains(&name) && traps != Some(true) && got == Err(Reason::BadHypercall) {
+        Verdict::Reachable
+    } else {
+        Verdict::Fail
+    }
+}
 
 fn run_attacks(backend: &Backend, guest: &[u8], inputs: &[Vec<u8>]) -> Result<bool, String> {
     let mut ok = true;
@@ -221,8 +274,15 @@ fn run_attacks(backend: &Backend, guest: &[u8], inputs: &[Vec<u8>]) -> Result<bo
     if let Ok(path) = env::var("HYALOS_SELFTEST_KERNEL") {
         let kernel = fs::read(path).map_err(|_| "cannot read the self-test kernel")?;
         let probing = Backend::Kvm { kernel, limit: Duration::from_secs(2) };
+        let (vendor, module) = host_cpu();
+        let traps = traps_randomness(&vendor, module);
         for (index, &(name, want)) in PROBES.iter().enumerate() {
-            check(name, execute(&probing, &[index as u8], vec![], Mode::Record { seed: 0 }).map(|_| ()), want);
+            let got = execute(&probing, &[index as u8], vec![], Mode::Record { seed: 0 }).map(|_| ());
+            if judge(name, got, want, traps) == Verdict::Reachable {
+                println!("REACHABLE {name}: {got:?} (host {vendor}, {}: not trapped, ADR-009)", module.unwrap_or("KVM module unknown"));
+            } else {
+                check(name, got, want);
+            }
         }
     }
     let base = execute(backend, guest, inputs.to_vec(), Mode::Record { seed: 7 }).map_err(|r| format!("{r:?}"))?;
@@ -511,6 +571,9 @@ mod live_tests;
 
 #[cfg(test)]
 mod ring_tests;
+
+#[cfg(test)]
+mod cpuid_tests;
 
 #[cfg(test)]
 mod profile_tests;
