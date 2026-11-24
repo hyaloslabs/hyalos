@@ -41,7 +41,7 @@ cargo deny check        # if cargo-deny is installed; CI's dependency audit
 
 A pull request that changes only `docs/`, `spikes/`, Markdown under `skills/` or Markdown at the root skips the test, simulation, spec, audit, conformance and proof jobs and still reports its required checks (`changes` job in `ci.yml`). `lint`, which runs `cargo xtask docs`, runs on every pull request (ADR-0119).
 
-Tests that need a tool skip without it unless CI's variable is set: `HYALOS_REQUIRE_CONTAINER`, `_GIT`, `_GVISOR`, `_MICROVM`, `_SANDBOX_IMAGE`, `_CVC5`, `_MCP_CONFORMANCE`, `_LANDLOCK`, `_KVM`. A skip is not a pass; say which ran.
+Tests that need a tool skip without it unless CI's variable is set: `HYALOS_REQUIRE_CONTAINER`, `_GIT`, `_GVISOR`, `_MICROVM`, `_SANDBOX_IMAGE`, `_CVC5`, `_MCP_CONFORMANCE`, `_LANDLOCK`, `_KVM`, `_PUBLIC_LOG`. A skip is not a pass; say which ran.
 
 ## Code layout (ADR-0017)
 

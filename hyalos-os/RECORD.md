@@ -165,6 +165,36 @@ A pass opens with `audit passed` and states `attempt {ticket + 1} of at most {bu
 
 Run counts are stated `under this log key only`.
 
+## The verifier
+
+`hyalos-verify` is the customer's program for this format. [`docs/operations/verify-a-hyalos-record.md`](../docs/operations/verify-a-hyalos-record.md) is its guide.
+
+```
+hyalos-verify <record-file> <links-dir> --operator-public <file> --notary-public <file> [--guest <file>] [--legacy-v1]
+hyalos-verify --version
+```
+
+`--guest` is required for every record but version 1. `--legacy-v1` is required for a version 1 record. `--version` prints the version, the source commit or `unknown`, the record versions and the profiles it reads.
+
+| Exit | Result | Output |
+|---|---|---|
+| 0 | Passed | The report on standard output |
+| 1 | Refused | `refused: <the first check that failed>` on standard error, and no report |
+| 2 | Inconclusive | `inconclusive: <what could not be checked>` on standard error, and no report |
+
+Each file's size is checked before it is read. A local file over its limit is refused, and a public log reply or list over its limit is inconclusive.
+
+| Input | Limit |
+|---|---|
+| Transcript | 16 MiB |
+| One presentation | 1 MiB |
+| One link file | 64 KiB |
+| Guest | 16 MiB |
+| Key file | 4 KiB |
+| Salt | 4 KiB |
+| One public log reply | 1 MiB |
+| Entries listed under one key | 10,000 |
+
 ## The provider-proof slot
 
 An answer of version 2 or later may hold `provider_proofs`, a list of entries:
