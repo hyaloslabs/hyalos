@@ -1,0 +1,4 @@
+{
+  "check": "link 3: the signed time does not verify",
+  "verdict": "refused"
+}

@@ -123,3 +123,7 @@ mod audit_tests;
 #[cfg(all(test, feature = "test-trust"))]
 #[path = "forgery_tests.rs"]
 mod forgery_tests;
+
+#[cfg(all(test, feature = "test-trust"))]
+#[path = "fixture_tests.rs"]
+mod fixture_tests;

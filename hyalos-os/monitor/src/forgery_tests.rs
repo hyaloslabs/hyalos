@@ -294,7 +294,13 @@ impl World {
         };
         let trust = self.settings.iter().filter(|(name, _)| name.starts_with("HYALOS_TRUST_")).map(|(n, v)| (n.clone(), v.into())).collect();
         let verifier = Verifier { program: inputs.verify.clone(), trust };
-        crate::audit_record(&self.record(), &inputs, LogSource::StandIn(self.rig.path("log"), self.rig.path("test-log.pub")), &verifier, &crate::PlainFiles).map_err(|failure| failure.message)
+        let audited = crate::audit_record(&self.record(), &inputs, LogSource::StandIn(self.rig.path("log"), self.rig.path("test-log.pub")), &verifier, &crate::PlainFiles).map_err(|failure| failure.message);
+        if let Err(said) = &audited {
+            let (record, links, log, log_key, operator, root) = (PathBuf::from(self.record()), self.rig.root.join("ledger"), self.rig.root.join("log"), self.rig.root.join("test-log.pub"), self.rig.root.join("operator.pub"), self.rig.root.join("root.der"));
+            let guest = inputs.guest.as_ref().map(PathBuf::from);
+            super::fixture_tests::keep(super::fixture_tests::Spec { record: &record, attest: true, links: Some(&links), log: Some(&log), log_key: Some(&log_key), operator: Some(&operator), notary: &self.signer, guest: guest.as_deref(), root: Some(&root), legacy }, said, !self.old_verifier);
+        }
+        audited
     }
 
     fn refused(&self) -> String {
@@ -599,7 +605,11 @@ fn one_answer(label: &str, version: u32) -> World {
 /// The audit of a record file that its version check refuses, so no key or log is reached.
 fn audit_file(record: &str, legacy: bool) -> Result<String, String> {
     let inputs = AuditInputs { dir: None, operator: Some("/nonexistent".into()), notary: format!("02{}", "11".repeat(32)), verify: "/nonexistent".into(), legacy, guest: None };
-    crate::audit_record(record, &inputs, LogSource::Public, &Verifier { program: "/nonexistent".into(), trust: Vec::new() }, &crate::PlainFiles).map_err(|failure| failure.message)
+    let audited = crate::audit_record(record, &inputs, LogSource::Public, &Verifier { program: "/nonexistent".into(), trust: Vec::new() }, &crate::PlainFiles).map_err(|failure| failure.message);
+    if let Err(said) = &audited {
+        super::fixture_tests::keep_version(Path::new(record), legacy, said);
+    }
+    audited
 }
 
 fn record_of_version(rig: &Rig, version: u32) -> String {
@@ -1027,17 +1037,17 @@ fn record_s_06_3_e1_a_proof_with_a_bad_kind_or_shape_is_refused() {
     let digest = "ab".repeat(32);
     assert!(crate::read_transcript(&record_with_proofs(2, json!([{"kind": "a.kind", "sha256": digest}]))).is_ok(), "the control");
     for kind in [String::new(), "x".repeat(65), "Upper".to_string(), "a kind".to_string(), "kind\n".to_string()] {
-        let refused = crate::read_transcript(&record_with_proofs(2, json!([{"kind": kind, "sha256": digest}]))).unwrap_err();
+        let refused = super::fixture_tests::parse_refused(&record_with_proofs(2, json!([{"kind": kind, "sha256": digest}])));
         assert_eq!(refused, "a provider proof is malformed");
     }
-    assert_eq!(crate::read_transcript(&record_with_proofs(2, json!([{"kind": "a.kind", "sha256": digest, "extra": 1}]))).unwrap_err(), "cannot parse");
-    assert_eq!(crate::read_transcript(&record_with_proofs(1, json!([{"kind": "a.kind", "sha256": digest}]))).unwrap_err(), "a version 1 record cannot carry a provider proof");
+    assert_eq!(super::fixture_tests::parse_refused(&record_with_proofs(2, json!([{"kind": "a.kind", "sha256": digest, "extra": 1}]))), "cannot parse");
+    assert_eq!(super::fixture_tests::parse_refused(&record_with_proofs(1, json!([{"kind": "a.kind", "sha256": digest}]))), "a version 1 record cannot carry a provider proof");
 }
 
 #[test]
 fn record_s_06_3_e2_a_proof_whose_digest_is_not_64_lowercase_hex_is_refused() {
     for digest in ["ab".repeat(31), "ab".repeat(33), "AB".repeat(32), "zz".repeat(32)] {
-        let refused = crate::read_transcript(&record_with_proofs(2, json!([{"kind": "a.kind", "sha256": digest}]))).unwrap_err();
+        let refused = super::fixture_tests::parse_refused(&record_with_proofs(2, json!([{"kind": "a.kind", "sha256": digest}])));
         assert_eq!(refused, "a provider proof is malformed");
     }
 }
@@ -1170,7 +1180,9 @@ fn canary_s_03_3_e3_a_version_1_record_keeps_its_legacy_audit() {
 #[test]
 fn canary_a_version_1_record_cannot_carry_a_canary() {
     let _one = locked();
-    let world = forged_world(World::signing_canary("canary-v1", 1, 1, None, Some("before=60")), 1);
+    // A notary that signs no ticket, so the real verify output, as the built verifier reads it,
+    // reaches the canary check.
+    let world = forged_world(World::signing_canary("canary-v1", 1, 1, Some("missing"), Some("before=60")), 1);
     assert_eq!(world.audit_with(true).unwrap_err(), "answer 0: a version 1 record cannot carry a canary");
 }
 
@@ -1185,8 +1197,8 @@ fn canary_3_1_the_monitors_window_is_the_notarys() {
 fn canary_3_2_provider_proofs_are_checked_on_version_3() {
     let good = crate::read_transcript(&record_with_proofs(3, json!([{"kind": AN_UNKNOWN_KIND, "sha256": "ab".repeat(32)}])));
     assert_eq!(good.unwrap().version, 3);
-    let bad = crate::read_transcript(&record_with_proofs(3, json!([{"kind": "NOT A KIND", "sha256": "ab".repeat(32)}])));
-    assert_eq!(bad.unwrap_err(), "a provider proof is malformed");
+    let bad = super::fixture_tests::parse_refused(&record_with_proofs(3, json!([{"kind": "NOT A KIND", "sha256": "ab".repeat(32)}])));
+    assert_eq!(bad, "a provider proof is malformed");
 }
 
 #[test]
@@ -1276,3 +1288,68 @@ fn s_03_7_e2_a_release_build_refuses_a_stand_in_providers_record() {
     assert!(output.stdout.is_empty(), "no pass line");
     assert!(String::from_utf8_lossy(&output.stderr).contains("the reply is not from the log's key"));
 }
+
+/// The two passing records the verifier's tests read: one with an unknown provider proof, through
+/// the ticketed path, and one of five answers that Slice 5 times.
+pub(super) fn pass_fixtures(into: &Path) {
+    let _one = locked();
+    let keep = |world: &World, name: &str| {
+        let (record, links, log, log_key, operator, guest, root) = (PathBuf::from(world.record()), world.rig.root.join("ledger"), world.rig.root.join("log"), world.rig.root.join("test-log.pub"), world.rig.root.join("operator.pub"), world.rig.root.join("guest.wasm"), world.rig.root.join("root.der"));
+        super::fixture_tests::keep_pass(into, name, super::fixture_tests::Spec { record: &record, attest: true, links: Some(&links), log: Some(&log), log_key: Some(&log_key), operator: Some(&operator), notary: &world.signer, guest: Some(&guest), root: Some(&root), legacy: false })
+    };
+    let (world, ..) = answer_with_a_proof("fixture-unknown-proof");
+    assert!(keep(&world, "unknown-proof").contains("unchecked provider proofs: 1, which prove nothing"));
+    let world = World::asking("fixture-five", crate::CURRENT_VERSION, 5);
+    let intent = world.declare();
+    let before = now() - 1;
+    let answers = world.honest(&intent, &QUESTIONS[..5]);
+    world.close(&intent, answers, before, now() + 1);
+    assert!(keep(&world, "five-answers").contains("all 5 answers were attested"));
+}
+
+/// The refusing tests whose audit calls `local_4_2_generate` keeps as fixtures.
+pub(super) const CORPUS: &[(&str, fn())] = &[
+    ("s_03_2_e1_s_03_3_e1_s_03_5_e1_s_04_3_e1_an_honest_record_of_eight_passes_and_others_are_refused", s_03_2_e1_s_03_3_e1_s_03_5_e1_s_04_3_e1_an_honest_record_of_eight_passes_and_others_are_refused),
+    ("s_03_2_e2_s_04_4_e2_a_real_presentation_from_another_run_is_refused", s_03_2_e2_s_04_4_e2_a_real_presentation_from_another_run_is_refused),
+    ("s_03_5_e2_a_question_asked_twice_with_the_first_answer_discarded_is_refused", s_03_5_e2_a_question_asked_twice_with_the_first_answer_discarded_is_refused),
+    ("s_03_5_e4_the_first_question_asked_three_times_is_refused", s_03_5_e4_the_first_question_asked_three_times_is_refused),
+    ("adr_014_a_session_left_after_reading_the_reply_cannot_be_asked_again", adr_014_a_session_left_after_reading_the_reply_cannot_be_asked_again),
+    ("s_03_5_e5_an_operator_who_tells_the_notary_another_run_is_refused", s_03_5_e5_an_operator_who_tells_the_notary_another_run_is_refused),
+    ("s_04_4_e1_an_answer_attested_by_the_forgers_own_notary_is_refused", s_04_4_e1_an_answer_attested_by_the_forgers_own_notary_is_refused),
+    ("s_04_4_e3_an_attestation_obtained_before_the_intent_was_logged_is_refused", s_04_4_e3_an_attestation_obtained_before_the_intent_was_logged_is_refused),
+    ("record_s_01_1_e1_an_unknown_version_is_refused_and_named", record_s_01_1_e1_an_unknown_version_is_refused_and_named),
+    ("record_s_01_1_e2_version_0_is_refused_even_with_the_legacy_option", record_s_01_1_e2_version_0_is_refused_even_with_the_legacy_option),
+    ("record_s_01_2_e1_a_version_1_record_without_the_option_is_refused_naming_it", record_s_01_2_e1_a_version_1_record_without_the_option_is_refused_naming_it),
+    ("record_s_05_8_e2_a_guest_with_one_byte_changed_is_refused", record_s_05_8_e2_a_guest_with_one_byte_changed_is_refused),
+    ("record_s_05_7_e6_extra_sessions_written_into_the_record_diverge", record_s_05_7_e6_extra_sessions_written_into_the_record_diverge),
+    ("record_s_05_7_e7_a_reworded_question_diverges", record_s_05_7_e7_a_reworded_question_diverges),
+    ("record_s_01_6_e1_a_ticketed_attestation_in_a_version_1_record_is_refused", record_s_01_6_e1_a_ticketed_attestation_in_a_version_1_record_is_refused),
+    ("record_s_05_1_e1_no_ticket_extension_is_refused", record_s_05_1_e1_no_ticket_extension_is_refused),
+    ("record_s_05_1_e2_two_ticket_extensions_are_refused", record_s_05_1_e2_two_ticket_extensions_are_refused),
+    ("record_s_05_1_e3_a_ticket_one_byte_short_is_refused", record_s_05_1_e3_a_ticket_one_byte_short_is_refused),
+    ("record_s_05_2_e1_another_ticket_on_a_later_answer_is_refused", record_s_05_2_e1_another_ticket_on_a_later_answer_is_refused),
+    ("record_s_05_2_e2_another_authorisation_on_a_later_answer_is_refused", record_s_05_2_e2_another_authorisation_on_a_later_answer_is_refused),
+    ("record_s_05_3_e1_a_ticket_for_another_task_is_refused", record_s_05_3_e1_a_ticket_for_another_task_is_refused),
+    ("record_s_05_4_e1_ticket_2_of_budget_2_is_refused", record_s_05_4_e1_ticket_2_of_budget_2_is_refused),
+    ("record_s_05_4_e2_budget_0_is_refused", record_s_05_4_e2_budget_0_is_refused),
+    ("record_s_05_4_e3_budget_101_is_refused", record_s_05_4_e3_budget_101_is_refused),
+    ("record_s_05_6_e2_a_failing_record_states_no_proof", record_s_05_6_e2_a_failing_record_states_no_proof),
+    ("record_s_05_7_e1_an_attestation_from_another_run_is_refused", record_s_05_7_e1_an_attestation_from_another_run_is_refused),
+    ("record_s_05_7_e2_a_varied_input_under_the_original_authorisation_is_refused", record_s_05_7_e2_a_varied_input_under_the_original_authorisation_is_refused),
+    ("record_s_05_7_e3_presenting_work_as_version_1_avoids_no_budget", record_s_05_7_e3_presenting_work_as_version_1_avoids_no_budget),
+    ("record_s_05_7_e5_an_edited_budget_in_a_stored_attestation_is_refused", record_s_05_7_e5_an_edited_budget_in_a_stored_attestation_is_refused),
+    ("record_s_05_7_e8_a_run_under_another_log_key_cannot_back_this_chain", record_s_05_7_e8_a_run_under_another_log_key_cannot_back_this_chain),
+    ("record_s_06_2_e2_a_proof_does_not_rescue_a_record_that_fails_another_check", record_s_06_2_e2_a_proof_does_not_rescue_a_record_that_fails_another_check),
+    ("record_s_06_3_e1_a_proof_with_a_bad_kind_or_shape_is_refused", record_s_06_3_e1_a_proof_with_a_bad_kind_or_shape_is_refused),
+    ("record_s_06_3_e2_a_proof_whose_digest_is_not_64_lowercase_hex_is_refused", record_s_06_3_e2_a_proof_whose_digest_is_not_64_lowercase_hex_is_refused),
+    ("canary_s_03_1_e2_no_canary_is_refused_naming_the_answer", canary_s_03_1_e2_no_canary_is_refused_naming_the_answer),
+    ("canary_s_03_1_e3_two_canaries_are_refused", canary_s_03_1_e3_two_canaries_are_refused),
+    ("canary_s_03_1_e4_a_canary_of_the_wrong_length_is_refused", canary_s_03_1_e4_a_canary_of_the_wrong_length_is_refused),
+    ("canary_s_03_1_e5_a_pass_after_its_session_is_refused", canary_s_03_1_e5_a_pass_after_its_session_is_refused),
+    ("canary_s_03_1_e6_a_pass_a_second_past_the_window_is_refused", canary_s_03_1_e6_a_pass_a_second_past_the_window_is_refused),
+    ("canary_s_03_3_e2_a_version_2_record_cannot_carry_a_canary", canary_s_03_3_e2_a_version_2_record_cannot_carry_a_canary),
+    ("canary_a_version_1_record_cannot_carry_a_canary", canary_a_version_1_record_cannot_carry_a_canary),
+    ("canary_3_2_provider_proofs_are_checked_on_version_3", canary_3_2_provider_proofs_are_checked_on_version_3),
+    ("s_02_6_e1_a_version_4_record_relabelled_version_3_is_refused", s_02_6_e1_a_version_4_record_relabelled_version_3_is_refused),
+    ("s_02_6_e2_a_version_4_record_with_its_profile_changed_is_refused", s_02_6_e2_a_version_4_record_with_its_profile_changed_is_refused),
+];

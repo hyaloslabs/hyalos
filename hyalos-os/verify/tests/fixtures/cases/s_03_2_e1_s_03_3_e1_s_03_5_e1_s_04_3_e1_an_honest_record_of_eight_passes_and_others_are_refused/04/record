@@ -1,0 +1,77 @@
+{
+  "version": 4,
+  "profile": "hyalos.profile/1",
+  "task": "a09db9b9e246780091e44bfb9267363c9b909ddb9288cb34c38e9f65c30fecbb",
+  "guest_sha256": "f2e8ee668b5b320a13e14f47667269a7ea866877c0b86cd6621ca18db1cdd168",
+  "inputs_hex": [
+    "6f6e6520696e707574"
+  ],
+  "answers": [
+    {
+      "schema": 0,
+      "question_sha256": "d16846b2e7d654c22d9138b6ebb9e1314a916ad72b768bb18dc1dc2deb807b45",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin",
+      "attestation": "a3965e64734cb044b707e873eb02580b6395097724f0a5633a3e4ea021aabb22"
+    },
+    {
+      "schema": 0,
+      "question_sha256": "dbc1d833fe1ef964141015b4dc76b0a8788ae8c4f23e8689c84fe77efb3829cd",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin",
+      "attestation": "575d94a9ca8bcb322906dcc9e28fa84c6c1e8946103e5b5735bbc1c2b5e083ed"
+    },
+    {
+      "schema": 0,
+      "question_sha256": "9f12496a63be70e003e3800a6924d07e61ff7db6776fa424177e85e3e1533eea",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin",
+      "attestation": "8f5086aca42c3473fda6205e2ab50a657797126d907db3466536713e2575c4b2"
+    },
+    {
+      "schema": 0,
+      "question_sha256": "34068373b8bb3522f0d6087de015a6668f6e1228328dfce96f60a01d52658e44",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin"
+    },
+    {
+      "schema": 0,
+      "question_sha256": "9608e4c7b64d9c3611b50a302b319bb655a5bdf806456b71e813d53fd724cf86",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin",
+      "attestation": "cb90202e543e1eaff626e024cfa29fd5e75f3f151dd3da9123870f70213156e0"
+    },
+    {
+      "schema": 0,
+      "question_sha256": "9f12496a63be70e003e3800a6924d07e61ff7db6776fa424177e85e3e1533eea",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin",
+      "attestation": "ea0427056747db43179abff6da5e6edae3abef0061f7e6f82b3fceb3c0f22a7b"
+    },
+    {
+      "schema": 0,
+      "question_sha256": "07eb2cee1170e0432f8ed7b1174991c51ebc87d207edace14201e6948897d01f",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin",
+      "attestation": "6d9bc64f12b6ec419a68a9b463af6a8b7c765acdb1e2ec34ee6c5746fc52d3f8"
+    },
+    {
+      "schema": 0,
+      "question_sha256": "36ebb446189935aeeeef51a3a9f4e4401e110020e372ee57e4775db48cfe1343",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin",
+      "attestation": "b3ef194990cdb34382c281a10386943ba39234c5bd125b94bb4a88fdfcf68dbd"
+    }
+  ],
+  "effects": [],
+  "result_hex": "00",
+  "fuel_used": 617
+}

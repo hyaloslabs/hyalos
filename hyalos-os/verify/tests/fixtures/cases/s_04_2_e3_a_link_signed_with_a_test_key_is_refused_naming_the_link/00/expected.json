@@ -1,0 +1,4 @@
+{
+  "check": "link 1: the reply is not from the log's key",
+  "verdict": "refused"
+}

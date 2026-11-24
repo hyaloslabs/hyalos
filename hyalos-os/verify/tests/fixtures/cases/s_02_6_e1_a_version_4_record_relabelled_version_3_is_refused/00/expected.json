@@ -1,0 +1,4 @@
+{
+  "check": "unknown field `profile` in a version 3 record",
+  "verdict": "refused"
+}

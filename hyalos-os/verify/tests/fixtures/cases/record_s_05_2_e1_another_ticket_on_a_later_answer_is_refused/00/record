@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "task": "9a7df46254164994200dc319e2343d4227dd95607c8308120fcad2477fb87bb6",
+  "guest_sha256": "f7d16d42d7fa7f810e9073b80a5500221a56cd317b19ab07797bd969d19a8dfd",
+  "inputs_hex": [
+    "6f6e6520696e707574"
+  ],
+  "answers": [
+    {
+      "schema": 0,
+      "question_sha256": "d16846b2e7d654c22d9138b6ebb9e1314a916ad72b768bb18dc1dc2deb807b45",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin",
+      "attestation": "eb7cf9d050fc835cd062db18edef537ec049fb347032f3867ec6ec36087e7a27"
+    },
+    {
+      "schema": 0,
+      "question_sha256": "dbc1d833fe1ef964141015b4dc76b0a8788ae8c4f23e8689c84fe77efb3829cd",
+      "label": 0,
+      "model": "standin",
+      "response_id": "msg_standin",
+      "attestation": "775b1cbf784b494ffd8a39674b2d3505ef0fb22ca73f03fe1a4b193f6654afd3"
+    }
+  ],
+  "effects": [],
+  "result_hex": "00",
+  "fuel_used": 194
+}

@@ -1,0 +1,4 @@
+{
+  "check": "this is a version 1 record, with no attempt budget: audit it with --legacy-v1",
+  "verdict": "refused"
+}

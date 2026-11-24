@@ -1,0 +1,22 @@
+{
+  "answers": [
+    {
+      "attestation": "82e8abae8ac87ad7743a00636e549fb5fbc913b06ff04417458e93abb1fe787e",
+      "label": 0,
+      "model": "standin",
+      "question_sha256": "d16846b2e7d654c22d9138b6ebb9e1314a916ad72b768bb18dc1dc2deb807b45",
+      "response_id": "msg_standin",
+      "schema": 0
+    }
+  ],
+  "effects": [],
+  "fuel_used": 127,
+  "guest_sha256": "4313c8f981555e7a608fd7c701058499e7575f2e5640c77259ea30cf2f14e41b",
+  "inputs_hex": [
+    "6f6e6520696e707574"
+  ],
+  "profile": "hyalos.profile/1",
+  "result_hex": "00",
+  "task": "d83caa1ca1b8dd6d72c5930e5f4e2c32c00b2c4fd493114b822fc77082d4afa5",
+  "version": 3
+}

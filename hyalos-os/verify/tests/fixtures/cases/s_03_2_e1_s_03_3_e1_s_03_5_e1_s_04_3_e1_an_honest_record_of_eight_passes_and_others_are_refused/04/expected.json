@@ -1,0 +1,4 @@
+{
+  "check": "answer 3: the attestation is not the one the record names",
+  "verdict": "refused"
+}

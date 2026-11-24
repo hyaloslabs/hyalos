@@ -1,0 +1,4 @@
+{
+  "check": "link 1: its version is not its intent's",
+  "verdict": "refused"
+}

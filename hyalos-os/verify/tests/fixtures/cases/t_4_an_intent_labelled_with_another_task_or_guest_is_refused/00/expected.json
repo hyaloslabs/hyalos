@@ -1,0 +1,4 @@
+{
+  "check": "link 0: the intent names another task than this record's",
+  "verdict": "refused"
+}

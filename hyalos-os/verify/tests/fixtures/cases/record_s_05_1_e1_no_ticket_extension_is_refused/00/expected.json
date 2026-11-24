@@ -1,0 +1,4 @@
+{
+  "check": "answer 0: the attestation carries no ticket",
+  "verdict": "refused"
+}
