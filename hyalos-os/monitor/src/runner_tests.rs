@@ -743,6 +743,62 @@ fn core_s_04_1_e1_the_vcpu_runs_in_a_child_with_only_its_kvm_handles_and_the_cha
     );
 }
 
+/// S-04.1.e1, with a descriptor the holder was started with and that lacks close-on-exec, as a CI
+/// agent's pipes or a shell's redirection are: the runner closes it before it opens anything, so
+/// while the guest waits it still holds only its KVM handles, the channel and the null device.
+#[test]
+fn core_s_04_1_e1_a_descriptor_inherited_without_close_on_exec_is_closed() {
+    let Some(Backend::Kvm { kernel, .. }) = kvm_backend("core_s_04_1_e1 inherited") else {
+        return;
+    };
+    let guest = fs::read(root().join("guest/digest.wasm")).unwrap();
+    let program = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("task-kernel");
+    let (mut stream, theirs) = UnixStream::pair().unwrap();
+    // The shell opens descriptor 7 without close-on-exec, then becomes the runner.
+    let child = Command::new("sh")
+        .args(["-c", "exec 7</dev/null; exec \"$0\" machine-runner"])
+        .arg(program)
+        .env_clear()
+        .current_dir("/")
+        .stdin(Stdio::from(std::os::fd::OwnedFd::from(theirs)))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let counts = Counts::default();
+    let found: Arc<std::sync::Mutex<Option<Seen>>> = Arc::default();
+    let mut source = Counting::new(&counts);
+    let into = found.clone();
+    source.on_infer = Box::new(move |call| {
+        if call == 0 {
+            *into.lock().unwrap() = Some(seen(pid));
+        }
+    });
+    let outcome = runner::serve(
+        &mut stream,
+        &runner::boot(&kernel, &guest).unwrap(),
+        hyalos_audit::Host::new(source, fixture_inputs()),
+        Instant::now() + Duration::from_secs(30),
+        &mut Timing::default(),
+    );
+    runner::Runner { child, stream }.end();
+    assert!(outcome.is_ok());
+    let files = found.lock().unwrap().take().unwrap().files;
+    let null = files.iter().filter(|f| *f == "/dev/null").count();
+    assert_eq!(
+        null, 2,
+        "only standard output and error are the null device: {files:?}"
+    );
+    assert_eq!(files.len(), 7, "{files:?}");
+}
+
 /// S-04.1: every KVM run goes through the runner. The KVM backend calls `runner::run`, and only
 /// the `machine-runner` command builds a machine for a run: `kvm::machine_run` has one caller, and
 /// the only other machine in the monitor is the host probe's fixed sequences.

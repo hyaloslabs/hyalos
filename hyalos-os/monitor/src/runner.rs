@@ -697,11 +697,25 @@ impl Calls for Channel {
     }
 }
 
+/// Closes every descriptor above standard error. The holder opens its own with close-on-exec, but
+/// whatever started the holder may have left it others without (a CI agent's or a jobserver's
+/// pipes, a shell's redirection), and a process inherits those through every `exec`. The runner
+/// holds nothing but its channel and KVM, so it drops them before it opens anything. `false` when
+/// the host cannot close them (`close_range` needs Linux 5.9), and the runner then refuses.
+fn close_inherited() -> bool {
+    // SAFETY: a plain system call. Nothing in this process owns a descriptor above 2 yet: the
+    // runtime opens none, and this runs before the runner opens KVM or copies its channel.
+    unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) == 0 }
+}
+
 /// `task-kernel machine-runner [--check | --trace]`, the runner's whole life. It opens KVM before
 /// any byte of the run arrives, then reads `Boot`, builds and runs the machine, and sends how it
 /// ended. With `--check` it exits after opening KVM: `0` when it could, `1` when not. `--trace`
 /// prints the machine's timings, for `HYALOS_TRACE`. Any other failure exits `2`.
 pub(crate) fn command(check: bool, trace: bool) -> u8 {
+    if !close_inherited() {
+        return 2;
+    }
     let kvm = kvm_ioctls::Kvm::new();
     if check {
         return u8::from(kvm.is_err());
