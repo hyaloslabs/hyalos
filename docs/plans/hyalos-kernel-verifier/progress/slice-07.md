@@ -51,6 +51,18 @@ All 363 hyalOS tests pass with `test-trust`.
 {"buildSignerURI":"https://github.com/hyaloslabs/hyalos/.github/workflows/release-verifier.yml@refs/heads/main","issuer":"https://token.actions.githubusercontent.com","runInvocationURI":"https://github.com/hyaloslabs/hyalos/actions/runs/45308242548/attempts/1","sourceRepositoryDigest":"2b3fe3aa055f2212e20e34e1f6207937cdcab5c6","sourceRepositoryRef":"refs/heads/main","sourceRepositoryURI":"https://github.com/hyaloslabs/hyalos","subjectAlternativeName":"https://github.com/hyaloslabs/hyalos/.github/workflows/release-verifier.yml@refs/heads/main"}
 ```
 
+## The first release
+
+Added on 2026-11-24, after this slice merged. It completes S-06.3.e1's download and tag steps, which needed a release.
+
+- **Tag:** the operator pushed `verifier-v0.1.0` at `eecae3b`, after #451 was settled. The release run, [45391056614](https://github.com/hyaloslabs/hyalos/actions/runs/45391056614), passed its evidence, build and publish jobs.
+- **Step 1:** `gh release download` fetched `hyalos-verify-x86_64-linux` and `SHA256SUMS`, and `sha256sum -c` passed. The binary's SHA-256 is `65a7ba1911df9357150e56ca22c584299e22b300f0828f460db08c3ffa2fef43`.
+- **Step 2:** `gh attestation verify` with `--source-ref refs/tags/verifier-v0.1.0` exits 0. Its certificate names that tag, commit `eecae3b` and run 45391056614. A copy with one changed byte exits 1, and so does the same copy checked against `refs/tags/verifier-v9.9.9`.
+- **Step 3:** `git clone --branch verifier-v0.1.0` followed by `.github/scripts/build-verifier.sh dist` rebuilt a byte-identical binary.
+- **Step 5:** the downloaded binary, run with an empty environment, verified the committed real record against the live public log. It printed `audit passed` with exit 0, and the 8 `not proven` lines the guide lists for a version 4 record.
+
+Step 4 has nothing to run. The run used the keys committed beside the record.
+
 ## Deviations
 
 | Plan said | Reality | Why | Contract affected |
@@ -64,4 +76,4 @@ All 363 hyalOS tests pass with `test-trust`.
 
 ## Discoveries
 
-- The first real `verifier-v*` tag is the operator's, and #451 must be settled before it.
+- The first real `verifier-v*` tag was the operator's, after #451 was settled. See **The first release**.
