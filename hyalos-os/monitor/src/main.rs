@@ -199,6 +199,8 @@ const PROBES: &[(&str, Reason)] = &[
     ("privilege: load an interrupt table (LIDT)", Reason::KernelFault),
     ("privilege: write a model-specific register (WRMSR)", Reason::KernelFault),
     ("privilege: halt (HLT)", Reason::KernelFault),
+    ("randomness: hardware randomness (RDRAND)", Reason::KernelFault),
+    ("randomness: read the processor ID (RDPID)", Reason::KernelFault),
 ];
 
 fn run_attacks(backend: &Backend, guest: &[u8], inputs: &[Vec<u8>]) -> Result<bool, String> {
@@ -511,6 +513,9 @@ mod live_tests;
 
 #[cfg(test)]
 mod ring_tests;
+
+#[cfg(test)]
+mod cpuid_tests;
 
 #[cfg(test)]
 mod profile_tests;

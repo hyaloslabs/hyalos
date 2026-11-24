@@ -3,10 +3,11 @@
 //! no network. It treats the kernel inside as untrusted, so a kernel taken over by a guest still
 //! has only the five requests below, each checked here. The kernel runs in ring 3 with no ring 0
 //! code beneath it (ADR-001 of `docs/plans/hyalos-kernel-core`), so it has no clock and no
-//! privileged instruction, and any fault ends the machine.
+//! privileged instruction, and any fault ends the machine. CPUID shows it only an allowed list, so
+//! it learns nothing of the host and `RDRAND` and `RDPID` fault.
 
 use crate::{Host, MAX_RESULT, Reason};
-use kvm_bindings::{KVM_MAX_CPUID_ENTRIES, kvm_dtable, kvm_regs, kvm_segment, kvm_sregs, kvm_userspace_memory_region};
+use kvm_bindings::{CpuId, KVM_MAX_CPUID_ENTRIES, Msrs, kvm_cpuid_entry2, kvm_dtable, kvm_msr_entry, kvm_regs, kvm_segment, kvm_sregs, kvm_userspace_memory_region};
 use kvm_ioctls::{Kvm, VcpuExit};
 use std::{
     ptr,
@@ -19,6 +20,7 @@ const KERNEL_HIGH: u64 = 0x70_0000;
 const GUEST_AT: u64 = 0x70_0000;
 const GUEST_MAX: u64 = 0x10_0000;
 const PORT: u16 = 0x1000;
+const APIC_BASE: u32 = 0x1b; // the `IA32_APIC_BASE` model-specific register
 // The only memory the monitor reads or writes on the kernel's behalf. A request block lives on the
 // kernel's stack or heap, and a buffer in the heap (where the guest's memory is). The monitor's own
 // view of memory ignores the kernel's page tables, so without this a request could aim the monitor
@@ -205,6 +207,26 @@ fn start_state(sregs: &mut kvm_sregs, entry: u64, guest_len: u64) -> kvm_regs {
     kvm_regs { rip: entry, rsp: RAM - 8, rflags: IOPL_3 | 2, rdi: GUEST_AT, rsi: guest_len, ..Default::default() }
 }
 
+/// The only CPUID the machine sees (`design.md` §2 of `docs/plans/hyalos-kernel-core`, the CPUID
+/// allow-list): four leaves, holding the highest basic and extended leaf numbers and the three
+/// feature bits the start state needs, `PAE`, long mode and `NX`, each only if the host has it.
+/// Every other bit and leaf reads as zero, or as leaf `1`'s filtered data where KVM answers a leaf
+/// past the highest one with it. So the vendor, model, brand and topology stay hidden, and with the
+/// `RDRAND`, `RDSEED`, `RDTSCP` and `RDPID` bits clear, KVM makes `RDRAND` and `RDPID` fault.
+fn allowed_cpuid(supported: &[kvm_cpuid_entry2]) -> Vec<kvm_cpuid_entry2> {
+    const PAE: u32 = 1 << 6; // leaf 1, EDX
+    const NX: u32 = 1 << 20; // leaf 0x8000_0001, EDX
+    const LONG_MODE: u32 = 1 << 29; // leaf 0x8000_0001, EDX
+    let edx = |function: u32| supported.iter().find(|e| e.function == function && e.index == 0).map_or(0, |e| e.edx);
+    let leaf = |function: u32, eax: u32, edx: u32| kvm_cpuid_entry2 { function, eax, edx, ..Default::default() };
+    vec![
+        leaf(0, 1, 0),
+        leaf(1, 0, edx(1) & PAE),
+        leaf(0x8000_0000, 0x8000_0001, 0),
+        leaf(0x8000_0001, 0, edx(0x8000_0001) & (NX | LONG_MODE)),
+    ]
+}
+
 enum Step {
     Reply(i64),
     Done(Vec<u8>, u64),
@@ -292,8 +314,15 @@ pub(crate) fn run(kernel: &[u8], guest: &[u8], mut host: Host, limit: Duration) 
     // SAFETY: the mapping outlives the machine: `ram` is dropped after `vm` and `vcpu`.
     unsafe { vm.set_user_memory_region(region) }.map_err(no)?;
     let mut vcpu = vm.create_vcpu(0).map_err(no)?;
-    let cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).map_err(no)?;
+    let supported = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).map_err(no)?;
+    let cpuid = CpuId::from_entries(&allowed_cpuid(supported.as_slice())).map_err(|_| Reason::NoKvm)?;
     vcpu.set_cpuid2(&cpuid).map_err(no)?;
+    // KVM shows leaf 1's `APIC` bit while the APIC base says enabled, though the machine has no
+    // interrupt controller. Disabling it keeps the bit clear, so CPUID holds only the list.
+    let apic_off = Msrs::from_entries(&[kvm_msr_entry { index: APIC_BASE, data: 0, ..Default::default() }]).map_err(|_| Reason::NoKvm)?;
+    if vcpu.set_msrs(&apic_off).map_err(no)? != 1 {
+        return Err(Reason::NoKvm);
+    }
 
     // Start in 64-bit ring 3: no firmware, no boot loader, no 16-bit code, no ring 0 code.
     let mut sregs = vcpu.get_sregs().map_err(no)?;
@@ -411,6 +440,73 @@ mod tests {
         assert_eq!((sregs.gdt.limit, sregs.idt.limit), (0, 0));
         assert_eq!(regs.rflags, 0x3002, "IOPL 3, interrupts off");
         assert_eq!((regs.rip, regs.rdi, regs.rsi), (0x10_1000, GUEST_AT, 5));
+    }
+
+    /// A host that offers every bit of every leaf, with a vendor and brand string of its own.
+    fn generous_host() -> Vec<kvm_cpuid_entry2> {
+        let all = |function: u32| kvm_cpuid_entry2 { function, eax: !0, ebx: !0, ecx: !0, edx: !0, ..Default::default() };
+        let text = |function: u32, words: [&[u8; 4]; 4]| {
+            let [eax, ebx, ecx, edx] = words.map(|w| u32::from_le_bytes(*w));
+            kvm_cpuid_entry2 { function, eax, ebx, ecx, edx, ..Default::default() }
+        };
+        let mut host: Vec<_> = [1, 4, 7, 0xb, 0xd, 0x4000_0000, 0x4000_0001, 0x8000_0001, 0x8000_0008].map(all).to_vec();
+        host.push(text(0, [b"\x20\0\0\0", b"Genu", b"ntel", b"ineI"]));
+        host.push(text(0x8000_0000, [b"\x08\0\0\x80", b"\0\0\0\0", b"\0\0\0\0", b"\0\0\0\0"]));
+        host.push(text(0x8000_0002, [b"Inte", b"l(R)", b" Cor", b"e(TM"]));
+        host.push(text(0x8000_0003, [b") i9", b"-139", b"00K ", b"CPU "]));
+        host.push(text(0x8000_0004, [b"@ 3.", b"00GH", b"z\0\0\0", b"\0\0\0\0"]));
+        host
+    }
+
+    fn words(list: &[kvm_cpuid_entry2], function: u32) -> Option<[u32; 4]> {
+        list.iter().find(|e| e.function == function).map(|e| [e.eax, e.ebx, e.ecx, e.edx])
+    }
+
+    /// From a host offering everything, the list keeps four leaves: the highest basic and
+    /// extended leaf numbers, `PAE` in leaf 1, and long mode and `NX` in leaf `0x8000_0001`.
+    #[test]
+    fn core_s_03_1_the_list_holds_only_the_allowed_leaves_and_bits() {
+        let list = allowed_cpuid(&generous_host());
+        let leaves: Vec<_> = list.iter().map(|e| (e.function, e.index, e.flags, e.padding)).collect();
+        assert_eq!(leaves, [0, 1, 0x8000_0000, 0x8000_0001].map(|f| (f, 0, 0, [0; 3])));
+        assert_eq!(words(&list, 0), Some([1, 0, 0, 0]), "highest basic leaf 1, vendor zeroed");
+        assert_eq!(words(&list, 1), Some([0, 0, 0, 1 << 6]), "only PAE");
+        assert_eq!(words(&list, 0x8000_0000), Some([0x8000_0001, 0, 0, 0]));
+        assert_eq!(words(&list, 0x8000_0001), Some([0, 0, 0, (1 << 29) | (1 << 20)]), "only long mode and NX");
+        for hidden in [7, 0xb, 0xd, 0x4000_0000] {
+            assert_eq!(words(&list, hidden), None, "leaf {hidden:#x}");
+        }
+    }
+
+    /// Leaf 1's `RDRAND` bit is clear even when the host has it.
+    #[test]
+    fn core_s_03_1_e1_leaf_1_has_no_rdrand_bit() {
+        let host = generous_host();
+        assert_ne!(words(&host, 1).unwrap()[2] & (1 << 30), 0);
+        assert_eq!(words(&allowed_cpuid(&host), 1).unwrap()[2] & (1 << 30), 0);
+    }
+
+    /// No brand leaf is given to the machine, and no word of the host's vendor or brand string
+    /// appears anywhere in the list.
+    #[test]
+    fn core_s_03_1_e2_no_brand_leaf_and_no_host_name() {
+        let host = generous_host();
+        let list = allowed_cpuid(&host);
+        let named: Vec<u32> = [0, 0x8000_0002, 0x8000_0003, 0x8000_0004].iter().flat_map(|&f| words(&host, f).unwrap()[1..].to_vec()).collect();
+        for entry in &list {
+            assert!(!(0x8000_0002..=0x8000_0004).contains(&entry.function));
+            for word in [entry.eax, entry.ebx, entry.ecx, entry.edx] {
+                assert!(word == 0 || !named.contains(&word), "{:#x} holds {word:#x}", entry.function);
+            }
+        }
+    }
+
+    /// A bit the host lacks is not offered, so a host without long mode refuses the start state
+    /// rather than pretending.
+    #[test]
+    fn core_s_03_1_a_bit_the_host_lacks_is_not_offered() {
+        let host: Vec<_> = generous_host().into_iter().filter(|e| e.function != 0x8000_0001).collect();
+        assert_eq!(words(&allowed_cpuid(&host), 0x8000_0001), Some([0; 4]));
     }
 
     /// Every entry on the way to a reachable page carries the user bit with its old rights, and
