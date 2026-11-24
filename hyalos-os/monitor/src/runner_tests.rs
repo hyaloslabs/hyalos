@@ -638,7 +638,8 @@ struct Seen {
     environ: Vec<u8>,
     cwd: String,
     parent: Option<u32>,
-    threads: usize,
+    /// Each thread's name, from `/proc/<pid>/task/<tid>/comm`.
+    threads: Vec<String>,
 }
 
 fn seen(pid: u32) -> Seen {
@@ -655,7 +656,15 @@ fn seen(pid: u32) -> Seen {
             .display()
             .to_string(),
         parent,
-        threads: fs::read_dir(format!("/proc/{pid}/task")).unwrap().count(),
+        threads: fs::read_dir(format!("/proc/{pid}/task"))
+            .unwrap()
+            .map(|t| {
+                fs::read_to_string(t.unwrap().path().join("comm"))
+                    .unwrap()
+                    .trim()
+                    .to_string()
+            })
+            .collect(),
     }
 }
 
@@ -699,9 +708,18 @@ fn core_s_04_1_e1_the_vcpu_runs_in_a_child_with_only_its_kvm_handles_and_the_cha
     );
     assert!(seen.environ.is_empty(), "the runner's environment is empty");
     assert_eq!(seen.cwd, "/");
+    // Newer host kernels run KVM's own workers, such as the NX huge page recovery, as tasks of the
+    // process that owns the machine. They are the kernel's, named `kvm-…`, and run no code of ours.
+    let ours: Vec<&String> = seen
+        .threads
+        .iter()
+        .filter(|name| !name.starts_with("kvm-"))
+        .collect();
     assert_eq!(
-        seen.threads, 1,
-        "one thread, the one running the virtual CPU"
+        ours,
+        ["task-kernel"],
+        "one thread of the runner's own, the one running the virtual CPU: {:?}",
+        seen.threads
     );
     let socket = seen
         .files
