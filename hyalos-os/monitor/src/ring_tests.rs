@@ -160,16 +160,16 @@ fn core_s_02_every_probe_ends_as_listed() {
     }
 }
 
-/// The raw hostile kernels the `attacks` command runs end as they did on the ring 0 kernel. The
-/// one that spins until the deadline is left to that command: the deadline's signal goes to the
-/// process, and in a test harness it reaches a thread other than the one running the machine.
+/// The raw hostile kernels the `attacks` command runs end as they did on the ring 0 kernel. Since
+/// the holder keeps the deadline (Slice 6), the one that spins until it is here too: before, the
+/// deadline's signal went to the process, and in a test harness it reached another thread.
 #[test]
 fn core_s_02_every_hostile_kernel_ends_as_before_in_ring_3() {
     if kvm_backend("core_s_02 hostile kernels").is_none() {
         return;
     }
     let inputs = read_inputs(root().join("evidence/fixtures/issues.tsv").to_str().unwrap()).unwrap();
-    for (name, kernel, want) in hostile_kernels().into_iter().filter(|(_, _, want)| *want != Reason::Timeout) {
+    for (name, kernel, want) in hostile_kernels() {
         let hostile = Backend::Kvm { kernel, limit: Duration::from_secs(1) };
         assert_eq!(execute(&hostile, &[], inputs.clone(), Mode::Record { seed: 0 }).map(|_| ()), Err(want), "{name}");
     }

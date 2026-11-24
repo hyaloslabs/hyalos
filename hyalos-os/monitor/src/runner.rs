@@ -1,0 +1,665 @@
+//! The machine runner and its channel, `hyalos.runner/1` (ADR-003 and `design.md` §2 of
+//! `docs/plans/hyalos-kernel-core`).
+//!
+//! Every KVM run happens in a separate process, the machine runner: this program again, started
+//! with the hidden `machine-runner` command, an empty environment, `/` as its directory, standard
+//! output and error null, and one end of a Unix socket pair as its standard input. It opens KVM,
+//! reads one `Boot` frame, builds the machine and runs it, sending each of the kernel's requests to
+//! the holder and writing back the reply. It holds no credential, no file of the operator's and no
+//! tool.
+//!
+//! The holder is the process that started it. It keeps `Host`, the deadline, the model calls, the
+//! effect and the chain, and trusts nothing the runner sends: every frame is bounded, versioned
+//! and must come in its turn, every length is checked again against `Host`'s limits, and the
+//! single-effect rule is `Host`'s own. A frame that breaks any of this, and a runner that dies or
+//! closes the channel, ends the run with `KernelFault`; the deadline ends it with `Timeout`. Both
+//! are reasons a run already gave, so no record changes shape.
+//!
+//! A frame is a 4-byte little-endian length, counting every byte after it, then the version byte,
+//! the type byte and the fields.
+
+use crate::{
+    MAX_RESULT, Reason,
+    kvm::{self, Calls, GUEST_MAX, RECORD_MAX},
+};
+use hyalos_audit::{Host, Source};
+use std::{
+    io::{ErrorKind, Read, Write},
+    os::{
+        fd::{AsFd, OwnedFd},
+        unix::net::UnixStream,
+    },
+    path::PathBuf,
+    process::{Child, Command, Stdio},
+    time::{Duration, Instant},
+};
+
+/// The version byte of `hyalos.runner/1`.
+pub(crate) const VERSION: u8 = 1;
+
+/// The most bytes after the length field, by direction: the `Boot` frame, a reply (the heap's
+/// size, so any record the kernel could hold fits), and anything the runner sends (the largest
+/// effect body and a header).
+pub(crate) const BOOT_LIMIT: usize = 8 << 20;
+pub(crate) const REPLY_LIMIT: usize = (16 << 20) + 64;
+pub(crate) const REQUEST_LIMIT: usize = (64 << 10) + 64;
+
+/// The type bytes, in `design.md`'s order.
+pub(crate) const BOOT: u8 = 1;
+pub(crate) const REPLY: u8 = 2;
+pub(crate) const INPUT: u8 = 3;
+pub(crate) const PRE_INFER: u8 = 4;
+pub(crate) const PRE_EFFECT: u8 = 5;
+pub(crate) const INFER: u8 = 6;
+pub(crate) const EFFECT: u8 = 7;
+pub(crate) const FINISHED: u8 = 8;
+pub(crate) const FAILED: u8 = 9;
+
+/// Every reason, by the byte that carries it on the channel. The order is this table's own, not
+/// the `Reason` enum's, so reordering the enum changes nothing here. A new reason goes at the end.
+pub(crate) const REASONS: [Reason; 29] = [
+    Reason::InvalidModule,
+    Reason::BadImport,
+    Reason::BadExport,
+    Reason::OutOfFuel,
+    Reason::GuestTrap,
+    Reason::BadPointer,
+    Reason::TooLarge,
+    Reason::UnknownSchema,
+    Reason::UnknownEffect,
+    Reason::EffectLimit,
+    Reason::NoResult,
+    Reason::ReplayDiverged,
+    Reason::GuestMismatch,
+    Reason::KernelFault,
+    Reason::BadHypercall,
+    Reason::Timeout,
+    Reason::NoKvm,
+    Reason::ModelUnavailable,
+    Reason::ModelRefused,
+    Reason::NotaryUnreachable,
+    Reason::NotaryDeadline,
+    Reason::WrongNotaryKey,
+    Reason::ReleaseMismatch,
+    Reason::ProviderRefused,
+    Reason::NoAuthorisation,
+    Reason::AttemptsSpent,
+    Reason::CanaryHeld,
+    Reason::EffectFailed,
+    Reason::LedgerFailed,
+];
+
+/// The reasons a runner can end a run with: what the machine and the kernel's requests give. Any
+/// other reason in a `Failed` frame is a broken protocol, since only the holder decides the rest.
+pub(crate) const RUNNER_REASONS: [Reason; 11] = [
+    Reason::InvalidModule,
+    Reason::BadImport,
+    Reason::BadExport,
+    Reason::OutOfFuel,
+    Reason::GuestTrap,
+    Reason::NoResult,
+    Reason::BadPointer,
+    Reason::TooLarge,
+    Reason::KernelFault,
+    Reason::BadHypercall,
+    Reason::NoKvm,
+];
+
+fn reason_byte(reason: Reason) -> u8 {
+    REASONS
+        .iter()
+        .position(|r| *r == reason)
+        .map_or(u8::MAX, |at| at as u8)
+}
+
+fn reason_of(byte: u8) -> Option<Reason> {
+    REASONS.get(usize::from(byte)).copied()
+}
+
+/// One frame's bytes, length field included.
+pub(crate) fn frame(kind: u8, fields: &[&[u8]]) -> Vec<u8> {
+    let len: usize = 2 + fields.iter().map(|f| f.len()).sum::<usize>();
+    let mut out = Vec::with_capacity(4 + len);
+    out.extend_from_slice(&(len as u32).to_le_bytes());
+    out.extend_from_slice(&[VERSION, kind]);
+    for f in fields {
+        out.extend_from_slice(f);
+    }
+    out
+}
+
+/// The `Boot` frame: the kernel's length, the kernel and the guest. `None` when it is over its limit.
+pub(crate) fn boot(kernel: &[u8], guest: &[u8]) -> Option<Vec<u8>> {
+    let len = u32::try_from(kernel.len()).ok()?;
+    (2 + 4 + kernel.len() + guest.len() <= BOOT_LIMIT)
+        .then(|| frame(BOOT, &[&len.to_le_bytes(), kernel, guest]))
+}
+
+fn split_boot(fields: &[u8]) -> Option<(&[u8], &[u8])> {
+    let len = u32::from_le_bytes(fields.get(..4)?.try_into().ok()?) as usize;
+    let rest = &fields[4..];
+    (len <= rest.len()).then(|| rest.split_at(len))
+}
+
+/// What the runner sends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Request {
+    Input(i32),
+    PreInfer(i32),
+    PreEffect(i32),
+    Infer(i32, Vec<u8>),
+    Effect(i32, Vec<u8>),
+    Finished(Vec<u8>, u64),
+    Failed(Reason),
+}
+
+fn word(bytes: &[u8]) -> Option<i32> {
+    Some(i32::from_le_bytes(bytes.get(..4)?.try_into().ok()?))
+}
+
+fn exactly_word(bytes: &[u8]) -> Option<i32> {
+    (bytes.len() == 4).then(|| word(bytes))?
+}
+
+impl Request {
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        match self {
+            Request::Input(index) => frame(INPUT, &[&index.to_le_bytes()]),
+            Request::PreInfer(schema) => frame(PRE_INFER, &[&schema.to_le_bytes()]),
+            Request::PreEffect(kind) => frame(PRE_EFFECT, &[&kind.to_le_bytes()]),
+            Request::Infer(schema, question) => frame(INFER, &[&schema.to_le_bytes(), question]),
+            Request::Effect(kind, body) => frame(EFFECT, &[&kind.to_le_bytes(), body]),
+            Request::Finished(result, fuel) => frame(FINISHED, &[&fuel.to_le_bytes(), result]),
+            Request::Failed(reason) => frame(FAILED, &[&[reason_byte(*reason)]]),
+        }
+    }
+
+    /// `None` for an unknown type or fields of the wrong shape.
+    pub(crate) fn decode(kind: u8, fields: &[u8]) -> Option<Self> {
+        Some(match kind {
+            INPUT => Request::Input(exactly_word(fields)?),
+            PRE_INFER => Request::PreInfer(exactly_word(fields)?),
+            PRE_EFFECT => Request::PreEffect(exactly_word(fields)?),
+            INFER => Request::Infer(word(fields)?, fields[4..].to_vec()),
+            EFFECT => Request::Effect(word(fields)?, fields[4..].to_vec()),
+            FINISHED => Request::Finished(
+                fields.get(8..)?.to_vec(),
+                u64::from_le_bytes(fields.get(..8)?.try_into().ok()?),
+            ),
+            FAILED => match fields {
+                [byte] => Request::Failed(reason_of(*byte)?),
+                _ => return None,
+            },
+            _ => return None,
+        })
+    }
+}
+
+/// What the holder answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Reply {
+    /// A record's length, and its bytes unless it is longer than the heap.
+    Record(u64, Vec<u8>),
+    NoRecord,
+    Limit(u64),
+    Label(i32),
+    Ok,
+    Refused(Reason),
+}
+
+impl Reply {
+    /// The reply for a record. A record longer than the heap could never be written into the
+    /// kernel's memory, so only its length is sent, which is all `answer` needs to refuse it.
+    fn record(record: &[u8]) -> Self {
+        let len = record.len() as u64;
+        Reply::Record(
+            len,
+            if len > RECORD_MAX {
+                Vec::new()
+            } else {
+                record.to_vec()
+            },
+        )
+    }
+
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        match self {
+            Reply::Record(len, bytes) => frame(REPLY, &[&[0], &len.to_le_bytes(), bytes]),
+            Reply::NoRecord => frame(REPLY, &[&[1]]),
+            Reply::Limit(max) => frame(REPLY, &[&[2], &max.to_le_bytes()]),
+            Reply::Label(label) => frame(REPLY, &[&[3], &label.to_le_bytes()]),
+            Reply::Ok => frame(REPLY, &[&[4]]),
+            Reply::Refused(reason) => frame(REPLY, &[&[5, reason_byte(*reason)]]),
+        }
+    }
+
+    pub(crate) fn decode(kind: u8, fields: &[u8]) -> Option<Self> {
+        if kind != REPLY {
+            return None;
+        }
+        let (&tag, rest) = fields.split_first()?;
+        Some(match (tag, rest) {
+            (0, _) => {
+                let len = u64::from_le_bytes(rest.get(..8)?.try_into().ok()?);
+                let bytes = &rest[8..];
+                let whole = bytes.len() as u64 == len || (bytes.is_empty() && len > RECORD_MAX);
+                whole.then(|| Reply::Record(len, bytes.to_vec()))?
+            }
+            (1, []) => Reply::NoRecord,
+            (2, _) => Reply::Limit(u64::from_le_bytes(rest.try_into().ok()?)),
+            (3, _) => Reply::Label(exactly_word(rest)?),
+            (4, []) => Reply::Ok,
+            (5, [byte]) => Reply::Refused(reason_of(*byte)?),
+            _ => return None,
+        })
+    }
+}
+
+/// Why a frame could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Broken {
+    /// The deadline passed first.
+    Late,
+    /// The channel closed, failed, or carried a frame over its limit or of another version.
+    Fault,
+}
+
+impl Broken {
+    fn reason(self) -> Reason {
+        match self {
+            Broken::Late => Reason::Timeout,
+            Broken::Fault => Reason::KernelFault,
+        }
+    }
+}
+
+/// Fills `buf`, waiting no later than `deadline` when there is one.
+fn read_full(
+    stream: &mut UnixStream,
+    buf: &mut [u8],
+    deadline: Option<Instant>,
+) -> Result<(), Broken> {
+    let mut got = 0;
+    while got < buf.len() {
+        if let Some(deadline) = deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(Broken::Late);
+            }
+            stream
+                .set_read_timeout(Some(left))
+                .map_err(|_| Broken::Fault)?;
+        }
+        match stream.read(&mut buf[got..]) {
+            Ok(0) => return Err(Broken::Fault),
+            Ok(n) => got += n,
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            // The timeout: the loop sees whether the deadline has passed.
+            Err(error)
+                if deadline.is_some()
+                    && matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+            Err(_) => return Err(Broken::Fault),
+        }
+    }
+    Ok(())
+}
+
+/// Reads one frame of at most `limit` bytes after its length, and returns its type and fields.
+/// Nothing past the length field is read from a frame over the limit.
+pub(crate) fn read_frame(
+    stream: &mut UnixStream,
+    limit: usize,
+    deadline: Option<Instant>,
+) -> Result<(u8, Vec<u8>), Broken> {
+    let mut len = [0u8; 4];
+    read_full(stream, &mut len, deadline)?;
+    let len = u32::from_le_bytes(len) as usize;
+    if !(2..=limit).contains(&len) {
+        return Err(Broken::Fault);
+    }
+    let mut body = vec![0u8; len];
+    read_full(stream, &mut body, deadline)?;
+    if body[0] != VERSION {
+        return Err(Broken::Fault);
+    }
+    let fields = body.split_off(2);
+    Ok((body[1], fields))
+}
+
+fn write_frame(stream: &mut UnixStream, bytes: &[u8], deadline: Instant) -> Result<(), Reason> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(Reason::Timeout);
+    }
+    stream
+        .set_write_timeout(Some(left))
+        .map_err(|_| Reason::KernelFault)?;
+    stream.write_all(bytes).map_err(|error| {
+        if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
+            Reason::Timeout
+        } else {
+            Reason::KernelFault
+        }
+    })
+}
+
+/// Whose turn it is on the channel.
+#[derive(Clone, Copy)]
+enum Turn {
+    /// The runner may send a request, `Finished` or `Failed`.
+    Request,
+    /// The question of this type, at most this long, or the runner's own refusal of its bytes.
+    Infer(i32, usize),
+    /// The effect of this kind, at most this long, or the runner's own refusal of its bytes.
+    Effect(i32, usize),
+}
+
+/// How the holder's side of a run went, beside its outcome, for `HYALOS_TRACE`.
+#[derive(Default)]
+pub(crate) struct Timing {
+    pub(crate) first: Option<Instant>,
+    pub(crate) requests: u32,
+    pub(crate) in_host: Duration,
+}
+
+/// The holder's side of one run: sends `boot`, then answers the runner through `host` until the
+/// run ends, no later than `deadline`. The runner is trusted with nothing: what it sends is
+/// checked here again, in the order `kvm.rs`'s `answer` asks, so every reason stays the same.
+pub(crate) fn serve<S: Source>(
+    stream: &mut UnixStream,
+    boot: &[u8],
+    mut host: Host<S>,
+    deadline: Instant,
+    timing: &mut Timing,
+) -> Result<(Host<S>, Vec<u8>, u64), Reason> {
+    // A runner that refused before reading says why in its first frame, so a failed write is not
+    // the end: the next read tells.
+    if write_frame(stream, boot, deadline) == Err(Reason::Timeout) {
+        return Err(Reason::Timeout);
+    }
+    let mut turn = Turn::Request;
+    loop {
+        let (kind, fields) =
+            read_frame(stream, REQUEST_LIMIT, Some(deadline)).map_err(Broken::reason)?;
+        timing.first.get_or_insert_with(Instant::now);
+        timing.requests += 1;
+        let request = Request::decode(kind, &fields).ok_or(Reason::KernelFault)?;
+        let before = Instant::now();
+        let reply = match (turn, request) {
+            (Turn::Request, Request::Input(index)) => {
+                host.input(index).map_or(Reply::NoRecord, Reply::record)
+            }
+            (Turn::Request, Request::PreInfer(schema)) => match host.pre_infer(schema) {
+                Ok(max) => {
+                    turn = Turn::Infer(schema, max);
+                    Reply::Limit(max as u64)
+                }
+                Err(reason) => return refuse(stream, reason, deadline),
+            },
+            (Turn::Request, Request::PreEffect(kind)) => match host.pre_effect(kind) {
+                Ok(max) => {
+                    turn = Turn::Effect(kind, max);
+                    Reply::Limit(max as u64)
+                }
+                Err(reason) => return refuse(stream, reason, deadline),
+            },
+            (Turn::Infer(schema, max), Request::Infer(asked, question))
+                if asked == schema && question.len() <= max =>
+            {
+                turn = Turn::Request;
+                match host.infer(schema, &question) {
+                    Ok(label) => Reply::Label(label),
+                    Err(reason) => return refuse(stream, reason, deadline),
+                }
+            }
+            (Turn::Effect(kind, max), Request::Effect(asked, body))
+                if asked == kind && body.len() <= max =>
+            {
+                turn = Turn::Request;
+                match host.effect(kind, &body) {
+                    Ok(()) => Reply::Ok,
+                    Err(reason) => return refuse(stream, reason, deadline),
+                }
+            }
+            (Turn::Request, Request::Finished(result, fuel)) if result.len() <= MAX_RESULT => {
+                return Ok((host, result, fuel));
+            }
+            (Turn::Request, Request::Failed(reason)) if RUNNER_REASONS.contains(&reason) => {
+                return Err(reason);
+            }
+            // Between a type check and the bytes, the runner may only refuse the bytes themselves.
+            (
+                Turn::Infer(..) | Turn::Effect(..),
+                Request::Failed(reason @ (Reason::TooLarge | Reason::BadPointer)),
+            ) => return Err(reason),
+            _ => return Err(Reason::KernelFault),
+        };
+        timing.in_host += before.elapsed();
+        write_frame(stream, &reply.encode(), deadline)?;
+    }
+}
+
+/// Tells the runner the run is refused, and ends it with that reason.
+fn refuse<T>(stream: &mut UnixStream, reason: Reason, deadline: Instant) -> Result<T, Reason> {
+    let _ = write_frame(stream, &Reply::Refused(reason).encode(), deadline);
+    Err(reason)
+}
+
+/// A started machine runner and the holder's end of its channel.
+pub(crate) struct Runner {
+    pub(crate) child: Child,
+    pub(crate) stream: UnixStream,
+}
+
+/// This program, which holds the `machine-runner` command. A test harness is not this program, so
+/// its tests use the `task-kernel` binary built beside it. No environment variable chooses it.
+fn program() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    if cfg!(test) {
+        Some(exe.parent()?.parent()?.join("task-kernel"))
+    } else {
+        Some(exe)
+    }
+}
+
+/// Starts a machine runner with `args` after the command. It inherits nothing but its channel.
+/// With `--trace` alone its standard error is this program's, for `HYALOS_TRACE`'s timings.
+pub(crate) fn start(args: &[&str]) -> Option<Runner> {
+    let (holder, runner) = UnixStream::pair().ok()?;
+    let child = Command::new(program()?)
+        .arg("machine-runner")
+        .args(args)
+        .env_clear()
+        .current_dir("/")
+        .stdin(Stdio::from(OwnedFd::from(runner)))
+        .stdout(Stdio::null())
+        .stderr(if args == ["--trace"] {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
+        })
+        .spawn()
+        .ok()?;
+    Some(Runner {
+        child,
+        stream: holder,
+    })
+}
+
+/// The threads reaping runners that have been killed, for `wait_for_runners`.
+static REAPERS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(Vec::new());
+
+impl Runner {
+    /// Kills the runner and reaps it on another thread: tearing a machine down takes the host
+    /// tens of milliseconds, and the run's outcome does not wait for it.
+    pub(crate) fn end(mut self) {
+        let _ = self.child.kill();
+        drop(self.stream);
+        let reaper = std::thread::spawn(move || {
+            let _ = self.child.wait();
+        });
+        if let Ok(mut reapers) = REAPERS.lock() {
+            reapers.push(reaper);
+        }
+    }
+}
+
+/// Waits until every runner this program started is gone, so the program never exits while one
+/// of its machines is still being torn down.
+pub(crate) fn wait_for_runners() {
+    let reapers = REAPERS
+        .lock()
+        .map(|mut reapers| std::mem::take(&mut *reapers))
+        .unwrap_or_default();
+    for reaper in reapers {
+        let _ = reaper.join();
+    }
+}
+
+/// One KVM run, on a machine runner (the holder's whole side). The guest-size check comes first,
+/// as it did when the monitor ran the machine itself.
+pub(crate) fn run<S: Source>(
+    kernel: &[u8],
+    guest: &[u8],
+    host: Host<S>,
+    limit: Duration,
+) -> Result<(Host<S>, Vec<u8>, u64), Reason> {
+    let trace = std::env::var_os("HYALOS_TRACE").is_some();
+    let t0 = Instant::now();
+    let deadline = t0 + limit;
+    if guest.len() as u64 > GUEST_MAX {
+        return Err(Reason::TooLarge);
+    }
+    let boot = boot(kernel, guest).ok_or(Reason::KernelFault)?;
+    let mut runner = start(if trace { &["--trace"] } else { &[] }).ok_or(Reason::KernelFault)?;
+    let started = t0.elapsed();
+    let mut timing = Timing::default();
+    let outcome = serve(&mut runner.stream, &boot, host, deadline, &mut timing);
+    runner.end();
+    if trace && outcome.is_ok() {
+        let ms = |d: Duration| d.as_secs_f64() * 1e3;
+        let first = timing.first.map_or(Duration::ZERO, |first| first - t0);
+        eprintln!(
+            "trace ms: runner started {:.2}, start to first call {:.2}, calls {:.2} ({} requests, {:.2} in host), total {:.2}",
+            ms(started),
+            ms(first),
+            ms(t0.elapsed() - first),
+            timing.requests,
+            ms(timing.in_host),
+            ms(t0.elapsed())
+        );
+    }
+    outcome
+}
+
+/// Whether a machine runner starts here and can open KVM (`machine-runner --check`). A `live` run
+/// asks before its intent link is written, so a host that cannot run the machine writes no link.
+pub(crate) fn check() -> Result<(), &'static str> {
+    let mut runner = start(&["--check"]).ok_or("the machine runner cannot be started")?;
+    let started = Instant::now();
+    loop {
+        match runner.child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(None) if started.elapsed() < Duration::from_secs(10) => {
+                std::thread::sleep(Duration::from_millis(2))
+            }
+            _ => {
+                runner.end();
+                return Err("the machine runner cannot open KVM");
+            }
+        }
+    }
+}
+
+/// The runner's side of the channel: each request is one frame to the holder and one reply back.
+struct Channel(UnixStream);
+
+impl Channel {
+    fn ask(&mut self, request: Request) -> Result<Reply, Reason> {
+        self.0
+            .write_all(&request.encode())
+            .map_err(|_| Reason::KernelFault)?;
+        let (kind, fields) =
+            read_frame(&mut self.0, REPLY_LIMIT, None).map_err(|_| Reason::KernelFault)?;
+        match Reply::decode(kind, &fields).ok_or(Reason::KernelFault)? {
+            Reply::Refused(reason) => Err(reason),
+            reply => Ok(reply),
+        }
+    }
+
+    fn limit(&mut self, request: Request) -> Result<usize, Reason> {
+        match self.ask(request)? {
+            Reply::Limit(max) => usize::try_from(max).map_err(|_| Reason::KernelFault),
+            _ => Err(Reason::KernelFault),
+        }
+    }
+}
+
+impl Calls for Channel {
+    fn input(&mut self, index: i32) -> Result<Option<(u64, Vec<u8>)>, Reason> {
+        match self.ask(Request::Input(index))? {
+            Reply::Record(len, bytes) => Ok(Some((len, bytes))),
+            Reply::NoRecord => Ok(None),
+            _ => Err(Reason::KernelFault),
+        }
+    }
+
+    fn pre_infer(&mut self, schema: i32) -> Result<usize, Reason> {
+        self.limit(Request::PreInfer(schema))
+    }
+
+    fn infer(&mut self, schema: i32, question: &[u8]) -> Result<i32, Reason> {
+        match self.ask(Request::Infer(schema, question.to_vec()))? {
+            Reply::Label(label) => Ok(label),
+            _ => Err(Reason::KernelFault),
+        }
+    }
+
+    fn pre_effect(&mut self, kind: i32) -> Result<usize, Reason> {
+        self.limit(Request::PreEffect(kind))
+    }
+
+    fn effect(&mut self, kind: i32, body: &[u8]) -> Result<(), Reason> {
+        match self.ask(Request::Effect(kind, body.to_vec()))? {
+            Reply::Ok => Ok(()),
+            _ => Err(Reason::KernelFault),
+        }
+    }
+}
+
+/// `task-kernel machine-runner [--check | --trace]`, the runner's whole life. It opens KVM before
+/// any byte of the run arrives, then reads `Boot`, builds and runs the machine, and sends how it
+/// ended. With `--check` it exits after opening KVM: `0` when it could, `1` when not. `--trace`
+/// prints the machine's timings, for `HYALOS_TRACE`. Any other failure exits `2`.
+pub(crate) fn command(check: bool, trace: bool) -> u8 {
+    let kvm = kvm_ioctls::Kvm::new();
+    if check {
+        return u8::from(kvm.is_err());
+    }
+    let Ok(channel) = std::io::stdin().as_fd().try_clone_to_owned() else {
+        return 2;
+    };
+    let mut channel = Channel(UnixStream::from(channel));
+    let Ok((BOOT, fields)) = read_frame(&mut channel.0, BOOT_LIMIT, None) else {
+        return 2;
+    };
+    let Some((kernel, guest)) = split_boot(&fields) else {
+        return 2;
+    };
+    kvm::machine_run(
+        kvm.ok(),
+        kernel,
+        guest,
+        &mut channel,
+        trace,
+        |channel, outcome| {
+            let ended = match outcome {
+                Ok((result, fuel)) => Request::Finished(result, fuel),
+                Err(reason) => Request::Failed(reason),
+            };
+            let _ = channel.0.write_all(&ended.encode());
+        },
+    );
+    0
+}

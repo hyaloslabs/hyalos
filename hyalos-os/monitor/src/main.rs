@@ -5,12 +5,14 @@
 //! transcript, and `replay` re-executes the guest from that transcript and demands identical bytes.
 //!
 //! Two backends run the same guest under the same rules: an ordinary process, and a bare-metal
-//! kernel booted on KVM (`kvm.rs`, chosen by setting `HYALOS_KERNEL` to the kernel image).
+//! kernel booted on KVM (`kvm.rs`, chosen by setting `HYALOS_KERNEL` to the kernel image). A KVM
+//! run's machine is owned by a separate process, the machine runner (`runner.rs`).
 
 mod kvm;
 mod ledger;
 mod live;
 mod probe_host;
+mod runner;
 
 #[allow(unused_imports)]
 pub(crate) use hyalos_audit::{
@@ -99,7 +101,8 @@ fn on_backend(backend: &Backend, guest: &[u8], host: Host, profile: &'static hya
         Backend::Process => hyalos_audit::in_process(guest, host, profile),
         // The kernel image is built with this one profile, so it cannot run under another.
         Backend::Kvm { .. } if profile.name != hyalos_profile::PROFILE_1.name => Err(Reason::ReplayDiverged),
-        Backend::Kvm { kernel, limit } => kvm::run(kernel, guest, host, *limit),
+        // The machine runs in its own process, the machine runner (`runner.rs`).
+        Backend::Kvm { kernel, limit } => runner::run(kernel, guest, host, *limit),
     }
 }
 
@@ -424,6 +427,10 @@ fn main_inner() -> Result<bool, String> {
             if !live::record_is_fresh(arg(4)?) {
                 return Err("the record path is already in use".into());
             }
+            // A host that cannot start the machine runner refuses here, before any chain link.
+            if matches!(backend, Backend::Kvm { .. }) {
+                runner::check()?;
+            }
             // `stub` as the repository runs the same committed flow with the stand-in model and no
             // real notification, so the chain can be exercised without a credential.
             let mode = if arg(5)? == "stub" {
@@ -551,7 +558,20 @@ fn main() -> ExitCode {
     if env::args().nth(1).as_deref() == Some("probe-host") {
         return ExitCode::from(probe_host::command());
     }
-    match main_inner() {
+    // The machine runner, started by this program for each KVM run (`runner.rs`). Not listed in
+    // the usage: only this program starts it.
+    if env::args().nth(1).as_deref() == Some("machine-runner") {
+        let (check, trace) = match (env::args().nth(2).as_deref(), env::args().count()) {
+            (None, _) => (false, false),
+            (Some("--check"), 3) => (true, false),
+            (Some("--trace"), 3) => (false, true),
+            _ => return ExitCode::from(2),
+        };
+        return ExitCode::from(runner::command(check, trace));
+    }
+    let outcome = main_inner();
+    runner::wait_for_runners();
+    match outcome {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(message) => {
@@ -578,6 +598,9 @@ mod profile_tests;
 
 #[cfg(test)]
 mod probe_host_tests;
+
+#[cfg(test)]
+mod runner_tests;
 
 #[cfg(test)]
 mod report_tests {
