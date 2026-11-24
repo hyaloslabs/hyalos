@@ -15,7 +15,16 @@ sha256sum -c SHA256SUMS
 chmod +x hyalos-verify-x86_64-linux
 ```
 
-If no verifier release exists yet, build it from source as in step 3, from the commit you were asked to trust.
+If no verifier release exists yet, there is nothing to download or attest, so skip steps 2 and 3 and build it from the commit you were asked to trust, with Docker:
+
+```
+git clone https://github.com/hyaloslabs/hyalos
+cd hyalos
+git checkout <commit>
+.github/scripts/build-verifier.sh dist
+```
+
+The program is `dist/hyalos-verify-x86_64-linux`. Use that path in step 5.
 
 ## 2. Confirm it came from this repository's release workflow
 
@@ -25,7 +34,7 @@ This needs `gh` 2.68 or later and uses no Hyalos tool:
 gh attestation verify hyalos-verify-x86_64-linux --repo hyaloslabs/hyalos --signer-workflow hyaloslabs/hyalos/.github/workflows/release-verifier.yml --source-ref "refs/tags/$tag"
 ```
 
-A copy with one changed byte, or one built anywhere else, fails this check. Do not use a copy that fails it.
+A copy whose bytes differ from the attested build, by even one byte, fails this check. Do not use a copy that fails it.
 
 ## 3. Rebuild it, if you do not want to trust GitHub
 
@@ -38,7 +47,7 @@ cd hyalos
 cat dist/SHA256SUMS
 ```
 
-The hash must equal the one in the release's `SHA256SUMS`. The build uses a Rust image named by digest and a pinned C compiler, so the directory you build in does not change the result.
+The hash must equal the one in the release's `SHA256SUMS`. The rebuilt program is `dist/hyalos-verify-x86_64-linux`, so use that path in step 5 if you run your own build. The build uses a Rust image named by digest and a pinned C compiler, so the directory you build in does not change the result.
 
 `hyalos-verify-x86_64-linux --version` prints the version, the source commit and the record versions it reads.
 
@@ -59,6 +68,8 @@ A pass holds only under the keys you give it. If the operator chose either key f
 ```
 ./hyalos-verify-x86_64-linux record.json links --operator-public operator.pub --notary-public notary.pub --guest guest.wasm
 ```
+
+A version 1 record needs `--legacy-v1` and no `--guest`.
 
 It asks the public log which entries it holds under the operator's key, so it needs network access to `rekor.sigstore.dev`.
 
