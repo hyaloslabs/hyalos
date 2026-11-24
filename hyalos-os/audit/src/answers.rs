@@ -3,14 +3,14 @@
 use crate::failure::Failure;
 use crate::files::{FileError, FileKind, Files};
 use crate::record::*;
+use attest_check::{Refusal, Trust};
 use std::path::Path;
 
 macro_rules! refused {
     ($($arg:tt)*) => { Failure::refused(format!($($arg)*)) };
 }
 
-/// The settings that point verify at a stand-in. They are the only part of this process's
-/// environment it is given, so it reads no home directory and no credential.
+/// The settings that point the check at a stand-in provider, in a test build only.
 #[cfg(feature = "test-trust")]
 const TRUST_SETTINGS: [&str; 3] = [
     "HYALOS_TRUST_SERVER_NAME",
@@ -18,26 +18,68 @@ const TRUST_SETTINGS: [&str; 3] = [
     "HYALOS_TRUST_PROVIDER_ADDRESS",
 ];
 
-/// The verify program the auditor built, and the trust settings it runs under.
+/// Whom the presentation check trusts to be the provider.
 pub struct Verifier {
-    pub program: String,
-    pub trust: Vec<(String, std::ffi::OsString)>,
+    pub trust: Trust,
 }
 
 impl Verifier {
-    /// Without `test-trust` this reads no setting, so the child runs with none of them.
-    pub fn from_env(program: &str) -> Self {
-        #[cfg(feature = "test-trust")]
-        let trust = TRUST_SETTINGS
+    /// The real provider's trust.
+    pub fn real() -> Self {
+        Self {
+            trust: Trust::real(),
+        }
+    }
+
+    /// The trust this process is configured for. Without `test-trust` this reads no setting.
+    #[cfg(not(feature = "test-trust"))]
+    pub fn from_env() -> Result<Self, Failure> {
+        Ok(Self::real())
+    }
+
+    /// The trust this process is configured for, from its stand-in settings.
+    #[cfg(feature = "test-trust")]
+    pub fn from_env() -> Result<Self, Failure> {
+        let settings: Vec<(String, std::ffi::OsString)> = TRUST_SETTINGS
             .iter()
             .filter_map(|name| Some((name.to_string(), std::env::var_os(name)?)))
             .collect();
-        #[cfg(not(feature = "test-trust"))]
-        let trust = Vec::new();
-        Self {
-            program: program.to_string(),
-            trust,
+        Self::from_settings(&settings)
+    }
+
+    /// A stand-in's trust. A setting that is present but unusable never falls back to the real one.
+    #[cfg(feature = "test-trust")]
+    pub fn from_settings(settings: &[(String, std::ffi::OsString)]) -> Result<Self, Failure> {
+        let set = |name: &str| -> Result<Option<String>, Failure> {
+            match settings.iter().find(|(held, _)| held == name) {
+                None => Ok(None),
+                Some((_, value)) => value
+                    .to_str()
+                    .map(|text| Some(text.to_string()).filter(|text| !text.is_empty()))
+                    .ok_or_else(|| Failure::inconclusive("a trust setting is not text")),
+            }
+        };
+        let (server, root, address) = (
+            set("HYALOS_TRUST_SERVER_NAME")?,
+            set("HYALOS_TRUST_ROOT")?,
+            set("HYALOS_TRUST_PROVIDER_ADDRESS")?,
+        );
+        let test = server.is_some() || root.is_some() || address.is_some();
+        let mut trust = Trust::real();
+        trust.test = test;
+        if let Some(server) = server {
+            trust.address = format!("{server}:443");
+            trust.server = server;
         }
+        if let Some(address) = address {
+            trust.address = address;
+        }
+        if let Some(file) = root {
+            let der = std::fs::read(file)
+                .map_err(|_| Failure::inconclusive("cannot read the test root"))?;
+            trust.roots.push(der);
+        }
+        Ok(Self { trust })
     }
 }
 
@@ -159,26 +201,15 @@ pub fn witnessed(
                 "answer {index}: the attestation is not the one the record names"
             ));
         }
-        let output = std::process::Command::new(&verifier.program)
-            .args(["verify", &file, notary])
-            .env_clear()
-            .envs(verifier.trust.iter().map(|(name, value)| (name, value)))
-            .output()
-            .map_err(|_| Failure::inconclusive("cannot run the verify program"))?;
-        if !output.status.success() {
-            // Only compared, never shown: the program's text stays out of the report.
-            let untrusted = String::from_utf8_lossy(&output.stderr).contains("not the trusted one");
-            return Err(refused!(
+        let seen = attest_check::check(&bytes, notary, &verifier.trust).map_err(|refusal| {
+            refused!(
                 "answer {index}: {}",
-                if untrusted {
-                    "not attested by the trusted notary"
-                } else {
-                    "the attestation does not verify"
+                match refusal {
+                    Refusal::UntrustedNotary => "not attested by the trusted notary",
+                    Refusal::Invalid => "the attestation does not verify",
                 }
-            ));
-        }
-        let seen: serde_json::Value = serde_json::from_slice(&output.stdout)
-            .map_err(|_| Failure::inconclusive("cannot read the verdict"))?;
+            )
+        })?;
         let named =
             run.get_or_insert_with(|| seen["intent_hash"].as_str().unwrap_or_default().to_string());
         check_answer(&seen, answer, index, named, chain.map(|(_, window)| window))?;

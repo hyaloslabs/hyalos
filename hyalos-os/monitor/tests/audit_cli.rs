@@ -44,7 +44,6 @@ impl Rig {
         let key = trusted.lines().nth(106).unwrap().split('"').nth(3).unwrap().to_string();
         fs::write(root.join("log.pub"), format!("-----BEGIN PUBLIC KEY-----\n{key}\n-----END PUBLIC KEY-----\n")).unwrap();
         fs::write(root.join("notary.pub"), format!("02{}\n", "11".repeat(32))).unwrap();
-        fs::write(root.join("verify"), "").unwrap();
         Self(root)
     }
 
@@ -52,8 +51,8 @@ impl Rig {
         self.0.join(name).display().to_string()
     }
 
-    fn keys(&self) -> [String; 6] {
-        ["--operator-public".to_string(), self.path("operator.pub"), "--notary-public".to_string(), self.path("notary.pub"), "--verify".to_string(), self.path("verify")]
+    fn keys(&self) -> [String; 4] {
+        ["--operator-public".to_string(), self.path("operator.pub"), "--notary-public".to_string(), self.path("notary.pub")]
     }
 
     fn audit(&self, extra: &[String], kernel: Option<&str>) -> Output {
@@ -110,19 +109,14 @@ fn s_04_1_a_missing_public_key_is_refused_and_named() {
 }
 
 #[test]
-fn t_5_1_no_notary_setting_replaces_the_key_and_no_verify_program_is_taken_from_the_environment() {
+fn t_5_1_no_notary_setting_replaces_the_key() {
     let rig = Rig::new("t-5-1");
     let keys = rig.keys();
     let mut no_key = Command::new(env!("CARGO_BIN_EXE_task-kernel"));
-    no_key.arg("audit").arg(source("evidence/out/live2.json")).arg(rig.path("ledger")).args(&keys[..2]).args(&keys[4..]);
+    no_key.arg("audit").arg(source("evidence/out/live2.json")).arg(rig.path("ledger")).args(&keys[..2]);
     let refused = no_key.env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", rig.path("home")).env("HYALOS_NOTARY", "02").output().unwrap();
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("notary's public key is not given"));
-    let mut no_verify = Command::new(env!("CARGO_BIN_EXE_task-kernel"));
-    no_verify.arg("audit").arg(source("evidence/out/live2.json")).arg(rig.path("ledger")).args(&keys[..4]);
-    let refused = no_verify.env_clear().env("PATH", std::env::var("PATH").unwrap()).env("HOME", rig.path("home")).env("HYALOS_ATTEST", rig.path("verify")).output().unwrap();
-    assert!(!refused.status.success());
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("verify program is not given"));
 }
 
 #[test]
@@ -134,30 +128,22 @@ fn t_5_1_a_notary_key_that_is_not_a_signing_key_is_refused() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("not a signing public key"));
 }
 
+/// The audit runs no program, so the option that named one is gone from both commands.
 #[test]
-fn t_5_a_verify_program_named_without_a_slash_is_the_file_in_this_directory() {
-    use sha2::{Digest, Sha256};
-    use std::os::unix::fs::PermissionsExt;
-    let rig = Rig::new("t-5-bare");
-    fs::create_dir_all(rig.0.join("record.attest")).unwrap();
-    fs::write(rig.0.join("record.attest/000.presentation"), b"a presentation").unwrap();
-    let digest: String = Sha256::digest(b"a presentation").iter().map(|b| format!("{b:02x}")).collect();
-    let record = serde_json::json!({"version": 1, "guest_sha256": "g", "inputs_hex": [], "effects": [], "result_hex": "", "fuel_used": 1,
-        "answers": [{"schema": 0, "question_sha256": "q", "label": 0, "model": "m", "response_id": "r", "attestation": digest}]});
-    fs::write(rig.0.join("record"), record.to_string()).unwrap();
-    let ran = rig.0.join("ran");
-    let program = rig.0.join("my-verify");
-    fs::write(&program, format!("#!/bin/sh\n: > '{}'\nexit 1\n", ran.display())).unwrap();
-    fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_task-kernel"))
-        .args(["attested", "record", "--notary-public", &rig.path("notary.pub"), "--verify", "my-verify"])
-        .current_dir(&rig.0)
-        .env_clear()
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
-    assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "refused: answer 0: the attestation does not verify");
-    assert!(ran.exists(), "the file in this directory was not the program that ran");
+fn local_5_5_the_audit_no_longer_takes_a_verify_program() {
+    let rig = Rig::new("local-5-5");
+    for command in [vec!["audit", "record"], vec!["attested", "record"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_task-kernel"))
+            .args(&command)
+            .args(["--notary-public", &rig.path("notary.pub"), "--verify", "/bin/true"])
+            .current_dir(&rig.0)
+            .env_clear()
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unknown audit option"), "{command:?}");
+    }
 }
 
 #[test]
@@ -209,7 +195,7 @@ fn local_3_1_the_monitors_audit_gives_every_golden_report() {
             .arg(format!("{slice5}/operator.pub"))
             .arg("--notary-public")
             .arg(format!("{keys}/notary.pub"))
-            .args(["--verify", "target/release/attest", "--guest", "guest/digest.wasm"])
+            .args(["--guest", "guest/digest.wasm"])
             .current_dir(source(""))
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap())

@@ -1,5 +1,7 @@
 //! Runs the built `hyalos-verify` on one committed fixture.
 
+#![allow(dead_code)]
+
 use serde_json::Value;
 use std::{
     env, fs,
@@ -54,8 +56,6 @@ pub fn verify(dir: &Path) -> Output {
         .arg(at("operator.pub"))
         .arg("--notary-public")
         .arg(at("notary.pub"))
-        .arg("--verify")
-        .arg(built("attest"))
         .env_clear()
         .env("PATH", env::var("PATH").unwrap())
         .env("HOME", "/nonexistent")

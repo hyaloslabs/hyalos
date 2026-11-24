@@ -86,7 +86,6 @@ struct Check {
     log: String,
     operator: String,
     notary: String,
-    verify: String,
     guest: Option<String>,
     legacy: bool,
 }
@@ -99,7 +98,6 @@ impl Check {
             links,
             operator: at(&format!("{SLICE5}/operator.pub")),
             notary: at(&format!("{CANARY}/notary.pub")),
-            verify: at("target/release/attest"),
             guest: Some(at("guest/digest.wasm")),
             legacy: false,
         }
@@ -116,7 +114,6 @@ impl Check {
             .arg(&self.links)
             .args(["--operator-public", &self.operator])
             .args(["--notary-public", &self.notary])
-            .args(["--verify", &self.verify])
             .env_clear()
             .env("PATH", env::var("PATH").unwrap())
             .env("HOME", "/nonexistent")
@@ -205,7 +202,6 @@ fn s_03_1_e1_the_canary_record_matches_the_monitors_audit() {
         .arg(&one.links)
         .args(["--operator-public", &one.operator])
         .args(["--notary-public", &one.notary])
-        .args(["--verify", &one.verify])
         .args(["--guest", one.guest.as_ref().unwrap()])
         .env_clear()
         .env("PATH", env::var("PATH").unwrap())
@@ -239,7 +235,6 @@ fn s_03_3_e1_a_public_log_that_cannot_be_reached_is_inconclusive() {
             .unwrap()
             .trim()
             .to_string(),
-        verify: at("target/release/attest"),
         legacy: false,
         guest: Some(at("guest/digest.wasm")),
     };
@@ -247,10 +242,7 @@ fn s_03_3_e1_a_public_log_that_cannot_be_reached_is_inconclusive() {
         &at(&format!("{CANARY}/record.json")),
         &inputs,
         log_at(base),
-        &Verifier {
-            program: inputs.verify.clone(),
-            trust: Vec::new(),
-        },
+        &Verifier::real(),
         &PlainFiles,
     );
     assert!(
@@ -307,7 +299,7 @@ fn s_03_4_e1_the_dependency_tree_holds_no_task_running_code() {
 
 #[test]
 fn s_03_4_e2_the_source_has_no_live_kvm_or_signing_code() {
-    for dir in ["verify/src", "audit/src"] {
+    for dir in ["verify/src", "audit/src", "attest-check/src"] {
         for file in fs::read_dir(at(dir)).unwrap() {
             let path = file.unwrap().path();
             let text = fs::read_to_string(&path).unwrap();
@@ -461,7 +453,7 @@ fn local_3_3_every_audit_failure_is_refused_or_inconclusive() {
     let other_guest = plain("other-guest");
     fs::write(&other_guest, b"another guest").unwrap();
     type Change = fn(&mut Check, &Temp);
-    let rows: [(&str, Change, i32, &str); 11] = [
+    let rows: [(&str, Change, i32, &str); 10] = [
         (
             "record missing",
             |c, _| c.record = "/nonexistent/record".into(),
@@ -522,12 +514,6 @@ fn local_3_3_every_audit_failure_is_refused_or_inconclusive() {
             1,
             "the guest is not this record's",
         ),
-        (
-            "verify program missing",
-            |c, _| c.verify = "/nonexistent/attest".into(),
-            2,
-            "cannot be launched",
-        ),
     ];
     for (name, change, code, says) in rows {
         let mut one = Check::canary();
@@ -560,30 +546,29 @@ fn local_3_3_every_audit_failure_is_refused_or_inconclusive() {
         1,
         "answer 0: no attestation",
     );
-    let unlaunchable = Temp::new("local-3-3-launch");
-    let program = unlaunchable.path("not-executable");
-    fs::write(&program, "").unwrap();
-    let mut one = Check::canary();
-    one.verify = program;
-    expect(&one.run(), 2, "cannot run the verify program");
 }
 
 #[test]
-fn local_3_4_the_verify_program_is_required_until_slice_5() {
+fn s_04_4_e1_the_verify_option_is_rejected_as_unknown() {
     let one = Check::canary();
     let output = Command::new(env!("CARGO_BIN_EXE_hyalos-verify"))
         .arg(&one.record)
         .arg(&one.links)
-        .args([
-            "--operator-public",
-            &one.operator,
-            "--notary-public",
-            &one.notary,
-        ])
+        .args(["--operator-public", &one.operator])
+        .args(["--notary-public", &one.notary])
+        .args(["--verify", "/bin/true"])
         .env_clear()
         .output()
         .unwrap();
-    expect(&output, 2, "the verify program is not given");
+    expect(&output, 2, "unknown option");
+}
+
+#[test]
+fn s_04_4_e2_without_the_option_it_runs_normally() {
+    if !stand_in("s_04_4_e2") {
+        return;
+    }
+    assert_eq!(Check::canary().run().status.code(), Some(0));
 }
 
 #[test]
@@ -686,7 +671,6 @@ fn s_03_7_e1_a_release_build_ignores_every_stand_in_setting() {
         .arg(&one.links)
         .args(["--operator-public", &one.operator])
         .args(["--notary-public", &one.notary])
-        .args(["--verify", &one.verify])
         .args(["--guest", one.guest.as_ref().unwrap()])
         .env_clear()
         .env("PATH", env::var("PATH").unwrap())

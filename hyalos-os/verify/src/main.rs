@@ -8,7 +8,7 @@ use hyalos_audit::{
     AuditInputs, FileError, FileKind, Files, LogSource, Verdict, Verifier, check, notary_key_text,
 };
 use std::{
-    fs::{self, File},
+    fs::File,
     io::{ErrorKind, Read},
     os::unix::fs::OpenOptionsExt,
     path::Path,
@@ -91,24 +91,8 @@ fn notary_key(path: &str) -> Result<String, Stop> {
     notary_key_text(&text).map_err(Stop::Refused)
 }
 
-/// The verify program, resolved once so what runs is the file checked here.
-fn verify_program(path: &str) -> Result<String, Stop> {
-    let what = "the verify program cannot be launched";
-    let Ok(resolved) = fs::canonicalize(path) else {
-        return inconclusive(what);
-    };
-    if !fs::metadata(&resolved).is_ok_and(|m| m.is_file()) {
-        return inconclusive(what);
-    }
-    match resolved.to_str() {
-        Some(text) => Ok(text.to_string()),
-        None => inconclusive(what),
-    }
-}
-
 fn parse(args: &[String]) -> Result<Command, Stop> {
-    let (mut positional, mut operator, mut notary, mut verify, mut guest) =
-        (Vec::new(), None, None, None, None);
+    let (mut positional, mut operator, mut notary, mut guest) = (Vec::new(), None, None, None);
     let mut legacy = false;
     let mut words = args.iter();
     while let Some(word) = words.next() {
@@ -121,7 +105,6 @@ fn parse(args: &[String]) -> Result<Command, Stop> {
         match word.as_str() {
             "--operator-public" => operator = Some(value("--operator-public")?),
             "--notary-public" => notary = Some(value("--notary-public")?),
-            "--verify" => verify = Some(value("--verify")?),
             "--guest" => guest = Some(value("--guest")?),
             "--legacy-v1" => legacy = true,
             flag if flag.starts_with('-') => return inconclusive("unknown option"),
@@ -137,16 +120,11 @@ fn parse(args: &[String]) -> Result<Command, Stop> {
     let Some(notary) = notary else {
         return inconclusive("the notary's public key is not given: --notary-public <file>");
     };
-    let Some(verify) = verify else {
-        return inconclusive("the verify program is not given: --verify <program you built>");
-    };
     let notary = notary_key(&notary)?;
-    let verify = verify_program(&verify)?;
     let inputs = AuditInputs {
         dir: Some(links),
         operator: Some(operator),
         notary,
-        verify,
         legacy,
         guest,
     };
@@ -181,6 +159,8 @@ fn finish(verdict: Verdict) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    // A panic is a refusal, and its text could name what it was reading.
+    std::panic::set_hook(Box::new(|_| {}));
     let args: Vec<String> = match std::env::args_os()
         .skip(1)
         .map(|arg| arg.into_string())
@@ -202,12 +182,22 @@ fn main() -> ExitCode {
         Ok(log) => log,
         Err(failure) => return finish(Verdict::Inconclusive(failure.message)),
     };
-    let verifier = Verifier::from_env(&command.inputs.verify);
-    finish(check(
-        &command.record,
-        &command.inputs,
-        log,
-        &verifier,
-        &BoundedFiles,
-    ))
+    let verifier = match Verifier::from_env() {
+        Ok(verifier) => verifier,
+        Err(failure) => return finish(Verdict::Inconclusive(failure.message)),
+    };
+    let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        check(
+            &command.record,
+            &command.inputs,
+            log,
+            &verifier,
+            &BoundedFiles,
+        )
+    }));
+    finish(
+        verdict.unwrap_or_else(|_| {
+            Verdict::Inconclusive("the check stopped unexpectedly".to_string())
+        }),
+    )
 }

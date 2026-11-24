@@ -1,0 +1,18 @@
+[package]
+name = "attest-check"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+tlsn-attestation = { git = "https://github.com/tlsnotary/tlsn", tag = "v0.1.0-beta.1" }
+tlsn-core = { git = "https://github.com/tlsnotary/tlsn", tag = "v0.1.0-beta.1", features = ["mozilla-certs"] }
+anyhow = "1"
+bincode = "1.3"
+hex = "0.4"
+serde_json = "1"
+sha2 = "0.10"

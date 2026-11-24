@@ -6,7 +6,6 @@
 //! differ on each run, so they are never compared.
 
 use super::*;
-use crate::live_tests::built;
 use crate::{AuditInputs, Verifier, read_transcript};
 use hyalos_audit::{Failure, FailureKind};
 use std::{cell::RefCell, collections::BTreeMap, ffi::OsString};
@@ -109,7 +108,6 @@ fn write_case(dest: &Path, spec: &Spec) -> Result<String, Failure> {
         dir: Some(path("links")),
         operator: Some(path("operator.pub")),
         notary: spec.notary.to_string(),
-        verify: built("attest").display().to_string(),
         legacy: spec.legacy,
         guest: spec.guest.map(|_| path("guest.wasm")),
     };
@@ -122,14 +120,12 @@ fn write_case(dest: &Path, spec: &Spec) -> Result<String, Failure> {
     } else {
         Vec::new()
     };
-    let verifier = Verifier { program: inputs.verify.clone(), trust };
+    let verifier = Verifier::from_settings(&trust).expect("the fixture's trust settings");
     crate::audit_record(&path("record"), &inputs, LogSource::StandIn(path("log"), path("log.pub")), &verifier, &crate::PlainFiles)
 }
 
-/// Keeps one refused audit call as a case. `said` is what the test was told, and `exact` says the
-/// fixture must be refused by that same check. A test that reads the record through a shim of the
-/// verify program is not exact, because the built verifier sees the real output.
-pub(super) fn keep(spec: Spec, said: &str, exact: bool) {
+/// Keeps one refused audit call as a case, which must be refused by the check the test was told.
+pub(super) fn keep(spec: Spec, said: &str) {
     SINK.with(|sink| {
         let mut sink = sink.borrow_mut();
         let Some(sink) = sink.as_mut() else { return };
@@ -141,9 +137,7 @@ pub(super) fn keep(spec: Spec, said: &str, exact: bool) {
             Ok(_) => panic!("{id}: a forgery in the corpus passes"),
         };
         assert!(matches!(failure.kind, FailureKind::Refused), "{id}: not a refusal: {}", failure.message);
-        if exact {
-            assert_eq!(failure.message, said, "{id}: the fixture meets another check");
-        }
+        assert_eq!(failure.message, said, "{id}: the fixture meets another check");
         let expected = json!({"verdict": "refused", "check": failure.message});
         fs::write(dest.join("expected.json"), serde_json::to_vec_pretty(&expected).unwrap()).unwrap();
         sink.cases.push((id, failure.message.clone()));
@@ -159,13 +153,13 @@ pub(super) fn keep_unparsable(bytes: &[u8], said: &str) {
     fs::create_dir_all(&dir).unwrap();
     let record = dir.join("record");
     fs::write(&record, bytes).unwrap();
-    keep(Spec { record: &record, attest: false, links: None, log: None, log_key: None, operator: None, notary: NO_NOTARY, guest: None, root: None, legacy: true }, said, true);
+    keep(Spec { record: &record, attest: false, links: None, log: None, log_key: None, operator: None, notary: NO_NOTARY, guest: None, root: None, legacy: true }, said);
     fs::remove_dir_all(&dir).unwrap();
 }
 
 /// A record the version check refuses, kept with placeholder keys.
 pub(super) fn keep_version(record: &Path, legacy: bool, said: &str) {
-    keep(Spec { record, attest: false, links: None, log: None, log_key: None, operator: None, notary: NO_NOTARY, guest: None, root: None, legacy }, said, true);
+    keep(Spec { record, attest: false, links: None, log: None, log_key: None, operator: None, notary: NO_NOTARY, guest: None, root: None, legacy }, said);
 }
 
 /// Keeps a passing record outside the corpus, and gives its report.

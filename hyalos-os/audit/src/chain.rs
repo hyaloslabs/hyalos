@@ -3,15 +3,15 @@
 
 use crate::failure::Failure;
 use crate::files::{FileError, FileKind, Files};
-use crate::record::{hex, sha, unhex};
+use crate::record::{sha, unhex};
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
+use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
+use p256::pkcs8::DecodePublicKey;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    fs,
-    os::unix::fs::DirBuilderExt,
+    io::Read,
     path::{Path, PathBuf},
-    process::Command,
     time::Duration,
 };
 
@@ -23,9 +23,20 @@ pub const REKOR: &str = "https://rekor.sigstore.dev/api/v1";
 /// The public key of the log at `REKOR`, from Sigstore's trusted root
 /// (`core/hyalos/tests/fixtures/marketplace-r10/trusted-root.json:107`). Its SHA-256 is the log ID.
 pub const REKOR_KEY: &str = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2G2Y+2tabdTV5BcGiBIx0a9fAFwrkBbmLSGtks4L3qX6yYY0zufBnhC8Ur/iy55GhWP/9A/bY2LhC30M9+RYtw==";
-fn openssl(args: &[&str]) -> Option<Vec<u8>> {
-    let output = Command::new("openssl").args(args).output().ok()?;
-    output.status.success().then_some(output.stdout)
+/// The most read of one reply from the public log.
+const MAX_LOG_REPLY: u64 = 1 << 20;
+/// The most entries the public log may list under one key.
+const MAX_LOG_ENTRIES: usize = 10_000;
+
+/// True only for a DER ECDSA signature over the SHA-256 of `message`, under this P-256 public key.
+pub fn signature_verifies(key: &[u8], signature: &[u8], message: &[u8]) -> bool {
+    let (Ok(key), Ok(signature)) = (
+        VerifyingKey::from_public_key_der(key),
+        Signature::from_der(signature),
+    ) else {
+        return false;
+    };
+    key.verify(message, &signature).is_ok()
 }
 
 /// The links of the chain in `dir`, from 00000 up to the first that is absent.
@@ -69,43 +80,6 @@ pub fn public_pem(der: &[u8]) -> String {
         "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n",
         lines.join("\n")
     )
-}
-
-/// A private directory for the files `openssl` needs, removed when the check ends.
-struct Scratch(PathBuf);
-
-impl Scratch {
-    fn new() -> Option<Self> {
-        let mut name = [0u8; 16];
-        fs::File::open("/dev/urandom")
-            .and_then(|mut device| std::io::Read::read_exact(&mut device, &mut name))
-            .ok()?;
-        let path = PathBuf::from(format!("/tmp/hyalos-audit-{}", hex(&name)));
-        fs::DirBuilder::new().mode(0o700).create(&path).ok()?;
-        Some(Self(path))
-    }
-
-    /// True only when `openssl` confirms the signature over the message under this public key.
-    fn verifies(&self, key: &[u8], signature: &[u8], message: &[u8]) -> bool {
-        let (k, s, m) = (
-            self.0.join("key.pem"),
-            self.0.join("signature"),
-            self.0.join("message"),
-        );
-        let written = fs::write(&k, public_pem(key)).is_ok()
-            && fs::write(&s, signature).is_ok()
-            && fs::write(&m, message).is_ok();
-        let (Some(k), Some(s), Some(m)) = (k.to_str(), s.to_str(), m.to_str()) else {
-            return false;
-        };
-        written && openssl(&["dgst", "-sha256", "-verify", k, "-signature", s, m]).is_some()
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
 }
 
 pub fn node(left: &[u8], right: &[u8]) -> Vec<u8> {
@@ -272,6 +246,7 @@ impl Auditor {
                     .decode(REKOR_KEY)
                     .map_err(|_| "the pinned log key is unreadable")?;
                 let agent = ureq::AgentBuilder::new()
+                    .redirects(0)
                     .timeout(Duration::from_secs(2))
                     .build();
                 (key, Log::Public { base, agent })
@@ -285,6 +260,7 @@ impl Auditor {
                     Log::Public {
                         base: REKOR.to_string(),
                         agent: ureq::AgentBuilder::new()
+                            .redirects(0)
                             .timeout(Duration::from_secs(30))
                             .build(),
                     },
@@ -302,7 +278,7 @@ impl Auditor {
 
     /// Verifies one stored reply against its link, from the reply and the keys alone, and gives
     /// the time the log signed for it.
-    fn check_entry(&self, scratch: &Scratch, seq: usize, link: &[u8]) -> Result<u64, Failure> {
+    fn check_entry(&self, seq: usize, link: &[u8]) -> Result<u64, Failure> {
         let fail = |what: &str| Failure::refused(format!("link {seq}: {what}"));
         let bytes = self
             .files
@@ -357,7 +333,11 @@ impl Auditor {
                 serde_json::to_string(body_text).ok()?,
                 serde_json::to_string(&log_id).ok()?
             );
-            Some(scratch.verifies(&self.log_key, &signature, text.as_bytes()))
+            Some(signature_verifies(
+                &self.log_key,
+                &signature,
+                text.as_bytes(),
+            ))
         };
         if signed_time() != Some(true) {
             return Err(fail("the signed time does not verify"));
@@ -379,7 +359,7 @@ impl Auditor {
                 })
                 .find(|s| s.len() > 4 && s[..4] == hint[..4])?;
             if origin.is_empty()
-                || !scratch.verifies(&self.log_key, &signed[4..], format!("{note}\n").as_bytes())
+                || !signature_verifies(&self.log_key, &signed[4..], format!("{note}\n").as_bytes())
             {
                 return Some(false);
             }
@@ -414,7 +394,7 @@ impl Auditor {
         let signature = body["spec"]["signature"]["content"]
             .as_str()
             .and_then(|s| B64.decode(s).ok());
-        if !signature.is_some_and(|s| scratch.verifies(&self.operator, &s, link)) {
+        if !signature.is_some_and(|s| signature_verifies(&self.operator, &s, link)) {
             return Err(fail("the link's signature does not verify"));
         }
         entry["integratedTime"]
@@ -457,12 +437,12 @@ impl Auditor {
         match &self.log {
             #[cfg(feature = "test-trust")]
             Log::StandIn(dir) => {
-                for file in fs::read_dir(dir).map_err(|_| unread())? {
+                for file in std::fs::read_dir(dir).map_err(|_| unread())? {
                     let path = file.map_err(|_| unread())?.path();
                     if !path.to_string_lossy().ends_with(".rekor.json") {
                         continue;
                     }
-                    let reply: Value = fs::read(&path)
+                    let reply: Value = std::fs::read(&path)
                         .ok()
                         .and_then(|b| serde_json::from_slice(&b).ok())
                         .ok_or_else(unread)?;
@@ -481,20 +461,32 @@ impl Auditor {
                 };
                 let ask =
                     |response: Result<ureq::Response, ureq::Error>| -> Result<Value, Failure> {
-                        serde_json::from_str(
-                            &response
-                                .map_err(|_| refused())?
-                                .into_string()
-                                .map_err(|_| refused())?,
-                        )
-                        .map_err(|_| refused())
+                        // With redirects off a 3xx arrives as a reply: only a 200 is an answer.
+                        let response = response.map_err(|_| refused())?;
+                        if response.status() != 200 {
+                            return Err(refused());
+                        }
+                        let mut bytes = Vec::new();
+                        response
+                            .into_reader()
+                            .take(MAX_LOG_REPLY + 1)
+                            .read_to_end(&mut bytes)
+                            .map_err(|_| refused())?;
+                        if bytes.len() as u64 > MAX_LOG_REPLY {
+                            return Err(refused());
+                        }
+                        serde_json::from_slice(&bytes).map_err(|_| refused())
                     };
                 let query = json!({"publicKey": {"format": "x509", "content": B64.encode(public_pem(&self.operator))}});
                 let ids = ask(agent
                     .post(&format!("{base}/index/retrieve"))
                     .set("content-type", "application/json")
                     .send_string(&query.to_string()))?;
-                for id in ids.as_array().ok_or_else(refused)? {
+                let ids = ids.as_array().ok_or_else(refused)?;
+                if ids.len() > MAX_LOG_ENTRIES {
+                    return Err(refused());
+                }
+                for id in ids {
                     let reply = ask(agent
                         .get(&format!(
                             "{base}/log/entries/{}",
@@ -525,12 +517,9 @@ impl Auditor {
     /// Checks one record against the chain and the log. Any failure names the first check it broke.
     pub fn audit(&self, claim: &Claim) -> Result<Audited, Failure> {
         let links = read_links(self.files, &self.dir)?;
-        let scratch = Scratch::new().ok_or_else(|| {
-            Failure::inconclusive("no private temporary directory for the signature checks")
-        })?;
         let mut times = Vec::with_capacity(links.len());
         for (seq, link) in links.iter().enumerate() {
-            times.push(self.check_entry(&scratch, seq, link)?);
+            times.push(self.check_entry(seq, link)?);
         }
         let parsed: Vec<Value> = links
             .iter()
