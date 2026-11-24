@@ -1,6 +1,6 @@
 # Slice 3 progress
 
-- **Status:** done
+- **Status:** blocked
 - **Issue:** #459
 - **PR:** this PR
 - **Executor model:** Claude Opus 5.5
@@ -68,3 +68,16 @@ Unit tests are at the end of `hyalos-os/monitor/src/kvm.rs`, on the pure functio
 - **`RDSEED`'s bit is clear now**, as S-03.1 asks, but this slice adds no `RDSEED` probe. Whether it still runs is Slice 4's host probe (ADR-002).
 - **The `APIC` base.** Slice 4's probe, Slice 6's runner and the review package's interface section should keep the `IA32_APIC_BASE` write with the CPUID list: without it the list the kernel sees is not the one the monitor sets.
 - **Cold start** was not measured: the slice adds one `KVM_SET_MSRS` call and a smaller CPUID table. Slice 6 compares with the Slice 2 baseline.
+
+## Blocked on
+
+**S-03.2 does not hold on CI's KVM host.** CI's `hyalos-os` job (run `45436579840`, commit `548368d`) ran the same tests that pass locally. S-03.1 held there: the kernel saw only the allowed list, and the `RDRAND` and `RDPID` bits were clear. But `RDRAND` and `RDPID` both ran in ring 3 and reached the unknown request (`BadHypercall`), not `KernelFault`. `core_s_03_2_rdrand_and_rdpid_fault`, `core_s_03_2_e1_rdrand_faults`, `core_s_03_2_e2_rdpid_faults` and Slice 2's `core_s_02_every_probe_ends_as_listed`, which reads the same `PROBES` table, failed.
+
+The likely cause is the host's vendor. This was not confirmed, because the job log does not name the CPU. GitHub's `ubuntu-24.04` runners are normally AMD EPYC. On Intel, KVM makes the two instructions fault through VMX controls (`RDRAND` exiting, and `RDPID` through the `RDTSCP` enable). AMD's SVM has no intercept for either one, so KVM cannot make them fault, whatever CPUID says. `context.md` §2 measured only an Intel host, and ADR-002 covers only `RDSEED`.
+
+Changing S-03.2, ADR-002 or the test strategy would change a contract, so this is a stop under rule 6 of the pack's README. The question for the developer:
+
+- Should S-03.2 become a host-dependent property, like `RDSEED` under ADR-002? That would mean a new or amended decision: on hosts where `RDRAND`/`RDPID` cannot be intercepted, the host probe (S-03.3, Slice 4) reports them `reachable`, runs are allowed, and the limit is stated. The tests would then assert `KernelFault` only where the host can intercept the instruction.
+- Or should KVM runs be refused on hosts that cannot intercept them? That would include CI's runner unless CI moves to an Intel KVM host.
+
+The code is unchanged pending the answer. The CodeQL alert on `kvm.rs` (a unit test's assertion message printed a word of the made-up host's brand) is fixed in the same commit as this note.

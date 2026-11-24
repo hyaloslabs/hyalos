@@ -496,7 +496,7 @@ mod tests {
         for entry in &list {
             assert!(!(0x8000_0002..=0x8000_0004).contains(&entry.function));
             for word in [entry.eax, entry.ebx, entry.ecx, entry.edx] {
-                assert!(word == 0 || !named.contains(&word), "{:#x} holds {word:#x}", entry.function);
+                assert!(word == 0 || !named.contains(&word), "leaf {:#x} holds a word of the host's name", entry.function);
             }
         }
     }
