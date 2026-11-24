@@ -3,7 +3,8 @@
 //!
 //! The self-test kernel reads CPUID from inside the machine and returns what it saw as the run's
 //! result, so these tests check the list the kernel really sees, not only the one the monitor
-//! builds. They then run `RDRAND` and `RDPID`, which KVM makes fault once their bits are clear.
+//! builds. They then run `RDRAND` and `RDPID`, which KVM makes fault once their bits are clear on
+//! a host that can trap them, and which run elsewhere (ADR-009 of the same pack).
 //! `HYALOS_REQUIRE_KVM` turns a host without KVM into a failure.
 
 use super::*;
@@ -104,22 +105,79 @@ fn core_s_03_1_e2_the_brand_leaves_hold_no_host_name() {
     assert!(!brand.iter().any(u8::is_ascii_alphanumeric), "the brand leaves spell something: {brand:x?}");
 }
 
-#[test]
-fn core_s_03_2_rdrand_and_rdpid_fault() {
-    for name in ["randomness: hardware randomness (RDRAND)", "randomness: read the processor ID (RDPID)"] {
-        let Some(got) = probe("core_s_03_2", name) else { return };
-        assert_eq!(got, Err(Reason::KernelFault), "{name}");
+/// Writes the host's CPU to the test output, past the harness's capture, so a CI log shows which
+/// host a randomness probe ran on.
+pub(crate) fn note_host(test: &str) -> Option<bool> {
+    use std::io::Write;
+    let (vendor, module) = host_cpu();
+    let traps = traps_randomness(&vendor, module);
+    let brand: String = BRAND_LEAVES.iter().flat_map(|&n| host(n)).flat_map(u32::to_le_bytes).filter(|&b| b != 0).map(char::from).collect();
+    let claim = match traps {
+        Some(true) => "RDRAND and RDPID must fault",
+        Some(false) => "KVM cannot trap RDRAND or RDPID here",
+        None => "cannot tell whether KVM traps RDRAND or RDPID, so a run is not a failure and nothing is proven",
+    };
+    let module = module.unwrap_or("KVM module unknown");
+    let _ = writeln!(std::io::stderr(), "{test}: host {vendor} ({}), {module}: {claim}", brand.trim());
+    traps
+}
+
+/// Runs a randomness probe and judges it on this host: a fault where the host traps it, and
+/// otherwise a fault or the stated limit (ADR-009). Returns whether the fault was shown.
+fn randomness(test: &str, name: &str) -> Option<bool> {
+    let got = probe(test, name)?;
+    let traps = note_host(test);
+    match judge(name, got, Reason::KernelFault, traps) {
+        Verdict::Pass => Some(true),
+        Verdict::Reachable => Some(false),
+        Verdict::Fail => panic!("{name}: {got:?} on a host where KVM traps it"),
     }
 }
 
 #[test]
-fn core_s_03_2_e1_rdrand_faults() {
-    let Some(got) = probe("core_s_03_2_e1", "randomness: hardware randomness (RDRAND)") else { return };
-    assert_eq!(got, Err(Reason::KernelFault));
+fn core_s_03_2_rdrand_and_rdpid_fault_where_the_host_traps_them() {
+    for name in ["randomness: hardware randomness (RDRAND)", "randomness: read the processor ID (RDPID)"] {
+        randomness("core_s_03_2", name);
+    }
 }
 
 #[test]
-fn core_s_03_2_e2_rdpid_faults() {
-    let Some(got) = probe("core_s_03_2_e2", "randomness: read the processor ID (RDPID)") else { return };
-    assert_eq!(got, Err(Reason::KernelFault));
+fn core_s_03_2_e1_rdrand_faults_where_the_host_traps_it() {
+    randomness("core_s_03_2_e1", "randomness: hardware randomness (RDRAND)");
+}
+
+#[test]
+fn core_s_03_2_e2_rdpid_faults_where_the_host_traps_it() {
+    randomness("core_s_03_2_e2", "randomness: read the processor ID (RDPID)");
+}
+
+/// Only Intel with `kvm_intel` is claimed to trap; AMD with `kvm_amd` is known not to; anything
+/// else, including a vendor and module that disagree, claims nothing.
+#[test]
+fn core_s_03_2_only_intel_kvm_is_claimed_to_trap() {
+    assert_eq!(traps_randomness("GenuineIntel", Some("kvm_intel")), Some(true));
+    assert_eq!(traps_randomness("AuthenticAMD", Some("kvm_amd")), Some(false));
+    assert_eq!(traps_randomness("HygonGenuine", Some("kvm_amd")), Some(false));
+    for (vendor, module) in [("GenuineIntel", None), ("GenuineIntel", Some("kvm_amd")), ("AuthenticAMD", Some("kvm_intel")), ("AuthenticAMD", None), ("", None), ("VIA VIA VIA ", Some("kvm_intel"))] {
+        assert_eq!(traps_randomness(vendor, module), None, "{vendor} {module:?}");
+    }
+}
+
+/// A randomness probe that runs fails on a host that traps it, and is the stated limit elsewhere.
+/// Every other probe, and any other ending, still fails on every host.
+#[test]
+fn core_s_03_2_a_run_is_reachable_only_where_the_host_cannot_trap_it() {
+    let rdrand = "randomness: hardware randomness (RDRAND)";
+    let ran = Err(Reason::BadHypercall);
+    assert_eq!(judge(rdrand, Err(Reason::KernelFault), Reason::KernelFault, Some(true)), Verdict::Pass);
+    assert_eq!(judge(rdrand, ran, Reason::KernelFault, Some(true)), Verdict::Fail);
+    assert_eq!(judge(rdrand, ran, Reason::KernelFault, Some(false)), Verdict::Reachable);
+    assert_eq!(judge(rdrand, ran, Reason::KernelFault, None), Verdict::Reachable);
+    assert_eq!(judge(rdrand, Err(Reason::Timeout), Reason::KernelFault, None), Verdict::Fail);
+    assert_eq!(judge(rdrand, Ok(()), Reason::KernelFault, None), Verdict::Fail);
+    assert_eq!(judge("privilege: halt (HLT)", ran, Reason::KernelFault, Some(false)), Verdict::Fail);
+    assert_eq!(HOST_DEPENDENT.len(), 2);
+    for name in HOST_DEPENDENT {
+        assert!(PROBES.iter().any(|(n, want)| n == name && *want == Reason::KernelFault), "{name}");
+    }
 }

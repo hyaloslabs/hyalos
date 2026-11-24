@@ -1,6 +1,6 @@
 # ADR-002: Report a reachable RDSEED and allow runs
 
-**Status:** accepted
+**Status:** accepted; amended by ADR-009, adds `RDRAND` and `RDPID` where KVM cannot trap them
 
 **Proposed by:** developer
 
