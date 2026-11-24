@@ -144,3 +144,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0128](0128-a-policy-update-trusts-only-a-current-signed-index.md) | A policy update trusts only a current signed index | Accepted |
 | [0129](0129-plan-packs-live-in-docs-plans.md) | Plan packs live in `docs/plans/`, and the tracker still holds status | Accepted |
 | [0130](0130-hyalos-os-is-its-own-workspace.md) | hyalOS is its own Cargo workspace | Accepted |
+| [0131](0131-a-verifier-release-is-confirmed-two-ways.md) | A verifier release is confirmed two ways, from a tag a human pushed | Accepted |

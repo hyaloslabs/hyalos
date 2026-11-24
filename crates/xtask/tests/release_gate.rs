@@ -131,15 +131,12 @@ fn every_job_the_evidence_asks_for_is_a_ci_job_by_that_name() -> Res {
     Ok(())
 }
 
-#[test]
-fn every_release_job_waits_for_the_evidence() -> Res {
-    let release = jobs(&read(".github/workflows/release.yml")?);
-    let evidence = release
-        .get("evidence")
-        .ok_or("release.yml has no evidence job")?;
-    assert!(evidence.on_tag && evidence.needs.is_empty());
+/// How many tag-triggered jobs a workflow has, each checked to wait for its evidence job.
+fn tagged_jobs_wait_for_the_evidence(release: &BTreeMap<String, Job>) -> Res<usize> {
+    let evidence = release.get("evidence").ok_or("no evidence job")?;
+    assert!(evidence.needs.is_empty());
     let mut tagged = 0;
-    for (key, job) in &release {
+    for (key, job) in release {
         if !job.on_tag || key == "evidence" {
             continue;
         }
@@ -161,7 +158,171 @@ fn every_release_job_waits_for_the_evidence() -> Res {
         }
         assert!(reaches, "release job {key} does not wait for the evidence");
     }
+    Ok(tagged)
+}
+
+#[test]
+fn every_release_job_waits_for_the_evidence() -> Res {
+    let release = jobs(&read(".github/workflows/release.yml")?);
+    assert!(release.get("evidence").is_some_and(|job| job.on_tag));
+    let tagged = tagged_jobs_wait_for_the_evidence(&release)?;
     assert!(tagged >= 3, "{tagged} release jobs");
+    Ok(())
+}
+
+const VERIFIER: &str = ".github/workflows/release-verifier.yml";
+
+/// The text of one job, from its key to the next job.
+fn job_text<'a>(workflow: &'a str, key: &str) -> Res<&'a str> {
+    let head = format!("\n  {key}:\n");
+    let start = workflow.find(&head).ok_or(format!("no job {key}"))? + 1;
+    let rest = &workflow[start + head.len() - 1..];
+    let end = rest
+        .lines()
+        .scan(0, |at, line| {
+            let here = *at;
+            *at += line.len() + 1;
+            Some((here, line))
+        })
+        .find(|(_, line)| line.starts_with("  ") && !line.starts_with("   ") && line.ends_with(':'))
+        .map_or(rest.len(), |(here, _)| here);
+    Ok(&rest[..end])
+}
+
+#[test]
+fn s_05_1_e1_a_verifier_release_holds_the_binary_its_hash_and_provenance() -> Res {
+    let text = read(VERIFIER)?;
+    assert!(text.contains("tags: [\"verifier-v*\"]"));
+    let build = job_text(&text, "build")?;
+    assert!(build.contains("actions/attest-build-provenance@"));
+    assert!(build.contains("subject-path: dist/hyalos-verify-x86_64-linux"));
+    let attest = build
+        .find("Attest the binary")
+        .ok_or("no provenance step")?;
+    let step = &build[attest..build[attest..].find("subject-path").unwrap() + attest];
+    assert!(!step.contains("if:"), "provenance must not be optional");
+    assert!(build.contains("grep -qxF \"commit $GITHUB_SHA\""));
+    let release = job_text(&text, "release")?;
+    assert!(release.contains("dist/hyalos-verify-x86_64-linux dist/SHA256SUMS"));
+    assert!(release.contains("sha256sum -c SHA256SUMS"));
+    Ok(())
+}
+
+#[test]
+fn s_05_1_e2_nothing_is_published_without_the_hyalos_os_evidence() -> Res {
+    let text = read(VERIFIER)?;
+    let workflow = jobs(&text);
+    assert_eq!(tagged_jobs_wait_for_the_evidence(&workflow)?, 1);
+    assert_eq!(
+        workflow
+            .iter()
+            .filter(|(_, job)| job.on_tag)
+            .map(|(key, _)| key.as_str())
+            .collect::<Vec<_>>(),
+        ["release"]
+    );
+    assert!(job_text(&text, "evidence")?.contains("release-evidence.sh \"$GITHUB_SHA\" hyalos-os"));
+    let ci = jobs(&read(".github/workflows/ci.yml")?);
+    assert!(
+        ci.values()
+            .any(|job| job.name.as_deref() == Some("hyalos-os"))
+    );
+    Ok(())
+}
+
+#[test]
+fn s_05_1_the_manual_mode_takes_no_input_and_publishes_nothing() -> Res {
+    let text = read(VERIFIER)?;
+    assert!(text.contains("\n  workflow_dispatch:\n\npermissions:"));
+    assert_eq!(text.matches("gh release").count(), 1);
+    let release = job_text(&text, "release")?;
+    assert!(release.contains("gh release create"));
+    assert!(
+        release
+            .lines()
+            .any(|l| l == "    if: github.event_name == 'push'")
+    );
+    assert!(text.contains("refs/heads/main"));
+    Ok(())
+}
+
+#[test]
+fn s_05_2_the_adr_documents_both_provenance_checks() -> Res {
+    let adr = read("docs/adr/0131-a-verifier-release-is-confirmed-two-ways.md")?;
+    let check = "gh attestation verify hyalos-verify-x86_64-linux --repo hyaloslabs/hyalos --signer-workflow hyaloslabs/hyalos/.github/workflows/release-verifier.yml --source-ref";
+    assert!(adr.contains(&format!("{check} refs/tags/<tag>")));
+    assert!(adr.contains(&format!("{check} refs/heads/main")));
+    Ok(())
+}
+
+#[test]
+fn s_05_5_e1_the_verifier_workflow_creates_no_tag() -> Res {
+    let text = read(VERIFIER)?.replace("\\\n", " ");
+    let publish: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains("gh release create"))
+        .collect();
+    assert_eq!(publish.len(), 1);
+    assert!(publish[0].contains("--verify-tag"));
+    for line in text.lines().filter(|l| !l.trim_start().starts_with('#')) {
+        assert!(
+            !line.contains("git tag") && !line.contains("git push"),
+            "{line}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn s_05_5_e2_a_tag_off_main_or_of_another_version_stops_first() -> Res {
+    let text = read(VERIFIER)?;
+    let evidence = job_text(&text, "evidence")?;
+    assert!(evidence.contains("fetch-depth: 0"));
+    assert!(evidence.contains("git merge-base --is-ancestor \"$GITHUB_SHA\" origin/main"));
+    assert!(evidence.contains("test \"$TAG\" = \"verifier-v$version\""));
+    assert!(evidence.contains("hyalos-os/verify/Cargo.toml"));
+    Ok(())
+}
+
+#[test]
+fn local_6_3_a_verifier_tag_never_starts_the_product_release() -> Res {
+    let release = read(".github/workflows/release.yml")?;
+    assert!(release.contains("tags: [\"v[0-9]*\"]"));
+    assert!(!release.contains("tags: [\"v*\"]"));
+    Ok(())
+}
+
+#[test]
+fn local_6_4_the_evidence_list_defaults_to_the_products() -> Res {
+    let script = read(".github/scripts/release-evidence.sh")?;
+    assert!(script.contains("if [[ $# -gt 0 ]]; then\n  EVIDENCE=(\"$@\")\nfi"));
+    assert!(evidence_names()?.len() >= 5);
+    Ok(())
+}
+
+#[test]
+fn local_6_6_the_verifier_build_is_pinned_and_checked_in_ci() -> Res {
+    let build = read(".github/scripts/build-verifier.sh")?;
+    let image = |text: &str| -> Option<String> {
+        let line = text.lines().find(|l| l.starts_with("builder="))?;
+        Some(line.to_string())
+    };
+    let product = read(".github/scripts/build-release-binary.sh")?;
+    assert!(image(&build).is_some_and(|l| l.contains("@sha256:")));
+    assert_eq!(image(&build), image(&product));
+    assert!(build.contains("musl=\"1.2.3-1\""));
+    assert!(build.contains("\"musl-tools=$MUSL\""));
+    assert!(build.contains("$PWD:/src:ro"));
+    assert!(build.contains("x86_64-unknown-linux-musl"));
+    assert!(build.contains("CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS"));
+    assert!(build.contains("--remap-path-prefix=/src="));
+    // A source tree inside another checkout must not take that checkout's commit.
+    assert!(build.contains("git rev-parse --show-toplevel"));
+    let ci = read(".github/workflows/ci.yml")?;
+    assert!(job_text(&ci, "hyalos-os")?.contains(".github/scripts/check-verifier-rebuild.sh"));
+    let check = read(".github/scripts/check-verifier-rebuild.sh")?;
+    assert!(check.contains("two builds of $commit differ"));
+    assert!(check.contains("a changed source gave the same binary"));
     Ok(())
 }
 

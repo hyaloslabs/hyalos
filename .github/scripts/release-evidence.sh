@@ -3,13 +3,15 @@
 # to main, for that commit, in which every evidence job succeeded. The evidence is the simulation and
 # its fault sweep, the job spec's model check, the contract suites and the red-team corpus (both in
 # the rest of the workspace's tests), the chaos scenarios (in the hyalos crate's tests) and the
-# required check that gathers them. Run with GH_TOKEN and GITHUB_REPOSITORY set.
+# required check that gathers them. Run with GH_TOKEN and GITHUB_REPOSITORY set. Job names after the
+# commit replace that list, for a release that needs other evidence (the verifier's, ADR-0131).
 #
 # It fails closed: a run still going, a job skipped, cancelled or failed, or an answer it cannot read
 # is no evidence. It only reads; it tags nothing and publishes nothing.
 set -euo pipefail
 
-sha="${1:?usage: release-evidence.sh <commit>}"
+sha="${1:?usage: release-evidence.sh <commit> [ci job name ...]}"
+shift
 repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is not set}"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "not a commit id: $sha"; exit 1; }
 
@@ -21,6 +23,9 @@ EVIDENCE=(
   "test (the rest of the workspace)"
   "build, lint, test"
 )
+if [[ $# -gt 0 ]]; then
+  EVIDENCE=("$@")
+fi
 
 runs=$(gh api "repos/$repo/actions/runs?head_sha=$sha&event=push&branch=main&per_page=100" \
   --jq '.workflow_runs[] | select(.path == ".github/workflows/ci.yml") | "\(.id) \(.status) \(.conclusion)"')

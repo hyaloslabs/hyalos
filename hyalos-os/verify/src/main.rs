@@ -132,12 +132,10 @@ fn parse(args: &[String]) -> Result<Command, Stop> {
 }
 
 fn version() -> String {
-    let commit = option_env!("HYALOS_BUILD_COMMIT")
-        .filter(|c| c.len() == 40 && c.bytes().all(|b| b.is_ascii_hexdigit()))
-        .unwrap_or("unknown");
     format!(
-        "hyalos-verify {}\ncommit {commit}\nrecords 1-4\nprofiles hyalos.profile/1",
-        env!("CARGO_PKG_VERSION")
+        "hyalos-verify {}\ncommit {}\nrecords 1-4\nprofiles hyalos.profile/1",
+        env!("CARGO_PKG_VERSION"),
+        env!("HYALOS_VERIFY_COMMIT")
     )
 }
 
