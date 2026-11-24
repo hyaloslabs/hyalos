@@ -27,7 +27,7 @@ Workflow tests are in `crates/xtask/tests/release_gate.rs`, and binary tests in 
 | S-05.1 (workflow side), e1, e2 | `s_05_1_e1_a_verifier_release_holds_the_binary_its_hash_and_provenance`, `s_05_1_e2_nothing_is_published_without_the_hyalos_os_evidence`, `s_05_1_the_manual_mode_takes_no_input_and_publishes_nothing`. A real run is Slice 7's |
 | S-05.2 (documented side) | `s_05_2_the_adr_documents_both_provenance_checks`. A real check is Slice 7's |
 | S-05.3.e1 (hash side) | `s_05_3_e1_a_binary_with_one_changed_byte_has_another_hash`. S-05.3.e2 is Slice 7's |
-| S-05.4.e1, e2 | `.github/scripts/check-verifier-rebuild.sh` in CI's `hyalos-os` job. CI_RESULT |
+| S-05.4.e1, e2 | `.github/scripts/check-verifier-rebuild.sh` in CI's `hyalos-os` job. [Run 45302154772](https://github.com/hyaloslabs/hyalos/actions/runs/45302154772), on merge commit `28d8cae`: both builds `c7ea77dbc58b8d529b5064584c58a87b1587c81085e2406f97389c8e7369eb19`, the one-byte change `5631e102a86830017b4b564f8d185f796a3126e7ab2d511edb529363437fba2e` |
 | S-05.5.e1 | `s_05_5_e1_the_verifier_workflow_creates_no_tag`, and `nothing_but_the_operators_script_creates_a_tag` |
 | S-05.5.e2 | `s_05_5_e2_a_tag_off_main_or_of_another_version_stops_first` |
 | S-05.6.e1 | `s_05_6_e1_a_release_build_names_its_commit_and_what_it_reads`, and the rebuild check requires the real commit in `--version` |
@@ -52,4 +52,5 @@ Workflow tests are in `crates/xtask/tests/release_gate.rs`, and binary tests in 
 
 ## Discoveries
 
+- CI's `hyalos-os` job now takes 14 minutes 13 seconds, against the 15-minute target and 20-minute limit in `ci.yml`. The next addition to it needs a split.
 - For Slice 7: the operator must start `release-verifier.yml` by hand on `main` before S-05.1 to S-05.3 can be proven. No agent starts it.

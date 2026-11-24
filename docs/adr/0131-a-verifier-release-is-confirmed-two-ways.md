@@ -1,6 +1,6 @@
 # ADR-0131: A verifier release is confirmed two ways, from a tag a human pushed
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
