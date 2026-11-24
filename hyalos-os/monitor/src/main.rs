@@ -412,6 +412,11 @@ fn main_inner() -> Result<bool, String> {
         }
         "live" => {
             let backend = load_backend()?;
+            // A real repository is reached only from a guest inside the machine. On the process
+            // backend the guest would run beside the chain and the tools, so nothing is written.
+            if matches!(backend, Backend::Process) && arg(5)? != "stub" {
+                return Err("a live run on a real repository needs the KVM kernel: set HYALOS_KERNEL".into());
+            }
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
             let inputs = read_inputs(arg(3)?)?;
             let issue = arg(6)?.parse().map_err(|_| "bad issue number")?;

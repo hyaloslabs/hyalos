@@ -9,7 +9,7 @@ use std::{
     fs,
     net::TcpListener,
     os::{fd::AsRawFd, unix::fs::PermissionsExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Output},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -420,15 +420,18 @@ fn canary_s_04_1_e2_the_format_states_the_latch_and_the_limit() {
 }
 
 /// The operator's script in a temporary directory, with every program it calls a stub on `PATH`
-/// or at its `$PWD` path. Nothing real is contacted. `None` when this host cannot run it.
-fn probe(label: &str, canary_exit: u8) -> Option<(Output, String, bool, bool)> {
+/// or at its `$PWD` path. Nothing real is contacted. `None` when this host cannot run it. The
+/// third value is what the stub monitor's `live` saw as `HYALOS_KERNEL`, one line per run, and
+/// is empty when `live` never ran. `kernel_builds` chooses whether the stub `cargo` leaves a
+/// kernel image behind.
+fn probe(label: &str, canary_exit: u8, kernel_builds: bool) -> Option<(Output, String, String, bool)> {
     if !std::path::Path::new("/usr/bin/time").exists() {
         eprintln!("skipped: this host has no /usr/bin/time");
         return None;
     }
     let scratch = Scratch::new(label);
     let (work, stubs, home) = (scratch.0.join("work"), scratch.0.join("stubs"), scratch.0.join("home"));
-    for dir in [work.join("target/release"), stubs.clone(), home.clone()] {
+    for dir in [work.join("target/release"), work.join("kernel-image"), stubs.clone(), home.clone()] {
         fs::create_dir_all(dir).unwrap();
     }
     let (log, live) = (scratch.0.join("ssh.log"), scratch.0.join("live.log"));
@@ -446,29 +449,55 @@ fn probe(label: &str, canary_exit: u8) -> Option<(Output, String, bool, bool)> {
     write(work.join("target/release/attest"), "case \"$1\" in\nlink-key) echo an-operator-key ;;\nask) cat > /dev/null; echo '{}' ;;\nesac".to_string());
     write(work.join("target/release/notary"), "exit 0".to_string());
     write(work.join("target/release/canary"), "exit 0".to_string());
-    write(work.join("target/release/task-kernel"), format!("case \"$1\" in\ntask) echo a-task ;;\nlive) echo live >> '{}' ;;\nesac", live.display()));
+    write(work.join("target/release/task-kernel"), format!("case \"$1\" in\ntask) echo a-task ;;\nlive) echo \"$HYALOS_KERNEL\" >> '{}' ;;\nesac", live.display()));
+    // The script builds the kernel image in `kernel-image`, where the real one lands.
+    let built = if kernel_builds { "mkdir -p target/x86_64-unknown-none/release && echo a-kernel > target/x86_64-unknown-none/release/hyalos-kernel" } else { "exit 101" };
+    write(stubs.join("cargo"), built.to_string());
     let path = format!("{}:{}", stubs.display(), std::env::var("PATH").unwrap());
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/probes/two_machines.sh");
-    let output = Command::new("bash").arg(script).args(["a-host", "owner/repo", "1"]).current_dir(&work).env("PATH", path).env("HOME", &home).output().unwrap();
+    let output = Command::new("bash").arg(script).args(["a-host", "owner/repo", "1"]).current_dir(&work).env("PATH", path).env("HOME", &home).env_remove("HYALOS_KERNEL").output().unwrap();
     drop(listener);
-    Some((output, fs::read_to_string(&log).unwrap_or_default(), live.exists(), work.join("evidence/out/two-machines").exists()))
+    Some((output, fs::read_to_string(&log).unwrap_or_default(), fs::read_to_string(&live).unwrap_or_default(), work.join("evidence/out/two-machines").exists()))
 }
 
 #[test]
 fn canary_s_04_2_e1_with_a_fresh_pass_the_probe_reaches_the_run() {
-    let Some((output, calls, ran, _)) = probe("canary-4-2-e1", 0) else { return };
+    let Some((output, calls, ran, _)) = probe("canary-4-2-e1", 0, true) else { return };
     assert!(output.status.success(), "{}", complained(&output));
-    assert!(ran, "the run was not reached");
+    assert!(!ran.is_empty(), "the run was not reached");
     let (gate, notary) = (calls.find("canary status").unwrap(), calls.find("--listen").unwrap());
     assert!(gate < notary, "the gate comes before the notary starts: {calls}");
 }
 
 #[test]
 fn canary_s_04_2_e2_without_a_pass_the_probe_stops_before_anything_public() {
-    let Some((output, calls, ran, made)) = probe("canary-4-2-e2", 1) else { return };
+    let Some((output, calls, ran, made)) = probe("canary-4-2-e2", 1, true) else { return };
     assert_eq!(output.status.code(), Some(2), "{}", complained(&output));
     assert!(said(&output).contains("no fresh customer canary pass"));
-    assert!(!ran, "the run went ahead");
+    assert!(ran.is_empty(), "the run went ahead");
     assert!(!calls.contains("--listen") && !calls.contains("authorize"), "{calls}");
     assert!(!made, "a stopped run left its output directory, which would block the retry");
+}
+
+/// S-04.5 of `docs/plans/hyalos-kernel-core`: the script's `live` run is on the KVM kernel it
+/// built, so the monitor's guard never refuses it after an authorised attempt is spent.
+#[test]
+fn core_s_04_5_the_probe_script_runs_live_on_the_kernel_it_built() {
+    let Some((output, _, ran, _)) = probe("core-4-5-kernel", 0, true) else { return };
+    assert!(output.status.success(), "{}", complained(&output));
+    let kernel = ran.trim();
+    assert!(kernel.ends_with("/kernel-image/target/x86_64-unknown-none/release/hyalos-kernel"), "live ran without the built kernel");
+    assert!(Path::new(kernel).is_absolute(), "the kernel path does not depend on the monitor's directory");
+}
+
+/// S-04.5: without a kernel image the script stops before the notary starts, any authorised
+/// attempt is spent or anything is published.
+#[test]
+fn core_s_04_5_the_probe_script_stops_before_anything_without_a_kernel() {
+    let Some((output, calls, ran, made)) = probe("core-4-5-no-kernel", 0, false) else { return };
+    assert_eq!(output.status.code(), Some(2), "{}", complained(&output));
+    assert!(said(&output).contains("the kernel image did not build"));
+    assert!(calls.is_empty(), "the other machine was contacted: {calls}");
+    assert!(ran.is_empty(), "the run went ahead");
+    assert!(!made, "a stopped run left its output directory");
 }

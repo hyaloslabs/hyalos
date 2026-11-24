@@ -13,7 +13,11 @@ port=7047 remote=.hyalos-notary out=evidence/out/two-machines
 attest=$PWD/target/release/attest
 monitor=$PWD/target/release/task-kernel
 key=$HOME/.config/hyalos-spike/operator-transport.key
-[ -x "$attest" ] && [ -x "$monitor" ] && [ -x target/release/notary ] && [ -x target/release/canary ] || { echo "build both programs first"; exit 2; }
+# A live run on a real repository needs the KVM kernel (S-04.5 of docs/plans/hyalos-kernel-core), so
+# the kernel image is built from this tree, as the monitor's tests build it, before anything starts.
+kernel=$PWD/kernel-image/target/x86_64-unknown-none/release/hyalos-kernel
+(cd kernel-image && cargo build --release --locked) || { echo "the kernel image did not build (if the target is missing: rustup target add x86_64-unknown-none)"; exit 2; }
+[ -x "$attest" ] && [ -x "$monitor" ] && [ -x target/release/notary ] && [ -x target/release/canary ] && [ -s "$kernel" ] || { echo "build both programs and the kernel image first"; exit 2; }
 [ ! -e "$out" ] || { echo "$out already exists: move it away first"; exit 2; }
 
 operator_public=$("$attest" link-key "$key")
@@ -48,6 +52,8 @@ export HYALOS_ATTEST=$attest HYALOS_NOTARY_ADDRESS=127.0.0.1:$port
 export HYALOS_NOTARY_TRANSPORT_PUBLIC=$transport HYALOS_NOTARY_SIGNER_PUBLIC=$signer
 export HYALOS_NOTARY_AUTHORISATION=$authorisation
 export HYALOS_OPERATOR_TRANSPORT_KEY=$key
+# The guest runs inside the KVM machine: without a kernel, `live` refuses a real repository.
+export HYALOS_KERNEL=$kernel
 
 # 3.2: the round trip, as the median of 20 TCP connection times to the other machine's SSH port.
 address=$(ssh -G "$host" | awk '$1=="hostname"{print $2}')
