@@ -194,8 +194,7 @@ fn s_01_3_e2_a_link_cut_at_any_point_is_never_logged_as_a_refused_server() {
         let _ = child.kill();
         let _ = child.wait();
         let line = rig.notary.line_after(seen);
-        // On a slow machine the notary can miss the closed link and end at its deadline (#453).
-        assert!(line.ends_with("refused dropped") || line.ends_with("refused deadline") || line.contains(" attested "), "cut after {wait} ms: {line}");
+        assert!(line.ends_with("refused dropped") || line.contains(" attested "), "cut after {wait} ms: {line}");
     }
 }
 

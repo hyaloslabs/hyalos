@@ -567,8 +567,18 @@ impl Notary {
 
         let session = Session::new(tls.compat());
         let (driver, mut handle) = session.split();
-        let mut driver = Aborting(tokio::spawn(driver));
-        let ran: Result<_, Reason> = async {
+        // The driver alone reads the link. When it fails, a verifier waiting on the handle is not
+        // always told and would hold the session to the deadline (#453), so a failed driver ends
+        // the protocol here. A driver that ends cleanly sends nothing: that follows a close.
+        let (failed, link_failed) = oneshot::channel();
+        let mut driver = Aborting(tokio::spawn(async move {
+            let ended = driver.await;
+            if ended.is_err() {
+                let _ = failed.send(());
+            }
+            ended
+        }));
+        let protocol = async {
             let config = VerifierConfig::builder().root_store(self.roots.clone()).build().map_err(|_| "dropped")?;
             let verifier = match handle.new_verifier(config).map_err(|_| "dropped")?.commit().await.map_err(|_| "dropped")? {
                 VerifierCommitStart::Mpc(verifier) => {
@@ -606,8 +616,11 @@ impl Notary {
             let tls_transcript = verifier.tls_transcript().clone();
             verifier.close().await.map_err(|_| "dropped")?;
             Ok((server_name, transcript_commitments, tls_transcript))
-        }
-        .await;
+        };
+        let ran: Result<_, Reason> = tokio::select! {
+            ran = protocol => ran,
+            Ok(()) = link_failed => Err("dropped"),
+        };
         let (server_name, transcript_commitments, tls_transcript) = match ran {
             Ok(ran) => ran,
             Err(reason) => {
