@@ -291,6 +291,8 @@ fn report_cpuid() {
     for (at, &leaf) in REPORTED_LEAVES.iter().enumerate() {
         let r = core::arch::x86_64::__cpuid_count(leaf, 0);
         for (word, value) in [r.eax, r.ebx, r.ecx, r.edx].into_iter().enumerate() {
+            // SAFETY: 14 leaves of 16 bytes stay inside the heap (`HEAP_START..HEAP_END`), which is
+            // mapped writable for the kernel, and nothing else uses it: the run ends with this report.
             unsafe { ptr::write_volatile(out.add(at * 4 + word), value) };
         }
     }
