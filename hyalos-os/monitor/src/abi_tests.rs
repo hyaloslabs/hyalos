@@ -9,10 +9,10 @@ use crate::profile_tests::kvm_backend;
 use hyalos_audit::{ABI, MAX_BODY, MAX_EFFECTS, MAX_QUESTION};
 use std::path::Path;
 
-/// The digest of each interface section's tables in `ABI.md`. A section is never edited once a
+/// The digest of each interface section of `ABI.md`. A section is never edited once a
 /// backend implements it: a change to a call's name, signature, limit or error value is a new
 /// interface name, a new section, a new row here and an ADR.
-const PINNED: &[(&str, &str)] = &[("hyalos.abi/1", "1de3ec74d093a51526bbab38fe00b961312472d484fe2d4adad24ac065fcb082")];
+const PINNED: &[(&str, &str)] = &[("hyalos.abi/1", "c252b9e8fcd87805df364b8f0b8e7386e4e70c559aff511b96573648f741fa49")];
 
 const GUIDE: &str = "a change to the guest interface needs a new name, a new section in ABI.md, a new pinned digest and an ADR";
 
@@ -36,10 +36,9 @@ fn rows(text: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// The digest of a section's tables: what a backend is held to.
+/// The digest of a whole section, prose and tables: what a backend is held to.
 fn digest(section: &str) -> String {
-    let tables: Vec<&str> = section.lines().filter(|l| l.starts_with('|')).collect();
-    sha(tables.join("\n").as_bytes())
+    sha(section.as_bytes())
 }
 
 /// The current interface's call table: name, signature and limit, in the document's order.
@@ -196,7 +195,7 @@ fn core_s_01_1_every_call_refuses_as_abi_md_states_on_both_backends() {
 fn core_s_01_2_e1_the_unchanged_interface_passes() {
     let doc = abi_md();
     let pinned = PINNED.iter().find(|(name, _)| *name == ABI).map(|(_, pin)| *pin);
-    assert_eq!(pinned, Some(digest(&section(&doc, ABI)).as_str()), "the tables of ABI.md's {ABI} section changed: {GUIDE}");
+    assert_eq!(pinned, Some(digest(&section(&doc, ABI)).as_str()), "ABI.md's {ABI} section changed: {GUIDE}");
     // The kernel image is its own workspace, so its copy of the name is read from its source.
     let kernel = include_str!("../../kernel-image/src/main.rs");
     assert!(kernel.contains(&format!("const ABI: &str = \"{ABI}\";")), "the kernel image names another interface: {GUIDE}");

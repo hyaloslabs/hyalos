@@ -10,7 +10,7 @@ Both backends, the ordinary process and the kernel image on KVM, are held to thi
 conformance suite in `monitor/src/abi_tests.rs`. A change to a call's name, signature, limit,
 result or refusal fails that suite until it is given a new interface name, a new section here and
 an ADR. A section here is never edited once a backend implements it: the suite pins the digest of
-its tables.
+the whole section.
 
 ## `hyalos.abi/1`
 
@@ -27,7 +27,9 @@ Its only imports are these four functions, from the module `hyalos`. All values 
 | `return` | `(ptr, len)` | 4,096 bytes | Ends the run with these bytes as its result. It never returns to the guest |
 
 A refusal is not a return value: it ends the run with the reason below, and no later call is
-made. The checks of one call run in the order listed, so the first that fails is the reason.
+made. A call's argument checks (`UnknownSchema` or `UnknownEffect`, `EffectLimit`, `TooLarge`,
+`BadPointer`) run in the order listed, so the first that fails is the reason. The reasons after
+them come from a live run or a replay once those checks pass.
 
 | Where | Reason | When |
 |---|---|---|
@@ -38,8 +40,8 @@ made. The checks of one call run in the order listed, so the first that fails is
 | `infer` | `UnknownSchema` | `schema` is not `0` |
 | `infer` | `TooLarge` | `len` is over 4,096 |
 | `infer` | `BadPointer` | The question is not inside the guest's memory |
-| `infer` | `ModelUnavailable` | A live run's model call failed in a way the attestation tool did not name |
-| `infer` | `ModelRefused` | A live run's question is not UTF-8, or the answer is not a label |
+| `infer` | `ModelUnavailable` | A live run's attestation tool could not be run or finish, or failed in a way it did not name |
+| `infer` | `ModelRefused` | A live run's question is not UTF-8, or the answer is not a label or not attested by the presentation it names |
 | `infer` | `NotaryUnreachable` | A live run has no notary, or cannot reach it |
 | `infer` | `NotaryDeadline` | The notary did not answer in time |
 | `infer` | `WrongNotaryKey` | The notary signed with a key the operator did not trust |

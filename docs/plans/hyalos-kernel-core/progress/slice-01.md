@@ -35,7 +35,7 @@ Tests are in `hyalos-os/monitor/src/abi_tests.rs`. Every case runs on the proces
 | S-01.1 | `core_s_01_1_every_call_refuses_as_abi_md_states_on_both_backends`: 20 refusals across the four calls and the run, each checked against `ABI.md`'s refusal table, including the order of each call's checks, and each call answered at its limit |
 | S-01.1.e1 | `core_s_01_1_e1_a_guest_calling_all_four_gives_byte_identical_transcripts`: `read` (length, `-1` for a missing and a negative index), `infer`, `effect` and `return` |
 | S-01.1.e2 | `core_s_01_1_e2_read_into_too_small_a_buffer_returns_minus_2_on_both_backends`: caps 0 and 22 return `-2`, cap 23 returns 23 |
-| S-01.2 | `core_s_01_2_e1` and `core_s_01_2_e2`, below. `ABI.md`'s `hyalos.abi/1` tables are pinned by digest, the call names, signatures and limits are read from them and checked against both backends, and the kernel image's name is checked against the monitor's |
+| S-01.2 | `core_s_01_2_e1` and `core_s_01_2_e2`, below. `ABI.md`'s `hyalos.abi/1` section is pinned by digest, the call names, signatures and limits are read from them and checked against both backends, and the kernel image's name is checked against the monitor's |
 | S-01.2.e1 | `core_s_01_2_e1_the_unchanged_interface_passes` passes. It also loads each call with its documented signature, and refuses it with one more parameter or a changed result |
 | S-01.2.e2 | `core_s_01_2_e2_a_limit_raised_without_a_version_change_fails`. Dry run: `MAX_QUESTION` raised to `8 * 1024` made it fail (`left: [("infer", 4096), …] right: [("infer", 8192), …]`); reverted. A second dry run changed `return`'s documented limit to 8,192 in `ABI.md`, and `core_s_01_2_e1` failed on the digest; reverted |
 | S-01.3 | `core_s_01_3_anything_outside_the_interface_is_refused_alike`: other imports (WASI, another module, a memory, a global, a table), missing or mistyped `run` and `memory` exports, floats, SIMD, atomics, a start function and bytes that are not a module |
@@ -52,14 +52,15 @@ No backend behaviour changed, so no committed guest's transcript changes. `s_02_
 | Plan said | Reality | Why | Contract affected |
 |---|---|---|---|
 | Add a constant in the monitor (`hyalos-os/monitor/src/main.rs`) | The constant is `hyalos_audit::ABI`, in `hyalos-os/audit/src/record.rs` beside the limits it names. `main.rs` only adds the test module | The process backend's limits and `Host` live in `hyalos-audit`, which the monitor and `hyalos-verify` both use. A public constant there needs no unused-code allowance | n |
-| A test asserts both constants equal the name in `ABI.md` | It does, and also pins the digest of `ABI.md`'s `hyalos.abi/1` tables | Without the pin, a call could change along with its document and keep the name, which S-01.2 forbids | n |
+| A test asserts both constants equal the name in `ABI.md` | It does, and also pins the digest of `ABI.md`'s whole `hyalos.abi/1` section, prose and tables | Without the pin, a call could change along with its document and keep the name, which S-01.2 forbids | n |
 | Files: create `abi_tests.rs`, modify `ABI.md` and `main.rs` | Also `profile_tests.rs` (`kvm_backend` made `pub(crate)`), `audit/src/record.rs` and `kernel-image/src/main.rs` | The shared contract asks every KVM test to use that gate, and the two constants live in those files | n |
 | Verify's second command passes on its own | It needs the `attest` programs built first (`context.md` §4 lists the two `cargo build` commands, as CI's `hyalos-os` job runs them). Without them `attest/tests/notary.rs` fails with "forging-notary is not built" | The slice's Verify block leaves out the build steps | n |
 
 ## Decisions
 
 - **Extra exports.** S-01.3 says an export "outside the interface" is refused. Both backends already refuse a missing or mistyped `run` or `memory`, and the suite tests that. A module that exports something besides those two is accepted by both, as it was before: the version-0 document only required the two, and refusing extras would change the interface, not fix it. The suite holds both backends to the same answer either way.
-- **Where reasons are listed.** `ABI.md` splits reasons a call can produce (the pinned `hyalos.abi/1` tables) from those that come from a backend or a run's setting (`KernelFault`, `BadHypercall`, `Timeout`, `NoKvm`, `GuestMismatch`, the KVM backend's guest-size `TooLarge`). The second table is outside the pin, so a backend change there does not need a new interface version.
+- **Where reasons are listed.** `ABI.md` splits reasons a call can produce (the pinned `hyalos.abi/1` tables) from those that come from a backend or a run's setting (`KernelFault`, `BadHypercall`, `Timeout`, `NoKvm`, `GuestMismatch`, the KVM backend's guest-size `TooLarge`). The second table is outside the pinned section, so a backend change there does not need a new interface version.
+- **Order of refusals.** `ABI.md` states an order only for a call's argument checks, which `answer` and `Host` share. A live run's own reasons (`monitor/src/live.rs`) come after those checks in an order of the live source's, which the interface does not fix.
 - **Kernel image constant.** It carries `#[allow(dead_code)]` and is checked from the source text, as `s_02_1_e1` checks `PROFILE`, because the kernel image is a separate workspace and does not use the name at run time.
 
 ## Discoveries
