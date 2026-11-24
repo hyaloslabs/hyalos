@@ -21,6 +21,11 @@ use wasmi::{
     StoreLimitsBuilder, TrapCode,
 };
 
+/// The guest interface this kernel implements (`ABI.md`). The monitor holds the same name as
+/// `hyalos_audit::ABI`, and a test keeps the two and the document equal.
+#[allow(dead_code)]
+const ABI: &str = "hyalos.abi/1";
+
 // The one definition both backends build from, so the two produce the same transcript.
 const PROFILE: Profile = PROFILE_1;
 
