@@ -617,7 +617,9 @@ impl Notary {
             verifier.close().await.map_err(|_| "dropped")?;
             Ok((server_name, transcript_commitments, tls_transcript))
         };
+        // The protocol first, so a refusal it has already decided is never logged as a drop.
         let ran: Result<_, Reason> = tokio::select! {
+            biased;
             ran = protocol => ran,
             Ok(()) = link_failed => Err("dropped"),
         };
