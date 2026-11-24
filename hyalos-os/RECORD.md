@@ -162,8 +162,31 @@ A pass opens with `audit passed` and states `attempt {ticket + 1} of at most {bu
 - The operator may have asked the provider directly, away from the notary.
 - The customer did not authorise this task again after this attestation.
 - On versions 3 and 4, the canary tested one forged shape, with the customer's credential, at the time stated. It does not close the hidden API-key case: a request may still have used another credential.
+- On the KVM backend, a taken-over kernel may have read hardware randomness. `RDSEED` may stay reachable from the kernel on some hosts though CPUID hides it, and `RDRAND` and `RDPID` may too where the host's KVM cannot trap them (on AMD at least). Such a value cannot change a verified result: replay refuses a record whose requests, effects or result differ from what the guest gives. The host probe below shows what a host leaves reachable.
 
 Run counts are stated `under this log key only`.
+
+## The host probe
+
+`task-kernel probe-host` shows which time and randomness instructions this host's KVM leaves reachable to a taken-over kernel. It prints one line for each of `RDTSC`, `RDTSCP`, `RDRAND`, `RDSEED` and `RDPID`, in that order:
+
+```text
+RDTSC blocked
+RDTSCP blocked
+RDRAND blocked
+RDSEED reachable
+RDPID blocked
+```
+
+| Exit | Meaning |
+|---|---|
+| 0 | Every instruction is blocked |
+| 1 | At least one is reachable |
+| 2 | It could not test, and standard error names the cause, such as no access to `/dev/kvm` |
+
+Each instruction runs alone on a fresh machine with the real start state and CPUID list, then writes to the monitor's port. Reaching the port is `reachable`, and a fault first is `blocked`. Two controls run first: a `nop` must reach the port and a `ud2` must fault, or the probe exits 2 and prints no verdict.
+
+Blocking is up to the host, so hyalOS does not claim that a taken-over kernel lacks hardware randomness on every host. A reachable instruction does not refuse a run (ADR-002 and ADR-009 of `docs/plans/hyalos-kernel-core`), since replay still refuses any result it changed. The output above is the development host's (Intel, nested KVM under WSL2) on 2026-11-24.
 
 ## The verifier
 

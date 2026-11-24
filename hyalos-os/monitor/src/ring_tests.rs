@@ -147,15 +147,16 @@ fn core_s_02_4_every_memory_probe_still_faults() {
 }
 
 /// Every probe on the list ends as it says, and every privilege probe is a fault. A randomness
-/// probe may instead run on a host not known to trap it (ADR-009), judged as Slice 3's tests are.
+/// probe may instead run on a host the host probe did not measure as blocking it (ADR-009), judged
+/// as Slice 3's tests are.
 #[test]
 fn core_s_02_every_probe_ends_as_listed() {
     let Some(kernel) = selftest_kvm_backend("core_s_02") else { return };
-    let traps = crate::cpuid_tests::note_host("core_s_02");
+    let found = crate::cpuid_tests::measured_host("core_s_02");
     for &(name, want) in PROBES {
         assert!(want == Reason::KernelFault || name.starts_with("memory: nothing"), "{name}");
         let got = probe(&kernel, name).0;
-        assert_ne!(judge(name, got, want, traps), Verdict::Fail, "{name}: {got:?}");
+        assert_ne!(judge(name, got, want, blocked_here(name, Some(&found))), Verdict::Fail, "{name}: {got:?}");
     }
 }
 

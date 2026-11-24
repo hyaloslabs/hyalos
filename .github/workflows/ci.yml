@@ -248,6 +248,13 @@ jobs:
         run: cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace --features task-kernel/test-trust,hyalos-audit/test-trust
         env:
           HYALOS_REQUIRE_KVM: "1"
+      # What the runner's KVM leaves a taken-over kernel (S-03.3 of docs/plans/hyalos-kernel-core). A
+      # reachable instruction is a stated limit (exit 1); a probe that could not test (exit 2) fails.
+      - name: Probe what the runner's KVM exposes
+        run: |
+          status=0
+          cargo run --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel -- probe-host || status=$?
+          [ "$status" -le 1 ]
       # The new crates hold to fmt and clippy. The moved monitor and attest code does not yet.
       - name: Format and lint the new crates
         run: |
