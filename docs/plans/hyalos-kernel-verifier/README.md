@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | executing |
+| **Status** | done |
 | **Type** | Feature |
 | **Size** | L — 7 slices |
 | **Modifiers** | security, data, public-api, integration, infra |
@@ -106,3 +106,9 @@ diverged, using the deviations in every progress file._
 
 | Cold read predicted | What diverged | Slice | Lesson for the next pack |
 |---|---|---|---|
+| The lockfiles merge keeping each resolved version | Five crates had to take the monitor's versions, and `cargo deny` needed reasoned exceptions | 1 | Resolve a merged lockfile and run the audit during planning |
+| Moved tests stay unchanged except for paths | A race and a slow-runner timing path surfaced, one accepted as #453 | 1 | Run moved concurrency tests on CI's runners before calling a move mechanical |
+| Each forgery test maps directly to a fixture | Chain tests needed real commitments, and shims could not stand in for the built verifier | 4, 5 | Check that a test's forged input is real output before planning to reuse it |
+| S-03.5.e2 can remove `/tmp` from a test | It needs privileges, so a file-size limit and a source scan stand in | 5 | Write environment criteria that an unprivileged runner can enforce |
+| The differential test compares the stored log replies | The main ledger held 12 of 396 stored replies, and the rest were found before review | 5 | State a "every stored item" count in the plan and assert it in the test |
+| The real-run proofs wait for the operator | The stop worked: all other work finished, and one manual run proved the rest, with a byte-identical rebuild | 6, 7 | Keep operator-only proofs in the last slice, with the exact command to run |
