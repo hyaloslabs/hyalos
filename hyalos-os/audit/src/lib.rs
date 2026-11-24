@@ -17,7 +17,7 @@ pub mod report;
 
 pub use answers::{Attempt, Verifier, Witnessed, check_answer, witnessed};
 pub use audit::{AuditInputs, Verdict, audit_record, check, claim_of, notary_key_text};
-pub use chain::{Audited, Auditor, Claim, LogSource};
+pub use chain::{Audited, Auditor, Claim, LogSource, REKOR_KEY, public_der, signature_verifies};
 pub use failure::{Failure, FailureKind};
 pub use files::{FileError, FileKind, Files, PlainFiles};
 pub use record::*;

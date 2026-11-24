@@ -14,4 +14,6 @@ hyalos-audit = { path = "../audit" }
 libc = "0.2"
 
 [dev-dependencies]
+attest-check = { path = "../attest-check" }
+base64 = "0.22"
 serde_json = "1"

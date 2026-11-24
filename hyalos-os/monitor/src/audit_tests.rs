@@ -326,7 +326,7 @@ fn keep_chain(rig: &Rig, claim: &Claim, said: &str) {
     let guest = rig.root.join("chain-guest.wasm");
     fs::write(&guest, CHAIN_GUEST).unwrap();
     let (ledger, log, log_key, operator) = (rig.root.join("ledger"), rig.root.join("log"), rig.root.join("test-log.pub"), rig.root.join("operator.pub"));
-    super::fixture_tests::keep(super::fixture_tests::Spec { record: &record, attest: false, links: Some(&ledger), log: Some(&log), log_key: Some(&log_key), operator: Some(&operator), notary: "021111111111111111111111111111111111111111111111111111111111111111", guest: (claim.version != 1).then_some(guest.as_path()), root: None, legacy: claim.version == 1 }, said, true);
+    super::fixture_tests::keep(super::fixture_tests::Spec { record: &record, attest: false, links: Some(&ledger), log: Some(&log), log_key: Some(&log_key), operator: Some(&operator), notary: "021111111111111111111111111111111111111111111111111111111111111111", guest: (claim.version != 1).then_some(guest.as_path()), root: None, legacy: claim.version == 1 }, said);
 }
 
 /// The refusal of a changed copy of the real chain, kept as a case over the whole committed chain
@@ -347,7 +347,7 @@ fn refused_real(rig: &Rig, auditor: &Auditor) -> String {
     }
     let notary = fs::read_to_string(source("evidence/out/two-machines-slice5/notary.pub")).unwrap();
     let (record, log_key, operator) = (source("evidence/out/two-machines/record.json"), rig.root.join("log.pub"), rig.root.join("operator.pub"));
-    super::fixture_tests::keep(super::fixture_tests::Spec { record: &record, attest: false, links: Some(&links), log: Some(&log), log_key: Some(&log_key), operator: Some(&operator), notary: notary.trim(), guest: None, root: None, legacy: true }, &said, true);
+    super::fixture_tests::keep(super::fixture_tests::Spec { record: &record, attest: false, links: Some(&links), log: Some(&log), log_key: Some(&log_key), operator: Some(&operator), notary: notary.trim(), guest: None, root: None, legacy: true }, &said);
     said
 }
 

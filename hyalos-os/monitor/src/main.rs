@@ -289,16 +289,15 @@ fn write_synced(path: &str, bytes: &[u8]) -> Result<(), String> {
     file.sync_all().map_err(|_| "cannot write".to_string())
 }
 
-/// `[ledger dir] [--operator-public <file>] --notary-public <file> --verify <program> [--guest <file>] [--legacy-v1]`. There is no
+/// `[ledger dir] [--operator-public <file>] --notary-public <file> [--guest <file>] [--legacy-v1]`. There is no
 /// setting that skips the attestations: without a trusted notary key the audit does not start.
 fn audit_inputs(rest: &[String]) -> Result<AuditInputs, String> {
-    let (mut dir, mut operator, mut notary, mut verify, mut guest, mut legacy) = (None, None, None, None, None, false);
+    let (mut dir, mut operator, mut notary, mut guest, mut legacy) = (None, None, None, None, false);
     let mut words = rest.iter();
     while let Some(word) = words.next() {
         match word.as_str() {
             "--operator-public" => operator = words.next(),
             "--notary-public" => notary = words.next(),
-            "--verify" => verify = words.next(),
             "--guest" => guest = words.next(),
             "--legacy-v1" => legacy = true,
             flag if flag.starts_with("--") => return Err("unknown audit option".into()),
@@ -307,14 +306,7 @@ fn audit_inputs(rest: &[String]) -> Result<AuditInputs, String> {
         }
     }
     let notary = notary.ok_or("the notary's public key is not given: --notary-public <file>")?;
-    let verify = verify.ok_or("the verify program is not given: --verify <program you built>")?;
-    // Resolved once, so what runs is the file checked here and never a name found on a search path.
-    let verify = fs::canonicalize(verify).map_err(|_| "the verify program is not a file")?;
-    if !fs::metadata(&verify).is_ok_and(|m| m.is_file()) {
-        return Err("the verify program is not a file".into());
-    }
-    let verify = verify.to_str().ok_or("the verify program's path is not text")?.to_string();
-    Ok(AuditInputs { dir: dir.cloned(), operator: operator.cloned(), notary: notary_key(notary)?, verify, legacy, guest: guest.cloned() })
+    Ok(AuditInputs { dir: dir.cloned(), operator: operator.cloned(), notary: notary_key(notary)?, legacy, guest: guest.cloned() })
 }
 
 /// The notary's signing key from its file.
@@ -397,17 +389,20 @@ fn main_inner() -> Result<bool, String> {
             let inputs = audit_inputs(&args[3..])?;
             // The links directory defaults to `ledger` here. The customer's program has no default.
             let inputs = AuditInputs { dir: Some(inputs.dir.unwrap_or_else(|| "ledger".to_string())), ..inputs };
+            // A panic in the presentation parser is a refusal, and its text could name what it read.
+            std::panic::set_hook(Box::new(|_| {}));
             let log = LogSource::from_env().map_err(|failure| failure.message)?;
-            println!("{}", audit_record(arg(2)?, &inputs, log, &Verifier::from_env(&inputs.verify), &PlainFiles).map_err(|failure| failure.message)?);
+            println!("{}", audit_record(arg(2)?, &inputs, log, &Verifier::from_env().map_err(|failure| failure.message)?, &PlainFiles).map_err(|failure| failure.message)?);
             Ok(true)
         }
         "attested" => {
             let inputs = audit_inputs(&args[3..])?;
             if inputs.dir.is_some() || inputs.operator.is_some() || inputs.legacy || inputs.guest.is_some() {
-                return Err("attested takes no ledger: --notary-public <file> --verify <program>".into());
+                return Err("attested takes no ledger: --notary-public <file>".into());
             }
+            std::panic::set_hook(Box::new(|_| {}));
             let t = read_transcript(&fs::read(arg(2)?).map_err(|_| "cannot read")?)?;
-            let answers = witnessed(&t, arg(2)?, &inputs.notary, &Verifier::from_env(&inputs.verify), None, &PlainFiles).map_err(|failure| failure.message)?;
+            let answers = witnessed(&t, arg(2)?, &inputs.notary, &Verifier::from_env().map_err(|failure| failure.message)?, None, &PlainFiles).map_err(|failure| failure.message)?;
             println!("{}", answers.lines.join("\n"));
             println!("not checked here: the run's links, its window and the ticket's task. The audit checks them");
             println!("{}", attested_report(answers.lines.len(), answers.test_settings));

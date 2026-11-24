@@ -35,9 +35,6 @@ struct World {
     guest: Vec<u8>,
     /// The authorisation on the notary last started.
     authorisation: String,
-    /// Audit through `old-verify`, which reports a presentation as an older notary's, with no ticket.
-    /// This notary always signs a ticket, and a version 1 record is from before tickets.
-    old_verifier: bool,
     /// The task's one input.
     input: Vec<u8>,
     /// What the test-only `forging-notary` signs in place of the ticket.
@@ -107,6 +104,8 @@ impl World {
     /// A world whose notary also signs the canary `canary` names.
     fn signing_canary(label: &str, version: u32, asks: usize, forge: Option<&str>, canary: Option<&str>) -> Self {
         let forge_canary = canary.or((version < 3).then_some("missing")).map(str::to_string);
+        // A version 1 record is from before tickets, so its notary signs none unless told to.
+        let forge = forge.or((version == 1).then_some("missing"));
         let rig = Rig::new(&format!("forgery-{label}"));
         let (log, ledger_key) = (rig.key("test-log"), rig.key("operator"));
         let home = rig.root.join("home");
@@ -129,11 +128,8 @@ impl World {
             ("HYALOS_TRUST_PROVIDER_ADDRESS".to_string(), provider),
             ("HYALOS_OPERATOR_TRANSPORT_KEY".to_string(), transport_key.display().to_string()),
         ];
-        let mut world = Self { rig, log, ledger_key, children, settings, signer: String::new(), operator_transport, version, guest: asking(&QUESTIONS[..asks]), authorisation: String::new(), old_verifier: version == 1, input: b"one input".to_vec(), forge: forge.map(str::to_string), forge_canary };
+        let mut world = Self { rig, log, ledger_key, children, settings, signer: String::new(), operator_transport, version, guest: asking(&QUESTIONS[..asks]), authorisation: String::new(), input: b"one input".to_vec(), forge: forge.map(str::to_string), forge_canary };
         fs::write(world.rig.path("guest.wasm"), &world.guest).unwrap();
-        let old = world.rig.path("old-verify");
-        fs::write(&old, format!("#!/bin/sh\nout=$('{}' verify \"$2\" \"$3\") || exit $?\nprintf '%s\\n' \"$out\" | /usr/bin/sed 's/\"ticket\":{{[^}}]*}}/\"ticket\":null/'\n", built("attest").display())).unwrap();
-        fs::set_permissions(&old, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
         let (signer, transport, address) = world.notary("notary");
         world.signer = signer;
         world.point_at(&transport, &address, &world.signer.clone());
@@ -288,17 +284,16 @@ impl World {
             dir: Some(self.rig.path("ledger")),
             operator: Some(self.rig.path("operator.pub")),
             notary: self.signer.clone(),
-            verify: if self.old_verifier { self.rig.path("old-verify") } else { built("attest").display().to_string() },
             legacy,
             guest,
         };
-        let trust = self.settings.iter().filter(|(name, _)| name.starts_with("HYALOS_TRUST_")).map(|(n, v)| (n.clone(), v.into())).collect();
-        let verifier = Verifier { program: inputs.verify.clone(), trust };
+        let trust: Vec<(String, std::ffi::OsString)> = self.settings.iter().filter(|(name, _)| name.starts_with("HYALOS_TRUST_")).map(|(n, v)| (n.clone(), v.into())).collect();
+        let verifier = Verifier::from_settings(&trust).unwrap();
         let audited = crate::audit_record(&self.record(), &inputs, LogSource::StandIn(self.rig.path("log"), self.rig.path("test-log.pub")), &verifier, &crate::PlainFiles).map_err(|failure| failure.message);
         if let Err(said) = &audited {
             let (record, links, log, log_key, operator, root) = (PathBuf::from(self.record()), self.rig.root.join("ledger"), self.rig.root.join("log"), self.rig.root.join("test-log.pub"), self.rig.root.join("operator.pub"), self.rig.root.join("root.der"));
             let guest = inputs.guest.as_ref().map(PathBuf::from);
-            super::fixture_tests::keep(super::fixture_tests::Spec { record: &record, attest: true, links: Some(&links), log: Some(&log), log_key: Some(&log_key), operator: Some(&operator), notary: &self.signer, guest: guest.as_deref(), root: Some(&root), legacy }, said, !self.old_verifier);
+            super::fixture_tests::keep(super::fixture_tests::Spec { record: &record, attest: true, links: Some(&links), log: Some(&log), log_key: Some(&log_key), operator: Some(&operator), notary: &self.signer, guest: guest.as_deref(), root: Some(&root), legacy }, said);
         }
         audited
     }
@@ -568,8 +563,7 @@ fn s_04_1_the_whole_audit_passes_with_an_empty_home() {
         .arg("audit")
         .arg(world.record())
         .arg(world.rig.path("ledger"))
-        .args(["--operator-public", &world.rig.path("operator.pub"), "--notary-public", &world.rig.path("notary.pub"), "--guest", &world.rig.path("guest.wasm"), "--verify"])
-        .arg(built("attest"))
+        .args(["--operator-public", &world.rig.path("operator.pub"), "--notary-public", &world.rig.path("notary.pub"), "--guest", &world.rig.path("guest.wasm")])
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
         .env("HOME", &empty)
@@ -604,8 +598,8 @@ fn one_answer(label: &str, version: u32) -> World {
 
 /// The audit of a record file that its version check refuses, so no key or log is reached.
 fn audit_file(record: &str, legacy: bool) -> Result<String, String> {
-    let inputs = AuditInputs { dir: None, operator: Some("/nonexistent".into()), notary: format!("02{}", "11".repeat(32)), verify: "/nonexistent".into(), legacy, guest: None };
-    let audited = crate::audit_record(record, &inputs, LogSource::Public, &Verifier { program: "/nonexistent".into(), trust: Vec::new() }, &crate::PlainFiles).map_err(|failure| failure.message);
+    let inputs = AuditInputs { dir: None, operator: Some("/nonexistent".into()), notary: format!("02{}", "11".repeat(32)), legacy, guest: None };
+    let audited = crate::audit_record(record, &inputs, LogSource::Public, &Verifier::real(), &crate::PlainFiles).map_err(|failure| failure.message);
     if let Err(said) = &audited {
         super::fixture_tests::keep_version(Path::new(record), legacy, said);
     }
@@ -731,8 +725,7 @@ fn record_2_1_a_version_1_record_needs_no_guest() {
 #[test]
 fn record_s_01_6_e1_a_ticketed_attestation_in_a_version_1_record_is_refused() {
     let _one = locked();
-    let mut world = one_answer("r-01-6-e1", 1);
-    world.old_verifier = false;
+    let world = forged_world(World::signing("r-01-6-e1", 1, 1, Some("budget=100")), 1);
     assert_eq!(world.audit_with(true).unwrap_err(), "answer 0: a version 1 record cannot carry a ticket");
 }
 
@@ -900,13 +893,13 @@ fn record_s_05_7_e2_a_varied_input_under_the_original_authorisation_is_refused()
 #[test]
 fn record_s_05_7_e3_presenting_work_as_version_1_avoids_no_budget() {
     let _one = locked();
-    let mut world = one_answer("r-05-7-e3", 1);
+    let world = one_answer("r-05-7-e3", 1);
     assert!(world.audit().unwrap_err().contains("--legacy-v1"));
     // With the option, what is truly ticketless reports that it has no budget.
     let report = world.audit_with(true).unwrap();
     assert_eq!(report.lines().next(), Some("legacy audit passed: no attempt budget"));
-    // The real verifier sees this notary's ticket, so the same record is refused.
-    world.old_verifier = false;
+    // The same work under a notary that signed a ticket is refused.
+    let world = forged_world(World::signing("r-05-7-e3-ticket", 1, 1, Some("budget=100")), 1);
     assert_eq!(world.audit_with(true).unwrap_err(), "answer 0: a version 1 record cannot carry a ticket");
 }
 
@@ -1180,9 +1173,7 @@ fn canary_s_03_3_e3_a_version_1_record_keeps_its_legacy_audit() {
 #[test]
 fn canary_a_version_1_record_cannot_carry_a_canary() {
     let _one = locked();
-    // A notary that signs no ticket, so the real verify output, as the built verifier reads it,
-    // reaches the canary check.
-    let world = forged_world(World::signing_canary("canary-v1", 1, 1, Some("missing"), Some("before=60")), 1);
+    let world = forged_world(World::signing_canary("canary-v1", 1, 1, None, Some("before=60")), 1);
     assert_eq!(world.audit_with(true).unwrap_err(), "answer 0: a version 1 record cannot carry a canary");
 }
 
@@ -1274,8 +1265,7 @@ fn s_03_7_e2_a_release_build_refuses_a_stand_in_providers_record() {
     command
         .arg(world.record())
         .arg(world.rig.path("ledger"))
-        .args(["--operator-public", &world.rig.path("operator.pub"), "--notary-public", &notary, "--guest", &world.rig.path("guest.wasm"), "--verify"])
-        .arg(built("attest"))
+        .args(["--operator-public", &world.rig.path("operator.pub"), "--notary-public", &notary, "--guest", &world.rig.path("guest.wasm")])
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
         .env("HYALOS_TRUST_LOG_DIR", world.rig.path("log"))

@@ -42,9 +42,8 @@ pub fn check(
 pub struct AuditInputs {
     pub dir: Option<String>,
     pub operator: Option<String>,
-    /// The trusted notary's signing key, as verify takes it.
+    /// The trusted notary's signing key, in hex.
     pub notary: String,
-    pub verify: String,
     /// `--legacy-v1`: a version 1 record may be read. It changes nothing for version 2.
     pub legacy: bool,
     /// `--guest`: the guest a version 2 record is replayed on.

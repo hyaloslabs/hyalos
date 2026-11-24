@@ -134,6 +134,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "attest-check"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "hex",
+ "serde_json",
+ "sha2",
+ "tlsn-attestation",
+ "tlsn-core",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1052,8 +1065,10 @@ dependencies = [
 name = "hyalos-audit"
 version = "0.1.0"
 dependencies = [
+ "attest-check",
  "base64 0.22.1",
  "hyalos-profile",
+ "p256",
  "serde",
  "serde_json",
  "sha2",
@@ -1070,6 +1085,8 @@ version = "0.1.0"
 name = "hyalos-verify"
 version = "0.1.0"
 dependencies = [
+ "attest-check",
+ "base64 0.22.1",
  "hyalos-audit",
  "libc",
  "serde_json",
