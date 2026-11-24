@@ -14,7 +14,7 @@ Checked at base commit `657745c`.
 |---|---|
 | `SERVER` at `attest/src/lib.rs:21` and `Trust::read` at line 78 | Holds |
 | The check in `attest verify` | Holds, `verify` at `attest/src/main.rs:270` |
-| Three `openssl` audit sites | Holds, moved by Slice 1 from `ledger.rs` to `audit/src/chain.rs` |
+| Three `openssl` audit sites | Holds, moved by Slice 3 from `ledger.rs` to `audit/src/chain.rs` |
 | 171 committed presentations | Holds |
 | `tlsn-attestation` and `tlsn-core` build without `tlsn` | Holds, `cargo tree -p attest-check` has no `tlsn` |
 
@@ -29,12 +29,12 @@ Checked at base commit `657745c`.
 | S-04.2.e1, e2 | `s_04_2_e1_e2_both_checks_agree_on_every_stored_presentation` in `verify/tests/differential.rs`: 171 compared, 122 accepted by both including all 40 of `two-machines-canary`, 0 refused by both, 49 with no committed key compared on the key they name. One altered copy of each is refused by both |
 | S-04.3.e1, e2 | `s_04_3_e1_e2_p256_and_openssl_agree_on_every_stored_signature`: 396 stored replies, 1,043 signatures accepted by both, 4 refused by both, 1,047 altered copies refused by both |
 | S-04.4.e1, e2 | `s_04_4_e1_the_verify_option_is_rejected_as_unknown`, `s_04_4_e2_without_the_option_it_runs_normally` in `verify/tests/cli.rs` |
-| 5.1 | `hyalos-os/attest-check` depends on `tlsn-attestation` and `tlsn-core`, holds trust by value, and reads no setting. `attest verify` is unchanged |
+| 5.1 | `hyalos-os/attest-check` depends on `tlsn-attestation` and `tlsn-core`, holds its whole trust (server, DER roots, address) by value, and reads no setting, shown by `local_5_1_the_real_trust_is_held_as_plain_values`. `attest verify` is unchanged |
 | 5.2 | `local_5_2_a_log_reply_over_its_limit_is_inconclusive`, `local_5_2_a_list_over_its_limit_is_inconclusive_before_any_entry_is_fetched`, `local_5_2_a_redirect_is_not_followed` |
 | 5.3 | All three sites call `signature_verifies`, and S-04.3 covers each |
 | 5.4 | `verify/tests/differential.rs` launches the built `attest verify` and compares its JSON key by key |
 | 5.5 | `local_5_5_the_audit_no_longer_takes_a_verify_program` in `monitor/tests/audit_cli.rs` |
-| 5.6 | `local_5_6_the_five_answer_record_verifies_inside_the_time_limit`: 3.8 ms on the `test-trust` build. Lines in `src/`: `hyalos-verify` 179, `hyalos-audit` 1,812, `attest-check` 365, total 2,356 |
+| 5.6 | `local_5_6_the_five_answer_record_verifies_inside_the_time_limit`: 4.5 ms on the `test-trust` build. Lines in `src/`: `hyalos-verify` 179, `hyalos-audit` 1,816, `attest-check` 382, total 2,377 |
 
 ## Deviations
 

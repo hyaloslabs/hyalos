@@ -30,8 +30,10 @@ const CANARY: &[u8] = b"hyalos.canary/1";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Trust {
     pub server: String,
-    /// Roots added to the Mozilla set, in DER. Only a test build's stand-in has any.
-    pub extra_roots: Vec<Vec<u8>>,
+    /// Every trusted root, in DER.
+    pub roots: Vec<Vec<u8>>,
+    /// Where the provider is reached. The check opens no connection, so it only carries this.
+    pub address: String,
     /// The report marks a check made under anything but the real provider's trust.
     pub test: bool,
 }
@@ -41,7 +43,12 @@ impl Trust {
     pub fn real() -> Self {
         Self {
             server: SERVER.to_string(),
-            extra_roots: Vec::new(),
+            roots: RootCertStore::mozilla()
+                .roots
+                .into_iter()
+                .map(|root| root.0)
+                .collect(),
+            address: format!("{SERVER}:443"),
             test: false,
         }
     }
@@ -89,10 +96,9 @@ fn judge(bytes: &[u8], trusted_notary: &str, trust: &Trust, untrusted: &mut bool
         *untrusted = true;
         bail!("signed by a notary that is not the trusted one");
     }
-    let mut roots = RootCertStore::mozilla();
-    for root in &trust.extra_roots {
-        roots.roots.push(CertificateDer(root.clone()));
-    }
+    let roots = RootCertStore {
+        roots: trust.roots.iter().cloned().map(CertificateDer).collect(),
+    };
     let provider = CryptoProvider {
         cert: ServerCertVerifier::new(&roots)
             .map_err(|_| anyhow!("cannot use the trusted roots"))?,
@@ -421,4 +427,18 @@ fn read_canary(extensions: &[Extension]) -> Result<Option<u64>> {
         .try_into()
         .map_err(|_| anyhow!("the canary is not in its one form"))?;
     Ok(Some(u64::from_be_bytes(bytes)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_5_1_the_real_trust_is_held_as_plain_values() {
+        let trust = Trust::real();
+        assert_eq!(trust.server, "api.anthropic.com");
+        assert_eq!(trust.address, "api.anthropic.com:443");
+        assert_eq!(trust.roots.len(), RootCertStore::mozilla().roots.len());
+        assert!(!trust.roots.is_empty() && !trust.test);
+    }
 }

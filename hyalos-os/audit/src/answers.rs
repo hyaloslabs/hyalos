@@ -68,12 +68,16 @@ impl Verifier {
         let mut trust = Trust::real();
         trust.test = test;
         if let Some(server) = server {
+            trust.address = format!("{server}:443");
             trust.server = server;
+        }
+        if let Some(address) = address {
+            trust.address = address;
         }
         if let Some(file) = root {
             let der = std::fs::read(file)
                 .map_err(|_| Failure::inconclusive("cannot read the test root"))?;
-            trust.extra_roots.push(der);
+            trust.roots.push(der);
         }
         Ok(Self { trust })
     }
