@@ -52,8 +52,8 @@ Tests are in `hyalos-os/monitor/src/runner_tests.rs`. The channel tests drive th
 
 **Verify**, run locally on KVM after CI's two `attest` builds:
 
-- `HYALOS_REQUIRE_KVM=1 cargo test … core_s_04_1`: 6 passed. `… core_s_04_4`: 9 passed. No `skipped:` line.
-- The whole workspace with `HYALOS_REQUIRE_KVM=1` and `--no-fail-fast`: 435 tests (Slice 5's 419 and 16 new), none ignored and no `skipped:` line. 434 passed; `ledger::fixture_tests::local_4_2_generate` failed under the parallel load, the known flake, and passed when rerun alone.
+- `HYALOS_REQUIRE_KVM=1 cargo test … core_s_04_1`: 6 passed. `… core_s_04_4`: 9 passed (10 after review's trace test). No `skipped:` line.
+- The whole workspace with `HYALOS_REQUIRE_KVM=1` and `--no-fail-fast`: 435 tests (Slice 5's 419 and 16 new), none ignored and no `skipped:` line. 434 passed; `ledger::fixture_tests::local_4_2_generate` failed under the parallel load, the known flake, and passed when rerun alone. After review's two tests (the trace line and the bounded reap wait), 437 tests, all passed, none ignored or skipped.
 - CI's other `hyalos-os` steps: `fmt --check` on `profile`, `audit`, `attest-check` and `verify`, their `clippy -D warnings`, and `cargo deny --all-features check` from `hyalos-os/` (advisories, bans, licences and sources ok). `clippy` on the monitor reports the same warnings as at base and none in the new files. Root checks: `cargo xtask layout`, `lines` and `docs` pass. The root workspace is not touched.
 
 ## Deviations
