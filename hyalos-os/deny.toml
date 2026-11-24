@@ -11,8 +11,9 @@ all-features = true
 # Fail on any RustSec advisory, including unmaintained crates. An exception needs an entry here with a reason.
 ignore = [
     # Held at 0.5.5 by elliptic-curve 0.13 under k256 and p256, which tlsn-attestation uses. No compatible
-    # fix exists. Whether it reaches the notary's signing is assessed in #451, before any verifier release.
-    { id = "RUSTSEC-2026-0387", reason = "no compatible fix for crypto-bigint 0.5.5; assessment tracked in #451" },
+    # fix exists. The notary's compiled signing and key exchange were read for secret-dependent branches,
+    # and none was found. attest/tests/advisories.rs fails if an assessed version changes.
+    { id = "RUSTSEC-2026-0387", reason = "no secret reaches an affected branch; see advisories/RUSTSEC-2026-0387.md" },
     { id = "RUSTSEC-2025-0141", reason = "bincode is unmaintained with no patched version; attest uses it directly" },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is unmaintained with no patched version; held by tlsn-tls-core" },
 ]
