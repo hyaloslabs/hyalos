@@ -1,5 +1,5 @@
-//! hyalOS kernel v0, bare metal: a throwaway spike. It boots straight into 64-bit mode on KVM with
-//! no Linux, no drivers, no interrupts and no devices. It holds a WebAssembly interpreter and one
+//! hyalOS kernel v0, bare metal: a throwaway spike. It boots straight into 64-bit ring 3 on KVM with
+//! no Linux, no drivers, no interrupts, no devices and no ring 0 code beneath it. It holds a WebAssembly interpreter and one
 //! way out: a hypercall on port 0x1000 carrying one of five requests (read, infer, effect, return,
 //! fault). The monitor outside treats this kernel as untrusted and checks every request.
 
@@ -108,6 +108,8 @@ fn hypercall(op: u64, a: u64, b: u64, c: u64, d: u64) -> i64 {
 
 fn halt(code: u64) -> ! {
     hypercall(FAULT, code, 0, 0, 0);
+    // The monitor ends the run at the request above. Should it not, `hlt` faults in ring 3, and a
+    // fault ends the machine too.
     loop {
         unsafe { asm!("hlt", options(nomem, nostack)) };
     }
@@ -251,7 +253,7 @@ fn run(guest: &[u8]) -> u64 {
     NO_RESULT
 }
 
-/// The monitor enters here in 64-bit mode with the guest's bytes in the first two arguments.
+/// The monitor enters here in 64-bit ring 3 with the guest's bytes in the first two arguments.
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(guest: *const u8, len: usize) -> ! {
     let guest = unsafe { core::slice::from_raw_parts(guest, len) };
@@ -260,10 +262,21 @@ pub extern "C" fn _start(guest: *const u8, len: usize) -> ! {
     halt(run(guest))
 }
 
-/// Built only for the monitor's tests: tries one thing the address space must stop, chosen by the
-/// first input byte, then sends a request the monitor calls unknown. Dying first is the pass.
+/// Page tables the self-test kernel's `CR3` probe builds for itself: a PML4, a PDPT and a page
+/// directory. The kernel is loaded at its physical address, so their addresses are physical too.
+#[cfg(feature = "selftest")]
+#[repr(C, align(4096))]
+struct Tables([[u64; 512]; 3]);
+
+#[cfg(feature = "selftest")]
+static mut TABLES: Tables = Tables([[0; 512]; 3]);
+
+/// Built only for the monitor's tests: tries one thing the address space or ring 3 must stop,
+/// chosen by the first input byte, then sends a request the monitor calls unknown. Dying first is
+/// the pass. The monitor's `PROBES` names each one by its byte.
 #[cfg(feature = "selftest")]
 fn probe(guest: &[u8]) {
+    let table = [0u64; 2]; // an empty descriptor table to load
     unsafe {
         match guest.first().copied().unwrap_or(0) {
             1 => ptr::write_volatile(_start as usize as *mut u8, 0x90), // change its own code
@@ -276,6 +289,34 @@ fn probe(guest: &[u8]) {
             5 => drop(ptr::read_volatile(8 as *const u8)), // follow a null pointer
             6 => ptr::write_volatile(guest.as_ptr() as *mut u8, 0), // change the signed guest
             7 => drop(ptr::read_volatile(0x200_0000 as *const u8)), // read past its memory
+            8 => asm!("rdtsc", out("eax") _, out("edx") _, options(nomem, nostack)), // read the clock
+            9 => asm!("rdtscp", out("eax") _, out("edx") _, out("ecx") _, options(nomem, nostack)),
+            10 => {
+                // Clear `CR4.TSD`, leaving `PAE`. Were the write allowed, the unknown request
+                // would end the run before the clock is read, so a fault here is at the write.
+                asm!("mov cr4, {}", in(reg) 1u64 << 5, options(nostack));
+                hypercall(9, 0, 0, 0, 0);
+                asm!("rdtsc", out("eax") _, out("edx") _, options(nomem, nostack));
+            }
+            11 => {
+                // Load page tables of its own that map all 32 MiB writable and executable. They
+                // map this code and the stack, so were the load allowed, the unknown request below
+                // would end the run. A fault here is at the load.
+                let tables = &raw mut TABLES as *mut [u64; 512];
+                let base = tables as u64;
+                (*tables)[0] = (base + 0x1000) | 3;
+                (*tables.add(1))[0] = (base + 0x2000) | 3;
+                for (index, entry) in (*tables.add(2)).iter_mut().take(16).enumerate() {
+                    *entry = ((index as u64) << 21) | 0x83;
+                }
+                asm!("mov cr3, {}", in(reg) base, options(nostack));
+            }
+            12 => asm!("mov cr0, {}", in(reg) 0x8004_0033u64, options(nostack)), // turn write protect off
+            13 => asm!("lgdt [{}]", in(reg) table.as_ptr(), options(nostack)),
+            14 => asm!("lidt [{}]", in(reg) table.as_ptr(), options(nostack)),
+            // Write the time counter's model-specific register.
+            15 => asm!("wrmsr", in("ecx") 0x10u32, in("eax") 0u32, in("edx") 0u32, options(nostack)),
+            16 => asm!("hlt", options(nomem, nostack)),
             _ => {}
         }
     }

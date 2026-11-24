@@ -178,6 +178,29 @@ fn hostile_kernels() -> Vec<(&'static str, Vec<u8>, Reason)> {
     ]
 }
 
+/// The self-test kernel's probes, in the order of the input byte that chooses each
+/// (`kernel-image/src/main.rs`, `probe`), and how each must end. The control does nothing and
+/// reaches the unknown request, which shows the machine booted. The rest must fault first.
+const PROBES: &[(&str, Reason)] = &[
+    ("memory: nothing (control: must survive)", Reason::BadHypercall),
+    ("memory: change its own code", Reason::KernelFault),
+    ("memory: run bytes it wrote", Reason::KernelFault),
+    ("memory: change its page tables", Reason::KernelFault),
+    ("memory: run off the stack", Reason::KernelFault),
+    ("memory: follow a null pointer", Reason::KernelFault),
+    ("memory: change the signed guest", Reason::KernelFault),
+    ("memory: read past its memory", Reason::KernelFault),
+    ("privilege: read the time counter (RDTSC)", Reason::KernelFault),
+    ("privilege: read the time counter (RDTSCP)", Reason::KernelFault),
+    ("privilege: clear CR4.TSD, then read the time counter", Reason::KernelFault),
+    ("privilege: load other page tables (CR3)", Reason::KernelFault),
+    ("privilege: turn write protect off (CR0)", Reason::KernelFault),
+    ("privilege: load a descriptor table (LGDT)", Reason::KernelFault),
+    ("privilege: load an interrupt table (LIDT)", Reason::KernelFault),
+    ("privilege: write a model-specific register (WRMSR)", Reason::KernelFault),
+    ("privilege: halt (HLT)", Reason::KernelFault),
+];
+
 fn run_attacks(backend: &Backend, guest: &[u8], inputs: &[Vec<u8>]) -> Result<bool, String> {
     let mut ok = true;
     let mut check = |name: &str, got: Result<(), Reason>, want: Reason| {
@@ -198,10 +221,8 @@ fn run_attacks(backend: &Backend, guest: &[u8], inputs: &[Vec<u8>]) -> Result<bo
     if let Ok(path) = env::var("HYALOS_SELFTEST_KERNEL") {
         let kernel = fs::read(path).map_err(|_| "cannot read the self-test kernel")?;
         let probing = Backend::Kvm { kernel, limit: Duration::from_secs(2) };
-        let probes = ["nothing (control: must survive)", "change its own code", "run bytes it wrote", "change its page tables", "run off the stack", "follow a null pointer", "change the signed guest", "read past its memory"];
-        for (index, name) in probes.iter().enumerate() {
-            let want = if index == 0 { Reason::BadHypercall } else { Reason::KernelFault };
-            check(&format!("memory: {name}"), execute(&probing, &[index as u8], vec![], Mode::Record { seed: 0 }).map(|_| ()), want);
+        for (index, &(name, want)) in PROBES.iter().enumerate() {
+            check(name, execute(&probing, &[index as u8], vec![], Mode::Record { seed: 0 }).map(|_| ()), want);
         }
     }
     let base = execute(backend, guest, inputs.to_vec(), Mode::Record { seed: 7 }).map_err(|r| format!("{r:?}"))?;
@@ -487,6 +508,9 @@ mod abi_tests;
 
 #[cfg(test)]
 mod live_tests;
+
+#[cfg(test)]
+mod ring_tests;
 
 #[cfg(test)]
 mod profile_tests;

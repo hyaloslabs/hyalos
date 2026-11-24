@@ -45,11 +45,17 @@ fn kvm_gate(usable: bool, required: bool) -> KvmGate {
     }
 }
 
-/// Builds the kernel image from this tree, so the comparison never runs a stale one.
-fn built_kernel() -> Option<Vec<u8>> {
+/// Builds the kernel image from this tree, so the comparison never runs a stale one. The
+/// self-test kernel has its own target directory, so it never replaces the real one while
+/// another test reads it.
+fn built_kernel(selftest: bool) -> Option<Vec<u8>> {
     let dir = root().join("kernel-image");
+    let target = if selftest { "target-selftest" } else { "target" };
     let mut build = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    build.current_dir(&dir).args(["build", "--release", "--locked"]);
+    build.current_dir(&dir).args(["build", "--release", "--locked", "--target-dir", target]);
+    if selftest {
+        build.args(["--features", "selftest"]);
+    }
     for (name, _) in env::vars_os() {
         if name.to_str().is_some_and(|n| n.starts_with("CARGO") && n != "CARGO_HOME" || n == "RUSTFLAGS" || n == "RUSTC") {
             build.env_remove(name);
@@ -58,11 +64,21 @@ fn built_kernel() -> Option<Vec<u8>> {
     if !build.output().ok()?.status.success() {
         return None;
     }
-    fs::read(dir.join("target/x86_64-unknown-none/release/hyalos-kernel")).ok()
+    fs::read(dir.join(target).join("x86_64-unknown-none/release/hyalos-kernel")).ok()
 }
 
 /// The KVM backend, or `None` when this host reports the comparison as skipped.
 pub(crate) fn kvm_backend(test: &str) -> Option<Backend> {
+    gated_kvm_backend(test, false)
+}
+
+/// The KVM backend with the self-test kernel, whose first input byte chooses a probe, behind the
+/// same gate.
+pub(crate) fn selftest_kvm_backend(test: &str) -> Option<Backend> {
+    gated_kvm_backend(test, true)
+}
+
+fn gated_kvm_backend(test: &str, selftest: bool) -> Option<Backend> {
     let usable = fs::OpenOptions::new().read(true).write(true).open("/dev/kvm").is_ok();
     let required = env::var_os("HYALOS_REQUIRE_KVM").is_some();
     match kvm_gate(usable, required) {
@@ -73,7 +89,7 @@ pub(crate) fn kvm_backend(test: &str) -> Option<Backend> {
         KvmGate::Fail => panic!("{test}: HYALOS_REQUIRE_KVM is set and /dev/kvm cannot be opened"),
         KvmGate::Run => {}
     }
-    match built_kernel() {
+    match built_kernel(selftest) {
         Some(kernel) => Some(Backend::Kvm { kernel, limit: Duration::from_secs(30) }),
         None if required => panic!("{test}: HYALOS_REQUIRE_KVM is set and the kernel image did not build"),
         None => {

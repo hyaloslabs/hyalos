@@ -1,10 +1,12 @@
 //! The monitor: it boots the bare-metal kernel on KVM and answers its hypercalls. It gives the
 //! machine one virtual CPU, 32 MiB of memory and nothing else: no devices, no interrupts, no disk,
 //! no network. It treats the kernel inside as untrusted, so a kernel taken over by a guest still
-//! has only the five requests below, each checked here.
+//! has only the five requests below, each checked here. The kernel runs in ring 3 with no ring 0
+//! code beneath it (ADR-001 of `docs/plans/hyalos-kernel-core`), so it has no clock and no
+//! privileged instruction, and any fault ends the machine.
 
 use crate::{Host, MAX_RESULT, Reason};
-use kvm_bindings::{KVM_MAX_CPUID_ENTRIES, kvm_regs, kvm_segment, kvm_userspace_memory_region};
+use kvm_bindings::{KVM_MAX_CPUID_ENTRIES, kvm_dtable, kvm_regs, kvm_segment, kvm_sregs, kvm_userspace_memory_region};
 use kvm_ioctls::{Kvm, VcpuExit};
 use std::{
     ptr,
@@ -138,11 +140,19 @@ fn load(kernel: &[u8], ram: &Ram) -> Option<(u64, Vec<(u64, u64, u32)>)> {
     (KERNEL_LOW..KERNEL_HIGH).contains(&entry).then_some((entry, segments))
 }
 
+// Page entry bits: present, writable, reachable from ring 3, a 2 MiB page, and not executable.
+const PRESENT: u64 = 1;
+const WRITABLE: u64 = 2;
+const USER: u64 = 4;
+const LARGE: u64 = 0x80;
+const NX: u64 = 1 << 63;
+
 /// Builds the kernel's address space. Code is read-only, everything else cannot be executed, and
 /// what the kernel has no business touching is not mapped at all: the first megabyte (which holds
-/// these page tables), the gap below the stack, and anything past the machine's memory.
+/// these page tables), the gap below the stack, and anything past the machine's memory. Every
+/// entry on the way to a page the kernel may reach carries the user bit, since the kernel runs in
+/// ring 3. The rights are the ones it had in ring 0.
 fn map(ram: &Ram, segments: &[(u64, u64, u32)], guest_len: u64) -> Option<()> {
-    const NX: u64 = 1 << 63;
     let mut small = vec![0u64; 4 * 512]; // 4 KiB pages for the first 8 MiB: kernel image and guest
     let mut page = |at: u64, entry: u64| {
         let slot = small.get_mut((at >> 12) as usize)?;
@@ -150,27 +160,49 @@ fn map(ram: &Ram, segments: &[(u64, u64, u32)], guest_len: u64) -> Option<()> {
         (*slot == 0 || *slot == at | entry).then(|| *slot = at | entry)
     };
     for &(start, end, flags) in segments {
-        let entry = 1 | if flags & 2 != 0 { 2 } else { 0 } | if flags & 1 != 0 { 0 } else { NX };
+        let entry = PRESENT | USER | if flags & 2 != 0 { WRITABLE } else { 0 } | if flags & 1 != 0 { 0 } else { NX };
         for at in ((start & !0xfff)..end).step_by(4096) {
             page(at, entry)?;
         }
     }
     for at in (GUEST_AT..GUEST_AT + guest_len).step_by(4096) {
-        page(at, 1 | NX)?; // the guest's bytes: read-only
+        page(at, PRESENT | USER | NX)?; // the guest's bytes: read-only
     }
+    let table = PRESENT | WRITABLE | USER;
     let mut large = vec![0u64; 512];
     for (index, slot) in large.iter_mut().enumerate().take((RAM >> 21) as usize) {
         *slot = match index {
-            0..4 => (0x4000 + index as u64 * 0x1000) | 3,
-            4..12 | 15 => ((index as u64) << 21) | 0x83 | NX, // heap, and the stack at the top
-            _ => 0,                                            // the guard below the stack
+            0..4 => (0x4000 + index as u64 * 0x1000) | table,
+            4..12 | 15 => ((index as u64) << 21) | table | LARGE | NX, // heap, and the stack at the top
+            _ => 0,                                                       // the guard below the stack
         };
     }
     let bytes = |values: &[u64]| values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
-    ram.write(0x1000, &bytes(&[0x2003]))?;
-    ram.write(0x2000, &bytes(&[0x3003]))?;
+    ram.write(0x1000, &bytes(&[0x2000 | table]))?;
+    ram.write(0x2000, &bytes(&[0x3000 | table]))?;
     ram.write(0x3000, &bytes(&large))?;
     ram.write(0x4000, &bytes(&small))
+}
+
+/// The machine's start state (`design.md` §2 of `docs/plans/hyalos-kernel-core`): 64-bit ring 3,
+/// paging from the tables `map` built, `CR4.TSD` so the time counter faults, `IOPL` 3 so the
+/// kernel's one `out` reaches the monitor, and empty descriptor tables, so a fault has no handler
+/// and shuts the machine down.
+fn start_state(sregs: &mut kvm_sregs, entry: u64, guest_len: u64) -> kvm_regs {
+    const CR0: u64 = 0x8005_0033; // paging, write protect, protected mode and the FPU bits
+    const CR4_TSD: u64 = 1 << 2;
+    const CR4_PAE: u64 = 1 << 5;
+    const EFER: u64 = 0xd00; // long mode, active, and no-execute
+    const IOPL_3: u64 = 3 << 12;
+    let code = kvm_segment { limit: 0xffff_ffff, selector: 8 | 3, type_: 11, present: 1, dpl: 3, s: 1, l: 1, g: 1, ..Default::default() };
+    let data = kvm_segment { selector: 16 | 3, type_: 3, db: 1, l: 0, ..code };
+    sregs.cs = code;
+    (sregs.ds, sregs.es, sregs.fs, sregs.gs, sregs.ss) = (data, data, data, data, data);
+    (sregs.cr0, sregs.cr3, sregs.cr4, sregs.efer) = (CR0, 0x1000, CR4_PAE | CR4_TSD, EFER);
+    let none = kvm_dtable { base: 0, limit: 0, ..Default::default() };
+    (sregs.gdt, sregs.idt) = (none, none);
+    // Bit 1 of `RFLAGS` is always set. Interrupts stay off.
+    kvm_regs { rip: entry, rsp: RAM - 8, rflags: IOPL_3 | 2, rdi: GUEST_AT, rsi: guest_len, ..Default::default() }
 }
 
 enum Step {
@@ -263,15 +295,10 @@ pub(crate) fn run(kernel: &[u8], guest: &[u8], mut host: Host, limit: Duration) 
     let cpuid = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).map_err(no)?;
     vcpu.set_cpuid2(&cpuid).map_err(no)?;
 
-    // Start in 64-bit mode: no firmware, no boot loader, no 16-bit code.
+    // Start in 64-bit ring 3: no firmware, no boot loader, no 16-bit code, no ring 0 code.
     let mut sregs = vcpu.get_sregs().map_err(no)?;
-    let code = kvm_segment { limit: 0xffff_ffff, selector: 8, type_: 11, present: 1, s: 1, l: 1, g: 1, ..Default::default() };
-    let data = kvm_segment { selector: 16, type_: 3, db: 1, l: 0, ..code };
-    sregs.cs = code;
-    (sregs.ds, sregs.es, sregs.fs, sregs.gs, sregs.ss) = (data, data, data, data, data);
-    (sregs.cr0, sregs.cr3, sregs.cr4, sregs.efer) = (0x8005_0033, 0x1000, 1 << 5, 0xd00);
+    let regs = start_state(&mut sregs, entry, guest.len() as u64);
     vcpu.set_sregs(&sregs).map_err(no)?;
-    let regs = kvm_regs { rip: entry, rsp: RAM - 8, rflags: 2, rdi: GUEST_AT, rsi: guest.len() as u64, ..Default::default() };
     vcpu.set_regs(&regs).map_err(no)?;
 
     let t_vm = t0.elapsed();
@@ -286,6 +313,8 @@ pub(crate) fn run(kernel: &[u8], guest: &[u8], mut host: Host, limit: Duration) 
                 Ok(bytes) => u64::from(u32::from_le_bytes(bytes)),
                 Err(_) => return Err(Reason::BadHypercall),
             },
+            // With no descriptor tables, any fault in ring 3 (a privileged instruction, the time
+            // counter, a page it may not touch) becomes a triple fault and a shutdown.
             Ok(VcpuExit::Hlt | VcpuExit::Shutdown) => return Err(Reason::KernelFault),
             Ok(_) => return Err(Reason::BadHypercall),
             Err(error) if error.errno() == libc::EINTR => continue,
@@ -362,4 +391,51 @@ pub(crate) fn fuzz(mut host: impl FnMut() -> Host, rounds: u64) -> Option<(u64, 
         }
     }
     Some((replied, refused))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The start state is the one `design.md` §2 gives: ring 3 code and data, `CR4` with `PAE`
+    /// and `TSD`, `IOPL` 3 with interrupts off, and no descriptor tables.
+    #[test]
+    fn core_s_02_the_machine_starts_in_ring_3_with_tsd_and_iopl_3() {
+        let mut sregs = kvm_sregs::default();
+        let regs = start_state(&mut sregs, 0x10_1000, 5);
+        assert_eq!((sregs.cs.selector, sregs.cs.dpl, sregs.cs.l, sregs.cs.type_), (11, 3, 1, 11));
+        for data in [sregs.ds, sregs.es, sregs.fs, sregs.gs, sregs.ss] {
+            assert_eq!((data.selector, data.dpl, data.type_), (19, 3, 3));
+        }
+        assert_eq!(sregs.cr4, (1 << 5) | (1 << 2));
+        assert_eq!((sregs.gdt.limit, sregs.idt.limit), (0, 0));
+        assert_eq!(regs.rflags, 0x3002, "IOPL 3, interrupts off");
+        assert_eq!((regs.rip, regs.rdi, regs.rsi), (0x10_1000, GUEST_AT, 5));
+    }
+
+    /// Every entry on the way to a reachable page carries the user bit with its old rights, and
+    /// the page tables themselves stay unmapped.
+    #[test]
+    fn core_s_02_every_reachable_page_is_a_user_page_and_the_tables_are_unmapped() {
+        let ram = Ram::new().unwrap();
+        let segments = [(KERNEL_LOW, KERNEL_LOW + 0x2000, 5), (KERNEL_LOW + 0x2000, KERNEL_LOW + 0x3000, 6)];
+        map(&ram, &segments, 10).unwrap();
+        let entry = |at: u64| field(&ram.read(at, 8).unwrap(), 0).unwrap();
+        assert_eq!((entry(0x1000), entry(0x2000)), (0x2007, 0x3007));
+        let small = |at: u64| entry(0x4000 + (at >> 12) * 8);
+        assert_eq!(small(KERNEL_LOW), KERNEL_LOW | 5, "code: read-only, executable");
+        assert_eq!(small(KERNEL_LOW + 0x2000), (KERNEL_LOW + 0x2000) | 7 | NX, "data: writable, not executable");
+        assert_eq!(small(GUEST_AT), GUEST_AT | 5 | NX, "the guest: read-only, not executable");
+        for table in [0x1000, 0x2000, 0x3000, 0x4000, 0x5000, 0x6000, 0x7000] {
+            assert_eq!(small(table), 0, "page table at {table:#x} is mapped");
+        }
+        for index in 0..16u64 {
+            let large = entry(0x3000 + index * 8);
+            match index {
+                0..4 => assert_eq!(large, (0x4000 + index * 0x1000) | 7),
+                4..12 | 15 => assert_eq!(large, (index << 21) | 0x87 | NX),
+                _ => assert_eq!(large, 0),
+            }
+        }
+    }
 }
