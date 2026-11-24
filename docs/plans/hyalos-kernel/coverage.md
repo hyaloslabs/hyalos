@@ -38,12 +38,12 @@ Every item a pack deferred, excluded or left open has one row. When a pack defer
 | Which interpreter | Parent | Decided | ADR-002 |
 | Record does not name its interpreter | This pass | Decided | ADR-002, built by `core` and `verifier` |
 | seL4 under the kernel | Parent | Parked | ADR-002. Reopens if the review finds KVM isolation insufficient |
-| Clock in a taken-over kernel | Parent | Owned | `core` |
-| Hardware randomness in a taken-over kernel | This pass, untested | Owned | `core` |
-| Monitor confinement and hardening | Parent | Owned | `core` |
-| Review scope for `tlsn` and `wasmi` | #412 | Owned | `core` |
-| Independent security review | #63 | Owned | `core` for hyalOS. #63 still covers v1's trusted core |
-| Leaving TLSNotary's beta pin | Parent, #412 | Owned | `core` |
+| Clock in a taken-over kernel | Parent | Owned | `core`, ADR-001, #458 |
+| Hardware randomness in a taken-over kernel | This pass, measured by `core` | Owned | `core`, ADR-002, #459, #460 |
+| Monitor confinement and hardening | Parent | Owned | `core`, ADR-003, #461 to #465 |
+| Review scope for `tlsn` and `wasmi` | #412 | Owned | `core`, ADR-005, ADR-008, #467 |
+| Independent security review | #63 | Owned | `core` prepares the package (ADR-006, #468), which files the issue for the review itself. #63 still covers v1's trusted core |
+| Leaving TLSNotary's beta pin | Parent, #412 | Owned | `core`, ADR-005, #467 |
 
 ## Tasks and product
 
