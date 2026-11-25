@@ -1,48 +1,62 @@
 # The independent review's scope over code hyalOS did not write (ADR-005 and ADR-008 of
-# docs/plans/hyalos-kernel-core, design.md §2 "Review scope").
+# docs/plans/hyalos-kernel-core, design.md §2 "Review scope", repository ADR-0135).
 #
 # One row per component and part. `name` and `version` equal the locked ones in hyalos-os/Cargo.lock,
 # kernel-image/Cargo.lock or guest/Cargo.lock; for TLSNotary, `version` is the tag and `commit` the
 # locked revision. `part` is `use` (how hyalOS uses it) or `internals`. `position` is `covered` or
-# `excluded`. `upstream_audit` is a citation, `none found (searched <date>)`, or, for an excluded
-# utility, `not searched (utility, <date>)`. Every direct dependency of a hyalOS crate has a row.
+# `excluded`, and `reason` says why.
 #
-# DRAFT (Slice 11 is blocked): the `cargo xtask review-scope` check that holds this file to the
-# lockfiles is not written yet. See docs/plans/hyalos-kernel-core/progress/slice-11.md.
+# `upstream_audit` is a citation of a published code audit, or `none found (searched <date>)`. An
+# `excluded` utility crate may say `not searched (utility, <date>)` instead: no search was made, and
+# none is needed for a crate the claim does not rest on. Every value carries the date it was last
+# checked. "None found" means no published audit report was found by a web search on that date;
+# cargo-vet records were not consulted.
+#
+# `cargo xtask review-scope` holds this file to the lockfiles: a listed version that moves, a moved
+# TLSNotary tag or commit, a direct dependency of a hyalOS crate with no row, or a second locked
+# version of a listed crate with no row fails it, and so does a missing field or an unknown value.
 
-# --- The interpreter: the route to a taken-over kernel (ADR-005) ---
+# --- The interpreter: the route to a taken-over kernel (ADR-005, repository ADR-0134) ---
 
 [[component]]
 name = "wasmi"
-version = "2.0.2"
+version = "2.0.3"
 part = "use"
 position = "covered"
-upstream_audit = "SRLabs 2023 (0.31.0); Runtime Verification 2024 (0.36.0-0.38.0), https://runtimeverification.com/public-report/wasmi. Neither covers 2.0.2 (searched 2026-11-24)"
-reason = "The configuration and host boundary we use (Config::default() in kernel-image and audit replay, the fuel limits, the imports of hyalos.abi/1). An interpreter bug is the route to a taken-over kernel. Version 2.0.2 is yanked and GHSA-qrr7-2g7f-r9rg names 2.0.0-beta.4 to 2.0.2; see the slice 11 progress file"
+upstream_audit = "SRLabs 2023 (0.31.0); Runtime Verification 2024 (0.36.0-0.38.0), https://runtimeverification.com/public-report/wasmi. Neither covers 2.0.3 (searched 2026-11-24)"
+reason = "The configuration and host boundary we use: Config::default() with fuel in kernel-image/src/main.rs and audit/src/replay.rs, default features plus memory64 and no simd, the fuel limits, and the imports of hyalos.abi/1. An interpreter bug is the route to a taken-over kernel. 2.0.3 is pinned for GHSA-qrr7-2g7f-r9rg, which named 2.0.0-beta.4 to 2.0.2 (ADR-0134)"
 
 [[component]]
 name = "wasmi"
-version = "2.0.2"
+version = "2.0.3"
 part = "internals"
 position = "covered"
-upstream_audit = "SRLabs 2023 (0.31.0); Runtime Verification 2024 (0.36.0-0.38.0), https://runtimeverification.com/public-report/wasmi. Neither covers 2.0.2 (searched 2026-11-24)"
-reason = "The changes since the last audited version, as far as the reviewer judges useful: no audit of this version was found"
+upstream_audit = "SRLabs 2023 (0.31.0); Runtime Verification 2024 (0.36.0-0.38.0), https://runtimeverification.com/public-report/wasmi. Neither covers 2.0.3 (searched 2026-11-24)"
+reason = "The changes since the last audited version, as far as the reviewer judges useful: no audit of 2.0.x was found. That includes the 2.0.2 to 2.0.3 diff, which fixes the store-lane offset decoding (simd only), regenerates the trap codes and Break from one macro, and adds upstream unsafe: wasmi::Error now holds its kind behind a NonNull, with unsafe impl Send and Sync and five unsafe blocks in src/error.rs (Box::from_raw, NonNull::new_unchecked, as_ref, as_mut). cargo xtask hyalos-unsafe checks only hyalOS's own code, so this row is where that unsafe is reviewed"
 
 [[component]]
 name = "wasmi_core"
-version = "2.0.2"
+version = "2.0.3"
 part = "internals"
 position = "covered"
-upstream_audit = "As wasmi: no audit of 2.0.2 found (searched 2026-11-24)"
-reason = "Part of the interpreter, locked to wasmi's version; reviewed with wasmi's internals"
+upstream_audit = "As wasmi: no audit of 2.0.x found (searched 2026-11-24)"
+reason = "Part of the interpreter, locked to wasmi's version; reviewed with wasmi's internals. 2.0.3 changes only how its trap codes are generated"
 
 [[component]]
 name = "wasmi_ir"
-version = "2.0.2"
+version = "2.0.3"
 part = "internals"
 position = "covered"
-upstream_audit = "As wasmi: no audit of 2.0.2 found (searched 2026-11-24)"
-reason = "Part of the interpreter, locked to wasmi's version; reviewed with wasmi's internals"
+upstream_audit = "As wasmi: no audit of 2.0.x found (searched 2026-11-24)"
+reason = "Part of the interpreter, locked to wasmi's version; reviewed with wasmi's internals. 2.0.3 changes the store-lane operator's offset type, the GHSA-qrr7-2g7f-r9rg fix"
+
+[[component]]
+name = "wasmi_collections"
+version = "2.0.3"
+part = "internals"
+position = "covered"
+upstream_audit = "As wasmi: no audit of 2.0.x found (searched 2026-11-24)"
+reason = "Part of the interpreter, locked to wasmi's version; reviewed with wasmi's internals. No source change in 2.0.3"
 
 # --- KVM: the monitor's unsafe boundary (ADR-005) ---
 
@@ -51,7 +65,7 @@ name = "kvm-ioctls"
 version = "0.25.1"
 part = "use"
 position = "covered"
-upstream_audit = "X41 D-Sec 2023 audit of rust-vmm, https://www.x41-dsec.de/news/2023/11/09/rustvmm/ (an earlier version; searched 2026-11-24)"
+upstream_audit = "X41 D-Sec 2023 code review of rust-vmm, kvm-ioctls at commit e4ee241cc188f253c184ed48b3d5c4fb58a86da9, an earlier version, https://ostif.org/wp-content/uploads/2023/11/X41-rustvmm-final_release.pdf (searched 2026-11-24)"
 reason = "It carries the monitor's unsafe boundary: guest memory, the vCPU state and KVM_RUN in monitor/src/kvm.rs and runner.rs"
 
 [[component]]
@@ -59,17 +73,17 @@ name = "kvm-bindings"
 version = "0.14.2"
 part = "use"
 position = "covered"
-upstream_audit = "X41 D-Sec 2023 audit of rust-vmm, https://www.x41-dsec.de/news/2023/11/09/rustvmm/ (an earlier version; searched 2026-11-24)"
+upstream_audit = "none found (searched 2026-11-24); X41 D-Sec's 2023 rust-vmm review does not list it"
 reason = "The structures the monitor fills for the machine's start state and CPUID list"
 
-# --- Confinement of the machine runner (ADR-005, ADR-0132) ---
+# --- Confinement of the machine runner (ADR-005, repository ADR-0132) ---
 
 [[component]]
 name = "seccompiler"
 version = "0.5.0"
 part = "use"
 position = "covered"
-upstream_audit = "none found (searched 2026-11-24)"
+upstream_audit = "X41 D-Sec 2023 code review of rust-vmm, seccompiler at commit 184f2d6838b753bcdf09be7c6b46934f33c86535, an earlier version, https://ostif.org/wp-content/uploads/2023/11/X41-rustvmm-final_release.pdf (searched 2026-11-24)"
 reason = "It builds and installs the runner's seccomp allow-list; our use and the resulting filter are reviewed"
 
 [[component]]
@@ -80,7 +94,7 @@ position = "covered"
 upstream_audit = "none found (searched 2026-11-24)"
 reason = "It applies the runner's Landlock rules; our use and the resulting policy are reviewed"
 
-# --- TLSNotary (ADR-005) ---
+# --- TLSNotary (ADR-005; leaving the pin: review/pin-policy.md) ---
 
 [[component]]
 name = "tlsn"
@@ -88,7 +102,7 @@ version = "v0.1.0-beta.1"
 commit = "40a069565a2eaecbb5e691dbc634be20e8498daf"
 part = "use"
 position = "covered"
-upstream_audit = "none found (searched 2026-11-23 and 2026-11-24); its protocol is reviewed in https://arxiv.org/abs/2409.17670"
+upstream_audit = "none found (searched 2026-11-23 and 2026-11-24); its protocol is reviewed in a research paper, https://arxiv.org/abs/2409.17670, which is not a code audit"
 reason = "Our use: the prover and notary configuration, trust settings, what a presentation must show before we accept it, and what we report"
 
 [[component]]
@@ -107,7 +121,7 @@ commit = "40a069565a2eaecbb5e691dbc634be20e8498daf"
 part = "use"
 position = "covered"
 upstream_audit = "none found (searched 2026-11-23 and 2026-11-24)"
-reason = "attest-check's presentation verification and its root store (mozilla-certs): what we accept"
+reason = "attest-check's presentation verification and the root store it trusts (RootCertStore::mozilla in attest/src/lib.rs, webpki-roots 1.0.12 underneath): what we accept"
 
 [[component]]
 name = "tlsn-core"
@@ -159,7 +173,7 @@ name = "p256"
 version = "0.13.2"
 part = "use"
 position = "covered"
-upstream_audit = "zkSecurity 2025 (signature verification), https://reports.zksecurity.xyz/reports/near-p256 (searched 2026-11-24)"
+upstream_audit = "zkSecurity 2025 for NEAR, p256 at RustCrypto/elliptic-curves commit 32343a78f1522aa5bd856556f114053d4bb938e0, https://reports.zksecurity.xyz/reports/near-p256 (searched 2026-11-24)"
 reason = "The audit's ECDSA P-256 check of the public log's signatures and the chain's (audit/src/chain.rs): which keys and encodings we accept"
 
 [[component]]
@@ -167,7 +181,7 @@ name = "p256"
 version = "0.13.2"
 part = "internals"
 position = "excluded"
-upstream_audit = "zkSecurity 2025 (signature verification), https://reports.zksecurity.xyz/reports/near-p256 (searched 2026-11-24)"
+upstream_audit = "zkSecurity 2025 for NEAR, p256 at RustCrypto/elliptic-curves commit 32343a78f1522aa5bd856556f114053d4bb938e0, https://reports.zksecurity.xyz/reports/near-p256 (searched 2026-11-24)"
 reason = "A widely used primitive (ADR-005). RUSTSEC-2026-0387 under it is assessed in advisories/"
 
 [[component]]
@@ -175,7 +189,7 @@ name = "k256"
 version = "0.13.4"
 part = "use"
 position = "covered"
-upstream_audit = "NCC Group 2023, https://research.nccgroup.com/2023/08/30/public-report-entropy-rust-cryptography-review/ (searched 2026-11-24)"
+upstream_audit = "NCC Group 2023 for Entropy, k256 at RustCrypto/elliptic-curves commits 0f27814 and 5c829a4, an earlier version, https://www.nccgroup.com/research/public-report-entropyrust-cryptography-review/ (searched 2026-11-24)"
 reason = "The notary signs and the verifier checks attestations with secp256k1, through tlsn-attestation; our choice of signer and key is reviewed"
 
 [[component]]
@@ -183,7 +197,7 @@ name = "k256"
 version = "0.13.4"
 part = "internals"
 position = "excluded"
-upstream_audit = "NCC Group 2023, https://research.nccgroup.com/2023/08/30/public-report-entropy-rust-cryptography-review/ (searched 2026-11-24)"
+upstream_audit = "NCC Group 2023 for Entropy, k256 at RustCrypto/elliptic-curves commits 0f27814 and 5c829a4, an earlier version, https://www.nccgroup.com/research/public-report-entropyrust-cryptography-review/ (searched 2026-11-24)"
 reason = "A widely used primitive (ADR-005). RUSTSEC-2026-0387 under it is assessed in advisories/"
 
 # --- TLS and certificates: our use covered, internals excluded (ADR-008) ---
@@ -194,14 +208,14 @@ version = "0.23.46"
 part = "use"
 position = "covered"
 upstream_audit = "Cure53 2020 (rustls, ring, webpki), https://cure53.de/pentest-report_rustls.pdf (an earlier version; searched 2026-11-24)"
-reason = "The notary link's TLS configuration and the custom certificate check in attest/src/lib.rs (ADR-008)"
+reason = "The notary link's TLS configuration and the custom certificate check, the Pin verifier (impl ServerCertVerifier for Pin) in attest/src/lib.rs (ADR-008). The trust anchors and chain check under it, webpki-roots and rustls-webpki 0.103.17, are read as part of this use"
 
 [[component]]
 name = "rustls"
 version = "0.23.46"
 part = "internals"
 position = "excluded"
-upstream_audit = "Cure53 2020, https://cure53.de/pentest-report_rustls.pdf (an earlier version; searched 2026-11-24)"
+upstream_audit = "Cure53 2020 (rustls, ring, webpki), https://cure53.de/pentest-report_rustls.pdf (an earlier version; searched 2026-11-24)"
 reason = "Specialist TLS work, excluded as TLSNotary's cryptography is (ADR-008)"
 
 [[component]]
@@ -218,7 +232,7 @@ version = "0.26.6"
 part = "internals"
 position = "excluded"
 upstream_audit = "none found (searched 2026-11-24)"
-reason = "ADR-008"
+reason = "Specialist TLS work (ADR-008)"
 
 [[component]]
 name = "ring"
@@ -226,15 +240,15 @@ version = "0.17.14"
 part = "use"
 position = "covered"
 upstream_audit = "Cure53 2020 (rustls, ring, webpki), https://cure53.de/pentest-report_rustls.pdf (an earlier version; searched 2026-11-24)"
-reason = "The crypto provider the notary link and stand-in select (ADR-008)"
+reason = "The crypto provider the notary link and its stand-in select (ADR-008)"
 
 [[component]]
 name = "ring"
 version = "0.17.14"
 part = "internals"
 position = "excluded"
-upstream_audit = "Cure53 2020, https://cure53.de/pentest-report_rustls.pdf (an earlier version; searched 2026-11-24)"
-reason = "ADR-008"
+upstream_audit = "Cure53 2020 (rustls, ring, webpki), https://cure53.de/pentest-report_rustls.pdf (an earlier version; searched 2026-11-24)"
+reason = "Specialist cryptography work (ADR-008)"
 
 [[component]]
 name = "rcgen"
@@ -250,7 +264,7 @@ version = "0.13.2"
 part = "internals"
 position = "excluded"
 upstream_audit = "none found (searched 2026-11-24)"
-reason = "ADR-008"
+reason = "Certificate generation, excluded with the TLS crates' internals (ADR-008)"
 
 [[component]]
 name = "ureq"
@@ -258,7 +272,7 @@ version = "2.12.1"
 part = "use"
 position = "covered"
 upstream_audit = "none found (searched 2026-11-24)"
-reason = "The HTTPS client the audit and the monitor reach the public log with, over rustls and webpki-roots: our TLS configuration (ADR-008's 'our use of TLS'). The log's answers are checked by signature, not by TLS"
+reason = "The HTTPS client the audit (audit/src/chain.rs) and the monitor (monitor/src/ledger.rs) reach the public log with, over rustls and webpki-roots 0.26.11: our TLS configuration, ADR-008's 'our use of TLS'. The log's answers are checked by signature, not by TLS"
 
 [[component]]
 name = "ureq"
@@ -267,6 +281,16 @@ part = "internals"
 position = "excluded"
 upstream_audit = "none found (searched 2026-11-24)"
 reason = "An HTTP client over rustls, whose internals ADR-008 excludes"
+
+# --- Decoding untrusted bytes ---
+
+[[component]]
+name = "bincode"
+version = "1.3.3"
+part = "use"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-24)"
+reason = "attest and attest-check decode presentations from bytes with it, so its use on untrusted input is reviewed. Unmaintained (RUSTSEC-2025-0141, an exception in deny.toml)"
 
 # --- Utility crates: direct dependencies the security claim does not rest on ---
 
@@ -287,12 +311,12 @@ upstream_audit = "not searched (utility, 2026-11-24)"
 reason = "Encoding of public log entries and keys; a wrong decode fails a signature check, it cannot pass one"
 
 [[component]]
-name = "bincode"
-version = "1.3.3"
-part = "use"
-position = "covered"
+name = "base64"
+version = "0.21.7"
+part = "internals"
+position = "excluded"
 upstream_audit = "not searched (utility, 2026-11-24)"
-reason = "attest and attest-check decode presentations from bytes with it, so its use on untrusted input is reviewed. Unmaintained (RUSTSEC-2025-0141, an exception in deny.toml)"
+reason = "Not ours: under rustls-pemfile under tlsn-tls-core. It has a row because 0.22.1 does, so a second copy cannot pass unread"
 
 [[component]]
 name = "futures"
@@ -316,7 +340,7 @@ version = "0.2.186"
 part = "internals"
 position = "excluded"
 upstream_audit = "not searched (utility, 2026-11-24)"
-reason = "System call bindings; each unsafe call into it is in UNSAFE_FILES and reviewed as our code"
+reason = "System call bindings; each unsafe call into it is in a file on UNSAFE_FILES and reviewed as our code"
 
 [[component]]
 name = "serde"

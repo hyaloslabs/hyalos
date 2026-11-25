@@ -65,7 +65,7 @@ jobs:
             echo "sigstore_library=$(touches '^Cargo\.lock$')"
             echo "mcp=$(touches '^(core/|crates/mcp-conformance/)')"
             # hyalOS is its own workspace (ADR-0130), so the main workspace's manifests do not reach it.
-            echo "hyalos_os=$(grep -qE '^(hyalos-os/|rust-toolchain\.toml$|\.github/workflows/ci\.yml$|\.github/scripts/(build-verifier|check-verifier-rebuild)\.sh$)' <<<"$changed" && echo true || echo false)"
+            echo "hyalos_os=$(grep -qE '^(hyalos-os/|crates/xtask/|rust-toolchain\.toml$|\.github/workflows/ci\.yml$|\.github/scripts/(build-verifier|check-verifier-rebuild)\.sh$)' <<<"$changed" && echo true || echo false)"
           } | tee -a "$GITHUB_OUTPUT"
 
   # The time budget (#320). Every job has a 20-minute limit and should finish in 15. The test run is
@@ -289,6 +289,10 @@ jobs:
           status=0
           cargo run --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel -- probe-host || status=$?
           [ "$status" -le 1 ]
+      # Every third-party component the claim rests on has a row in the review scope at its locked
+      # version, so a moved pin fails until its row is read again (S-06.2, ADR-0135).
+      - name: The review scope agrees with hyalOS's lockfiles
+        run: cargo xtask review-scope
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           manifest-path: hyalos-os/Cargo.toml

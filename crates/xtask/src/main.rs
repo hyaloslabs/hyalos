@@ -6,6 +6,8 @@
 //! * `cargo xtask hyalos-unsafe` fails if `unsafe` appears in hyalOS outside a listed file or with
 //!   no `SAFETY` comment (ADR-0133).
 //! * `cargo xtask docs` fails if a security page cites code or a test that is not there (#333).
+//! * `cargo xtask review-scope` fails if hyalOS's review scope disagrees with its lockfiles, and
+//!   `cargo xtask advisories` if a saved upstream advisory feed affects a pinned version (ADR-0135).
 //!
 //! This crate is the control, so it is listed in `CODEOWNERS`. It is not trusted core and is not counted.
 
@@ -16,6 +18,7 @@ use std::process::{Command, ExitCode};
 
 mod hyalos;
 mod refs;
+mod scope;
 
 /// The trusted-core budget from the PRD's success metrics.
 const BUDGET: usize = 30_000;
@@ -161,8 +164,15 @@ fn main() -> ExitCode {
         Some("lines") => lines(&root),
         Some("hyalos-unsafe") => hyalos::check_unsafe(&root),
         Some("docs") => refs::check(&root),
+        Some("review-scope") => scope::check(&root),
+        Some("advisories") => {
+            let feeds: Vec<String> = std::env::args().skip(2).collect();
+            scope::check_advisories(&root, &feeds)
+        }
         _ => {
-            eprintln!("usage: cargo xtask <layout|lines|hyalos-unsafe|docs>");
+            eprintln!(
+                "usage: cargo xtask <layout|lines|hyalos-unsafe|docs|review-scope|advisories <owner/repo>=<file>...>"
+            );
             return ExitCode::from(2);
         }
     };

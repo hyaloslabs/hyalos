@@ -1,0 +1,83 @@
+name: hyalos-advisories
+
+# hyalOS's daily advisory check (ADR-0135, S-06.3 of docs/plans/hyalos-kernel-core). A pull request's
+# `hyalos-os` job checks RustSec when hyalOS changes; this job checks every day, so an advisory
+# published against a pin that has not moved still fails a run. It reads RustSec through cargo-deny
+# for all three hyalOS lockfiles, and the GitHub advisories of wasmi-labs/wasmi and tlsnotary/tlsn,
+# which RustSec may never list (a git dependency such as TLSNotary has no crates.io entry). A source
+# that cannot be read fails the job; it never passes.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hyalos-advisories
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  advisories:
+    name: hyalOS advisories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      # Installed, not run through cargo-deny-action, so the canary below can read what it printed.
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny --version 0.20.2
+      # The canary: a crate pinned to a version with a known RustSec advisory, written here rather
+      # than committed so the repository carries no vulnerable lockfile. If cargo-deny does not fail
+      # on it naming RUSTSEC-2021-0003, the advisory database was not read, and the check below
+      # would pass on nothing.
+      - name: The advisory database is read
+        run: |
+          canary="$RUNNER_TEMP/advisory-canary"
+          mkdir -p "$canary/src"
+          printf '[package]\nname = "advisory-canary"\nversion = "0.0.0"\nedition = "2021"\npublish = false\n\n[dependencies]\nsmallvec = "=1.6.0"\n\n[workspace]\n' > "$canary/Cargo.toml"
+          : > "$canary/src/lib.rs"
+          printf '[advisories]\nignore = []\n' > "$canary/deny.toml"
+          (cd "$canary" && cargo generate-lockfile)
+          status=0
+          cargo deny --manifest-path "$canary/Cargo.toml" --config "$canary/deny.toml" check advisories 2> "$canary/out" || status=$?
+          cat "$canary/out"
+          if [ "$status" -eq 0 ] || ! grep -q 'RUSTSEC-2021-0003' "$canary/out"; then
+            echo "::error::cargo-deny did not report the canary's known advisory; the advisory database was not read"
+            exit 1
+          fi
+      - name: RustSec, against hyalOS's three lockfiles
+        run: |
+          cargo deny --manifest-path hyalos-os/Cargo.toml --config hyalos-os/deny.toml --all-features check advisories
+          cargo deny --manifest-path hyalos-os/kernel-image/Cargo.toml --config hyalos-os/deny.toml check advisories
+          cargo deny --manifest-path hyalos-os/guest/Cargo.toml --config hyalos-os/deny.toml check advisories
+      # Each feed is read through the REST API with this run's token, with a 30-second limit and one
+      # retry. `cargo xtask advisories` fails, naming the advisory, when one's affected range includes
+      # a pinned version or tag, and fails on a feed it cannot parse.
+      - name: GitHub advisories of wasmi-labs/wasmi and tlsnotary/tlsn
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          fetch() {
+            for attempt in 1 2; do
+              if timeout 30 gh api "/repos/$1/security-advisories?per_page=100" --paginate --slurp > "$2"; then
+                return 0
+              fi
+              echo "::warning::reading $1's advisories failed (attempt $attempt)"
+            done
+            echo "::error::could not read $1's advisories"
+            return 1
+          }
+          fetch wasmi-labs/wasmi "$RUNNER_TEMP/wasmi.json"
+          fetch tlsnotary/tlsn "$RUNNER_TEMP/tlsn.json"
+          cargo xtask advisories "wasmi-labs/wasmi=$RUNNER_TEMP/wasmi.json" "tlsnotary/tlsn=$RUNNER_TEMP/tlsn.json"
+      - name: The review scope agrees with the lockfiles
+        run: cargo xtask review-scope
