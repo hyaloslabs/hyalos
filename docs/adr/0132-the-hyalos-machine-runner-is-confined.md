@@ -14,7 +14,7 @@ v1's broker already refuses to run without Landlock ([ADR-0121](0121-no-broker-r
 
 - **Order.** The runner closes every descriptor it inherited, opens `/dev/kvm`, and applies Landlock before any byte of the run arrives. It then reads the `Boot` frame, builds the machine, installs its seccomp filter, and only then runs the virtual CPU.
 - **Landlock** handles every file right the kernel's Landlock has, with no rule granting any back, and where the kernel has them, TCP and the scopes for signals and abstract sockets. The first ABI's file rights are required; a kernel that cannot enforce them refuses. Descriptors opened before it, KVM and the channel, keep working.
-- **Seccomp** is an allow-list built with the pure-Rust `seccompiler` crate (`=0.5.0`, JSON feature off, depending only on `libc`). Anything else kills the runner with `SIGSYS`. The list was measured, by tracing a runner from the moment its filter holds on every path the tests and the `attacks` command take:
+- **Seccomp** is an allow-list built with the pure-Rust `seccompiler` crate (`=0.5.0`, JSON feature off, depending only on `libc`). Anything else kills the runner with `SIGSYS`. The list was measured, by tracing a runner from the moment its filter holds on every path the tests and the `attacks` command take, and one call a trace cannot see was added from reading the code:
 
   | System call | Restriction |
   | --- | --- |
@@ -24,6 +24,7 @@ v1's broker already refuses to run without Landlock ([ADR-0121](0121-no-broker-r
   | `write` | Only standard error, only under `--trace` |
   | `mmap` | Only anonymous, never executable |
   | `munmap`, `brk` | None: memory for frames |
+  | `clock_gettime` | Only `CLOCK_MONOTONIC`: the standard library's `Instant`, a system call only where the host's clock source has no vDSO path |
   | `close` | None: tearing the machine down |
   | `exit_group` | None |
 

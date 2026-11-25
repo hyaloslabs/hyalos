@@ -67,6 +67,7 @@ fn core_s_04_2_the_allow_list_is_pinned_and_reaches_nothing() {
             "mmap",
             "munmap",
             "brk",
+            "clock_gettime",
             "close",
             "exit_group"
         ]
@@ -74,7 +75,7 @@ fn core_s_04_2_the_allow_list_is_pinned_and_reaches_nothing() {
     let numbers: Vec<i64> = runner::ALLOWED.iter().map(|(_, number)| *number).collect();
     assert_eq!(
         numbers,
-        [16, 45, 44, 1, 9, 11, 12, 3, 231],
+        [16, 45, 44, 1, 9, 11, 12, 228, 3, 231],
         "x86-64 numbers"
     );
     for forbidden in [
@@ -111,6 +112,7 @@ fn core_s_04_2_the_allow_list_is_pinned_and_reaches_nothing() {
         "\"write\" if trace => vec![rule(vec![fd(0, 2)])?],",
         "\"write\" => continue,",
         "when(2, SeccompCmpArgLen::Qword, SeccompCmpOp::MaskedEq(exec), 0),",
+        "libc::CLOCK_MONOTONIC as u64,",
         "SeccompAction::KillProcess,",
     ] {
         assert!(source.contains(restriction), "{restriction}");
@@ -405,6 +407,21 @@ mod hostile {
     #[test]
     fn core_s_04_2_a_sealed_runner_that_maps_executable_memory_is_killed() {
         killed("core_s_04_2 map", "map-executable", b"");
+    }
+
+    /// S-04.2: a sealed runner may read the monotonic clock with the system call itself, as the
+    /// standard library's `Instant` does on a host whose clock source has no vDSO path. Without
+    /// it, every run on such a host would die by `SIGSYS` just after sealing.
+    #[test]
+    fn core_s_04_2_a_sealed_runner_may_read_the_monotonic_clock() {
+        let Some(ended) = run_on("core_s_04_2 clock", &["--hostile", "read-clock"], b"") else {
+            return;
+        };
+        assert_eq!(
+            (ended.status.signal(), ended.status.code()),
+            (None, Some(runner::hostile::SURVIVED)),
+            "the runner did not survive reading the clock"
+        );
     }
 
     /// S-04.2: a runner whose guest waits on its first question is sealed: its filter is

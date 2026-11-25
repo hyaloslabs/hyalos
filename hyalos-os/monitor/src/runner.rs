@@ -859,7 +859,7 @@ const KVM_RUN: u64 = 0xae80;
 /// these outside its restriction, kills the runner with `SIGSYS`. The list is what a traced runner
 /// made once sealed, on every path its tests and the `attacks` command take. A new entry needs a
 /// reason that holds: none may reach a file, a network, another process or executable memory.
-pub(crate) const ALLOWED: [(&str, i64); 9] = [
+pub(crate) const ALLOWED: [(&str, i64); 10] = [
     // Only `KVM_RUN`, only on the machine's virtual CPU.
     ("ioctl", libc::SYS_ioctl),
     // Only on the channel, a connected socket, and `sendto` with no address: how the standard
@@ -872,6 +872,11 @@ pub(crate) const ALLOWED: [(&str, i64); 9] = [
     ("mmap", libc::SYS_mmap),
     ("munmap", libc::SYS_munmap),
     ("brk", libc::SYS_brk),
+    // Only the monotonic clock: the standard library's `Instant`, which the machine's run reads
+    // once sealed. Where the host's clock source has a vDSO path this is no system call at all,
+    // so a trace cannot see it; where it has none (`hpet`, `acpi_pm`, `kvm-clock` without a
+    // stable TSC) it is, and a runner without it would die on every run.
+    ("clock_gettime", libc::SYS_clock_gettime),
     // Tearing the machine down closes its descriptors; then the runner exits.
     ("close", libc::SYS_close),
     ("exit_group", libc::SYS_exit_group),
@@ -910,6 +915,12 @@ fn filter(channel: RawFd, vcpu: RawFd, trace: bool) -> Option<seccompiler::BpfPr
                 fd(0, channel),
                 when(4, SeccompCmpArgLen::Qword, SeccompCmpOp::Eq, 0),
             ])?],
+            "clock_gettime" => vec![rule(vec![when(
+                0,
+                SeccompCmpArgLen::Dword,
+                SeccompCmpOp::Eq,
+                libc::CLOCK_MONOTONIC as u64,
+            )])?],
             "write" if trace => vec![rule(vec![fd(0, 2)])?],
             // An empty list would allow it unconditionally.
             "write" => continue,
@@ -1030,7 +1041,8 @@ pub(crate) fn command(options: &Options) -> u8 {
 /// The hostile runner (S-04.2), in a build with the `test-switches` feature only: a runner taken
 /// over by code that, once the machine is built and the runner sealed, attempts one thing it may
 /// not, at the target the `Boot` frame's guest bytes name. It never runs the machine. Killed by
-/// `SIGSYS` is the expected end; an attempt that returns exits `SURVIVED`.
+/// `SIGSYS` is the expected end; an attempt that returns exits `SURVIVED`, which only `read-clock`
+/// must do.
 #[cfg(feature = "test-switches")]
 pub(crate) mod hostile {
     use std::{
@@ -1064,9 +1076,12 @@ pub(crate) mod hostile {
         MapExecutable,
         /// Create the file the target names under Landlock alone, before the seccomp filter.
         CreateUnderLandlock,
+        /// Read the monotonic clock with the system call itself, as a host whose clock has no
+        /// vDSO path does. Allowed: the runner must survive it.
+        ReadClock,
     }
 
-    pub(crate) const ACTS: [(&str, Act); 8] = [
+    pub(crate) const ACTS: [(&str, Act); 9] = [
         ("open", Act::Open),
         ("create", Act::Create),
         ("connect", Act::Connect),
@@ -1075,6 +1090,7 @@ pub(crate) mod hostile {
         ("signal", Act::Signal),
         ("map-executable", Act::MapExecutable),
         ("create-under-landlock", Act::CreateUnderLandlock),
+        ("read-clock", Act::ReadClock),
     ];
 
     impl Act {
@@ -1124,6 +1140,20 @@ pub(crate) mod hostile {
                 );
                 // SAFETY: a fresh anonymous mapping that nothing uses; this is the attempt.
                 unsafe { libc::mmap(std::ptr::null_mut(), 4096, read_exec, private, -1, 0) };
+            }
+            Act::ReadClock => {
+                let mut now = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                };
+                // SAFETY: a plain system call writing to a local `timespec`; this is the attempt.
+                unsafe {
+                    libc::syscall(
+                        libc::SYS_clock_gettime,
+                        libc::CLOCK_MONOTONIC,
+                        &mut now as *mut libc::timespec,
+                    )
+                };
             }
             Act::CreateUnderLandlock => {}
         }
