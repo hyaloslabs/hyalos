@@ -30,7 +30,7 @@ Checked on the branch's base, `c97212e` (Slice 2 merged).
 
 | ID | How it was shown |
 |---|---|
-| S-04.1 | Met as a recorded result: the process backend gives the transcripts, and every record replays there. On KVM the default kernel image cannot run MicroPython (Deviations, `process-only: micropython` in `spikes/438/README.md`, issue #503) |
+| S-04.1 | Shown on the process backend only: the transcripts, and replay of every record there. The KVM half is not shown. It is a recorded blocker: the default kernel image cannot run MicroPython (Deviations, `process-only: micropython` in `spikes/438/README.md`, issue #503) |
 | S-04.1.e1 | `expected.tsv` case `micropython-triage-0`, listed `process`: `python_committed_evidence_replays_on_both_backends` re-runs it, compares the transcript with `evidence/micropython-triage-0.json` byte for byte, and replays the record. `run.sh` checks the KVM leg still ends `KernelFault` |
 | S-04.1.e2 | Case `micropython-triage-7`, the same way. Its notification differs from seed 0's (`python_3_3_…` asserts it) |
 | S-04.2 | S-04.2.e1 |
@@ -83,8 +83,11 @@ From the repository root, on a host with KVM and Landlock. Every line exited as 
   `https://github.com/micropython/micropython`. Recorded in `build.sh` and `spikes/438/README.md`.
 - **Toolchain:** clang 18.1.3 (`1:18.1.3-1ubuntu1`), wasm-ld 18.1.3, Binaryen 108, in
   `ubuntu@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b`. python3 and make
-  come from the same release unpinned: they drive MicroPython's build, and the two-build compare
-  catches any effect they have on the output.
+  come from the same release unpinned. They drive MicroPython's build (its qstr and ROM generators
+  run under python3). The two-build compare shows only that the build is deterministic in one
+  environment. A later rebuild with a newer python3 or make that gives other bytes is a
+  reproducibility finding (pre-mortem P1), not a failure: the committed `.wasm` is what the records
+  name.
 - **The port** (`spikes/438/micropython/port/`): the minimal ROM level with the compiler, no floats, no
   `sys`, `io`, file system, time, REPL or keyboard interrupt, MPZ long integers, `bytearray`, slices.
   A 2 MiB GC heap that is never collected: WebAssembly locals are outside linear memory, so a

@@ -1,8 +1,11 @@
 # The toolchain build.sh runs the MicroPython port's build in: clang and wasm-ld for
 # wasm32-unknown-unknown, Binaryen's wasm-opt for the Asyncify pass (port/sjlj.c), and the Python and
 # make that MicroPython's own build needs. The base image is pinned by digest and the compiler,
-# linker and Binaryen by version; python3 and make come from the same release and are not pinned,
-# since only their behaviour, not their bytes, reaches the guest.
+# linker and Binaryen by version. python3 and make come from the same release and are not pinned.
+# They drive MicroPython's build (its qstr and ROM generators run under python3), so a newer one
+# could change the guest's bytes. build.sh's two-build compare would not show that, since both
+# builds use this image. Such a rebuild is a reproducibility finding: the committed guest is what
+# the records name.
 FROM ubuntu@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
