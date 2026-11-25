@@ -1,6 +1,6 @@
 # ADR-0133: hyalOS has a line budget and a list of files that may use `unsafe`
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
