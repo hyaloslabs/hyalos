@@ -69,3 +69,40 @@ cargo run --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel
 `spike-task` takes the same five files and prints the task identity without running. On KVM, set
 `HYALOS_KERNEL` to the path `spikes/438/kernel.sh <profile>` prints. The profile is `hyalos.spike/1`
 unless `HYALOS_SPIKE_PROFILE` names another spike profile.
+
+## MicroPython
+
+`micropython/port/` is a MicroPython port for `wasm32-unknown-unknown` with no Emscripten and no
+libc. It has no floats, no filesystem, no time and no `sys`, and uses a fixed 2 MiB GC heap that
+is never collected, so a run that fills it ends with `MemoryError` the same way every time. Its
+native module `_hyalos` has `read`, `infer`, `effect` and `finish` over the four `hyalos` imports.
+`run` executes record 1 as module `hyalos` and record 2 as `__main__`. An uncaught exception ends
+the run with `finish` of `error ` and the exception's type name.
+
+MicroPython's non-local return (its exceptions) needs `setjmp` and `longjmp`, which plain
+WebAssembly cannot express. LLVM lowers them only to the exception-handling proposal, which no
+profile loads. The port gets them from Binaryen's Asyncify pass instead (`port/sjlj.c`): setjmp and
+longjmp unwind the stack to `run`, which rewinds a saved snapshot. The output is plain WebAssembly
+with no added import.
+
+- Upstream: <https://github.com/micropython/micropython>, tag `v1.29.0`, commit
+  `0fd6c573ea815774668bbb16b8e197c8822368b2`. `build.sh` fetches the tag and stops unless it is
+  that commit. MicroPython's licence is `micropython/LICENSE`.
+- Toolchain: `micropython/Containerfile`, on `ubuntu@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b`, with
+  clang 18.1.3 (`1:18.1.3-1ubuntu1`), wasm-ld 18.1.3 and Binaryen 108. The host needs only
+  docker.
+- `guests/micropython.wasm`: 249,874 bytes, SHA-256
+  `590822a76c8ccbb2bd74d920bea3134ba671ad96c594f8888657fbd3b7c73b40`.
+
+micropython profile: hyalos.spike/1
+
+process-only: micropython — does not fit KVM: the default kernel image runs out of its 2 MiB stack (`0x1e0_0000` to `0x200_0000`) and ends `KernelFault` once a guest loop runs about 10,000 iterations, because its `wasmi` dispatch does not get tail calls in the kernel build. MicroPython's start-up alone runs past that. The guest's own sizes fit: 249,874 bytes against `GUEST_MAX` 1 MiB, and 4 MiB of memory. This pack does not change the default image, so the fix is issue #503.
+
+```bash
+spikes/438/micropython/build.sh   # two clean builds, compared; ends with the size and SHA-256
+spikes/438/micropython/run.sh     # the micropython-* cases of evidence/expected.tsv; ends "micropython: ok"
+```
+
+`run.sh` runs each case on the backends `evidence/expected.tsv` lists and writes its record. On a
+host with KVM it also checks that the triage case still ends `KernelFault` there, so a fix for
+#503 shows up as a failure and the cases can then be listed `both`.

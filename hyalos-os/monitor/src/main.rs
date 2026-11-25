@@ -1005,6 +1005,10 @@ mod confine_tests;
 mod spike_tests;
 
 #[cfg(test)]
+#[cfg(feature = "spike-contract")]
+mod spike_evidence_tests;
+
+#[cfg(test)]
 mod report_tests {
     use super::*;
 
