@@ -28,8 +28,10 @@ pub const SECTIONS: &[&str] = &[
 /// The words the package must contain (12.1).
 pub const NOT_REVIEWED: &str = "not yet been independently reviewed";
 
-/// Phrases that claim a review took place. A line is read in lower case, with every occurrence of
-/// `NOT_REVIEWED` taken out first, so the required sentence itself never matches.
+/// Phrases that claim a review took place, as whole words. A line is read in lower case with its
+/// punctuation read as spaces, and every occurrence of `NOT_REVIEWED` taken out first, so the
+/// required sentence itself never matches. Each line is also read joined to the next, so a claim
+/// wrapped across two lines is found. The list errs towards failing.
 const CLAIMS: &[&str] = &[
     "has been reviewed",
     "have been reviewed",
@@ -51,7 +53,49 @@ const CLAIMS: &[&str] = &[
     "passed review",
     "passed an independent review",
     "independently reviewed and",
+    "review complete",
+    "review completed",
+    "review finished",
+    "review passed",
+    "review found",
+    "reviewers found",
+    "passed a review",
+    "passed an audit",
+    "passed audit",
+    "audit found",
+    "audit complete",
+    "audit completed",
+    "audit is complete",
+    "audit passed",
+    "audited by",
+    "independently audited",
+    "underwent",
+    "undergone",
+    "certified",
 ];
+
+/// `text` in lower case, with `NOT_REVIEWED` taken out and every run of characters that are not
+/// letters or digits read as one space, padded so a phrase matches only whole words.
+fn words(text: &str) -> String {
+    let flat: String = text
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+    let flat = format!(
+        " {} ",
+        flat.split_whitespace().collect::<Vec<_>>().join(" ")
+    );
+    flat.replace(&format!(" {NOT_REVIEWED} "), " ")
+}
+
+/// Whether `text` holds a phrase of `CLAIMS`.
+fn claims_review(text: &str) -> bool {
+    let text = words(text);
+    CLAIMS
+        .iter()
+        .any(|claim| text.contains(&format!(" {claim} ")))
+}
 
 /// The body of each `## ` section, by heading, in order.
 fn sections(text: &str) -> Vec<(String, String)> {
@@ -100,14 +144,17 @@ fn full_hashes(text: &str) -> Vec<String> {
 
 /// The lines that claim a review took place, as `line number: text`.
 fn claims(text: &str) -> Vec<String> {
-    text.lines()
-        .enumerate()
-        .filter(|(_, line)| {
-            let line = line.to_lowercase().replace(NOT_REVIEWED, "");
-            CLAIMS.iter().any(|claim| line.contains(claim))
-        })
-        .map(|(i, line)| format!("{}: {}", i + 1, line.trim()))
-        .collect()
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let next = lines.get(i + 1).copied().unwrap_or("");
+        // A claim on the next line alone is reported there, not twice.
+        let wrapped = !claims_review(next) && claims_review(&format!("{line} {next}"));
+        if claims_review(line) || wrapped {
+            out.push(format!("{}: {}", i + 1, line.trim()));
+        }
+    }
+    out
 }
 
 /// What is wrong with the package `text`. `ancestor` says whether a commit is an ancestor of

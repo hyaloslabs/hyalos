@@ -193,7 +193,8 @@ The CPUID bits are clear everywhere, but whether `RDRAND`,
 at all, and `RDSEED` stays reachable on some Intel hosts (ADR-002 and ADR-009 of the plan). On such
 a host a taken-over kernel can read unpredictable values and the processor ID. It still cannot
 change a verified result: replay refuses a record whose requests, effects or result differ from
-what the guest gives (`hyalos-os/monitor/src/probe_host_tests.rs::core_s_03_4_e1_a_record_whose_question_rdseed_varied_is_refused_as_diverged`).
+what the guest gives (`hyalos-os/monitor/src/probe_host_tests.rs::core_s_03_4_e1_a_record_whose_question_rdseed_varied_is_refused_as_diverged`,
+which shows it only on a host where `RDSEED` is reachable, and elsewhere checks that it faults).
 A reachable instruction does not refuse a run. `RDTSC` and `RDTSCP` faulted on every host measured.
 Run `task-kernel probe-host` on the host you review. Measured so far:
 
@@ -201,7 +202,7 @@ Run `task-kernel probe-host` on the host you review. Measured so far:
 |---|---|---|---|---|
 | Intel, nested KVM under WSL2 (development host) | blocked | reachable | blocked | This package's dry run, 2026-11-25 |
 | `GenuineIntel` Xeon 6975P-C, `kvm_intel` (CI) | blocked | blocked | blocked | CI runs `45547863519`, `45551214113` |
-| `GenuineIntel` Xeon Platinum 8573C (CI) | blocked | reachable | blocked | CI run `45556140227` |
+| `GenuineIntel` Xeon Platinum 8573C, `kvm_intel` (CI) | blocked | reachable | blocked | CI run `45556140227` |
 | `AuthenticAMD` EPYC 7763, `kvm_amd` (CI) | reachable | reachable | reachable | CI run `45552923599` |
 
 No bare-metal host has been measured.
@@ -279,15 +280,18 @@ git diff --stat 7a6e6481c0f07939c295f0baa87412d24f16af04 HEAD -- hyalos-os ':(ex
 
 ## Commands
 
-Run them from a clean clone, at the repository root, on x86-64 Linux. The toolchain is pinned in
-`rust-toolchain.toml` (1.99.1), and the first build fetches and compiles every dependency, which
-takes several minutes. Tests that need KVM or Landlock skip without them unless the matching
-variable is set, and a skip is not a pass.
+Run them from a clean clone, at the repository root, on x86-64 Linux, with `git`, `rustup` and a C
+compiler installed. The toolchain is pinned in `rust-toolchain.toml` (1.99.1). The first build needs
+network access: it downloads every crate from crates.io and fetches TLSNotary and its
+dependencies (the `tlsnotary` repositories `tlsn`, `mpz2`, `tlsn-utils` and `rs-merkle`) from GitHub, at the
+revisions `hyalos-os/Cargo.lock` pins. Building everything takes several minutes. Tests that need
+KVM or Landlock skip without them unless the matching variable is set, and a skip is not a pass.
 
 **Common setup.**
 
 ```bash
 git clone https://github.com/hyaloslabs/hyalos.git && cd hyalos
+# With no argument, rustup installs the toolchain rust-toolchain.toml names, with its components.
 rustup toolchain install
 rustup target add x86_64-unknown-none wasm32-unknown-unknown
 # The attestation tests run these two programs, so they are built first.
@@ -295,9 +299,20 @@ cargo build --release --locked --manifest-path hyalos-os/Cargo.toml -p attest --
 cargo build --release --locked --manifest-path hyalos-os/Cargo.toml -p attest --features forge-ticket --bin forging-notary
 ```
 
-**On a KVM host.** You need read and write access to `/dev/kvm`, and a kernel with Landlock and
-seccomp. With both variables set, a test that cannot reach KVM or Landlock fails instead of
-skipping.
+**On a KVM host.** You need read and write access to `/dev/kvm` (usually membership of the `kvm`
+group), and a kernel with Landlock and seccomp. Check both first; each line must print `ok`. The
+second asks the confined runner itself to open KVM and apply Landlock and seccomp, and exits non-zero
+when it cannot:
+
+```bash
+test -r /dev/kvm && test -w /dev/kvm && echo "kvm ok"
+cargo run --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel -- machine-runner --check && echo "runner ok"
+```
+
+With both variables set, a test that cannot reach KVM or Landlock fails instead of skipping, so a
+run that passes has skipped nothing. Once built, the workspace test run took about three minutes on
+the development host; the first run also builds the kernel image, so it takes longer. Run it in the
+foreground and let it finish.
 
 ```bash
 HYALOS_REQUIRE_KVM=1 HYALOS_REQUIRE_LANDLOCK=1 cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace --features task-kernel/test-trust,hyalos-audit/test-trust,task-kernel/test-switches
@@ -306,8 +321,17 @@ cargo run --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel
 cargo run --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel -- probe-host
 ```
 
-The first two must pass. The fuzzer ends with exit 0. The probe prints five lines and exits 0 or 1;
-exit 2 means it could not test.
+The first two must pass: the workspace run reports about 460 passed tests over its test binaries,
+and `release_switches` 5. The fuzzer ends with exit 0 and a line `100000 random requests: …, no
+crash`. The probe prints five lines and exits 0 when all five are blocked or 1 when any is
+reachable; both are results, to compare with the table under **Limits**. Exit 2 means it could not
+test.
+
+A KVM host without Landlock is not a supported test host, and the check above fails there. The
+runner refuses every run without it (ADR-0132). Only the confinement tests
+(`hyalos-os/monitor/src/confine_tests.rs`) and two in `release_switches.rs` name Landlock when they
+skip (`needs Landlock`, `needs KVM and Landlock`); the other KVM tests check only `/dev/kvm`, so
+expect them to fail rather than skip. How many do has not been measured.
 
 **On a host without KVM.** The same tests, without the variables, keeping their output so each
 skipped test can be seen with its reason:

@@ -192,6 +192,11 @@ fn core_12_1_a_line_claiming_a_review_fails() {
         "It passed an independent review in 2026.",
         "Both crates have been reviewed and audited.",
         "THE CODE WAS REVIEWED.",
+        "An independent audit found nothing.",
+        "Security review: complete.",
+        "The monitor was audited by a firm.",
+        "The kernel has\nbeen reviewed.",
+        "It underwent a review.",
     ] {
         let text = package().replace("## Limits\n\nSome text.", &format!("## Limits\n\n{claim}"));
         assert!(
