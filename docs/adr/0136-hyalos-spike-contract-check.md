@@ -1,6 +1,6 @@
 # ADR-0136: hyalOS checks a draft contract under spike profiles, behind `spike-contract`
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
