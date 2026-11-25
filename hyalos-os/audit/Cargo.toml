@@ -25,3 +25,6 @@ base64 = "0.22"
 
 [dev-dependencies]
 wat = "1"
+
+[lints]
+workspace = true

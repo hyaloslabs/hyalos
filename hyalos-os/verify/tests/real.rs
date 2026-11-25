@@ -1,6 +1,9 @@
 //! S-06: a real committed record against the public log, and the documents held to the code. A test
 //! that needs the log skips when it cannot be reached, unless `HYALOS_REQUIRE_PUBLIC_LOG` is set.
 
+// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+#![allow(unsafe_code)]
+
 mod common;
 
 use common::root;

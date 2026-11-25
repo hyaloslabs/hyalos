@@ -1,6 +1,8 @@
 //! In a build without `test-trust`, no stand-in provider setting changes whom the check trusts.
 
 #![cfg(not(feature = "test-trust"))]
+// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+#![allow(unsafe_code)]
 
 use attest_check::Trust;
 use hyalos_audit::Verifier;

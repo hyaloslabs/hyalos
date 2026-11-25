@@ -1,6 +1,9 @@
 //! S-03.5, S-04.1 and 5.2: the verifier runs no program, writes no file, reads no home directory,
 //! and holds the public log's replies to their limits.
 
+// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+#![allow(unsafe_code)]
+
 mod common;
 
 use base64::{Engine, engine::general_purpose::STANDARD as B64};
