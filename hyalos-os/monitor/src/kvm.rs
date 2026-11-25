@@ -11,7 +11,7 @@
 //! pack), which asks the holder for every answer through `Calls`. The host probe's fixed sequences
 //! are the one machine built in the monitor's own process.
 
-// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+// One of the files allowed `unsafe` (`UNSAFE_FILES` in crates/xtask/src/hyalos.rs, ADR-0133).
 #![allow(unsafe_code)]
 
 use crate::{MAX_RESULT, Reason};

@@ -13,7 +13,7 @@
 //!
 //! It prints case names, status codes and a verdict, and never the credential or a reply's body.
 
-// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+// One of the files allowed `unsafe` (`UNSAFE_FILES` in crates/xtask/src/hyalos.rs, ADR-0133).
 #![allow(unsafe_code)]
 
 use attest::{

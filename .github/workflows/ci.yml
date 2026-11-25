@@ -100,8 +100,11 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Crate layout (ADR-0017)
         run: cargo xtask layout
-      - name: Trusted-core size (ADR-0017)
+      # `lines` also counts hyalOS's own code against its separate budget (ADR-0133).
+      - name: Trusted-core and hyalOS size (ADR-0017, ADR-0133)
         run: cargo xtask lines
+      - name: hyalOS uses unsafe only where listed and explained (ADR-0133)
+        run: cargo xtask hyalos-unsafe
       - name: Security pages cite code that exists (#333)
         run: cargo xtask docs
 

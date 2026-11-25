@@ -1,7 +1,10 @@
 //! Repository checks for the rules in ADR-0017.
 //!
 //! * `cargo xtask layout` fails if the workspace breaks a dependency or placement rule.
-//! * `cargo xtask lines` reports the trusted-core size and fails if it passes the budget.
+//! * `cargo xtask lines` reports the trusted-core size and fails if it passes the budget. It also
+//!   reports hyalOS's own code against its separate budget (ADR-0133).
+//! * `cargo xtask hyalos-unsafe` fails if `unsafe` appears in hyalOS outside a listed file or with
+//!   no `SAFETY` comment (ADR-0133).
 //! * `cargo xtask docs` fails if a security page cites code or a test that is not there (#333).
 //!
 //! This crate is the control, so it is listed in `CODEOWNERS`. It is not trusted core and is not counted.
@@ -11,6 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+mod hyalos;
 mod refs;
 
 /// The trusted-core budget from the PRD's success metrics.
@@ -155,9 +159,10 @@ fn main() -> ExitCode {
     let result = match std::env::args().nth(1).as_deref() {
         Some("layout") => layout(&root),
         Some("lines") => lines(&root),
+        Some("hyalos-unsafe") => hyalos::check_unsafe(&root),
         Some("docs") => refs::check(&root),
         _ => {
-            eprintln!("usage: cargo xtask <layout|lines|docs>");
+            eprintln!("usage: cargo xtask <layout|lines|hyalos-unsafe|docs>");
             return ExitCode::from(2);
         }
     };
@@ -346,7 +351,18 @@ fn config_violations(files: &[(String, Option<String>)]) -> Vec<String> {
 
 // ---- lines ----------------------------------------------------------------------------------
 
+/// Both budgets: the trusted core's, then hyalOS's, which is counted apart (ADR-0130, ADR-0133).
 fn lines(root: &Path) -> Result<(), String> {
+    let core = core_lines(root);
+    let hyalos = hyalos::lines(root);
+    match (core, hyalos) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
+        (Err(a), Err(b)) => Err(format!("{a}\n{b}")),
+    }
+}
+
+fn core_lines(root: &Path) -> Result<(), String> {
     let core = root.join("core");
     let mut per_crate: BTreeMap<String, usize> = BTreeMap::new();
     let mut per_part: BTreeMap<&str, usize> = BTreeMap::new();

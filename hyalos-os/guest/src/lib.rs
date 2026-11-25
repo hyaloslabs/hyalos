@@ -4,7 +4,7 @@
 //! title with `infer` (schema 0), and sends one digest through one `effect`.
 
 #![no_std]
-// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+// One of the files allowed `unsafe` (`UNSAFE_FILES` in crates/xtask/src/hyalos.rs, ADR-0133).
 #![allow(unsafe_code)]
 
 use core::arch::wasm32::unreachable;
@@ -106,6 +106,8 @@ fn num_len(mut n: u32) -> usize {
 
 #[no_mangle]
 pub extern "C" fn run() {
+    // SAFETY: `run` is the module's one export and the host calls it once, on one thread, so these
+    // are the only references to the three buffers.
     let rec: &mut [u8] = unsafe { &mut *addr_of_mut!(REC) };
     let sec: &mut [Entry] = unsafe { &mut *addr_of_mut!(SEC) };
     let dig: &mut [u8] = unsafe { &mut *addr_of_mut!(DIG) };
@@ -117,6 +119,7 @@ pub extern "C" fn run() {
     let mut nsec: usize = 0;
 
     for index in 0..MAX_RECORDS as i32 {
+        // SAFETY: the host writes at most `REC_CAP` bytes at `rec_ptr`, the buffer `rec` holds.
         let n = unsafe { host_read(index, rec_ptr, REC_CAP as i32) };
         if n == -1 {
             break;
@@ -136,6 +139,7 @@ pub extern "C" fn run() {
                 Some(number) => {
                     let title = &line[tab + 1..];
                     let tl = core::cmp::min(title.len(), TITLE_MAX);
+                    // SAFETY: the host only reads `tl` bytes at the title, all inside `rec`.
                     let answer =
                         unsafe { host_infer(0, title.as_ptr() as usize as i32, tl as i32) };
                     let label = if (LABEL_BUG..=LABEL_SECURITY).contains(&answer) {
@@ -193,6 +197,7 @@ pub extern "C" fn run() {
     }
 
     let digest_ptr = dig.as_ptr() as usize as i32;
+    // SAFETY: the host only reads `len` bytes at `digest_ptr`, all inside `dig`.
     unsafe {
         host_effect(0, digest_ptr, len as i32);
     }
@@ -201,6 +206,7 @@ pub extern "C" fn run() {
     let mut rlen = 0usize;
     put(&mut result, &mut rlen, b"ok ");
     put_num(&mut result, &mut rlen, total);
+    // SAFETY: the host only reads `rlen` bytes of `result`, and does not return from `host_return`.
     unsafe {
         host_return(result.as_ptr() as usize as i32, rlen as i32);
         unreachable()

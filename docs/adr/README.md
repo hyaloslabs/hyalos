@@ -146,3 +146,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0130](0130-hyalos-os-is-its-own-workspace.md) | hyalOS is its own Cargo workspace | Accepted |
 | [0131](0131-a-verifier-release-is-confirmed-two-ways.md) | A verifier release is confirmed two ways, from a tag a human pushed | Accepted |
 | [0132](0132-the-hyalos-machine-runner-is-confined.md) | The hyalOS machine runner is confined | Accepted |
+| [0133](0133-hyalos-has-a-line-budget-and-a-list-of-unsafe-files.md) | hyalOS has a line budget and a list of files that may use `unsafe` | Accepted |

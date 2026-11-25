@@ -1,7 +1,7 @@
 //! The customer's provider check, run as a program against the stand-in. No test contacts a real
 //! provider. Every credential here is made up.
 
-// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+// One of the files allowed `unsafe` (`UNSAFE_FILES` in crates/xtask/src/hyalos.rs, ADR-0133).
 #![allow(unsafe_code)]
 
 mod common;
