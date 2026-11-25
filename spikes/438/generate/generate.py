@@ -88,7 +88,9 @@ _NUMBER_MAX = 4294967295
 def _bytes(value):
     if isinstance(value, str):
         return value.encode()
-    return bytes(value)
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    raise TypeError("expected str or bytes")
 
 
 def _number(text):

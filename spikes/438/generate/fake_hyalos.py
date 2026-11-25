@@ -4,13 +4,16 @@
 
 Runs the script under the host's Python as a runtime guest's `run` would (design.md §2, Runtime
 guest `run`): the SDK executed as module `hyalos`, then the script as the main program. Records 0
-to 2 are placeholders, the data file's non-empty lines follow from index 3, and every question is
-answered with `label` (3, other, by default). It prints the effects and the result as JSON.
+to 2 are placeholders, the data file's non-empty lines follow from index 3 (one over 16,384 bytes
+reads as empty, as `read`'s -2 does), and every question is answered with `label` (3, other, by
+default). It prints the effects and the result as JSON.
 """
 
 import json
 import sys
 import types
+
+RECORD_CAP = 16384
 
 
 class Finished(Exception):
@@ -28,7 +31,10 @@ def main():
     native = types.ModuleType("_hyalos")
 
     def read(index):
-        return records[index] if 0 <= index < len(records) else None
+        if not 0 <= index < len(records):
+            return None
+        # As a runtime guest's `read` does for the host's -2: a record over its buffer is empty.
+        return records[index] if len(records[index]) <= RECORD_CAP else b""
 
     def infer(schema, question):
         seen["questions"].append([schema, question.decode("latin-1")])

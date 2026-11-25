@@ -54,8 +54,9 @@ spikes/438/generate/check.sh    # ends "check: ok"
 `check.sh` generates every SDK twice and compares both with the committed file. It checks that a
 reordered, whitespace-padded or newline-terminated contract is refused, and that each SDK's public
 names are the ones above. It checks that `triage.py` imports only `task` from `hyalos`. It also runs
-`triage.py` under the host's Python with `fake_hyalos.py` and expects the digest guest's
-notification format. CI does not run it. Each slice's progress file records its output.
+`triage.py` under the host's Python with `fake_hyalos.py`: with every answer other it expects the
+digest guest's notification format, and with every answer security it expects the bytes a
+line-by-line port of the digest guest gives, on the fixture and on inputs at the guest's limits. CI does not run it. Each slice's progress file records its output.
 
 ## Run a spike task
 
