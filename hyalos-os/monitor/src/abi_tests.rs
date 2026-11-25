@@ -141,6 +141,9 @@ fn every_reason() -> Vec<Reason> {
             | ModelUnavailable | ModelRefused | NotaryUnreachable | NotaryDeadline
             | WrongNotaryKey | ReleaseMismatch | ProviderRefused | NoAuthorisation
             | AttemptsSpent | CanaryHeld | EffectFailed | LedgerFailed => {}
+            // A spike-only reason, outside `ABI.md` (ADR-0136), so it is not in `all`.
+            #[cfg(feature = "spike-contract")]
+            BadContract => {}
         }
     }
     all

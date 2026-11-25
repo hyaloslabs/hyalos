@@ -13,6 +13,8 @@ mod ledger;
 mod live;
 mod probe_host;
 mod runner;
+#[cfg(feature = "spike-contract")]
+mod spike;
 #[cfg(feature = "test-switches")]
 mod switches;
 
@@ -910,6 +912,11 @@ fn main_inner() -> Result<bool, String> {
             );
             Ok(true)
         }
+        // The Python guest spike's commands, in a build with the `spike-contract` feature only.
+        #[cfg(feature = "spike-contract")]
+        "spike-run" => spike::run(&args[2..]),
+        #[cfg(feature = "spike-contract")]
+        "spike-task" => spike::task(&args[2..]),
         #[cfg(feature = "test-switches")]
         "attacks" => {
             let backend = load_backend()?;
@@ -993,6 +1000,9 @@ mod runner_tests;
 
 #[cfg(test)]
 mod confine_tests;
+
+#[cfg(test)]
+mod spike_tests;
 
 #[cfg(test)]
 mod report_tests {

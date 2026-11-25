@@ -462,9 +462,17 @@ fn core_s_04_4_the_holder_ends_a_silent_or_slow_runner_at_the_deadline() {
 #[test]
 fn core_s_04_4_the_reason_table_is_closed_and_every_message_round_trips() {
     let names: Vec<String> = runner::REASONS.iter().map(|r| format!("{r:?}")).collect();
+    // A spike build appends `BadContract`, and only there (ADR-0136).
+    let spike = if cfg!(feature = "spike-contract") {
+        " BadContract"
+    } else {
+        ""
+    };
     assert_eq!(
         names.join(" "),
-        "InvalidModule BadImport BadExport OutOfFuel GuestTrap BadPointer TooLarge UnknownSchema UnknownEffect EffectLimit NoResult ReplayDiverged GuestMismatch KernelFault BadHypercall Timeout NoKvm ModelUnavailable ModelRefused NotaryUnreachable NotaryDeadline WrongNotaryKey ReleaseMismatch ProviderRefused NoAuthorisation AttemptsSpent CanaryHeld EffectFailed LedgerFailed"
+        format!(
+            "InvalidModule BadImport BadExport OutOfFuel GuestTrap BadPointer TooLarge UnknownSchema UnknownEffect EffectLimit NoResult ReplayDiverged GuestMismatch KernelFault BadHypercall Timeout NoKvm ModelUnavailable ModelRefused NotaryUnreachable NotaryDeadline WrongNotaryKey ReleaseMismatch ProviderRefused NoAuthorisation AttemptsSpent CanaryHeld EffectFailed LedgerFailed{spike}"
+        )
     );
     // A new reason fails to compile here until it has a byte.
     for reason in runner::REASONS {
@@ -498,6 +506,8 @@ fn core_s_04_4_the_reason_table_is_closed_and_every_message_round_trips() {
             | Reason::CanaryHeld
             | Reason::EffectFailed
             | Reason::LedgerFailed => {}
+            #[cfg(feature = "spike-contract")]
+            Reason::BadContract => {}
         }
     }
     let decode = |bytes: &[u8]| (bytes[5], bytes[6..].to_vec());

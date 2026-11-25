@@ -49,6 +49,10 @@ pub enum Reason {
     CanaryHeld,
     EffectFailed,
     LedgerFailed,
+    /// A spike run whose input record 0 is not a contract, refused before its guest loads. Only a
+    /// build with the `spike-contract` feature has it, and `ABI.md` does not name it (ADR-0136).
+    #[cfg(feature = "spike-contract")]
+    BadContract,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

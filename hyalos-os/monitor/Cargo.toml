@@ -29,6 +29,10 @@ test-trust = ["hyalos-audit/test-trust"]
 # kernel images, and `HYALOS_SELFTEST_KERNEL`, `HYALOS_TRACE` and `HYALOS_HUGE` (S-05.4). A build
 # without it reads none of these, and `tests/release_switches.rs` checks that it does not.
 test-switches = []
+# The Python guest spike (ADR-0136, ADR-001 and ADR-006 of docs/plans/hyalos-kernel-python): the
+# draft contract check, `hyalos.spike/1`, `BadContract` and the `spike-run` and `spike-task`
+# commands. Off by default, and a build without it knows none of them.
+spike-contract = ["hyalos-audit/spike-contract", "hyalos-profile/spike-contract"]
 
 [lints]
 workspace = true
