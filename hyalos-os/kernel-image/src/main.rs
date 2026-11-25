@@ -5,7 +5,7 @@
 
 #![no_std]
 #![no_main]
-// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+// One of the files allowed `unsafe` (`UNSAFE_FILES` in crates/xtask/src/hyalos.rs, ADR-0133).
 #![allow(unsafe_code)]
 
 extern crate alloc;
@@ -50,6 +50,9 @@ const KERNEL_PANIC: u64 = 7;
 
 struct Bump(AtomicUsize);
 
+// SAFETY: `alloc` returns null or a block of `layout`'s size and alignment inside the heap
+// (`HEAP_START..HEAP_END`) that no other block overlaps, since the bump only moves forward. The
+// kernel has one thread, so the relaxed atomic is never raced.
 unsafe impl GlobalAlloc for Bump {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let start = (self.0.load(Ordering::Relaxed) + layout.align() - 1) & !(layout.align() - 1);
@@ -62,8 +65,11 @@ unsafe impl GlobalAlloc for Bump {
         }
     }
 
+    // SAFETY: freeing nothing is sound; a task is short, and the heap ends with it.
     unsafe fn dealloc(&self, _: *mut u8, _: Layout) {}
 
+    // SAFETY: the block grows in place only when it is the newest and stays inside the heap;
+    // otherwise a new block is taken and the old one's bytes copied, as `GlobalAlloc` requires.
     unsafe fn realloc(&self, old: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         // Grow the newest allocation in place; a task is short, so nothing else is reclaimed.
         if old as usize + layout.size() == self.0.load(Ordering::Relaxed) {
@@ -78,8 +84,10 @@ unsafe impl GlobalAlloc for Bump {
         let Ok(new_layout) = Layout::from_size_align(new_size, layout.align()) else {
             return ptr::null_mut();
         };
+        // SAFETY: `new_layout` is a valid layout, built just above.
         let new = unsafe { self.alloc(new_layout) };
         if !new.is_null() {
+            // SAFETY: both blocks are live, at least this long, and do not overlap.
             unsafe { ptr::copy_nonoverlapping(old, new, layout.size().min(new_size)) };
         }
         new
@@ -109,6 +117,8 @@ fn hypercall(op: u64, a: u64, b: u64, c: u64, d: u64) -> i64 {
         ret: 0,
     };
     let address = &raw mut request as u32;
+    // SAFETY: the port write hands the monitor the address of `request`, which lives on this stack
+    // until the volatile read of its answer; the kernel's memory sits below 4 GiB, so `u32` holds it.
     unsafe {
         asm!("out dx, eax", in("dx") 0x1000u16, in("eax") address, options(nostack, preserves_flags));
         ptr::read_volatile(&raw const request.ret)
@@ -120,6 +130,7 @@ fn halt(code: u64) -> ! {
     // The monitor ends the run at the request above. Should it not, `hlt` faults in ring 3, and a
     // fault ends the machine too.
     loop {
+        // SAFETY: `hlt` touches no memory; in ring 3 it faults, which ends the machine.
         unsafe { asm!("hlt", options(nomem, nostack)) };
     }
 }
@@ -329,6 +340,7 @@ fn run(guest: &[u8]) -> u64 {
 ///
 /// Only the monitor calls this, once, as the image's entry point, with `guest` pointing at `len`
 /// bytes it placed in the kernel's memory and maps read-only for the whole run (`kvm.rs`, `map`).
+// SAFETY: `_start` is the image's only exported symbol, so no other symbol shares its name.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start(guest: *const u8, len: usize) -> ! {
     // SAFETY: the monitor placed `len` bytes at `guest`, mapped read-only for the whole run.
@@ -446,8 +458,11 @@ fn ask_after_rdseed(vary: bool) {
 #[cfg(feature = "selftest")]
 fn probe(guest: &[u8]) {
     let table = [0u64; 2]; // an empty descriptor table to load
+    // SAFETY: each arm is one act the address space or ring 3 must stop, built only for the
+    // monitor's tests; the machine ends at the fault, and an act that does not fault is reported.
     unsafe {
         match guest.first().copied().unwrap_or(0) {
+            // SAFETY: as above; the cast names `_start`'s own type only to take its address.
             1 => ptr::write_volatile(
                 _start as unsafe extern "C" fn(*const u8, usize) -> ! as usize as *mut u8,
                 0x90,

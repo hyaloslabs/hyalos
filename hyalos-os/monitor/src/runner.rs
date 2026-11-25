@@ -20,7 +20,7 @@
 //! A frame is a 4-byte little-endian length, counting every byte after it, then the version byte,
 //! the type byte and the fields.
 
-// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+// One of the files allowed `unsafe` (`UNSAFE_FILES` in crates/xtask/src/hyalos.rs, ADR-0133).
 #![allow(unsafe_code)]
 
 use crate::{

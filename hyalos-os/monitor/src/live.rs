@@ -2,7 +2,7 @@
 //! tool and the customer's notary, and one notification channel. This process never holds the
 //! model credential. Only the tool reads it.
 
-// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+// One of the files allowed `unsafe` (`UNSAFE_FILES` in crates/xtask/src/hyalos.rs, ADR-0133).
 #![allow(unsafe_code)]
 
 use crate::{Reason, sha};

@@ -1,8 +1,7 @@
 //! S-03.5, S-04.1 and 5.2: the verifier runs no program, writes no file, reads no home directory,
 //! and holds the public log's replies to their limits.
 
-// Not yet on the `unsafe` list of design.md §2 (docs/plans/hyalos-kernel-core), which predates
-// this test; Slice 10's list takes it in or this test drops its `unsafe` (progress/slice-09.md).
+// One of the files allowed `unsafe` (`UNSAFE_FILES` in crates/xtask/src/hyalos.rs, ADR-0133).
 #![allow(unsafe_code)]
 
 mod common;

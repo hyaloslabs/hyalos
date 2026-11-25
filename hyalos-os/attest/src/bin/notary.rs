@@ -16,7 +16,7 @@
 //!
 //! `notary tickets --dir <directory>` prints each authorisation and what has been spent of it.
 
-// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+// One of the files allowed `unsafe` (`UNSAFE_FILES` in crates/xtask/src/hyalos.rs, ADR-0133).
 #![allow(unsafe_code)]
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
