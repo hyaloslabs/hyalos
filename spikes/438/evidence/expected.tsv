@@ -1,0 +1,5 @@
+# id	guest	contract	sdk	script	data	seed	backends	outcome	record
+micropython-triage-0	spikes/438/guests/micropython.wasm	spikes/438/contracts/draft	spikes/438/sdk/draft.py	spikes/438/scripts/triage.py	hyalos-os/evidence/fixtures/issues.tsv	0	process	result ok 40 effects 1	spikes/438/evidence/micropython-triage-0.json
+micropython-triage-7	spikes/438/guests/micropython.wasm	spikes/438/contracts/draft	spikes/438/sdk/draft.py	spikes/438/scripts/triage.py	hyalos-os/evidence/fixtures/issues.tsv	7	process	result ok 40 effects 1	spikes/438/evidence/micropython-triage-7.json
+micropython-no-notify	spikes/438/guests/micropython.wasm	spikes/438/contracts/no-notify	spikes/438/sdk/no-notify.py	spikes/438/scripts/triage.py	hyalos-os/evidence/fixtures/issues.tsv	0	process	result error AttributeError effects 0	spikes/438/evidence/micropython-no-notify.json
+micropython-raw-effect	spikes/438/guests/micropython.wasm	spikes/438/contracts/no-notify	spikes/438/sdk/no-notify.py	spikes/438/scripts/raw-effect.py	hyalos-os/evidence/fixtures/issues.tsv	0	process	refused UnknownEffect	-
