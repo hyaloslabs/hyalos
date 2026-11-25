@@ -86,6 +86,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # `cargo xtask review-package` checks that the commit under review is an ancestor.
+          fetch-depth: 0
       # The exact toolchain is pinned in rust-toolchain.toml.
       - name: Install the pinned toolchain
         run: rustup toolchain install
@@ -110,6 +112,11 @@ jobs:
       # here, on every pull request, so a change to the check or to a lockfile always meets it.
       - name: hyalOS's review scope agrees with its lockfiles (ADR-0135)
         run: cargo xtask review-scope
+      # The review package has every section, names a commit under review that is an ancestor of
+      # this tree, and claims no review took place (S-07 of docs/plans/hyalos-kernel-core). The
+      # ancestor check needs history, so this job's checkout fetches it.
+      - name: hyalOS's review package stands alone and claims no review
+        run: cargo xtask review-package
       - name: Security pages cite code that exists (#333)
         run: cargo xtask docs
 
