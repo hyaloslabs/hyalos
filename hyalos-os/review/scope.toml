@@ -6,15 +6,17 @@
 # locked revision. `part` is `use` (how hyalOS uses it) or `internals`. `position` is `covered` or
 # `excluded`, and `reason` says why.
 #
-# `upstream_audit` is a citation of a published code audit, or `none found (searched <date>)`. An
-# `excluded` utility crate may say `not searched (utility, <date>)` instead: no search was made, and
-# none is needed for a crate the claim does not rest on. Every value carries the date it was last
-# checked. "None found" means no published audit report was found by a web search on that date;
+# `upstream_audit` is a citation of a published code audit, or `none found`, and says `searched
+# <date>`. An `excluded` utility crate may say exactly `not searched (utility, <date>)` instead: no
+# search was made, and none is needed for a crate the claim does not rest on. "None found" means no published audit report was found by a web search on that date;
 # cargo-vet records were not consulted.
 #
 # `cargo xtask review-scope` holds this file to the lockfiles: a listed version that moves, a moved
 # TLSNotary tag or commit, a direct dependency of a hyalOS crate with no row, or a second locked
-# version of a listed crate with no row fails it, and so does a missing field or an unknown value.
+# version of a listed crate with no row fails it, and so does a missing field, an unknown value, a
+# `use` row ADR-005 or ADR-008 covers that is not `covered`, or a lockfile line it cannot read.
+# Transitive crates the claim rests on have rows too: wasmparser (wasmi's parser) and the trust
+# anchors, webpki-roots and rustls-webpki.
 
 # --- The interpreter: the route to a taken-over kernel (ADR-005, repository ADR-0134) ---
 
@@ -24,7 +26,7 @@ version = "2.0.3"
 part = "use"
 position = "covered"
 upstream_audit = "SRLabs 2023 (0.31.0); Runtime Verification 2024 (0.36.0-0.38.0), https://runtimeverification.com/public-report/wasmi. Neither covers 2.0.3 (searched 2026-11-24)"
-reason = "The configuration and host boundary we use: Config::default() with fuel in kernel-image/src/main.rs and audit/src/replay.rs, default features plus memory64 and no simd, the fuel limits, and the imports of hyalos.abi/1. An interpreter bug is the route to a taken-over kernel. 2.0.3 is pinned for GHSA-qrr7-2g7f-r9rg, which named 2.0.0-beta.4 to 2.0.2 (ADR-0134)"
+reason = "The configuration and host boundary we use: Config::default() with fuel in kernel-image/src/main.rs and audit/src/replay.rs, the fuel limits, and the imports of hyalos.abi/1. The features differ by backend: the monitor and the audit take wasmi's defaults, which include wat, so Module::new runs wat::parse_bytes on every guest in audit/src/replay.rs and a text guest is parsed there; the kernel image builds with stable, validate, memory64, auto-dispatch and libm, no wat and no simd, and refuses a text guest. Neither build enables simd. An interpreter bug is the route to a taken-over kernel. 2.0.3 is pinned for GHSA-qrr7-2g7f-r9rg, which named 2.0.0-beta.4 to 2.0.2 (ADR-0134)"
 
 [[component]]
 name = "wasmi"
@@ -57,6 +59,30 @@ part = "internals"
 position = "covered"
 upstream_audit = "As wasmi: no audit of 2.0.x found (searched 2026-11-24)"
 reason = "Part of the interpreter, locked to wasmi's version; reviewed with wasmi's internals. No source change in 2.0.3"
+
+[[component]]
+name = "wasmparser"
+version = "0.228.0"
+part = "internals"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-24); not covered by the SRLabs or Runtime Verification wasmi reports"
+reason = "Part of the interpreter: wasmi 2.0.3 decodes and, with its validate feature, validates every guest through it, in the monitor, the audit and the kernel image. It is the first code to read a guest's bytes, so it is reviewed with wasmi's internals"
+
+[[component]]
+name = "wasmparser"
+version = "0.244.0"
+part = "internals"
+position = "excluded"
+upstream_audit = "not searched (utility, 2026-11-24)"
+reason = "Not ours: locked under wit-bindgen-rust's wit-component, wit-parser, wasm-metadata and wasm-encoder 0.244.0, and on no guest's path. It has a row because 0.228.0 does, so a second copy cannot pass unread"
+
+[[component]]
+name = "wasmparser"
+version = "0.263.0"
+part = "internals"
+position = "excluded"
+upstream_audit = "not searched (utility, 2026-11-24)"
+reason = "Not ours: locked under wasm-encoder 0.263.0 under wast under wat, the text-to-binary tooling, and on no binary guest's path. It has a row because 0.228.0 does, so a second copy cannot pass unread"
 
 # --- KVM: the monitor's unsafe boundary (ADR-005) ---
 
@@ -112,7 +138,7 @@ commit = "40a069565a2eaecbb5e691dbc634be20e8498daf"
 part = "internals"
 position = "excluded"
 upstream_audit = "none found (searched 2026-11-23 and 2026-11-24)"
-reason = "TLSNotary's protocol and cryptography are a specialist review of their own, and the audit report states what an attestation does not prove (ADR-005)"
+reason = "TLSNotary's protocol and cryptography are a specialist review of their own, and the audit report states what an attestation does not prove (ADR-005). This excludes every crate the tag brings: the nine tlsn-* crates at this commit (tlsn, tlsn-core, tlsn-attestation, tlsn-cipher, tlsn-deap, tlsn-hmac-sha256, tlsn-key-exchange, tlsn-mpc-tls, tlsn-tls-core), the 23 mpz-* and helper crates of tlsnotary/mpz2 at rev 23e2cc08ed11ae86d71f72fb968f1273d70c9e88, tlsn-mux and futures-plex of tlsnotary/tlsn-utils, and tlsnotary/rs-merkle. TLSNotary's manifest at this tag pins each, so they move only with it"
 
 [[component]]
 name = "tlsn-core"
@@ -121,7 +147,7 @@ commit = "40a069565a2eaecbb5e691dbc634be20e8498daf"
 part = "use"
 position = "covered"
 upstream_audit = "none found (searched 2026-11-23 and 2026-11-24)"
-reason = "attest-check's presentation verification and the root store it trusts (RootCertStore::mozilla in attest/src/lib.rs, webpki-roots 1.0.12 underneath): what we accept"
+reason = "attest-check's presentation verification and the root store it trusts (RootCertStore::mozilla in attest/src/lib.rs, over webpki-roots, which has rows of its own): what we accept"
 
 [[component]]
 name = "tlsn-core"
@@ -208,7 +234,7 @@ version = "0.23.46"
 part = "use"
 position = "covered"
 upstream_audit = "Cure53 2020 (rustls, ring, webpki), https://cure53.de/pentest-report_rustls.pdf (an earlier version; searched 2026-11-24)"
-reason = "The notary link's TLS configuration and the custom certificate check, the Pin verifier (impl ServerCertVerifier for Pin) in attest/src/lib.rs (ADR-008). The trust anchors and chain check under it, webpki-roots and rustls-webpki 0.103.17, are read as part of this use"
+reason = "The notary link's TLS configuration and the custom certificate check, the Pin verifier (impl ServerCertVerifier for Pin) in attest/src/lib.rs (ADR-008). The trust anchors and chain check under it, webpki-roots and rustls-webpki, have rows of their own"
 
 [[component]]
 name = "rustls"
@@ -217,6 +243,38 @@ part = "internals"
 position = "excluded"
 upstream_audit = "Cure53 2020 (rustls, ring, webpki), https://cure53.de/pentest-report_rustls.pdf (an earlier version; searched 2026-11-24)"
 reason = "Specialist TLS work, excluded as TLSNotary's cryptography is (ADR-008)"
+
+[[component]]
+name = "rustls-webpki"
+version = "0.103.17"
+part = "use"
+position = "covered"
+upstream_audit = "Cure53 2020 (rustls, ring, webpki), https://cure53.de/pentest-report_rustls.pdf, covers webpki, the crate rustls-webpki forked, at an earlier version (searched 2026-11-24)"
+reason = "The certificate-chain check under rustls: which verifier the notary link, TLSNotary's server check and ureq's client config select, and that the Pin verifier does not fall back to it (ADR-008)"
+
+[[component]]
+name = "rustls-webpki"
+version = "0.103.17"
+part = "internals"
+position = "excluded"
+upstream_audit = "Cure53 2020 (rustls, ring, webpki), https://cure53.de/pentest-report_rustls.pdf, covers webpki, the crate rustls-webpki forked, at an earlier version (searched 2026-11-24)"
+reason = "Specialist TLS and X.509 work, excluded with the TLS crates' internals (ADR-008)"
+
+[[component]]
+name = "webpki-roots"
+version = "1.0.12"
+part = "use"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-24)"
+reason = "The Mozilla trust anchors RootCertStore::mozilla gives tlsn-core and tlsn (the mozilla-certs feature), so the set of roots a presentation's server certificate may chain to: what we accept. A new version changes that set, so it is read again"
+
+[[component]]
+name = "webpki-roots"
+version = "0.26.11"
+part = "use"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-24)"
+reason = "The trust anchors ureq's default TLS config uses to reach the public log; 0.26.11 re-exports webpki-roots 1.x's roots. The log's answers are checked by signature, so these roots decide only which server is reached"
 
 [[component]]
 name = "tokio-rustls"
@@ -272,7 +330,7 @@ version = "2.12.1"
 part = "use"
 position = "covered"
 upstream_audit = "none found (searched 2026-11-24)"
-reason = "The HTTPS client the audit (audit/src/chain.rs) and the monitor (monitor/src/ledger.rs) reach the public log with, over rustls and webpki-roots 0.26.11: our TLS configuration, ADR-008's 'our use of TLS'. The log's answers are checked by signature, not by TLS"
+reason = "The HTTPS client the audit (audit/src/chain.rs) and the monitor (monitor/src/ledger.rs) reach the public log with, over rustls and webpki-roots (rows of their own): our TLS configuration, ADR-008's 'our use of TLS'. The log's answers are checked by signature, not by TLS"
 
 [[component]]
 name = "ureq"
@@ -380,4 +438,4 @@ version = "1.263.0"
 part = "internals"
 position = "excluded"
 upstream_audit = "not searched (utility, 2026-11-24)"
-reason = "Text-to-binary WebAssembly for the monitor's attacks command (test-switches builds) and the audit's tests; a signed guest is binary and never passes through it"
+reason = "Text-to-binary WebAssembly. The monitor calls it for its attacks command (test-switches builds) and the audit's tests use it. wasmi's default wat feature also runs wat::parse_bytes on every guest the monitor and the audit load: a binary guest passes through on its magic number, and a text guest is parsed. That path is reviewed under wasmi's use row; the crate's parser is not"

@@ -40,12 +40,12 @@ fn scope() -> String {
     .concat()
 }
 
-/// The findings on a test scope, leaving out the rows `SPLIT` wants that these small lockfiles do
-/// not have.
+/// The findings on a test scope, leaving out the rows `SPLIT` and `USE_COVERED` want that these
+/// small lockfiles do not have.
 fn check(scope: &str, lock: &str) -> Vec<String> {
     findings(scope, &[("Cargo.lock".into(), lock.into())])
         .into_iter()
-        .filter(|f| !f.contains("(ADR-005 and ADR-008 split it)"))
+        .filter(|f| !f.contains("(ADR-005 and ADR-008 split it)") && !f.ends_with("row (ADR-005)"))
         .collect()
 }
 
@@ -60,6 +60,7 @@ fn core_s_06_1_the_scope_lists_every_component_the_claim_rests_on() {
     assert_eq!(errors, Vec::<String>::new());
     for name in [
         "wasmi",
+        "wasmparser",
         "kvm-ioctls",
         "kvm-bindings",
         "seccompiler",
@@ -74,6 +75,8 @@ fn core_s_06_1_the_scope_lists_every_component_the_claim_rests_on() {
         "tokio-rustls",
         "ring",
         "rcgen",
+        "rustls-webpki",
+        "webpki-roots",
     ] {
         let mine: Vec<&Row> = rows.iter().filter(|r| r.get("name") == name).collect();
         assert!(!mine.is_empty(), "{name} has no row");
@@ -159,6 +162,35 @@ fn core_s_06_1_unknown_values_and_unreadable_lines_fail() {
             ),
             "is `not searched` but not `excluded`",
         ),
+        // Another spelling of `not searched` on a covered row, and a date that is not a search's.
+        (
+            good.replacen(
+                "none found (searched 2026-11-24)",
+                "Not searched (utility, 2026-11-24)",
+                1,
+            ),
+            "is `not searched` but not `excluded`",
+        ),
+        (
+            good.replacen(
+                "none found (searched 2026-11-24)",
+                "none; not searched (utility, 2026-11-24)",
+                1,
+            ),
+            "not written `not searched (utility, YYYY-MM-DD)`",
+        ),
+        (
+            good.replacen(
+                "none found (searched 2026-11-24)",
+                "see report_2023-08-25",
+                1,
+            ),
+            "no date searched",
+        ),
+        (
+            good.replacen("searched 2026-11-24", "searched 2026-13-24", 1),
+            "no date searched",
+        ),
         (
             format!("{good}{}", row("wasmi", "2.0.3", "use", "covered")),
             "wasmi 2.0.3 has two `use` rows",
@@ -200,6 +232,31 @@ fn core_s_06_1_split_components_need_both_rows_and_their_positions() {
             .any(|f| f.ends_with("tlsn's internals must be `excluded` (ADR-005, ADR-008)")),
         "{found:?}"
     );
+}
+
+#[test]
+fn core_s_06_1_use_rows_are_covered_as_the_adrs_say() {
+    // A split component's `use` row turned `excluded` fails.
+    let flipped = scope().replacen(
+        "part = \"use\"\nposition = \"covered\"",
+        "part = \"use\"\nposition = \"excluded\"",
+        1,
+    );
+    let found = check(&flipped, &lock("2.0.3"));
+    assert!(
+        found
+            .iter()
+            .any(|f| f.ends_with("wasmi's use must be `covered` (ADR-005, ADR-008)")),
+        "{found:?}"
+    );
+    // ADR-005's unsplit components need a covered `use` row.
+    let found = findings(&scope(), &[("Cargo.lock".into(), lock("2.0.3"))]);
+    for name in USE_COVERED {
+        assert!(
+            found.contains(&format!("{name} needs a `use` row (ADR-005)")),
+            "{name}: {found:?}"
+        );
+    }
 }
 
 #[test]
@@ -331,9 +388,28 @@ fn core_s_06_2_an_unreadable_lockfile_fails() {
         lock("2.0.3").replace("version = \"2.0.3\"", "version = 2"),
         lock("2.0.3").replace(" \"tlsn\",", " tlsn,"),
         lock("2.0.3").replace(" \"tlsn\",", " \"nothing\","),
+        // A line that is neither a table header nor `key = value`, and an unknown table.
+        lock("2.0.3").replace(
+            "name = \"wasmi\"\n",
+            "name = \"wasmi\"\nthis line is not TOML\n",
+        ),
+        lock("2.0.3").replacen("[[package]]", "[[packages]]", 2),
+        // A lockfile with no workspace member: empty, or cut short.
+        "version = 4\n".into(),
+        String::new(),
     ] {
         assert!(!check(&scope(), &bad).is_empty(), "{bad}");
     }
+    // The real kernel image's lockfile emptied fails, though the workspace's still matches.
+    let (scope, mut locks) = real();
+    locks[1].1 = "version = 4\n".into();
+    let found = findings(&scope, &locks);
+    assert!(
+        found
+            .iter()
+            .any(|f| f.starts_with("hyalos-os/kernel-image/Cargo.lock: no workspace member")),
+        "{found:?}"
+    );
 }
 
 #[test]
@@ -420,6 +496,16 @@ fn core_s_06_3_e2_an_advisory_against_a_pinned_crate_fails_naming_it() {
     let found = advisory_findings(&feeds(WASMI_FEED, bare), &locked("2.0.3")).unwrap();
     assert_eq!(found.len(), 1, "{found:?}");
     assert!(found[0].starts_with("GHSA-test-tlsn-0002"));
+    // A name spelt with `-` for the locked `_` (or the reverse) is the same crate.
+    let hyphen = r#"[{"ghsa_id":"GHSA-test-wasmi-0003","state":"published",
+        "vulnerabilities":[{"package":{"ecosystem":"rust","name":"wasmi-ir"},"vulnerable_version_range":"<= 2.0.3"}]}]"#;
+    let found = advisory_findings(&feeds(hyphen, TLSN_FEED), &locked("2.0.3")).unwrap();
+    assert_eq!(
+        found,
+        [
+            "GHSA-test-wasmi-0003 (wasmi-labs/wasmi): wasmi-ir 2.0.3 is in its affected range `<= 2.0.3`"
+        ]
+    );
 }
 
 #[test]

@@ -38,6 +38,10 @@ const SPLIT: &[(&str, &str)] = &[
     ("rcgen", "excluded"),
 ];
 
+/// The components ADR-005 covers "our use" of without splitting them: each needs a `covered` `use`
+/// row. The `use` rows of `SPLIT`'s components must be `covered` too.
+const USE_COVERED: &[&str] = &["kvm-ioctls", "kvm-bindings", "seccompiler", "landlock"];
+
 /// The GitHub repositories whose own advisories are read, each with the crate an advisory that
 /// names no package is taken to be about (`design.md`, **Modifier: integration**).
 pub const FEEDS: &[(&str, &str)] = &[("wasmi-labs/wasmi", "wasmi"), ("tlsnotary/tlsn", "tlsn")];
@@ -145,8 +149,12 @@ fn parse_scope(text: &str) -> (Vec<Row>, Vec<String>) {
     (rows, out)
 }
 
+/// The tables a Cargo lockfile holds. Any other table header is an error.
+const LOCK_TABLES: &[&str] = &["[[package]]", "[[patch.unused]]", "[metadata]"];
+
 /// Parses the `[[package]]` tables of a Cargo lockfile: their name, version, source and
-/// dependencies. A package with no name or version is an error.
+/// dependencies. A package with no name or version, a line that is not a comment, a known table
+/// header or `key = value`, and a lockfile with no workspace member are errors.
 pub fn parse_lock(file: &str, text: &str) -> Result<Vec<Locked>, String> {
     let mut out: Vec<Locked> = Vec::new();
     let mut in_package = false;
@@ -165,7 +173,13 @@ pub fn parse_lock(file: &str, text: &str) -> Result<Vec<Locked>, String> {
             }
             continue;
         }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
         if line.starts_with('[') {
+            if !LOCK_TABLES.contains(&line) {
+                return Err(bad());
+            }
             in_package = line == "[[package]]";
             if in_package {
                 out.push(Locked {
@@ -177,10 +191,10 @@ pub fn parse_lock(file: &str, text: &str) -> Result<Vec<Locked>, String> {
             }
             continue;
         }
-        let Some(p) = out.last_mut().filter(|_| in_package) else {
-            continue;
-        };
         let Some((key, value)) = line.split_once('=') else {
+            return Err(bad());
+        };
+        let Some(p) = out.last_mut().filter(|_| in_package) else {
             continue;
         };
         let (key, value) = (key.trim(), value.trim());
@@ -206,6 +220,11 @@ pub fn parse_lock(file: &str, text: &str) -> Result<Vec<Locked>, String> {
         .find(|p| p.name.is_empty() || p.version.is_empty())
     {
         return Err(format!("{file}: a package with no name or version ({p:?})"));
+    }
+    if !out.iter().any(|p| p.source.is_none()) {
+        return Err(format!(
+            "{file}: no workspace member (a package with no `source`); the lockfile is empty or unread"
+        ));
     }
     Ok(out)
 }
@@ -239,15 +258,38 @@ fn direct(file: &str, packages: &[Locked]) -> Result<Vec<Locked>, String> {
     Ok(out)
 }
 
-/// Whether `text` holds a date written `YYYY-MM-DD`.
-fn has_date(text: &str) -> bool {
+/// Whether `text` is a date written `YYYY-MM-DD`, with a month and a day in range.
+fn is_date(text: &str) -> bool {
     let b = text.as_bytes();
-    b.windows(10).any(|w| {
-        w.iter().enumerate().all(|(i, c)| match i {
-            4 | 7 => *c == b'-',
-            _ => c.is_ascii_digit(),
-        })
+    let digits = |r: std::ops::Range<usize>| {
+        b[r.clone()].iter().all(u8::is_ascii_digit)
+            && text[r].parse::<u32>().ok().is_some_and(|n| n > 0)
+    };
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && digits(0..4)
+        && digits(5..7)
+        && digits(8..10)
+        && text[5..7].parse::<u32>().is_ok_and(|m| m <= 12)
+        && text[8..10].parse::<u32>().is_ok_and(|d| d <= 31)
+}
+
+/// Whether `audit` says when it was searched: `searched YYYY-MM-DD` somewhere in it.
+fn has_search_date(audit: &str) -> bool {
+    audit.match_indices("searched ").any(|(i, m)| {
+        audit
+            .get(i + m.len()..i + m.len() + 10)
+            .is_some_and(is_date)
     })
+}
+
+/// Whether `audit` is exactly the utility form, `not searched (utility, YYYY-MM-DD)`.
+fn is_utility_form(audit: &str) -> bool {
+    audit
+        .strip_prefix("not searched (utility, ")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .is_some_and(is_date)
 }
 
 /// Every way the scope breaks its rules or disagrees with the lockfiles, as one line each. The
@@ -326,6 +368,26 @@ pub fn findings(scope: &str, locks: &[(String, String)]) -> Vec<String> {
             }
         }
     }
+    // ADR-005 and ADR-008 cover our use of every component they name.
+    for name in SPLIT
+        .iter()
+        .map(|(n, _)| *n)
+        .chain(USE_COVERED.iter().copied())
+    {
+        let uses: Vec<&Row> = rows
+            .iter()
+            .filter(|r| r.get("name") == name && r.get("part") == "use")
+            .collect();
+        if uses.is_empty() && USE_COVERED.contains(&name) {
+            out.push(format!("{name} needs a `use` row (ADR-005)"));
+        }
+        for r in uses.iter().filter(|r| r.get("position") != "covered") {
+            out.push(format!(
+                "{SCOPE}:{}: {name}'s use must be `covered` (ADR-005, ADR-008)",
+                r.line
+            ));
+        }
+    }
     out.sort();
     out.dedup();
     out
@@ -360,15 +422,23 @@ fn row_findings(row: &Row, locked: &[Locked]) -> Vec<String> {
             "has position `{position}`; it is `covered` or `excluded`"
         )));
     }
+    // A citation or `none found` says `searched YYYY-MM-DD`. Only an excluded row may say it was
+    // not searched, and only in the one form, so no spelling of it slips past.
     let audit = row.get("upstream_audit");
-    if !has_date(audit) {
+    if audit.to_ascii_lowercase().contains("not searched") {
+        if !is_utility_form(audit) {
+            out.push(at(
+                "has an `upstream_audit` that is not searched but not written `not searched (utility, YYYY-MM-DD)`".into(),
+            ));
+        }
+        if position != "excluded" {
+            out.push(at(
+                "is `not searched` but not `excluded`; a covered row needs a real search".into(),
+            ));
+        }
+    } else if !has_search_date(audit) {
         out.push(at(
-            "has an `upstream_audit` with no date searched (YYYY-MM-DD)".into(),
-        ));
-    }
-    if audit.starts_with("not searched") && position != "excluded" {
-        out.push(at(
-            "is `not searched` but not `excluded`; a covered row needs a real search".into(),
+            "has an `upstream_audit` with no date searched (`searched YYYY-MM-DD`)".into(),
         ));
     }
     let same: Vec<&Locked> = locked
@@ -605,7 +675,9 @@ fn one_advisory(
             .filter(|n| !n.is_empty())
             .unwrap_or(default);
         let range = v["vulnerable_version_range"].as_str().unwrap_or_default();
-        for p in locked.iter().filter(|p| p.name == name) {
+        // Cargo treats `-` and `_` in a crate's name alike, so an advisory may spell it either way.
+        let same = |locked: &str| locked.replace('-', "_") == name.replace('-', "_");
+        for p in locked.iter().filter(|p| same(&p.name)) {
             if in_range(p.pinned(), range).map_err(|e| format!("{repo}: {id}: {e}"))? {
                 out.push(format!(
                     "{id} ({repo}): {name} {} is in its affected range `{range}`",

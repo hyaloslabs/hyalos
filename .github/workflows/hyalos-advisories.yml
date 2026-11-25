@@ -57,11 +57,13 @@ jobs:
       - name: RustSec, against hyalOS's three lockfiles
         run: |
           cargo deny --manifest-path hyalos-os/Cargo.toml --config hyalos-os/deny.toml --all-features check advisories
-          cargo deny --manifest-path hyalos-os/kernel-image/Cargo.toml --config hyalos-os/deny.toml check advisories
-          cargo deny --manifest-path hyalos-os/guest/Cargo.toml --config hyalos-os/deny.toml check advisories
+          cargo deny --manifest-path hyalos-os/kernel-image/Cargo.toml --config hyalos-os/deny.toml --all-features check advisories
+          cargo deny --manifest-path hyalos-os/guest/Cargo.toml --config hyalos-os/deny.toml --all-features check advisories
       # Each feed is read through the REST API with this run's token, with a 30-second limit and one
       # retry. `cargo xtask advisories` fails, naming the advisory, when one's affected range includes
-      # a pinned version or tag, and fails on a feed it cannot parse.
+      # a pinned version or tag, and fails on a feed it cannot parse. The wasmi feed's canary is
+      # GHSA-qrr7-2g7f-r9rg, published and not affecting the pinned 2.0.3: a feed without it was not
+      # read, however cleanly the request ended.
       - name: GitHub advisories of wasmi-labs/wasmi and tlsnotary/tlsn
         env:
           GH_TOKEN: ${{ github.token }}
@@ -78,6 +80,10 @@ jobs:
           }
           fetch wasmi-labs/wasmi "$RUNNER_TEMP/wasmi.json"
           fetch tlsnotary/tlsn "$RUNNER_TEMP/tlsn.json"
+          if ! jq -e '[.. | objects | .ghsa_id? // empty] | index("GHSA-qrr7-2g7f-r9rg")' "$RUNNER_TEMP/wasmi.json" > /dev/null; then
+            echo "::error::wasmi-labs/wasmi's feed lacks GHSA-qrr7-2g7f-r9rg; the feed was not read"
+            exit 1
+          fi
           cargo xtask advisories "wasmi-labs/wasmi=$RUNNER_TEMP/wasmi.json" "tlsnotary/tlsn=$RUNNER_TEMP/tlsn.json"
       - name: The review scope agrees with the lockfiles
         run: cargo xtask review-scope
