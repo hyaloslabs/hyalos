@@ -42,7 +42,7 @@ Every item a pack deferred, excluded or left open has one row. When a pack defer
 | Hardware randomness in a taken-over kernel | This pass, measured by `core` | Owned | `core`, ADR-002, #459, #460 |
 | Monitor confinement and hardening | Parent | Owned | `core`, ADR-003, #461 to #465 |
 | Review scope for `tlsn` and `wasmi` | #412 | Owned | `core`, ADR-005, ADR-008, #467 |
-| Independent security review | #63 | Owned | `core` prepares the package (ADR-006, #468), which files the issue for the review itself. #63 still covers v1's trusted core |
+| Independent security review | #63 | Owned | `core` prepared the package (ADR-006, #468): `hyalos-os/review/README.md`. Engaging a reviewer and closing findings: #491. #63 still covers v1's trusted core |
 | Leaving TLSNotary's beta pin | Parent, #412 | Owned | `core`, ADR-005, #467 |
 
 ## Tasks and product
