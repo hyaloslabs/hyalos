@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | executing |
+| **Status** | done |
 | **Type** | Feature |
 | **Size** | L — 12 slices |
 | **Modifiers** | security, public-api, infra, integration |
@@ -97,8 +97,19 @@ folder and the repository.
 
 ## Retro
 
-_Written by the final slice. Guidance: compare what the cold read predicted with what really
-diverged, using the deviations in every progress file._
+Written by Slice 12 on 2026-11-25, from `cold-read.md`'s five rounds and the deviations in all twelve progress files. Every slice is done. The pack ends at a ready review package (ADR-006). The review itself is #491, and #63 still covers v1's trusted core.
 
 | Cold read predicted | What diverged | Slice | Lesson for the next pack |
 |---|---|---|---|
+| Round 1 Q-16, round 2 C-07, round 5 C9: only `RDSEED` is host-dependent, and the 64-bit probe's measurement governs | `RDRAND` and `RDPID` ran in ring 3 on one of CI's runners with their CPUID bits clear. AMD's SVM cannot trap them. The slice blocked, and ADR-009 made them host-dependent like `RDSEED`. Since then CI has measured an AMD EPYC 7763 with all three reachable, a Xeon Platinum 8573C with `RDSEED` reachable, and a Xeon 6975P-C with all blocked | 3, 4, 12 | Measure hardware behaviour on every runner type in the CI pool before writing it into acceptance criteria. One development host is one data point |
+| Rounds 2 and 5 (Q-06, Q-09, Q6): the `live` guard is a few lines after `load_backend`, tested through the binary | `two_machines.sh` was a committed caller of `live` on a real repository without a kernel, and the canary tests run that script. The slice blocked until the developer chose to fix the script in it | 5 | Preflight should search for every script and test that calls a command, not only the code that defines it |
+| Round 1 Q-02: "cold start" is boot to first call, within 20% | The metric held (about 2.0 ms against 2.1 ms), but the runner split made the whole start 3.8 ms to 7.0 ms (+85%), a cost the NFR's metric does not see | 6 | When a slice adds a process boundary, define the performance target over the whole start, or name the cost the target leaves out |
+| Round 2 Q-15: the seccomp list may grow, each addition with a reason | The measured list differs from the design's in both directions: `recvfrom` and `sendto` instead of `read`, `close` and a `CLOCK_MONOTONIC` `clock_gettime` that a trace cannot see on a vDSO host, and six listed calls never made | 7 | Write the allow-list's rule and restrictions in the design, and leave the list to measurement and code reading |
+| Rounds 3 to 5 (Q6, Q14, K7, C5): the `unsafe` list starts with seven files | Eleven: `runner.rs`, and three verifier-pack tests that need `env::set_var` or `pre_exec` | 9, 10 | A list copied from a snapshot goes stale when another pack is merging into the same tree. Name the rule, and let the check hold the list |
+| Rounds 3 and 4 (Q16, Q17, Q19): the scope lists the components ADR-005 and ADR-008 name, each with a dated audit search | An advisory (GHSA-qrr7-2g7f-r9rg) named the pinned `wasmi` 2.0.2 mid-slice. The slice blocked, and the developer moved to 2.0.3 with `hyalos.profile/2` (ADR-0134). Review also added rows for `ureq`, `bincode`, `wasmparser` and the trust anchors, and `not searched` for utility crates | 11 | Run the advisory check when the pack is planned and again before the scope slice. A pin the pack cites can move under it |
+| Round 4 K1 and Q12: the hyalOS counter is a function of its own with `core/`'s rules | Review found that moving a `#[cfg(test)]` line drops code from the count, and that `unsafe /* */ {` passed a next-token match. Both were tightened. The same gap in `core/`'s counter is #487 | 10 | Plant each failure a check claims to catch before calling the check done. Review found every gap here by planting |
+| Not predicted | Every slice's Verify needed CI's two `attest` builds first, because `attest/tests/notary.rs` runs the built programs. Slice 12's Verify, run exactly from a clean clone, shows the same | 1–12 | A cold read should run each Verify block from a clean clone, not only read it |
+| Not predicted | The KVM deadline's `SIGALRM` did not reach the virtual CPU off the main thread, so a spinning kernel hung a test. Slice 6's runner fixed it by moving the deadline to the holder | 2, 6 | Hostile tests under a test harness run on other threads. Check that a signal-based mechanism is tested off the main thread |
+| Round 3 Q13, round 3 C8, round 5 Q16: the commit under review is the pull request's merge-base | Held. CI's `lint` job needed `fetch-depth: 0` so the ancestor check can see that commit, and the check fails closed on a shallow clone | 12 | A check that reads history needs a checkout that holds it. Say so in the contract |
+| Cold read and `context.md`: citations are found by symbol when lines move | Held. Line drift appeared in almost every preflight and never touched a contract | 1–12 | Keep citing by symbol and line together |
+| Not predicted | `ledger::fixture_tests::local_4_2_generate` flaked in several slices on a timing-dependent message. It has no issue | 7, 8, 9 | File a flake when it is first seen, so later slices can cite it instead of rediscovering it |
