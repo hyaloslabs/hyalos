@@ -99,6 +99,7 @@ The spike must therefore test hostile inputs as well as hostile scripts, and the
 - **Interface limit:** the input loader splits files on newlines (`kernel/src/main.rs:441`), so a multi-line script cannot be one input today. The contract needs a separate script field or a framed input.
 - **Decide in the pack:** whether to allow floats, and a higher per-task memory limit. Each is a new execution profile (ADR-002), so neither changes quietly.
 - **Generated SDK:** if the spike succeeds, this pack owns the generator, and the monitor's contract enforcement replaces the spike's minimal check.
+- **The Python spike's result:** [`../hyalos-kernel-python/decisions/ADR-008-findings-adopt-micropython-monty-is-not-ready.md`](../hyalos-kernel-python/decisions/ADR-008-findings-adopt-micropython-monty-is-not-ready.md) names the runtime to adopt, the limit an audit report must state for any Python task, and what this pack must decide: the kernel image's dispatch, floats, the memory limit, fuel and the script field.
 
 Draft shape, to expose conflicts early. It is not a contract:
 

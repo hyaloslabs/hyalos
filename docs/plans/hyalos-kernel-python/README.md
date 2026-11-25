@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | executing |
+| **Status** | done |
 | **Type** | Feature |
 | **Size** | M — 5 slices |
 | **Modifiers** | security |
@@ -134,8 +134,18 @@ to 5.
 
 ## Retro
 
-_Written by the final slice. Guidance: compare what the cold read predicted with what really
-diverged, using the deviations in every progress file._
+Written by Slice 5 from `cold-read.md` and the deviations in `progress/slice-01.md` to
+`slice-05.md`. The spike answered its question: capsules should adopt MicroPython, and Monty is not
+ready (ADR-008). No contract changed in any slice; every deviation was recorded with `n`.
 
 | Cold read predicted | What diverged | Slice | Lesson for the next pack |
 |---|---|---|---|
+| Round 1, Q6 and K7: Slice 1 need not touch the kernel image, since `hyalos.spike/1` already passes `same_settings` | It held for Slice 1, but Slice 4's profile needed its own image, and nothing let an image name the profile it was built for: Slice 4 added the image's profile marker and its read (ADR-0137) | 1, 4 | When a pack adds a profile with settings of its own, plan how its kernel image says so before the slice that needs it |
+| R1, round 2 Q1: MicroPython builds with the host's `clang` and `wasm-ld` and its own `libm` | The build runs in a pinned container, and needs Binaryen's Asyncify for MicroPython's `setjmp` and `longjmp`, since plain WebAssembly has neither and exception handling is outside every profile | 3 | For an interpreter in C, check how its non-local exits compile to the target before slicing |
+| R4: Monty may not fit KVM even with a spike layout; nothing predicted MicroPython would not run there | Neither runs on KVM. The default kernel image overflows its 2 MiB stack once a guest loop runs about 10,000 iterations (#503), which every interpreter does; the existing KVM tests run about 30,000 fuel and never reach it | 3, 4 | Before planning slices that run a large guest on KVM, run a long-loop guest there: the cheapest test that would have found #503 at planning time |
+| Round 2, Q3: deterministic floats cannot be confined to one profile's builds (ADR-007), and the pinned transcripts must hold with them on | It held: profiles 1 and 2 refuse float modules at load, the pinned transcripts did not change, and 4.3's NaN is canonical on both backends | 4 | A build-wide setting is safe when every profile that must not see it refuses it at load; test that refusal, not the setting's scope |
+| Round 2, Q4: only Monty's version needed checking | Monty needed a `getrandom` backend, `chrono` without default features, a stand-in for `web-time` (both import JavaScript's clock), a pruned lockfile, and a `bytearray` in module `hyalos`; it has no `globals()` | 4 | Build a candidate runtime once for the target during the cold read; each of these would have been a planning question instead of a deviation |
+| Nothing: Slice 1's CI runs fit the `hyalos-os` job | The feature's runs overran the job's 20-minute limit and became a job of their own, `hyalos-os (spike contract)` | 1 | Budget CI time for each feature matrix a pack adds |
+| Nothing: Slice 4's Verify `cargo tree … -e features` line counts the `deterministic` feature | The forward tree never prints it, so the `!` checks passed vacuously; the inverted tree (`-i wasmi`) counts it | 4 | Make every Verify `grep` fail once on purpose before trusting it |
+| S-06.1.e3: colliding titles, or same-length titles where a hash cannot be reproduced | Both hashes were reproduced, but Monty's is 64-bit SipHash, where 200 full collisions are out of reach; the blocks collide in the low 16 bits, which decide a dict's first probe | 5 | Name the collision width a hostile case aims at, not only the hash |
+| Nothing about fuel against time | Monty uses 12.5 times MicroPython's fuel in about 5 times its time, and cannot triage 200 issues within `hyalos.spike/2`'s fuel | 4, 5 | Measure fuel on the largest input a task accepts, not only on the fixture, before fixing a profile's fuel |

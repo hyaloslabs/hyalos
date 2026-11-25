@@ -1,0 +1,4 @@
+1	ÿþ security invalid start bytes
+2	À€ security overlong nul
+3	í € security lone surrogate
+4	security cut short â‚

@@ -18,10 +18,10 @@ contract check and the `spike-run` and `spike-task` commands, is in `hyalos-os/`
 | `sdk/` | The SDK generated from each contract, committed. Do not edit: regenerate them |
 | `scripts/triage.py` | The issue-triage task in Python, against the SDK. It keeps every rule of the digest guest (`hyalos-os/guest/src/lib.rs`) |
 | `kernel.sh` | `kernel.sh <profile>` builds the kernel image a profile's KVM runs need and prints its path |
-| `fixtures/` | Hostile scripts and inputs (later slices) |
+| `fixtures/hostile.tsv`, `fixtures/collide.py` | The hostile inputs, and the generator and check of their colliding titles (Slice 5) |
 | `micropython/`, `monty/` | Each runtime's build (Slices 3 and 4) |
 | `guests/` | The committed `.wasm` guests that records name, each with its SHA-256 below (Slices 3 and 4) |
-| `evidence/` | Records and `expected.tsv`, which `python_committed_evidence_replays_on_both_backends` replays (Slices 3 to 5) |
+| `evidence/` | Records and `expected.tsv`, which `python_committed_evidence_replays_on_both_backends` replays (Slices 3 to 5); `evidence/data/` holds each hostile case's data file, as `hostile.sh` decodes it |
 | `MEASUREMENTS.md`, `hostile.sh`, `measure.sh` | Measurements and the scripts that take them (Slice 5) |
 
 Each upstream source a later slice builds is fetched by a script from its repository at a full
@@ -153,3 +153,44 @@ triage case still ends `TooLarge` on the `spike-profile-2` image (`kernel.sh hya
 `HYALOS_KERNEL`), so a machine that can hold the guest shows up as a failure and the cases can then
 be listed `both`. Monty's records give the same effects, answers and results as MicroPython's, at
 about 12.5 times the fuel.
+
+## Hostile inputs and measurements
+
+`fixtures/hostile.tsv` holds the hostile inputs (S-06.1): titles that are not UTF-8, a record of
+exactly 16,384 bytes (the guests' read buffer) and one of 16,385, issue numbers the SDK must
+refuse, titles aimed at the Monty guest's reading of bytes from their repr, 200 titles of 4,096
+bytes aimed at MicroPython's uncollected heap and Monty's memory and fuel, 200 distinct titles as a
+control, and a block of 200 colliding titles per runtime. Its first lines give its form, and a
+comment names what each case tries.
+
+The colliding titles come from `fixtures/collide.py`, which reimplements each runtime's hash of a
+`bytes` value at the pinned commit, with its constant seed:
+
+- MicroPython: `qstr_compute_hash`, `py/qstr.c:64-76`, djb2 with xor from 5381, masked to 16 bits
+  (`py/qstr.c:48`, since the port's minimum ROM level leaves `MICROPY_QSTR_BYTES_IN_HASH` 0,
+  `py/mpconfig.h:373-381`).
+- Monty: `hash_python_bytes`, `crates/monty/src/hash.rs:187-191`, Rust's `DefaultHasher`
+  (SipHash-1-3, both keys 0) over the slice's 4-byte length and its bytes. A dict or set is a
+  hashbrown table probed by that hash's low bits (`crates/monty/src/types/hash_table.rs:114`).
+
+Both were reproduced: a script that finishes with `hash()` of six titles, run in each committed
+guest, gave the values `collide.py --hash` gives. So collisions were tested for both runtimes:
+each block is 200 distinct 32-letter titles whose hashes agree in their low 16 bits, all of
+MicroPython's hash and the bits that pick Monty's first probe in any table of up to 65,536 buckets.
+`triage.py` never hashes a title, so neither block changes what the task does: its fuel is within
+1,000 of the distinct control's under MicroPython, and both end `OutOfFuel` under Monty.
+
+```bash
+spikes/438/hostile.sh             # every case under each runtime that built; ends "hostile: ok"
+spikes/438/measure.sh             # prints the tables of MEASUREMENTS.md
+spikes/438/measure.sh --check     # stops unless MEASUREMENTS.md has the same figures but the times
+```
+
+`hostile.sh` decodes each case into `evidence/data/`, runs it at seed 0 on the backends its
+runtime runs on (the process backend for both, by their `process-only:` lines), writes the record
+of each run that ends with a result, and prints each run's outcome in `expected.tsv`'s form and
+its reach: the labels asked, the notification's SHA-256, the result and the fuel. `expected.tsv`'s
+hostile lines were copied from that output by hand. No hostile case ended `Timeout`, since none ran
+on KVM, so none has a `process-only:` line of its own. What the cases could steer is in
+`MEASUREMENTS.md`, and what it means for capsules in the pack's findings ADR
+(`docs/plans/hyalos-kernel-python/decisions/ADR-008-findings-adopt-micropython-monty-is-not-ready.md`).
