@@ -107,10 +107,12 @@ pub(crate) fn run(args: &[String]) -> Result<bool, String> {
     );
     // A guest that never called the host before it returned started when it ended.
     let cold_start = first_call.map_or(run_time, |at| at.duration_since(start));
+    // In milliseconds, to the microsecond, so a fast run on the process backend is not 0.
+    let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
     println!(
-        "timing: cold_start {} ms, run_time {} ms, backend {}",
-        cold_start.as_millis(),
-        run_time.as_millis(),
+        "timing: cold_start {:.3} ms, run_time {:.3} ms, backend {}",
+        ms(cold_start),
+        ms(run_time),
         match backend {
             Backend::Process => "process",
             Backend::Kvm { .. } => "kvm",

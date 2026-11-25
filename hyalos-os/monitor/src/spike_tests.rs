@@ -423,10 +423,11 @@ mod with_the_feature {
         }
     }
 
-    /// The spike profile comes from the image's settings, so the default kernel image runs it, and
-    /// a name that is not a spike profile is refused before anything runs.
+    /// The default spike profile has the default kernel image's settings, so that image runs it, and
+    /// `BadContract` is a holder's reason only. A name that is not a spike profile is refused in
+    /// `python_1_5_spike_task_equals_record_task` (`tests/release_switches.rs`).
     #[test]
-    fn python_the_spike_profile_variable_names_only_a_spike_profile() {
+    fn python_the_default_spike_profile_runs_on_the_default_image() {
         assert_eq!(spike::profile().unwrap().name, SPIKE);
         assert!(hyalos_profile::SPIKE_1.same_settings(hyalos_profile::CURRENT));
         assert_eq!(runner::REASONS.last(), Some(&Reason::BadContract));

@@ -132,8 +132,9 @@ backend and `cold_start 44 ms, run_time 51 ms` on KVM.
   or the run is refused before it reads anything but its arguments.
 - `runner::REASONS` is 30 entries in a spike build; the channel fuzzer's `% 29` index still covers
   only the first 29, which is harmless (every index is valid) but never sends `BadContract`.
-- Millisecond timing reads `0 ms` for the digest guest on the process backend. Slice 5 may want
-  finer units for interpreters, or will find them slow enough not to matter.
+- Whole-millisecond timing read `0 ms` for the digest guest on the process backend (the dry run
+  above), so after review the timing line prints milliseconds to three decimals
+  (`cold_start 0.412 ms`), which Slice 5's measurements can use.
 - The extra test run adds about 4.5 minutes here (272 s) to CI's `hyalos-os` job, which has a 20-minute limit. If later
   slices' evidence replay grows it, narrow the feature run to `-p task-kernel -p hyalos-audit -p
   hyalos-profile` first.

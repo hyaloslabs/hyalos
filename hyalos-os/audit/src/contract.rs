@@ -101,7 +101,7 @@ mod tests {
             br#"{"may_touch":[0],"asks":[0]}"#,
             br#"{"asks": [0],"may_touch":[0]}"#,
             br#"{"asks":[0],"may_touch":[0]} "#,
-            br#"{"asks":[0],"may_touch":[0]}\n"#,
+            b"{\"asks\":[0],\"may_touch\":[0]}\n",
             br#"{"asks":[0],"may_touch":[0],"tools":[]}"#,
             br#"{"asks":[0,0],"may_touch":[0]}"#,
             br#"{"asks":[1],"may_touch":[0]}"#,
