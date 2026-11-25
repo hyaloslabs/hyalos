@@ -1,6 +1,6 @@
 # ADR-0137: `hyalos.spike/2` allows deterministic floats, and a spike kernel image names its own profile
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
