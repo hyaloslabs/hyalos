@@ -1,7 +1,8 @@
 //! S-03.5, S-04.1 and 5.2: the verifier runs no program, writes no file, reads no home directory,
 //! and holds the public log's replies to their limits.
 
-// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+// Not yet on the `unsafe` list of design.md §2 (docs/plans/hyalos-kernel-core), which predates
+// this test; Slice 10's list takes it in or this test drops its `unsafe` (progress/slice-09.md).
 #![allow(unsafe_code)]
 
 mod common;
@@ -125,6 +126,7 @@ fn s_03_5_e2_it_completes_where_it_cannot_write_a_byte() {
     fs::set_permissions(&cwd, fs::Permissions::from_mode(0o500)).unwrap();
     let mut command = real_record(&at("evidence/ledger"), &cwd, "", &home);
     // Any write to a regular file, in `/tmp` or anywhere else, now fails and kills the process.
+    // SAFETY: the closure makes only one async-signal-safe system call, `setrlimit`.
     unsafe {
         command.pre_exec(|| {
             let none = libc::rlimit {

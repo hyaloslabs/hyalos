@@ -1,7 +1,8 @@
 //! S-06: a real committed record against the public log, and the documents held to the code. A test
 //! that needs the log skips when it cannot be reached, unless `HYALOS_REQUIRE_PUBLIC_LOG` is set.
 
-// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+// Not yet on the `unsafe` list of design.md §2 (docs/plans/hyalos-kernel-core), which predates
+// this test; Slice 10's list takes it in or this test drops its `unsafe` (progress/slice-09.md).
 #![allow(unsafe_code)]
 
 mod common;
