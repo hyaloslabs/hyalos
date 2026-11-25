@@ -1,6 +1,6 @@
 # ADR-0134: `hyalos.profile/2` moves to `wasmi` 2.0.3, and profile 1's records still replay
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
