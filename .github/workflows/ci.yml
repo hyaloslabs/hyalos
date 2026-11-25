@@ -105,6 +105,11 @@ jobs:
         run: cargo xtask lines
       - name: hyalOS uses unsafe only where listed and explained (ADR-0133)
         run: cargo xtask hyalos-unsafe
+      # Every third-party component hyalOS's claim rests on has a row in its review scope at the
+      # locked version, so a moved pin fails until its row is read again (S-06.2, ADR-0135). It runs
+      # here, on every pull request, so a change to the check or to a lockfile always meets it.
+      - name: hyalOS's review scope agrees with its lockfiles (ADR-0135)
+        run: cargo xtask review-scope
       - name: Security pages cite code that exists (#333)
         run: cargo xtask docs
 
@@ -293,6 +298,20 @@ jobs:
         with:
           manifest-path: hyalos-os/Cargo.toml
           command: check
+          arguments: --all-features --config hyalos-os/deny.toml
+      # The kernel image and the guest are workspaces of their own, and the kernel image locks
+      # `wasmi` too, so their lockfiles meet RustSec on every pull request as well (ADR-0135).
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: hyalos-os/kernel-image/Cargo.toml
+          command: check
+          command-arguments: advisories
+          arguments: --all-features --config hyalos-os/deny.toml
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: hyalos-os/guest/Cargo.toml
+          command: check
+          command-arguments: advisories
           arguments: --all-features --config hyalos-os/deny.toml
       # The published verifier must be rebuildable from its source in any directory (ADR-0131).
       - name: Build the verifier twice and compare

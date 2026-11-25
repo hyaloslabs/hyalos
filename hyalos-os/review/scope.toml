@@ -1,0 +1,441 @@
+# The independent review's scope over code hyalOS did not write (ADR-005 and ADR-008 of
+# docs/plans/hyalos-kernel-core, design.md §2 "Review scope", repository ADR-0135).
+#
+# One row per component and part. `name` and `version` equal the locked ones in hyalos-os/Cargo.lock,
+# kernel-image/Cargo.lock or guest/Cargo.lock; for TLSNotary, `version` is the tag and `commit` the
+# locked revision. `part` is `use` (how hyalOS uses it) or `internals`. `position` is `covered` or
+# `excluded`, and `reason` says why.
+#
+# `upstream_audit` is a citation of a published code audit, or `none found`, and says `searched
+# <date>`. An `excluded` utility crate may say exactly `not searched (utility, <date>)` instead: no
+# search was made, and none is needed for a crate the claim does not rest on. "None found" means no published audit report was found by a web search on that date;
+# cargo-vet records were not consulted.
+#
+# `cargo xtask review-scope` holds this file to the lockfiles: a listed version that moves, a moved
+# TLSNotary tag or commit, a direct dependency of a hyalOS crate with no row, or a second locked
+# version of a listed crate with no row fails it, and so does a missing field, an unknown value, a
+# `use` row ADR-005 or ADR-008 covers that is not `covered`, or a lockfile line it cannot read.
+# Transitive crates the claim rests on have rows too: wasmparser (wasmi's parser) and the trust
+# anchors, webpki-roots and rustls-webpki.
+
+# --- The interpreter: the route to a taken-over kernel (ADR-005, repository ADR-0134) ---
+
+[[component]]
+name = "wasmi"
+version = "2.0.3"
+part = "use"
+position = "covered"
+upstream_audit = "SRLabs 2023 (0.31.0); Runtime Verification 2024 (0.36.0-0.38.0), https://runtimeverification.com/public-report/wasmi. Neither covers 2.0.3 (searched 2026-11-24)"
+reason = "The configuration and host boundary we use: Config::default() with fuel in kernel-image/src/main.rs and audit/src/replay.rs, the fuel limits, and the imports of hyalos.abi/1. The features differ by backend: the monitor and the audit take wasmi's defaults, which include wat, so Module::new runs wat::parse_bytes on every guest in audit/src/replay.rs and a text guest is parsed there; the kernel image builds with stable, validate, memory64, auto-dispatch and libm, no wat and no simd, and refuses a text guest. Neither build enables simd. An interpreter bug is the route to a taken-over kernel. 2.0.3 is pinned for GHSA-qrr7-2g7f-r9rg, which named 2.0.0-beta.4 to 2.0.2 (ADR-0134)"
+
+[[component]]
+name = "wasmi"
+version = "2.0.3"
+part = "internals"
+position = "covered"
+upstream_audit = "SRLabs 2023 (0.31.0); Runtime Verification 2024 (0.36.0-0.38.0), https://runtimeverification.com/public-report/wasmi. Neither covers 2.0.3 (searched 2026-11-24)"
+reason = "The changes since the last audited version, as far as the reviewer judges useful: no audit of 2.0.x was found. That includes the 2.0.2 to 2.0.3 diff, which fixes the store-lane offset decoding (simd only), regenerates the trap codes and Break from one macro, and adds upstream unsafe: wasmi::Error now holds its kind behind a NonNull, with unsafe impl Send and Sync and five unsafe blocks in src/error.rs (Box::from_raw, NonNull::new_unchecked, as_ref, as_mut). cargo xtask hyalos-unsafe checks only hyalOS's own code, so this row is where that unsafe is reviewed"
+
+[[component]]
+name = "wasmi_core"
+version = "2.0.3"
+part = "internals"
+position = "covered"
+upstream_audit = "As wasmi: no audit of 2.0.x found (searched 2026-11-24)"
+reason = "Part of the interpreter, locked to wasmi's version; reviewed with wasmi's internals. 2.0.3 changes only how its trap codes are generated"
+
+[[component]]
+name = "wasmi_ir"
+version = "2.0.3"
+part = "internals"
+position = "covered"
+upstream_audit = "As wasmi: no audit of 2.0.x found (searched 2026-11-24)"
+reason = "Part of the interpreter, locked to wasmi's version; reviewed with wasmi's internals. 2.0.3 changes the store-lane operator's offset type, the GHSA-qrr7-2g7f-r9rg fix"
+
+[[component]]
+name = "wasmi_collections"
+version = "2.0.3"
+part = "internals"
+position = "covered"
+upstream_audit = "As wasmi: no audit of 2.0.x found (searched 2026-11-24)"
+reason = "Part of the interpreter, locked to wasmi's version; reviewed with wasmi's internals. No source change in 2.0.3"
+
+[[component]]
+name = "wasmparser"
+version = "0.228.0"
+part = "internals"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-24); not covered by the SRLabs or Runtime Verification wasmi reports"
+reason = "Part of the interpreter: wasmi 2.0.3 decodes and, with its validate feature, validates every guest through it, in the monitor, the audit and the kernel image. It is the first code to read a guest's bytes, so it is reviewed with wasmi's internals"
+
+[[component]]
+name = "wasmparser"
+version = "0.244.0"
+part = "internals"
+position = "excluded"
+upstream_audit = "not searched (utility, 2026-11-24)"
+reason = "Not ours: locked under wit-bindgen-rust's wit-component, wit-parser, wasm-metadata and wasm-encoder 0.244.0, and on no guest's path. It has a row because 0.228.0 does, so a second copy cannot pass unread"
+
+[[component]]
+name = "wasmparser"
+version = "0.263.0"
+part = "internals"
+position = "excluded"
+upstream_audit = "not searched (utility, 2026-11-24)"
+reason = "Not ours: locked under wasm-encoder 0.263.0 under wast under wat, the text-to-binary tooling, and on no binary guest's path. It has a row because 0.228.0 does, so a second copy cannot pass unread"
+
+# --- KVM: the monitor's unsafe boundary (ADR-005) ---
+
+[[component]]
+name = "kvm-ioctls"
+version = "0.25.1"
+part = "use"
+position = "covered"
+upstream_audit = "X41 D-Sec 2023 code review of rust-vmm, kvm-ioctls at commit e4ee241cc188f253c184ed48b3d5c4fb58a86da9, an earlier version, https://ostif.org/wp-content/uploads/2023/11/X41-rustvmm-final_release.pdf (searched 2026-11-24)"
+reason = "It carries the monitor's unsafe boundary: guest memory, the vCPU state and KVM_RUN in monitor/src/kvm.rs and runner.rs"
+
+[[component]]
+name = "kvm-bindings"
+version = "0.14.2"
+part = "use"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-24); X41 D-Sec's 2023 rust-vmm review does not list it"
+reason = "The structures the monitor fills for the machine's start state and CPUID list"
+
+# --- Confinement of the machine runner (ADR-005, repository ADR-0132) ---
+
+[[component]]
+name = "seccompiler"
+version = "0.5.0"
+part = "use"
+position = "covered"
+upstream_audit = "X41 D-Sec 2023 code review of rust-vmm, seccompiler at commit 184f2d6838b753bcdf09be7c6b46934f33c86535, an earlier version, https://ostif.org/wp-content/uploads/2023/11/X41-rustvmm-final_release.pdf (searched 2026-11-24)"
+reason = "It builds and installs the runner's seccomp allow-list; our use and the resulting filter are reviewed"
+
+[[component]]
+name = "landlock"
+version = "0.4.4"
+part = "use"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-24)"
+reason = "It applies the runner's Landlock rules; our use and the resulting policy are reviewed"
+
+# --- TLSNotary (ADR-005; leaving the pin: review/pin-policy.md) ---
+
+[[component]]
+name = "tlsn"
+version = "v0.1.0-beta.1"
+commit = "40a069565a2eaecbb5e691dbc634be20e8498daf"
+part = "use"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-23 and 2026-11-24); its protocol is reviewed in a research paper, https://arxiv.org/abs/2409.17670, which is not a code audit"
+reason = "Our use: the prover and notary configuration, trust settings, what a presentation must show before we accept it, and what we report"
+
+[[component]]
+name = "tlsn"
+version = "v0.1.0-beta.1"
+commit = "40a069565a2eaecbb5e691dbc634be20e8498daf"
+part = "internals"
+position = "excluded"
+upstream_audit = "none found (searched 2026-11-23 and 2026-11-24)"
+reason = "TLSNotary's protocol and cryptography are a specialist review of their own, and the audit report states what an attestation does not prove (ADR-005). This excludes every crate the tag brings: the nine tlsn-* crates at this commit (tlsn, tlsn-core, tlsn-attestation, tlsn-cipher, tlsn-deap, tlsn-hmac-sha256, tlsn-key-exchange, tlsn-mpc-tls, tlsn-tls-core), the 23 mpz-* and helper crates of tlsnotary/mpz2 at rev 23e2cc08ed11ae86d71f72fb968f1273d70c9e88, tlsn-mux and futures-plex of tlsnotary/tlsn-utils, and tlsnotary/rs-merkle. TLSNotary's manifest at this tag pins each, so they move only with it"
+
+[[component]]
+name = "tlsn-core"
+version = "v0.1.0-beta.1"
+commit = "40a069565a2eaecbb5e691dbc634be20e8498daf"
+part = "use"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-23 and 2026-11-24)"
+reason = "attest-check's presentation verification and the root store it trusts (RootCertStore::mozilla in attest/src/lib.rs, over webpki-roots, which has rows of its own): what we accept"
+
+[[component]]
+name = "tlsn-core"
+version = "v0.1.0-beta.1"
+commit = "40a069565a2eaecbb5e691dbc634be20e8498daf"
+part = "internals"
+position = "excluded"
+upstream_audit = "none found (searched 2026-11-23 and 2026-11-24)"
+reason = "TLSNotary's protocol and cryptography (ADR-005)"
+
+[[component]]
+name = "tlsn-attestation"
+version = "v0.1.0-beta.1"
+commit = "40a069565a2eaecbb5e691dbc634be20e8498daf"
+part = "use"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-23 and 2026-11-24)"
+reason = "The notary's signer and the verifier's attestation check: which algorithm and key we accept"
+
+[[component]]
+name = "tlsn-attestation"
+version = "v0.1.0-beta.1"
+commit = "40a069565a2eaecbb5e691dbc634be20e8498daf"
+part = "internals"
+position = "excluded"
+upstream_audit = "none found (searched 2026-11-23 and 2026-11-24)"
+reason = "TLSNotary's protocol and cryptography (ADR-005)"
+
+# --- Signature and hash crates: our use covered, internals excluded (ADR-005) ---
+
+[[component]]
+name = "sha2"
+version = "0.10.9"
+part = "use"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-24)"
+reason = "The digests the chain, the attestation link and the guest hash rest on: what is hashed and compared"
+
+[[component]]
+name = "sha2"
+version = "0.10.9"
+part = "internals"
+position = "excluded"
+upstream_audit = "none found (searched 2026-11-24)"
+reason = "A widely used primitive (ADR-005)"
+
+[[component]]
+name = "p256"
+version = "0.13.2"
+part = "use"
+position = "covered"
+upstream_audit = "zkSecurity 2025 for NEAR, p256 at RustCrypto/elliptic-curves commit 32343a78f1522aa5bd856556f114053d4bb938e0, https://reports.zksecurity.xyz/reports/near-p256 (searched 2026-11-24)"
+reason = "The audit's ECDSA P-256 check of the public log's signatures and the chain's (audit/src/chain.rs): which keys and encodings we accept"
+
+[[component]]
+name = "p256"
+version = "0.13.2"
+part = "internals"
+position = "excluded"
+upstream_audit = "zkSecurity 2025 for NEAR, p256 at RustCrypto/elliptic-curves commit 32343a78f1522aa5bd856556f114053d4bb938e0, https://reports.zksecurity.xyz/reports/near-p256 (searched 2026-11-24)"
+reason = "A widely used primitive (ADR-005). RUSTSEC-2026-0387 under it is assessed in advisories/"
+
+[[component]]
+name = "k256"
+version = "0.13.4"
+part = "use"
+position = "covered"
+upstream_audit = "NCC Group 2023 for Entropy, k256 at RustCrypto/elliptic-curves commits 0f27814 and 5c829a4, an earlier version, https://www.nccgroup.com/research/public-report-entropyrust-cryptography-review/ (searched 2026-11-24)"
+reason = "The notary signs and the verifier checks attestations with secp256k1, through tlsn-attestation; our choice of signer and key is reviewed"
+
+[[component]]
+name = "k256"
+version = "0.13.4"
+part = "internals"
+position = "excluded"
+upstream_audit = "NCC Group 2023 for Entropy, k256 at RustCrypto/elliptic-curves commits 0f27814 and 5c829a4, an earlier version, https://www.nccgroup.com/research/public-report-entropyrust-cryptography-review/ (searched 2026-11-24)"
+reason = "A widely used primitive (ADR-005). RUSTSEC-2026-0387 under it is assessed in advisories/"
+
+# --- TLS and certificates: our use covered, internals excluded (ADR-008) ---
+
+[[component]]
+name = "rustls"
+version = "0.23.46"
+part = "use"
+position = "covered"
+upstream_audit = "Cure53 2020 (rustls, ring, webpki), https://cure53.de/pentest-report_rustls.pdf (an earlier version; searched 2026-11-24)"
+reason = "The notary link's TLS configuration and the custom certificate check, the Pin verifier (impl ServerCertVerifier for Pin) in attest/src/lib.rs (ADR-008). The trust anchors and chain check under it, webpki-roots and rustls-webpki, have rows of their own"
+
+[[component]]
+name = "rustls"
+version = "0.23.46"
+part = "internals"
+position = "excluded"
+upstream_audit = "Cure53 2020 (rustls, ring, webpki), https://cure53.de/pentest-report_rustls.pdf (an earlier version; searched 2026-11-24)"
+reason = "Specialist TLS work, excluded as TLSNotary's cryptography is (ADR-008)"
+
+[[component]]
+name = "rustls-webpki"
+version = "0.103.17"
+part = "use"
+position = "covered"
+upstream_audit = "Cure53 2020 (rustls, ring, webpki), https://cure53.de/pentest-report_rustls.pdf, covers webpki, the crate rustls-webpki forked, at an earlier version (searched 2026-11-24)"
+reason = "The certificate-chain check under rustls: which verifier the notary link, TLSNotary's server check and ureq's client config select, and that the Pin verifier does not fall back to it (ADR-008)"
+
+[[component]]
+name = "rustls-webpki"
+version = "0.103.17"
+part = "internals"
+position = "excluded"
+upstream_audit = "Cure53 2020 (rustls, ring, webpki), https://cure53.de/pentest-report_rustls.pdf, covers webpki, the crate rustls-webpki forked, at an earlier version (searched 2026-11-24)"
+reason = "Specialist TLS and X.509 work, excluded with the TLS crates' internals (ADR-008)"
+
+[[component]]
+name = "webpki-roots"
+version = "1.0.12"
+part = "use"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-24)"
+reason = "The Mozilla trust anchors RootCertStore::mozilla gives tlsn-core and tlsn (the mozilla-certs feature), so the set of roots a presentation's server certificate may chain to: what we accept. A new version changes that set, so it is read again"
+
+[[component]]
+name = "webpki-roots"
+version = "0.26.11"
+part = "use"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-24)"
+reason = "The trust anchors ureq's default TLS config uses to reach the public log; 0.26.11 re-exports webpki-roots 1.x's roots. The log's answers are checked by signature, so these roots decide only which server is reached"
+
+[[component]]
+name = "tokio-rustls"
+version = "0.26.6"
+part = "use"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-24)"
+reason = "The acceptor and connector the notary link is built on (ADR-008)"
+
+[[component]]
+name = "tokio-rustls"
+version = "0.26.6"
+part = "internals"
+position = "excluded"
+upstream_audit = "none found (searched 2026-11-24)"
+reason = "Specialist TLS work (ADR-008)"
+
+[[component]]
+name = "ring"
+version = "0.17.14"
+part = "use"
+position = "covered"
+upstream_audit = "Cure53 2020 (rustls, ring, webpki), https://cure53.de/pentest-report_rustls.pdf (an earlier version; searched 2026-11-24)"
+reason = "The crypto provider the notary link and its stand-in select (ADR-008)"
+
+[[component]]
+name = "ring"
+version = "0.17.14"
+part = "internals"
+position = "excluded"
+upstream_audit = "Cure53 2020 (rustls, ring, webpki), https://cure53.de/pentest-report_rustls.pdf (an earlier version; searched 2026-11-24)"
+reason = "Specialist cryptography work (ADR-008)"
+
+[[component]]
+name = "rcgen"
+version = "0.13.2"
+part = "use"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-24)"
+reason = "The self-signed certificates of the notary link, which the custom certificate check pins (ADR-008)"
+
+[[component]]
+name = "rcgen"
+version = "0.13.2"
+part = "internals"
+position = "excluded"
+upstream_audit = "none found (searched 2026-11-24)"
+reason = "Certificate generation, excluded with the TLS crates' internals (ADR-008)"
+
+[[component]]
+name = "ureq"
+version = "2.12.1"
+part = "use"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-24)"
+reason = "The HTTPS client the audit (audit/src/chain.rs) and the monitor (monitor/src/ledger.rs) reach the public log with, over rustls and webpki-roots (rows of their own): our TLS configuration, ADR-008's 'our use of TLS'. The log's answers are checked by signature, not by TLS"
+
+[[component]]
+name = "ureq"
+version = "2.12.1"
+part = "internals"
+position = "excluded"
+upstream_audit = "none found (searched 2026-11-24)"
+reason = "An HTTP client over rustls, whose internals ADR-008 excludes"
+
+# --- Decoding untrusted bytes ---
+
+[[component]]
+name = "bincode"
+version = "1.3.3"
+part = "use"
+position = "covered"
+upstream_audit = "none found (searched 2026-11-24)"
+reason = "attest and attest-check decode presentations from bytes with it, so its use on untrusted input is reviewed. Unmaintained (RUSTSEC-2025-0141, an exception in deny.toml)"
+
+# --- Utility crates: direct dependencies the security claim does not rest on ---
+
+[[component]]
+name = "anyhow"
+version = "1.0.103"
+part = "internals"
+position = "excluded"
+upstream_audit = "not searched (utility, 2026-11-24)"
+reason = "Error plumbing in attest and attest-check; no decision depends on it"
+
+[[component]]
+name = "base64"
+version = "0.22.1"
+part = "internals"
+position = "excluded"
+upstream_audit = "not searched (utility, 2026-11-24)"
+reason = "Encoding of public log entries and keys; a wrong decode fails a signature check, it cannot pass one"
+
+[[component]]
+name = "base64"
+version = "0.21.7"
+part = "internals"
+position = "excluded"
+upstream_audit = "not searched (utility, 2026-11-24)"
+reason = "Not ours: under rustls-pemfile under tlsn-tls-core. It has a row because 0.22.1 does, so a second copy cannot pass unread"
+
+[[component]]
+name = "futures"
+version = "0.3.32"
+part = "internals"
+position = "excluded"
+upstream_audit = "not searched (utility, 2026-11-24)"
+reason = "Async plumbing in attest"
+
+[[component]]
+name = "hex"
+version = "0.4.3"
+part = "internals"
+position = "excluded"
+upstream_audit = "not searched (utility, 2026-11-24)"
+reason = "Printing and parsing digests; a wrong decode fails a comparison"
+
+[[component]]
+name = "libc"
+version = "0.2.186"
+part = "internals"
+position = "excluded"
+upstream_audit = "not searched (utility, 2026-11-24)"
+reason = "System call bindings; each unsafe call into it is in a file on UNSAFE_FILES and reviewed as our code"
+
+[[component]]
+name = "serde"
+version = "1.0.228"
+part = "internals"
+position = "excluded"
+upstream_audit = "not searched (utility, 2026-11-24)"
+reason = "Derive and data model; the records' shapes are our code and reviewed there"
+
+[[component]]
+name = "serde_json"
+version = "1.0.149"
+part = "internals"
+position = "excluded"
+upstream_audit = "not searched (utility, 2026-11-24)"
+reason = "JSON parsing of records and log answers; every decision on them is our code"
+
+[[component]]
+name = "tokio"
+version = "1.53.3"
+part = "internals"
+position = "excluded"
+upstream_audit = "not searched (utility, 2026-11-24)"
+reason = "Async runtime under attest's programs"
+
+[[component]]
+name = "tokio-util"
+version = "0.7.18"
+part = "internals"
+position = "excluded"
+upstream_audit = "not searched (utility, 2026-11-24)"
+reason = "Compatibility adapters in attest"
+
+[[component]]
+name = "wat"
+version = "1.263.0"
+part = "internals"
+position = "excluded"
+upstream_audit = "not searched (utility, 2026-11-24)"
+reason = "Text-to-binary WebAssembly. The monitor calls it for its attacks command (test-switches builds) and the audit's tests use it. wasmi's default wat feature also runs wat::parse_bytes on every guest the monitor and the audit load: a binary guest passes through on its magic number, and a text guest is parsed. That path is reviewed under wasmi's use row; the crate's parser is not"
