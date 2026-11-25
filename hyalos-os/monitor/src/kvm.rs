@@ -393,8 +393,6 @@ fn answer(ram: &Ram, host: &mut impl Calls, at: u64) -> Result<Step, Reason> {
         3 => {
             let kind = a as u32 as i32;
             let max = host.pre_effect(kind)?;
-            // TEMPORARY (Slice 9 dry run, S-05.5.e2): a handler panic CI's fuzz step must fail on.
-            assert!(b < u64::MAX - 64, "planted");
             let body = bytes(b, c, max, d)?;
             host.effect(kind, &body)?;
             Ok(Step::Reply(0))
