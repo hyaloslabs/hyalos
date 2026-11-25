@@ -13,6 +13,8 @@ mod ledger;
 mod live;
 mod probe_host;
 mod runner;
+#[cfg(feature = "test-switches")]
+mod switches;
 
 #[allow(unused_imports)]
 pub(crate) use hyalos_audit::{
@@ -115,6 +117,7 @@ fn read_inputs(path: &str) -> Result<Vec<Vec<u8>>, String> {
     Ok(text.split(|b| *b == b'\n').filter(|l| !l.is_empty()).map(<[u8]>::to_vec).collect())
 }
 
+#[cfg(any(test, feature = "test-switches"))]
 const IMPORTS: &str = r#"
   (import "hyalos" "read" (func $read (param i32 i32 i32) (result i32)))
   (import "hyalos" "infer" (func $infer (param i32 i32 i32) (result i32)))
@@ -122,10 +125,12 @@ const IMPORTS: &str = r#"
   (import "hyalos" "return" (func $ret (param i32 i32)))
 "#;
 
+#[cfg(any(test, feature = "test-switches"))]
 fn with_run(body: &str) -> String {
     format!(r#"(module {IMPORTS} (memory (export "memory") 1) (func (export "run") {body}))"#)
 }
 
+#[cfg(any(test, feature = "test-switches"))]
 fn attacks() -> Vec<(&'static str, String, Reason)> {
     let ret = "(call $ret (i32.const 0) (i32.const 1))";
     vec![
@@ -151,6 +156,8 @@ fn attacks() -> Vec<(&'static str, String, Reason)> {
 }
 
 /// Hostile kernels, as raw x86-64 machine code: what a guest that took over the kernel could try.
+/// A raw image is loaded only in a build with the `test-switches` feature (S-05.4).
+#[cfg(feature = "test-switches")]
 fn hostile_kernels() -> Vec<(&'static str, Vec<u8>, Reason)> {
     // Writes one 64-bit field of a request block at 0x800000, the start of the heap.
     let set = |offset: u8, value: u32| [&[0x48, 0xc7, 0x04, 0x25, offset, 0x00, 0x80, 0x00][..], &value.to_le_bytes()].concat();
@@ -185,6 +192,7 @@ fn hostile_kernels() -> Vec<(&'static str, Vec<u8>, Reason)> {
 /// The self-test kernel's probes, in the order of the input byte that chooses each
 /// (`kernel-image/src/main.rs`, `probe`), and how each must end. The control does nothing and
 /// reaches the unknown request, which shows the machine booted. The rest must fault first.
+#[cfg(any(test, feature = "test-switches"))]
 const PROBES: &[(&str, Reason)] = &[
     ("memory: nothing (control: must survive)", Reason::BadHypercall),
     ("memory: change its own code", Reason::KernelFault),
@@ -211,6 +219,7 @@ const PROBES: &[(&str, Reason)] = &[
 /// The probes that fault only where the host's KVM can trap them (ADR-002 and ADR-009 of
 /// `docs/plans/hyalos-kernel-core`), each with the instruction the host probe measures for it.
 /// Elsewhere they run and reach the unknown request, a stated limit.
+#[cfg(any(test, feature = "test-switches"))]
 const HOST_DEPENDENT: &[(&str, &str)] = &[
     ("randomness: hardware randomness (RDRAND)", "RDRAND"),
     ("randomness: read the processor ID (RDPID)", "RDPID"),
@@ -219,12 +228,14 @@ const HOST_DEPENDENT: &[(&str, &str)] = &[
 
 /// Whether the host probe measured a host-dependent probe's instruction as blocked on this host.
 /// `None` for any other probe, and when the host could not be measured, so nothing is claimed.
+#[cfg(any(test, feature = "test-switches"))]
 fn blocked_here(name: &str, measured: Option<&[(&str, bool)]>) -> Option<bool> {
     let (_, instruction) = HOST_DEPENDENT.iter().find(|(probe, _)| *probe == name)?;
     measured?.iter().find(|(measured, _)| measured == instruction).map(|&(_, blocked)| blocked)
 }
 
 /// How a probe ended, judged on a host.
+#[cfg(any(test, feature = "test-switches"))]
 #[derive(Debug, PartialEq)]
 enum Verdict {
     /// It ended as `PROBES` says.
@@ -236,6 +247,7 @@ enum Verdict {
 }
 
 /// `blocked` is the host probe's measurement of the probe's instruction (`blocked_here`).
+#[cfg(any(test, feature = "test-switches"))]
 fn judge(name: &str, got: Result<(), Reason>, want: Reason, blocked: Option<bool>) -> Verdict {
     if got == Err(want) {
         Verdict::Pass
@@ -246,6 +258,9 @@ fn judge(name: &str, got: Result<(), Reason>, want: Reason, blocked: Option<bool
     }
 }
 
+/// The `attacks` command, in a build with the `test-switches` feature only (S-05.4): it runs raw
+/// hostile kernels and reads the self-test kernel's file.
+#[cfg(feature = "test-switches")]
 fn run_attacks(backend: &Backend, guest: &[u8], inputs: &[Vec<u8>]) -> Result<bool, String> {
     let mut ok = true;
     let mut check = |name: &str, got: Result<(), Reason>, want: Reason| {
@@ -263,7 +278,7 @@ fn run_attacks(backend: &Backend, guest: &[u8], inputs: &[Vec<u8>]) -> Result<bo
             check(&format!("kernel: {name}"), execute(&hostile, &[], inputs.to_vec(), Mode::Record { seed: 0 }).map(|_| ()), want);
         }
     }
-    if let Ok(path) = env::var("HYALOS_SELFTEST_KERNEL") {
+    if let Some(path) = switches::selftest_kernel() {
         let kernel = fs::read(path).map_err(|_| "cannot read the self-test kernel")?;
         let probing = Backend::Kvm { kernel, limit: Duration::from_secs(2) };
         let measured = probe_host::on_host(probe_host::KVM_DEVICE).ok();
@@ -386,6 +401,10 @@ fn audit_inputs(rest: &[String]) -> Result<AuditInputs, String> {
 fn notary_key(file: &str) -> Result<String, String> {
     hyalos_audit::notary_key_text(&fs::read_to_string(file).map_err(|_| "the notary's public key is not a readable file")?)
 }
+
+/// Why a release build refuses the `attacks` command.
+#[cfg(not(feature = "test-switches"))]
+const ATTACKS_NEED_TEST_SWITCHES: &str = "the attacks command needs a build with the test-switches feature";
 
 /// The backend for the commands that run a guest. The audit never calls this, so it opens no
 /// kernel file.
@@ -530,11 +549,15 @@ fn main_inner() -> Result<bool, String> {
             println!("{}", current_task(&sha(&guest), &inputs).ok_or("the guest's hash is unreadable")?);
             Ok(true)
         }
+        #[cfg(feature = "test-switches")]
         "attacks" => {
             let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
             run_attacks(&backend, &guest, &read_inputs(arg(3)?)?)
         }
+        // Refused before any file is read: its kernels are test inputs (S-05.4).
+        #[cfg(not(feature = "test-switches"))]
+        "attacks" => Err(ATTACKS_NEED_TEST_SWITCHES.into()),
         "bench" => {
             let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
