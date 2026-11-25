@@ -41,12 +41,12 @@ triage.py: imports only `from hyalos import task`; other names: its own and buil
   none of 16 that reach outside the script, and no attribute starting _
 2.3: notification 'total 40 bug 0 feature 0 security 0 other 40\n', result 'ok 40'
 fixture edge exact-last exact-not-last over-last over-not-last
-2.2: fixture: same as the digest guest (3581 bytes, 40 security lines, not truncated, ok 40)
-2.2: edge: same as the digest guest (4159 bytes, 1 security lines, truncated, ok 200)
-2.2: exact-last: same as the digest guest (8000 bytes, 2 security lines, not truncated, ok 2)
-2.2: over-last: same as the digest guest (3962 bytes, 1 security lines, truncated, ok 2)
-2.2: exact-not-last: same as the digest guest (8000 bytes, 2 security lines, truncated, ok 3)
-2.2: over-not-last: same as the digest guest (3962 bytes, 1 security lines, truncated, ok 3)
+2.2: fixture: same questions and digest as the digest guest (40 asked, 3581 bytes, 40 security lines, not truncated, ok 40)
+2.2: edge: same questions and digest as the digest guest (193 asked, 4159 bytes, 1 security lines, truncated, ok 200)
+2.2: exact-last: same questions and digest as the digest guest (2 asked, 8000 bytes, 2 security lines, not truncated, ok 2)
+2.2: over-last: same questions and digest as the digest guest (2 asked, 3962 bytes, 1 security lines, truncated, ok 2)
+2.2: exact-not-last: same questions and digest as the digest guest (3 asked, 8000 bytes, 2 security lines, truncated, ok 3)
+2.2: over-not-last: same questions and digest as the digest guest (3 asked, 3962 bytes, 1 security lines, truncated, ok 3)
 no-notify: AttributeError after 40 questions, no effect
 check: ok
 ```
@@ -65,7 +65,7 @@ check: ok
 | S-02.4.e1 | Verify: `spike-task` over the digest guest, the triage script and the fixture gives `58417a84…cf9b` for `draft` and `66cc0197…7a8c` for `no-notify` (`sort -u … \| wc -l` prints 2); `cmp` of `sdk/draft.py` and `sdk/no-notify.py` differs (`check.sh`'s hashes above) |
 | S-02.4.e2 | Verify: the same loop run twice gives the same two identities (`cmp` passes), and the `draft` identity is the `task` field of the record `spike-run` wrote (`grep -c` prints 1) |
 | 2.1 | `spikes/438/contracts/{draft,no-notify,no-ask}` in canonical bytes, no trailing newline; `spikes/438/sdk/{draft,no-notify,no-ask}.py` committed, checked by `check.sh` |
-| 2.2 | `spikes/438/scripts/triage.py`; `check.sh` parses it and finds exactly one import, `from hyalos import task`, no name but its own variables, `task` and builtins, none of the builtins that reach outside the script (`__import__`, `exec`, `open`, `getattr` and others), and no attribute starting `_`. It keeps the digest guest's rules: with every answer security, `check.sh` compares its notification and result with a line-by-line port of `hyalos-os/guest/src/lib.rs` on the fixture, on inputs at its limits (titles of 4,095 to 4,097 bytes, a record over 16,384 bytes, leading zeros, `u32`'s bound, 213 records), and on digests landing exactly on 8,000 bytes and one byte past, with the long line last and not last; all are identical. Making the last-line rule `<` instead of `<=` fails it on `exact-last`. Also, once, not committed: with a Python port of the stand-in model at seed 0, its notification and result were byte-identical to the digest guest's profile 2 record on the fixture |
+| 2.2 | `spikes/438/scripts/triage.py`; `check.sh` parses it and finds exactly one import, `from hyalos import task`, no name but its own variables, `task` and builtins, none of the builtins that reach outside the script (`__import__`, `exec`, `open`, `getattr` and others), and no attribute starting `_`. It keeps the digest guest's rules: with every answer security, `check.sh` compares its questions, notification and result with a line-by-line port of `hyalos-os/guest/src/lib.rs` on the fixture, on inputs at its limits (titles of 4,095 to 4,097 bytes, a record over 16,384 bytes, leading zeros, `u32`'s bound, 213 records), and on digests landing exactly on 8,000 bytes and one byte past, with the long line last and not last; all are identical. Making the last-line rule `<` instead of `<=` fails it on `exact-last`; a `TITLE_MAX` of 5,000, or a fake that never reads a record as too large, fails it on `edge`. Also, once, not committed: with a Python port of the stand-in model at seed 0, its notification and result were byte-identical to the digest guest's profile 2 record on the fixture |
 | 2.3 | `check.sh`: `total 40 bug 0 feature 0 security 0 other 40\n` and `ok 40` |
 | 2.4 | `spikes/438/README.md`: the layout table and **Regenerate the SDKs** (`grep -c regenerate` prints 1) |
 | 2.5 | `spikes/438/kernel.sh hyalos.profile/2` and `hyalos.spike/1` print the default image's path (`test -s` passes); `kernel.sh hyalos.spike/9` exits 1 |

@@ -114,7 +114,7 @@ py - "$work" "$fixture" <<'PY'
 import sys
 work, fixture = sys.argv[1:3]
 fixture_lines = [l for l in open(fixture, "rb").read().split(b"\n") if l]
-edge = [b"7\t" + b"a" * 4095, b"8\t" + b"b" * 4096, b"9\t" + b"c" * 4097, b"10\t" + b"d" * 16380,
+edge = [b"7\t" + b"a" * 4095, b"8\t" + b"b" * 4096, b"9\t" + b"c" * 4097, b"10\t" + b"d" * 16390,
         b"007\tzeros", b"4294967295\tmax", b"4294967296\tover", b"-1\tsign", b"+1\tsign",
         b" 1\tspace", b"no tab here", b"11\t", b"12a\tletters"]
 edge += [str(100 + i).encode() + b"\tt" + str(i).encode() for i in range(200)]
@@ -147,7 +147,7 @@ def parse_number(s):
         return None
     n = int(s)
     return n if n <= 0xFFFFFFFF else None
-counts, total, sec = [0, 0, 0, 0], 0, []
+counts, total, sec, asked = [0, 0, 0, 0], 0, [], []
 for index in range(MAX_RECORDS):
     if index >= len(records):
         break
@@ -162,6 +162,7 @@ for index in range(MAX_RECORDS):
         label = 3
     else:
         title = line[tab + 1:][:TITLE_MAX]
+        asked.append(title.decode("latin-1"))
         label = 2
         if len(sec) < MAX_RECORDS:
             sec.append((number, title))
@@ -175,7 +176,7 @@ for k, (num, title) in enumerate(sec):
     else:
         dig += TRUNC_LINE
         break
-print(json.dumps({"effect": dig.decode("latin-1"), "result": "ok %d" % total}))
+print(json.dumps({"effect": dig.decode("latin-1"), "result": "ok %d" % total, "asked": asked}))
 PY
 }
 for name in fixture edge exact-last over-last exact-not-last over-not-last; do
@@ -186,8 +187,11 @@ import json, sys
 run, port, name = json.load(open(sys.argv[1])), json.load(open(sys.argv[2])), sys.argv[3]
 assert run["effects"] == [[0, port["effect"]]], (run["effects"][:1], port["effect"][:200])
 assert run["result"] == port["result"], (run["result"], port["result"])
+# The questions too, so the title cut and which records are asked about are compared even when
+# the digest's truncation hides them.
+assert run["questions"] == [[0, q] for q in port["asked"]], "the questions differ"
 body = port["effect"]
-print(f"2.2: {name}: same as the digest guest ({len(body)} bytes,"
+print(f"2.2: {name}: same questions and digest as the digest guest ({len(port['asked'])} asked, {len(body)} bytes,"
       f" {body.count(chr(10)) - 1 - body.endswith('...truncated' + chr(10))} security lines,"
       f" {'truncated' if body.endswith('...truncated' + chr(10)) else 'not truncated'}, {run['result']})")
 PY
