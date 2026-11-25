@@ -356,8 +356,10 @@ enum Turn {
     Effect(i32, usize),
 }
 
-/// How the holder's side of a run went, beside its outcome, for `HYALOS_TRACE`.
+/// How the holder's side of a run went, beside its outcome, for the trace switch (a build with the
+/// `test-switches` feature only).
 #[derive(Default)]
+#[cfg_attr(not(feature = "test-switches"), allow(dead_code))]
 pub(crate) struct Timing {
     pub(crate) first: Option<Instant>,
     pub(crate) requests: u32,
@@ -488,7 +490,9 @@ fn spawn(args: &[&str], stderr: Stdio) -> Option<Runner> {
 }
 
 /// Starts a machine runner with `--trace`, whose standard error is a socket of its own. Nothing
-/// it writes there reaches this program's output: `read_trace` reads its timings back.
+/// it writes there reaches this program's output: `read_trace` reads its timings back. A build
+/// with the `test-switches` feature only (S-05.4).
+#[cfg(feature = "test-switches")]
 pub(crate) fn start_traced() -> Option<(Runner, UnixStream)> {
     let (holder, runner) = UnixStream::pair().ok()?;
     let args = [&["--trace"][..], &injected()].concat();
@@ -497,11 +501,13 @@ pub(crate) fn start_traced() -> Option<(Runner, UnixStream)> {
 }
 
 /// The most bytes read back from a tracing runner's standard error.
+#[cfg(feature = "test-switches")]
 const TRACE_MAX: usize = 256;
 
 /// The runner's three timings, read without waiting from its trace socket, when what it wrote is
 /// exactly the one line `kvm::machine_run` prints. Anything else, from a runner the holder trusts
 /// with nothing, gives `None`, so no byte of it is printed.
+#[cfg(feature = "test-switches")]
 pub(crate) fn read_trace(stream: &mut UnixStream) -> Option<[f64; 3]> {
     stream.set_nonblocking(true).ok()?;
     let mut got = Vec::new();
@@ -516,6 +522,7 @@ pub(crate) fn read_trace(stream: &mut UnixStream) -> Option<[f64; 3]> {
 }
 
 /// Parses `trace ms: memory+load <ms>, vm setup <ms>, boot to first call <ms>` and its newline.
+#[cfg(feature = "test-switches")]
 pub(crate) fn runner_trace(bytes: &[u8]) -> Option<[f64; 3]> {
     let line = std::str::from_utf8(bytes).ok()?.strip_suffix('\n')?;
     let rest = line.strip_prefix("trace ms: memory+load ")?;
@@ -586,24 +593,41 @@ pub(crate) fn run<S: Source>(
     host: Host<S>,
     limit: Duration,
 ) -> Result<(Host<S>, Vec<u8>, u64), Reason> {
-    let trace = std::env::var_os("HYALOS_TRACE").is_some();
     let t0 = Instant::now();
     let deadline = t0 + limit;
     if guest.len() as u64 > GUEST_MAX {
         return Err(Reason::TooLarge);
     }
     let boot = boot(kernel, guest).ok_or(Reason::KernelFault)?;
-    let (mut runner, mut traced) = if trace {
+    // Only a build with the `test-switches` feature traces a run (S-05.4).
+    #[cfg(feature = "test-switches")]
+    let (mut runner, mut traced) = if crate::switches::trace() {
         let (runner, traced) = start_traced().ok_or(Reason::KernelFault)?;
         (runner, Some(traced))
     } else {
         (start(&injected()).ok_or(Reason::KernelFault)?, None)
     };
+    #[cfg(not(feature = "test-switches"))]
+    let mut runner = start(&injected()).ok_or(Reason::KernelFault)?;
+    #[cfg(feature = "test-switches")]
     let started = t0.elapsed();
     let mut timing = Timing::default();
     let outcome = serve(&mut runner.stream, &boot, host, deadline, &mut timing);
     runner.end();
-    if let (Some(traced), true) = (traced.as_mut(), outcome.is_ok()) {
+    #[cfg(feature = "test-switches")]
+    print_trace(
+        traced.as_mut().filter(|_| outcome.is_ok()),
+        t0,
+        started,
+        &timing,
+    );
+    outcome
+}
+
+/// Prints a traced run's timings: the runner's, read back from its socket, then the holder's.
+#[cfg(feature = "test-switches")]
+fn print_trace(traced: Option<&mut UnixStream>, t0: Instant, started: Duration, timing: &Timing) {
+    if let Some(traced) = traced {
         // The runner wrote its line before its first request, so it is there to read now.
         if let Some([load, setup, boot]) = read_trace(traced) {
             eprintln!(
@@ -622,7 +646,6 @@ pub(crate) fn run<S: Source>(
             ms(t0.elapsed())
         );
     }
-    outcome
 }
 
 /// Whether a machine runner starts here, opens KVM and confines itself with both Landlock and its
@@ -754,6 +777,9 @@ fn close_inherited() -> bool {
 #[derive(Default)]
 pub(crate) struct Options {
     check: bool,
+    /// Whether the machine prints its timings (`--trace`), in a build with the `test-switches`
+    /// feature only (S-05.4). A release runner refuses `--trace`, so its filter never allows `write`.
+    #[cfg(feature = "test-switches")]
     trace: bool,
     /// The confinement this runner fails on purpose, as a host without it would (S-04.3).
     #[cfg(feature = "test-switches")]
@@ -770,8 +796,9 @@ enum Confinement {
 }
 
 impl Options {
-    /// The arguments after `machine-runner`: nothing, `--check` or `--trace`, and in a build with
-    /// the `test-switches` feature the test-only arguments after them. `None` for anything else.
+    /// The arguments after `machine-runner`: nothing or `--check`, and in a build with the
+    /// `test-switches` feature `--trace` in its place and the test-only arguments after them. `None`
+    /// for anything else.
     pub(crate) fn parse(args: &[String]) -> Option<Self> {
         let mut options = Options::default();
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -780,6 +807,7 @@ impl Options {
                 options.check = true;
                 rest
             }
+            #[cfg(feature = "test-switches")]
             ["--trace", rest @ ..] => {
                 options.trace = true;
                 rest
@@ -810,6 +838,14 @@ impl Options {
                 _ => return Some(rest),
             }
         }
+    }
+
+    /// Whether the machine prints its timings. Never, without `test-switches`.
+    fn traced(&self) -> bool {
+        #[cfg(feature = "test-switches")]
+        return self.trace;
+        #[cfg(not(feature = "test-switches"))]
+        false
     }
 
     /// Whether this runner fails `confinement` on purpose. Never, without `test-switches`.
@@ -967,12 +1003,12 @@ fn seal(channel: RawFd, vcpu: RawFd, trace: bool, fail: bool) -> bool {
     seccompiler::apply_filter(&program).is_ok()
 }
 
-/// `task-kernel machine-runner [--check | --trace]`, the runner's whole life (ADR-0132). It closes
+/// `task-kernel machine-runner [--check]`, the runner's whole life (ADR-0132). It closes
 /// what it inherited and opens KVM before any byte of the run arrives, gives up its file rights
 /// with Landlock, then reads `Boot`, builds the machine, installs its seccomp filter, and only then
 /// runs it and sends how it ended. With `--check` it exits after both confinements hold: `0`, or
-/// `NO_KVM`, `NO_LANDLOCK` or `NO_SECCOMP`. `--trace` prints the machine's timings, for
-/// `HYALOS_TRACE`. Any other failure exits `BROKEN`, and a run whose runner cannot confine itself
+/// `NO_KVM`, `NO_LANDLOCK` or `NO_SECCOMP`. `--trace`, in a build with the `test-switches` feature
+/// only, prints the machine's timings for the holder's trace switch. Any other failure exits `BROKEN`, and a run whose runner cannot confine itself
 /// ends in `KernelFault` before any guest instruction runs.
 pub(crate) fn command(options: &Options) -> u8 {
     if !close_inherited() {
@@ -1011,7 +1047,7 @@ pub(crate) fn command(options: &Options) -> u8 {
     let Some((kernel, guest)) = split_boot(&fields) else {
         return BROKEN as u8;
     };
-    let trace = options.trace;
+    let trace = options.traced();
     kvm::machine_run(
         kvm.ok(),
         kernel,

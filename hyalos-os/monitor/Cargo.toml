@@ -24,6 +24,8 @@ seccompiler = { version = "=0.5.0", default-features = false }
 [features]
 # The stand-in log and provider settings, for this program's tests.
 test-trust = ["hyalos-audit/test-trust"]
-# Test-only behaviour, off by default: the hostile machine runner and the injected confinement
-# failures (design.md, Modifier: infra, of docs/plans/hyalos-kernel-core). Slice 8 adds the rest.
+# Test-only behaviour, off by default (design.md, Modifier: infra, of docs/plans/hyalos-kernel-core):
+# the hostile machine runner and the injected confinement failures, the `attacks` command, raw
+# kernel images, and `HYALOS_SELFTEST_KERNEL`, `HYALOS_TRACE` and `HYALOS_HUGE` (S-05.4). A build
+# without it reads none of these, and `tests/release_switches.rs` checks that it does not.
 test-switches = []

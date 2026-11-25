@@ -163,6 +163,7 @@ fn core_s_02_every_probe_ends_as_listed() {
 /// The raw hostile kernels the `attacks` command runs end as they did on the ring 0 kernel. Since
 /// the holder keeps the deadline (Slice 6), the one that spins until it is here too: before, the
 /// deadline's signal went to the process, and in a test harness it reached another thread.
+#[cfg(feature = "test-switches")]
 #[test]
 fn core_s_02_every_hostile_kernel_ends_as_before_in_ring_3() {
     if kvm_backend("core_s_02 hostile kernels").is_none() {

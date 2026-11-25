@@ -48,7 +48,9 @@ impl Ram {
         if at == libc::MAP_FAILED {
             return None;
         }
-        if std::env::var_os("HYALOS_HUGE").is_some() {
+        // Test builds only (S-05.4).
+        #[cfg(feature = "test-switches")]
+        if crate::switches::huge() {
             // SAFETY: advice on the mapping just made; failure only costs speed.
             unsafe { libc::madvise(at, RAM as usize, libc::MADV_HUGEPAGE) };
         }
@@ -117,15 +119,22 @@ fn field(bytes: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
 }
 
-/// Copies the kernel image into memory and returns its entry point. An image is an ELF file, or
-/// raw machine code placed at the kernel's base (the tests use that for hostile kernels).
+/// Copies the kernel image into memory and returns its entry point. An image is an ELF file. In a
+/// build with the `test-switches` feature it may also be raw machine code placed at the kernel's
+/// base, for the hostile-kernel tests; a release build refuses that (`None`, so `KernelFault`), so a
+/// replaced kernel file never gets writable, executable memory (S-05.4, P7).
 fn load(kernel: &[u8], ram: &Ram) -> Option<(u64, Vec<(u64, u64, u32)>)> {
     let mut segments = Vec::new();
     if !kernel.starts_with(b"\x7fELF") {
-        (kernel.len() as u64 <= KERNEL_HIGH - KERNEL_LOW).then_some(())?;
-        ram.write(KERNEL_LOW, kernel)?;
-        // A raw image stands for an attacker who already runs code in the kernel: give it everything.
-        return Some((KERNEL_LOW, vec![(KERNEL_LOW, KERNEL_HIGH, 7)]));
+        #[cfg(not(feature = "test-switches"))]
+        return None;
+        #[cfg(feature = "test-switches")]
+        {
+            (kernel.len() as u64 <= KERNEL_HIGH - KERNEL_LOW).then_some(())?;
+            ram.write(KERNEL_LOW, kernel)?;
+            // A raw image stands for an attacker who already runs code in the kernel: give it everything.
+            return Some((KERNEL_LOW, vec![(KERNEL_LOW, KERNEL_HIGH, 7)]));
+        }
     }
     let entry = field(kernel, 0x18)?;
     let table = field(kernel, 0x20)? as usize;
@@ -405,7 +414,8 @@ type Held = (VcpuFd, VmFd, Ram);
 /// before any byte of the run arrived, and its failure is reported only after the image is checked,
 /// so every reason stays the one a run gave when the monitor ran the machine itself. Tearing a
 /// machine down takes the host tens of milliseconds, so it happens only after `ended` has reported.
-/// `trace` prints the timings `HYALOS_TRACE` asks for, in the fields the monitor printed before.
+/// `trace` prints the timings the holder's trace switch asks for (a build with the `test-switches`
+/// feature only), in the fields the monitor printed before.
 /// `seal` installs the runner's seccomp filter once the machine is built, given its virtual CPU, and
 /// says whether it holds: no guest instruction runs before it does, and a machine it fails for
 /// never runs (`KernelFault`).

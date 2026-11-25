@@ -6,7 +6,9 @@
 //! `HYALOS_REQUIRE_KVM` turns a host without it into a failure.
 
 use super::*;
-use crate::profile_tests::{kvm_backend, selftest_kvm_backend};
+use crate::profile_tests::kvm_backend;
+#[cfg(feature = "test-switches")]
+use crate::profile_tests::selftest_kvm_backend;
 use crate::runner::{self, Reply, Request, Timing};
 use std::{
     io::{Read as _, Write as _},
@@ -899,6 +901,7 @@ fn core_s_04_1_e2_a_channel_that_closes_mid_run_performs_no_effect() {
 
 /// S-04.1: the deadline reaches a kernel that spins, now that the holder holds it, under the test
 /// harness too (Slice 2 could only leave this case to the `attacks` command).
+#[cfg(feature = "test-switches")]
 #[test]
 fn core_s_04_1_a_kernel_that_spins_is_stopped_at_the_deadline() {
     if kvm_backend("core_s_04_1 spin").is_none() {
@@ -973,7 +976,7 @@ fn core_s_04_1_a_live_run_checks_the_runner_before_its_chain() {
     );
     assert!(!dir.join("ledger").exists());
     let _ = fs::remove_dir_all(&dir);
-    // The command takes nothing but `--check` or `--trace`.
+    // The command takes nothing but `--check` (or, with `test-switches`, `--trace`).
     for args in [&["--other"][..], &["--check", "x"]] {
         let status = Command::new(&program)
             .arg("machine-runner")
@@ -986,9 +989,23 @@ fn core_s_04_1_a_live_run_checks_the_runner_before_its_chain() {
     }
 }
 
+/// S-05.4: only a build with the `test-switches` feature takes `--trace`, so a release runner's
+/// filter never allows `write`.
+#[test]
+fn core_s_05_4_a_release_runner_refuses_trace() {
+    let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+    assert!(runner::Options::parse(&args(&[])).is_some());
+    assert!(runner::Options::parse(&args(&["--check"])).is_some());
+    assert_eq!(
+        runner::Options::parse(&args(&["--trace"])).is_some(),
+        cfg!(feature = "test-switches")
+    );
+}
+
 /// S-04.4: a tracing runner's standard error never reaches the holder's. The holder prints the
 /// runner's timings only from the exact line the runner prints, parsed into numbers, and anything
 /// else, such as a terminal escape or a second line, prints nothing of it.
+#[cfg(feature = "test-switches")]
 #[test]
 fn core_s_04_4_the_holder_reprints_only_a_well_formed_trace_line() {
     let line = b"trace ms: memory+load 0.95, vm setup 0.71, boot to first call 2.03\n";
@@ -1058,6 +1075,7 @@ fn runner_waiting_for_reapers_is_bounded() {
 /// 6.1: every line of the `attacks` command's output is the previous commit's, where the machine
 /// ran in the monitor's own process. The three host-dependent probes print the line that commit
 /// printed for this host's measurement.
+#[cfg(feature = "test-switches")]
 #[test]
 fn core_6_1_the_attacks_command_prints_the_previous_commits_lines() {
     let (
@@ -1115,6 +1133,7 @@ fn core_6_1_the_attacks_command_prints_the_previous_commits_lines() {
 
 /// `task-kernel attacks` with the kernel and the self-test kernel, at the commit before this slice
 /// (`4ee6273`), on a host whose KVM traps all three randomness instructions.
+#[cfg(feature = "test-switches")]
 const PREVIOUS_ATTACKS: &str = "\
 PASS guest: open a file (WASI import): Err(BadImport)
 PASS guest: read the clock (WASI import): Err(BadImport)

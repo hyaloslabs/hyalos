@@ -251,6 +251,13 @@ jobs:
         env:
           HYALOS_REQUIRE_KVM: "1"
           HYALOS_REQUIRE_LANDLOCK: "1"
+      # The default build, without the test switches: no test-only variable or raw kernel image
+      # changes what it does (S-05.4 of docs/plans/hyalos-kernel-core).
+      - name: Test the release build's switches
+        run: cargo test --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel --test release_switches
+        env:
+          HYALOS_REQUIRE_KVM: "1"
+          HYALOS_REQUIRE_LANDLOCK: "1"
       # What the runner's KVM leaves a taken-over kernel (S-03.3 of docs/plans/hyalos-kernel-core). A
       # reachable instruction is a stated limit (exit 1); a probe that could not test (exit 2) fails.
       - name: Probe what the runner's KVM exposes
