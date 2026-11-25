@@ -39,8 +39,8 @@ workspace under `hyalos-os/` (ADR-0130), x86-64 Linux with KVM only.
 
 The record format is `hyalos-os/RECORD.md`. The plan behind this work is
 [`docs/plans/hyalos-kernel-core`](../../docs/plans/hyalos-kernel-core/README.md), and its decisions
-are under `decisions/` there. The repository's own records are ADR-0130 to ADR-0135 under
-`docs/adr/`.
+are under `decisions/` there, numbered with three digits (ADR-002 to ADR-009). The repository's
+own records have four (ADR-0130 to ADR-0135, under `docs/adr/`).
 
 ## Scope
 
@@ -61,9 +61,9 @@ review-scope` fails when a lockfile moves without its row (ADR-0135). In short:
 | `wasmi` 2.0.3 and `wasmi_core`, `wasmi_ir`, `wasmi_collections`, `wasmparser` | Our configuration and host boundary, and the internals as far as the reviewer judges useful: the changes since the last audited versions (`0.31.0`, `0.36.0` to `0.38.0`), including 2.0.3's new upstream `unsafe` in `wasmi::Error` | Lock-only `wasmparser` versions no build uses |
 | `kvm-ioctls`, `kvm-bindings` | Our use: the monitor's `unsafe` boundary | |
 | `seccompiler`, `landlock` | Our use and the policy that results | |
-| TLSNotary (`tlsn`, `tlsn-core`, `tlsn-attestation` at tag `v0.1.0-beta.1`) | Our use: trust settings, what we accept and what we report | Its protocol and cryptography (ADR-005) |
+| TLSNotary (`tlsn`, `tlsn-core`, `tlsn-attestation` at tag `v0.1.0-beta.1`) | Our use: trust settings, what we accept and what we report | Its protocol and cryptography (the plan's ADR-005) |
 | `sha2`, `p256`, `k256` | Our use | Their internals |
-| `rustls`, `rustls-webpki`, `webpki-roots`, `tokio-rustls`, `ring`, `rcgen`, `ureq` | Our TLS configuration, the trust anchors, and our own certificate check (`Pin` in `hyalos-os/attest/src/lib.rs`) | The crates' internals (ADR-008) |
+| `rustls`, `rustls-webpki`, `webpki-roots`, `tokio-rustls`, `ring`, `rcgen`, `ureq` | Our TLS configuration, the trust anchors, and our own certificate check (`Pin` in `hyalos-os/attest/src/lib.rs`) | The crates' internals (the plan's ADR-008) |
 | `bincode` | Our use: it decodes untrusted presentations | |
 | Utility crates (`serde`, `tokio`, `libc` and the rest in `scope.toml`) | | Excluded, each with its reason |
 
@@ -178,9 +178,9 @@ Each of these is known and accepted for now. A finding that one is worse than st
 - KVM and the host's Linux kernel are trusted. So are the CPU and its microcode.
 - Side channels are out of scope, including timing a taken-over kernel controls, such as how long it
   takes to make a request.
-- TLSNotary's protocol and cryptography are excluded (ADR-005), and so are the internals of
+- TLSNotary's protocol and cryptography are excluded (the plan's ADR-005), and so are the internals of
   `rustls`, `rustls-webpki`, `tokio-rustls`, `ring`, `rcgen`, `ureq`, `sha2`, `p256` and `k256`
-  (ADR-008), and the excluded utility crates (`scope.toml`).
+  (the plan's ADR-008), and the excluded utility crates (`scope.toml`).
 - `attest`'s `forge-ticket` and `canary-test-hooks` features are test-only and off by default. So
   are the monitor's `test-switches` and the kernel image's `selftest`. The reviewed binaries are
   built without them, and the `attacks` command exists only in a test build.
@@ -277,6 +277,13 @@ merges it this prints nothing:
 ```bash
 git diff --stat 7a6e6481c0f07939c295f0baa87412d24f16af04 HEAD -- hyalos-os ':(exclude)hyalos-os/review/README.md'
 ```
+
+A clone of `main` is at a later commit. Run the commands below from it, since this file and its check
+are not in the commit under review, and run the command above first: while it prints nothing,
+hyalOS's code in the clone is the code under review. If it prints anything, the code has moved
+since: read the commit above in a separate worktree
+(`git worktree add ../under-review 7a6e6481c0f07939c295f0baa87412d24f16af04`), and treat what
+changed after it as out of scope.
 
 ## Commands
 
