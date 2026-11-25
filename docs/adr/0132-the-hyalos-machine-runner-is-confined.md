@@ -1,6 +1,6 @@
 # ADR-0132: The hyalOS machine runner is confined
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
