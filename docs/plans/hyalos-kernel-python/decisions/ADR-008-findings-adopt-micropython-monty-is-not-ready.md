@@ -32,7 +32,7 @@ lets any long guest loop run would let it run (below).
 
 ### What both runtimes showed
 
-- **The same task gives the same record.** The triage script and its generated SDK run unchanged
+- **The same task gives the same answers, effects and results.** The triage script and its generated SDK run unchanged
   under both. At seeds 0 and 7, and under the no-notification contract, Monty's records hold the
   same answers, effects and results as MicroPython's (`evidence/micropython-triage-0.json` and
   `monty-triage-0.json`, and their `-7` and `-no-notify` pairs; progress `slice-04.md`,
@@ -98,8 +98,8 @@ accepted profile; and `bytearray`.
 
 ### The hostile-input limit an audit report must carry (pre-mortem P5)
 
-A runtime cannot reach anything outside the guest: no hostile case made either backend crash, no
-record holds an ungranted schema or effect, and every case ran to a result or a refusal
+A runtime cannot reach anything outside the guest: no hostile case crashed the process backend,
+the only one they ran on since both runtimes are process-only (KVM was not reached), no record holds an ungranted schema or effect, and every case ran to a result or a refusal
 (`spikes/438/hostile.sh` stops otherwise; `MEASUREMENTS.md`, the hostile table). Inside its grants,
 hostile data does steer the task:
 
