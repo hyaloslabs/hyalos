@@ -236,16 +236,33 @@ jobs:
           cargo build --release --locked --manifest-path hyalos-os/Cargo.toml -p attest --bins
           cargo build --release --locked --manifest-path hyalos-os/Cargo.toml -p attest --features forge-ticket --bin forging-notary
       # The two backends are compared on the runner's KVM, so the kernel image's target is needed.
-      - name: Open KVM and add the kernel image's target
+      # The guest's target is for its lint below.
+      - name: Open KVM and add the kernel image's and the guest's targets
         run: |
-          rustup target add x86_64-unknown-none
+          rustup target add x86_64-unknown-none wasm32-unknown-unknown
           if ! [ -r /dev/kvm ] || ! [ -w /dev/kvm ]; then
             echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
             sudo udevadm control --reload-rules
             sudo udevadm trigger --name-match=kvm
           fi
+      # Every hyalOS crate holds to rustfmt and clippy (S-05.3 of docs/plans/hyalos-kernel-core),
+      # before the long tests, so a lint fails fast. The test switches and the self-test kernel
+      # compile other code, so clippy runs with and without them. `forging-notary` needs a feature
+      # `notary` cannot compile with. The kernel image and the guest are workspaces of their own.
+      - name: Format and lint every crate
+        run: |
+          cargo fmt --manifest-path hyalos-os/Cargo.toml --all --check
+          (cd hyalos-os/kernel-image && cargo fmt --check)
+          (cd hyalos-os/guest && cargo fmt --check)
+          cargo clippy --locked --manifest-path hyalos-os/Cargo.toml --workspace --all-targets --features task-kernel/test-trust,hyalos-audit/test-trust,task-kernel/test-switches -- -D warnings
+          cargo clippy --locked --manifest-path hyalos-os/Cargo.toml --workspace --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path hyalos-os/Cargo.toml -p attest --features forge-ticket --bin forging-notary -- -D warnings
+          (cd hyalos-os/kernel-image && cargo clippy --release --locked -- -D warnings && cargo clippy --release --locked --features selftest -- -D warnings)
+          (cd hyalos-os/guest && cargo clippy --release --locked --target wasm32-unknown-unknown -- -D warnings)
       # The test-only switches (the hostile machine runner and the injected confinement failures)
-      # run here, and the runner's confinement must hold on this kernel (ADR-0132).
+      # run here, and the runner's confinement must hold on this kernel (ADR-0132). The channel's
+      # frame fuzzer, 100,000 frames from a fixed seed, is one of these tests
+      # (`core_s_05_5_frame_fuzzer`, S-05.5).
       - name: Test the workspace
         run: cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace --features task-kernel/test-trust,hyalos-audit/test-trust,task-kernel/test-switches
         env:
@@ -258,6 +275,10 @@ jobs:
         env:
           HYALOS_REQUIRE_KVM: "1"
           HYALOS_REQUIRE_LANDLOCK: "1"
+      # The request handler on 100,000 hostile requests from its fixed seed (S-05.5), in the release
+      # build the step above made. A panic or crash ends it with a failing status.
+      - name: Fuzz the request handler
+        run: cargo run --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel -- fuzz hyalos-os/evidence/fixtures/issues.tsv 100000
       # What the runner's KVM leaves a taken-over kernel (S-03.3 of docs/plans/hyalos-kernel-core). A
       # reachable instruction is a stated limit (exit 1); a probe that could not test (exit 2) fails.
       - name: Probe what the runner's KVM exposes
@@ -265,13 +286,6 @@ jobs:
           status=0
           cargo run --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel -- probe-host || status=$?
           [ "$status" -le 1 ]
-      # The new crates hold to fmt and clippy. The moved monitor and attest code does not yet.
-      - name: Format and lint the new crates
-        run: |
-          for crate in profile audit attest-check verify; do
-            cargo fmt --manifest-path "hyalos-os/$crate/Cargo.toml" --check
-          done
-          cargo clippy --locked --manifest-path hyalos-os/Cargo.toml -p hyalos-profile -p hyalos-audit -p attest-check -p hyalos-verify --all-targets -- -D warnings
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           manifest-path: hyalos-os/Cargo.toml
