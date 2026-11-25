@@ -82,7 +82,7 @@ pub const SPIKE_1: Profile = Profile {
 /// `wasmi`'s deterministic float results, so a NaN has one bit pattern on every host (ADR-007 of
 /// that pack); profiles 1 and 2 still refuse every float instruction at load. `max_memory` is the
 /// smallest whole number of MiB at which the triage fixture's seed-0 run ends with a result, and
-/// `fuel` is twice that run's `fuel_used` (413,701,352) rounded up to the next ten million
+/// `fuel` is twice that run's `fuel_used` (413,707,242) rounded up to the next ten million
 /// (spikes/438/README.md, `monty profile:`). Only a build with the `spike-contract` feature knows it.
 #[cfg(feature = "spike-contract")]
 pub const SPIKE_2: Profile = Profile {

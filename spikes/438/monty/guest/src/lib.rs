@@ -166,8 +166,10 @@ fn hyalos_module() -> MontyObject {
     MontyObject::module("_hyalos", MontyUuid::from_u128(1), attrs)
 }
 
-fn script() -> String {
-    match read(2) {
+/// Record 1 or 2 as source text. A missing record ends the run `error NoSource`, one too large
+/// for the buffer `error BufferTooSmall` (`design.md` §2, Runtime guest `run`).
+fn source(index: i64) -> String {
+    match read(index) {
         None => finish_error("NoSource"),
         Some(r) if r.is_empty() => finish_error("BufferTooSmall"),
         Some(r) => String::from_utf8(r).unwrap_or_else(|_| finish_error("UnicodeDecodeError")),
@@ -185,7 +187,10 @@ pub extern "C" fn run() {
         random_start: RandomStart::Seed(RandomSeed::Int(0.into())),
         ..OsPolicy::default()
     };
-    let runner = match MontyRun::new(script(), "main.py", vec![], CompileOptions::default()) {
+    // Record 1 is checked here, before anything compiles; `PRELUDE` then reads a record known to
+    // fit its buffer.
+    source(1);
+    let runner = match MontyRun::new(source(2), "main.py", vec![], CompileOptions::default()) {
         Ok(runner) => runner.with_os_policy(policy),
         Err(e) => finish_error(&e.exc_type().to_string()),
     };
@@ -196,7 +201,7 @@ pub extern "C" fn run() {
             // The script ended without `finish`: the run ends with no result.
             Ok(RunProgress::Complete(_)) => return,
             Ok(RunProgress::FunctionCall(fc)) => {
-                // A method call on a host object (`bytearray(...)` included) is no `_hyalos` call.
+                // A method call on a host object is no `_hyalos` call.
                 let result = if fc.object_id.is_some() {
                     type_error()
                 } else {

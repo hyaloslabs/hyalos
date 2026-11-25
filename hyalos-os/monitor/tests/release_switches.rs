@@ -508,12 +508,14 @@ fn python_4_2_a_spike_profile_runs_only_on_its_own_image() {
     fs::write(&default, built_kernel("python_4_2 images")).unwrap();
     let spike_2 = built_kernel_with("python_4_2 images", &["spike-profile-2"], "target-spike-2");
     let unknown = scratch.0.join("unknown-kernel");
+    // The marker and the name together: the kernel also holds the name alone, as `SPIKE_2.name`.
+    let marked = b"\0hyalos-kernel-profile=hyalos.spike/2";
     let at = spike_2
-        .windows(14)
-        .position(|w| w == b"hyalos.spike/2")
+        .windows(marked.len())
+        .position(|w| w == marked)
         .unwrap();
     let mut renamed = spike_2.clone();
-    renamed[at + 13] = b'9';
+    renamed[at + marked.len() - 1] = b'9';
     fs::write(&unknown, renamed).unwrap();
     let spike_2_path = scratch.0.join("spike-2-kernel");
     fs::write(&spike_2_path, spike_2).unwrap();
