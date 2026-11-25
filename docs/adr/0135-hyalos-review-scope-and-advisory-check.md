@@ -1,6 +1,6 @@
 # ADR-0135: hyalOS's review scope follows its lockfiles, and its upstreams' advisories fail a daily check
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

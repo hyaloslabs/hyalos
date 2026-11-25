@@ -148,4 +148,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0132](0132-the-hyalos-machine-runner-is-confined.md) | The hyalOS machine runner is confined | Accepted |
 | [0133](0133-hyalos-has-a-line-budget-and-a-list-of-unsafe-files.md) | hyalOS has a line budget and a list of files that may use `unsafe` | Accepted |
 | [0134](0134-hyalos-profile-2-moves-to-wasmi-2-0-3.md) | `hyalos.profile/2` moves to `wasmi` 2.0.3, and profile 1's records still replay | Accepted |
-| [0135](0135-hyalos-review-scope-and-advisory-check.md) | hyalOS's review scope follows its lockfiles, and its upstreams' advisories fail a daily check | Proposed |
+| [0135](0135-hyalos-review-scope-and-advisory-check.md) | hyalOS's review scope follows its lockfiles, and its upstreams' advisories fail a daily check | Accepted |

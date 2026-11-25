@@ -73,7 +73,7 @@ First run against the branch's base, `812c403`. Rechecked on resuming, after mer
 - **No TOML dependency.** The check reads the scope's restricted form and a lockfile's packages itself, and fails on any line it cannot read, so `crates/xtask` still depends only on `serde_json`.
 - **The GitHub feed check matches every locked package,** not only listed ones, compares a git pin's tag without its `v`, and takes an advisory that names no package to affect every version of the repository's crate. Feeds are read with `gh api --paginate --slurp`.
 - **No exception list for the GitHub feed.** A finding goes to the developer, as this slice's block did. RustSec exceptions stay in `hyalos-os/deny.toml` with an assessment under `hyalos-os/advisories/`.
-- **Repository ADR-0135** (Proposed) records the scope, the two checks and the daily job, with its README row and the `hyalos-os/` and `crates/xtask` rows of `CLAUDE.md`'s map.
+- **Repository ADR-0135** records the scope, the two checks, where CI runs them and the daily job, with its README row and the `hyalos-os/`, `crates/xtask` and `.github/workflows/ci.yml` rows of `CLAUDE.md`'s map. Proposed with the slice, and set to Accepted in this pull request's last commit once its review was clean.
 
 ## Discoveries
 
