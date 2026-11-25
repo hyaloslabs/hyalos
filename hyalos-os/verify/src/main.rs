@@ -133,7 +133,7 @@ fn parse(args: &[String]) -> Result<Command, Stop> {
 
 fn version() -> String {
     format!(
-        "hyalos-verify {}\ncommit {}\nrecords 1-4\nprofiles hyalos.profile/1",
+        "hyalos-verify {}\ncommit {}\nrecords 1-4\nprofiles hyalos.profile/1 hyalos.profile/2",
         env!("CARGO_PKG_VERSION"),
         env!("HYALOS_VERIFY_COMMIT")
     )

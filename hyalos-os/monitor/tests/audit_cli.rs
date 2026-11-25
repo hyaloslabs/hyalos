@@ -239,7 +239,7 @@ fn local_2_1_task_prints_the_version_4_identity() {
         .split(|b| *b == b'\n')
         .filter(|l| !l.is_empty())
         .collect();
-    let name = b"hyalos.profile/1";
+    let name = b"hyalos.profile/2";
     let mut frame = Sha256::new();
     frame.update(b"hyalos.task/4");
     frame.update((name.len() as u64).to_be_bytes());

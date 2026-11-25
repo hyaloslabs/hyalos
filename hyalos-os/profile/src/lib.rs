@@ -2,7 +2,8 @@
 //!
 //! Plain values with no I/O and no `wasmi` dependency, so the process backend, the kernel image and
 //! the verifier all build from one definition. A profile's contents never change. A change is a new
-//! name, and the old profile stays, so an old record keeps its meaning.
+//! name, and the old profile stays, so an old record keeps its meaning. A record replays only on the
+//! `wasmi` its profile names, or on one checked equal to it (ADR-0134).
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -31,7 +32,9 @@ pub struct Profile {
     pub trap_on_grow_failure: bool,
 }
 
-/// `hyalos.profile/1`. Records of versions 1 to 3 ran under it without naming it.
+/// `hyalos.profile/1`. Records of versions 1 to 3 ran under it without naming it, and version 4
+/// records made before `hyalos.profile/2` name it. It is kept unchanged, and its runs replay on
+/// `wasmi` 2.0.3 because the two were checked equal (ADR-0134).
 pub const PROFILE_1: Profile = Profile {
     name: "hyalos.profile/1",
     wasmi: "2.0.2",
@@ -53,14 +56,48 @@ pub const PROFILE_1: Profile = Profile {
     trap_on_grow_failure: true,
 };
 
-/// The profile new runs use.
-pub const CURRENT: &Profile = &PROFILE_1;
+/// `hyalos.profile/2`: profile 1's settings and limits on `wasmi` 2.0.3, which fixes
+/// GHSA-qrr7-2g7f-r9rg (ADR-0134).
+pub const PROFILE_2: Profile = Profile {
+    name: "hyalos.profile/2",
+    wasmi: "2.0.3",
+    ..PROFILE_1
+};
 
-static KNOWN: [Profile; 1] = [PROFILE_1];
+/// The profile new runs use. Its `wasmi` is the one this build links, which a test holds to both
+/// lockfiles.
+pub const CURRENT: &Profile = &PROFILE_2;
 
-/// The profile of this exact name, or nothing.
+static KNOWN: [Profile; 2] = [PROFILE_1, PROFILE_2];
+
+/// Pairs of an older `wasmi` and the linked one whose runs were checked equal: the same fuel and
+/// the same transcripts for every committed guest and record, and no change to the code a profile's
+/// guest can reach (ADR-0134). A profile on any other older `wasmi` does not replay here.
+const CHECKED_EQUAL: [(&str, &str); 1] = [("2.0.2", "2.0.3")];
+
+impl Profile {
+    /// Whether this build's `wasmi` replays a run under this profile: it is the profile's own
+    /// version, or one checked equal to it.
+    pub fn replays_here(&self) -> bool {
+        self.wasmi == CURRENT.wasmi || CHECKED_EQUAL.contains(&(self.wasmi, CURRENT.wasmi))
+    }
+
+    /// Whether this profile has the same settings and limits as `other`, whatever its name and
+    /// `wasmi`, so a backend built for `other` runs it the same way.
+    pub fn same_settings(&self, other: &Profile) -> bool {
+        Profile {
+            name: other.name,
+            wasmi: other.wasmi,
+            ..*self
+        } == *other
+    }
+}
+
+/// The profile of this exact name, or nothing. A profile this build cannot replay is nothing.
 pub fn lookup(name: &str) -> Option<&'static Profile> {
-    KNOWN.iter().find(|profile| profile.name == name)
+    KNOWN
+        .iter()
+        .find(|profile| profile.name == name && profile.replays_here())
 }
 
 #[cfg(test)]
@@ -95,8 +132,41 @@ mod tests {
     }
 
     #[test]
+    fn profile_2_is_profile_1_on_wasmi_2_0_3() {
+        assert_eq!(
+            PROFILE_2,
+            Profile {
+                name: "hyalos.profile/2",
+                wasmi: "2.0.3",
+                ..PROFILE_1
+            }
+        );
+        assert!(PROFILE_2.same_settings(&PROFILE_1));
+        assert_eq!(CURRENT, &PROFILE_2);
+    }
+
+    #[test]
+    fn every_known_profile_replays_here_and_no_other_wasmi_does() {
+        assert!(KNOWN.iter().all(Profile::replays_here));
+        let other = Profile {
+            name: "hyalos.profile/1",
+            wasmi: "2.0.1",
+            ..PROFILE_1
+        };
+        assert!(!other.replays_here());
+        assert!(
+            !Profile {
+                fuel: 1,
+                ..PROFILE_1
+            }
+            .same_settings(&PROFILE_2)
+        );
+    }
+
+    #[test]
     fn s_02_4_a_name_gives_its_profile_or_nothing() {
         assert_eq!(lookup("hyalos.profile/1"), Some(&PROFILE_1));
+        assert_eq!(lookup("hyalos.profile/2"), Some(&PROFILE_2));
         for unknown in [
             "hyalos.profile/9",
             "hyalos.profile/1 ",

@@ -17,7 +17,7 @@ use core::{
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
-use hyalos_profile::{PROFILE_1, Profile};
+use hyalos_profile::{PROFILE_2, Profile};
 use wasmi::{
     Caller, Config, Engine, Error, Extern, ExternType, Linker, Module, Store, StoreLimits,
     StoreLimitsBuilder, TrapCode,
@@ -29,7 +29,7 @@ use wasmi::{
 const ABI: &str = "hyalos.abi/1";
 
 // The one definition both backends build from, so the two produce the same transcript.
-const PROFILE: Profile = PROFILE_1;
+const PROFILE: Profile = PROFILE_2;
 
 const HEAP_START: usize = 0x80_0000;
 const HEAP_END: usize = 0x180_0000;

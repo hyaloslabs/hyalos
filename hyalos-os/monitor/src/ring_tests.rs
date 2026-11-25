@@ -11,7 +11,7 @@ use std::path::Path;
 
 /// SHA-256 of `task-kernel run`'s transcript file for the committed digest guest on
 /// `evidence/fixtures/issues.tsv`, by seed, from the ring 0 kernel at this slice's base commit
-/// (`9c6706b`). Both backends gave these bytes there.
+/// (`9c6706b`). Both backends gave these bytes there, under `hyalos.profile/1` on `wasmi` 2.0.2.
 const BASE: &[(u64, &str)] = &[
     (
         0,
@@ -68,17 +68,50 @@ fn core_s_02_1_e1_the_digest_guest_gives_the_base_commits_transcript_in_ring_3()
     )
     .unwrap();
     for &(seed, base) in BASE {
-        let ring_3 = execute(&kvm, &guest, inputs.clone(), Mode::Record { seed }).unwrap();
-        let process = execute(
-            &Backend::Process,
-            &guest,
-            inputs.clone(),
-            Mode::Record { seed },
-        )
-        .unwrap();
+        // Under the profile the pins were made with, on this build's `wasmi` (ADR-0134).
+        let ring_3 = under_profile_1(&kvm, &guest, inputs.clone(), seed);
+        let process = under_profile_1(&Backend::Process, &guest, inputs.clone(), seed);
         assert_eq!(sha(&written(&ring_3)), base, "seed {seed}");
         assert_eq!(written(&ring_3), written(&process), "seed {seed}");
+        // A new run differs only in the profile it names and the task that name is part of.
+        let new = execute(&kvm, &guest, inputs.clone(), Mode::Record { seed }).unwrap();
+        assert_eq!(new.profile.as_deref(), Some("hyalos.profile/2"));
+        assert_eq!(
+            written(&Transcript {
+                profile: ring_3.profile.clone(),
+                task: ring_3.task.clone(),
+                ..new.clone()
+            }),
+            written(&ring_3),
+            "seed {seed}"
+        );
+        assert_eq!(
+            written(&new),
+            written(
+                &execute(
+                    &Backend::Process,
+                    &guest,
+                    inputs.clone(),
+                    Mode::Record { seed }
+                )
+                .unwrap()
+            ),
+            "seed {seed}"
+        );
     }
+}
+
+/// A version 4 run that names `hyalos.profile/1`, as new runs did before `hyalos.profile/2`.
+fn under_profile_1(backend: &Backend, guest: &[u8], inputs: Vec<Vec<u8>>, seed: u64) -> Transcript {
+    hyalos_audit::execute_with(
+        CURRENT_VERSION,
+        Some(hyalos_profile::PROFILE_1.name),
+        guest,
+        inputs,
+        Mode::Record { seed },
+        |guest, host, profile| on_backend(backend, guest, host, profile),
+    )
+    .unwrap()
 }
 
 #[test]

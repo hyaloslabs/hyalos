@@ -38,7 +38,10 @@ fn s_05_6_e1_a_release_build_names_its_commit_and_what_it_reads() {
         lines[0],
         concat!("hyalos-verify ", env!("CARGO_PKG_VERSION"))
     );
-    assert_eq!(&lines[2..], ["records 1-4", "profiles hyalos.profile/1"]);
+    assert_eq!(
+        &lines[2..],
+        ["records 1-4", "profiles hyalos.profile/1 hyalos.profile/2"]
+    );
 }
 
 #[test]

@@ -603,7 +603,10 @@ fn local_3_cli_version_names_what_this_build_reads() {
     assert!(
         lines[1] == "commit unknown" || (lines[1].len() == 47 && lines[1].starts_with("commit "))
     );
-    assert_eq!(&lines[2..], ["records 1-4", "profiles hyalos.profile/1"]);
+    assert_eq!(
+        &lines[2..],
+        ["records 1-4", "profiles hyalos.profile/1 hyalos.profile/2"]
+    );
 }
 
 #[test]
