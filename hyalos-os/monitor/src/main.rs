@@ -160,8 +160,9 @@ fn on_backend(
 ) -> Result<(Host, Vec<u8>, u64), Reason> {
     match backend {
         Backend::Process => hyalos_audit::in_process(guest, host, profile),
-        // The kernel image is built with this one profile, so it cannot run under another.
-        Backend::Kvm { .. } if profile.name != hyalos_profile::PROFILE_1.name => {
+        // The kernel image is built with the current profile, so it runs only a profile with the
+        // same settings. Its `wasmi` was checked when the profile was looked up (ADR-0134).
+        Backend::Kvm { .. } if !profile.same_settings(hyalos_profile::CURRENT) => {
             Err(Reason::ReplayDiverged)
         }
         // The machine runs in its own process, the machine runner (`runner.rs`).

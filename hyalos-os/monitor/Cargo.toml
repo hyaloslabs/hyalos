@@ -7,7 +7,7 @@ publish = false
 [dependencies]
 hyalos-audit = { path = "../audit" }
 hyalos-profile = { path = "../profile" }
-wasmi = "=2.0.2"
+wasmi = "=2.0.3"
 wat = "1"
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }

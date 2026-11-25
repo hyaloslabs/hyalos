@@ -3,8 +3,8 @@
 The guest interface is versioned. This file states every version a backend implements, and the
 current one is the name the monitor holds as `hyalos_audit::ABI` and the kernel image as `ABI`.
 A record does not carry this name (ADR-004 of the `hyalos-kernel-core` plan pack); the interpreter
-settings a record names are the execution profile `hyalos.profile/1`, which this file does not
-restate.
+settings a record names are its execution profile (`hyalos.profile/1` or `hyalos.profile/2`,
+`RECORD.md`), which this file does not restate.
 
 Both backends, the ordinary process and the kernel image on KVM, are held to this file by the
 conformance suite in `monitor/src/abi_tests.rs`. A change to a call's name, signature, limit,

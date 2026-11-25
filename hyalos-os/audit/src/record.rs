@@ -227,10 +227,12 @@ pub fn task_for(
 }
 
 /// The profile a record of this version runs under. Versions 1 to 3 imply profile 1 and may not
-/// name one, and version 4 must name a known one.
+/// name one, and version 4 must name a known one. Either way, it must be one this build's `wasmi`
+/// replays (ADR-0134).
 pub fn profile_for(version: u32, named: Option<&str>) -> Result<&'static Profile, String> {
     match (version, named) {
-        (1..=3, None) => Ok(&hyalos_profile::PROFILE_1),
+        (1..=3, None) => hyalos_profile::lookup(hyalos_profile::PROFILE_1.name)
+            .ok_or_else(|| "this build cannot replay hyalos.profile/1".into()),
         (1..=3, Some(_)) => Err(format!(
             "unknown field `profile` in a version {version} record"
         )),
