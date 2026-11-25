@@ -12,8 +12,10 @@ doctest = false
 # The stand-in log and provider settings. A release build of `hyalos-verify` never enables this.
 test-trust = []
 # The Python guest spike's draft contract and its profiles (ADR-0136, ADR-001 and ADR-006 of
-# docs/plans/hyalos-kernel-python). Off by default: a default build is unchanged.
-spike-contract = ["hyalos-profile/spike-contract"]
+# docs/plans/hyalos-kernel-python). Off by default: a default build is unchanged. It turns on
+# `wasmi`'s deterministic float results for the whole build, for `hyalos.spike/2`'s floats; profiles
+# 1 and 2 still refuse every float at load (ADR-007 of that pack, ADR-0137).
+spike-contract = ["hyalos-profile/spike-contract", "wasmi/deterministic"]
 
 [dependencies]
 hyalos-profile = { path = "../profile" }

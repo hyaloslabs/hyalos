@@ -14,7 +14,10 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 profile=${1:-}
 case "$profile" in
-  hyalos.profile/2 | hyalos.spike/1) features=() ;;
+  hyalos.profile/2 | hyalos.spike/1) features=() target=target ;;
+  # Slice 4: Monty's profile, with floats (ADR-0137). Its own target directory, so it never
+  # replaces the default image.
+  hyalos.spike/2) features=(--features spike-profile-2) target=target-spike-2 ;;
   "") echo "usage: kernel.sh <profile>" >&2; exit 2 ;;
   *) echo "kernel.sh: no kernel image is built for profile '$profile'" >&2; exit 1 ;;
 esac
@@ -24,7 +27,7 @@ dir="$root/hyalos-os/kernel-image"
 for name in $(env | sed -n 's/^\(CARGO[A-Z_]*\|RUSTFLAGS\|RUSTC\)=.*/\1/p'); do
   [ "$name" = CARGO_HOME ] || unset "$name"
 done
-(cd "$dir" && cargo build --release --locked --target-dir target "${features[@]}") >&2
-image="$dir/target/x86_64-unknown-none/release/hyalos-kernel"
+(cd "$dir" && cargo build --release --locked --target-dir "$target" "${features[@]}") >&2
+image="$dir/$target/x86_64-unknown-none/release/hyalos-kernel"
 [ -s "$image" ] || { echo "kernel.sh: the build wrote no image" >&2; exit 1; }
 echo "$image"

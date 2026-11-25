@@ -114,8 +114,21 @@ fn process_only() -> BTreeSet<String> {
         .collect()
 }
 
-/// A case's run from its inputs, under the profile its record names (`hyalos.spike/1` when it has
-/// none), as `spike-run` makes it.
+/// The profile `spikes/438/README.md` names for a runtime on its `<runtime> profile: <name>` line,
+/// the guest's file stem, as `run.sh` runs it (`HYALOS_SPIKE_PROFILE`).
+fn runtime_profile(guest: &str) -> String {
+    let runtime = Path::new(guest).file_stem().unwrap().to_str().unwrap();
+    let text = fs::read_to_string(repo().join("spikes/438/README.md")).unwrap();
+    let prefix = format!("{runtime} profile: ");
+    text.lines()
+        .find_map(|l| l.strip_prefix(prefix.as_str()))
+        .and_then(|l| l.split_whitespace().next())
+        .unwrap_or_else(|| panic!("{runtime}: no `{prefix}` line in spikes/438/README.md"))
+        .to_string()
+}
+
+/// A case's run from its inputs, under its runtime's profile (`runtime_profile`), as `spike-run`
+/// makes it. A case's record must name that profile.
 fn run_case(case: &Case, backend: &Backend) -> Result<Transcript, Reason> {
     let guest = fs::read(path(&case.guest)).unwrap_or_else(|_| panic!("{}: no guest", case.id));
     for input in [&case.contract, &case.sdk, &case.script, &case.data] {
@@ -128,11 +141,18 @@ fn run_case(case: &Case, backend: &Backend) -> Result<Transcript, Reason> {
         &path(&case.data),
     )
     .unwrap();
-    let profile = case
-        .record
-        .as_ref()
-        .and_then(|r| read_transcript(&fs::read(path(r)).ok()?).ok()?.profile)
-        .unwrap_or_else(|| SPIKE.into());
+    let profile = runtime_profile(&case.guest);
+    if let Some(record) = &case.record {
+        let named = read_transcript(&fs::read(path(record)).unwrap())
+            .ok()
+            .and_then(|t| t.profile);
+        assert_eq!(
+            named.as_ref(),
+            Some(&profile),
+            "{}: the record's profile",
+            case.id
+        );
+    }
     hyalos_audit::execute_with(
         CURRENT_VERSION,
         Some(profile.as_str()),

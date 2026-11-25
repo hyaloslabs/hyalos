@@ -1,0 +1,14 @@
+# The spike's type-check tool (Slice 4 of docs/plans/hyalos-kernel-python, S-05.3). typecheck.sh
+# copies this directory into a checkout of Monty at the pinned commit, as `hyalos-typecheck/`, so
+# the paths below name Monty's own crates. It runs on the host, never in a guest.
+[package]
+name = "hyalos-monty-typecheck"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+monty-type-checking = { path = "../crates/monty-type-checking" }
+monty-types = { path = "../crates/monty-types" }

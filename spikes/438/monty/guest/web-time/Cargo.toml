@@ -1,0 +1,6 @@
+[package]
+name = "web-time"
+version = "1.1.0"
+edition = "2021"
+publish = false
+description = "The hyalOS spike's stand-in for web-time: a clock that never moves, and no JavaScript."

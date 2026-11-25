@@ -1,0 +1,30 @@
+# The spike's Monty guest (Slice 4 of docs/plans/hyalos-kernel-python). build.sh copies this
+# directory into a checkout of Monty at the pinned commit, as `hyalos-guest/`, so the paths below
+# name Monty's own crates. It is a workspace of its own, not one of Monty's members.
+[package]
+name = "hyalos-monty-guest"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+monty = { path = "../crates/monty" }
+monty-types = { path = "../crates/monty-types" }
+getrandom = "=0.3.4"
+
+# `web-time` reads JavaScript's clock on this target; the stand-in's clock never moves.
+[patch.crates-io]
+web-time = { path = "web-time" }
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

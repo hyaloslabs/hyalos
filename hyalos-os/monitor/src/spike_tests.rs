@@ -433,4 +433,121 @@ mod with_the_feature {
         assert_eq!(runner::REASONS.last(), Some(&Reason::BadContract));
         assert!(!runner::RUNNER_REASONS.contains(&Reason::BadContract));
     }
+
+    const SPIKE_2: &str = "hyalos.spike/2";
+
+    /// 4.3: an `f32` zero divided by zero, from memory so no translator folds it, gives its NaN's
+    /// bits as the result. Under `hyalos.spike/2` both backends give the same transcript, and the
+    /// bits are the canonical NaN, `0x7fc00000`: every spike build turns on `wasmi`'s deterministic
+    /// float results (ADR-007 of docs/plans/hyalos-kernel-python), without which x86 gives
+    /// `0xffc00000`.
+    #[test]
+    fn python_4_3_a_float_nan_is_canonical_on_both_backends() {
+        let guest = wasm(
+            "(i32.store (i32.const 0) (i32.reinterpret_f32 \
+             (f32.div (f32.load (i32.const 4)) (f32.load (i32.const 4))))) \
+             (call $ret (i32.const 0) (i32.const 4))",
+        );
+        let Some(kvm) = crate::profile_tests::spike_kvm_backend("python_4_3", "spike-profile-2")
+        else {
+            return;
+        };
+        let process = under(&Backend::Process, SPIKE_2, &guest, records(DRAFT));
+        let kernel = under(&kvm, SPIKE_2, &guest, records(DRAFT));
+        assert_eq!(process, kernel, "python_4_3: the backends differ");
+        let t = read_transcript(&process.0.unwrap()).unwrap();
+        assert_eq!(t.profile.as_deref(), Some(SPIKE_2));
+        assert_eq!(unhex(&t.result_hex).unwrap(), 0x7fc0_0000_u32.to_le_bytes());
+        // The same guest is refused at load under the profiles that allow no floats.
+        for profile in [SPIKE, "hyalos.profile/2"] {
+            let refused = under(&Backend::Process, profile, &guest, records(DRAFT)).0;
+            assert_eq!(refused, Err(Reason::InvalidModule), "{profile}");
+        }
+    }
+
+    /// The Monty triage case of `spikes/438/evidence/expected.tsv`, seed 0: its inputs.
+    fn monty_triage() -> (Vec<u8>, Vec<Vec<u8>>) {
+        let repo = root().join("..");
+        let path = |p: &str| repo.join(p).to_str().unwrap().to_string();
+        let guest = fs::read(repo.join("spikes/438/guests/monty.wasm")).unwrap();
+        let inputs = spike::inputs(
+            &path("spikes/438/contracts/draft"),
+            &path("spikes/438/sdk/draft.py"),
+            &path("spikes/438/scripts/triage.py"),
+            &path("hyalos-os/evidence/fixtures/issues.tsv"),
+        )
+        .unwrap();
+        (guest, inputs)
+    }
+
+    /// 4.2: the Monty triage guest on the fixture, seed 0, under `hyalos.spike/2` on the process
+    /// backend, ends with a result, so `max_memory` holds its peak; one MiB less does not, so it is
+    /// the smallest whole number of MiB that does; and the profile's `fuel` is twice the run's
+    /// `fuel_used` rounded up to the next ten million.
+    #[test]
+    fn python_4_2_profile_limits_cover_the_fixture() {
+        let (guest, inputs) = monty_triage();
+        let profile = hyalos_profile::lookup(SPIKE_2).unwrap();
+        let t = hyalos_audit::execute_with(
+            CURRENT_VERSION,
+            Some(SPIKE_2),
+            &guest,
+            inputs.clone(),
+            Mode::Record { seed: 0 },
+            hyalos_audit::in_process,
+        )
+        .unwrap();
+        assert_eq!(unhex(&t.result_hex).unwrap(), b"ok 40");
+        assert_eq!(
+            profile.fuel,
+            (2 * t.fuel_used).div_ceil(10_000_000) * 10_000_000
+        );
+        assert_eq!(profile.max_memory % (1024 * 1024), 0);
+        let smaller: &'static hyalos_profile::Profile =
+            Box::leak(Box::new(hyalos_profile::Profile {
+                max_memory: profile.max_memory - 1024 * 1024,
+                ..*profile
+            }));
+        let less = hyalos_audit::execute_with(
+            CURRENT_VERSION,
+            Some(SPIKE_2),
+            &guest,
+            inputs,
+            Mode::Record { seed: 0 },
+            |guest, host, _| hyalos_audit::in_process(guest, host, smaller),
+        );
+        assert_eq!(less.err(), Some(Reason::GuestTrap));
+    }
+
+    /// A spike kernel image carries the marker and its profile's name exactly as the monitor reads
+    /// them, and the read refuses everything but no marker or one marker naming a known profile.
+    #[test]
+    fn python_4_2_the_image_reports_its_own_profile() {
+        let kernel = include_str!("../../kernel-image/src/main.rs");
+        let marker = String::from_utf8(spike::KERNEL_MARKER.to_vec()).unwrap();
+        let spike_2 = format!("{marker}hyalos.spike/2\0").replace('\0', "\\0");
+        assert!(kernel.contains(&format!("*b\"{spike_2}\"")), "{spike_2}");
+        let image = |names: &[&str]| -> Vec<u8> {
+            let mut bytes = b"code".to_vec();
+            for name in names {
+                bytes.extend_from_slice(spike::KERNEL_MARKER);
+                bytes.extend_from_slice(name.as_bytes());
+                bytes.extend_from_slice(b"\0more");
+            }
+            bytes
+        };
+        assert_eq!(spike::image_profile(b"code"), Ok(hyalos_profile::CURRENT));
+        assert_eq!(
+            spike::image_profile(&image(&["hyalos.spike/2"])),
+            Ok(&hyalos_profile::SPIKE_2)
+        );
+        for refused in [
+            image(&["hyalos.spike/9"]),
+            image(&["hyalos.spike/2", "hyalos.spike/2"]),
+            image(&[""]),
+            [spike::KERNEL_MARKER, b"hyalos.spike/2"].concat(),
+        ] {
+            assert!(spike::image_profile(&refused).is_err());
+        }
+    }
 }

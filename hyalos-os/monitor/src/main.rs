@@ -162,13 +162,28 @@ fn on_backend(
 ) -> Result<(Host, Vec<u8>, u64), Reason> {
     match backend {
         Backend::Process => hyalos_audit::in_process(guest, host, profile),
-        // The kernel image is built with the current profile, so it runs only a profile with the
-        // same settings. Its `wasmi` was checked when the profile was looked up (ADR-0134).
-        Backend::Kvm { .. } if !profile.same_settings(hyalos_profile::CURRENT) => {
+        // The kernel image is built with one profile, so it runs only a profile with the same
+        // settings. Its `wasmi` was checked when the profile was looked up (ADR-0134).
+        Backend::Kvm { kernel, .. }
+            if !image_profile(kernel).is_some_and(|p| profile.same_settings(p)) =>
+        {
             Err(Reason::ReplayDiverged)
         }
         // The machine runs in its own process, the machine runner (`runner.rs`).
         Backend::Kvm { kernel, limit } => runner::run(kernel, guest, host, *limit),
+    }
+}
+
+/// The profile a kernel image was built for: `CURRENT` in a default build, which reads no marker;
+/// in a `spike-contract` build, the one the image names, or nothing when it names none this build
+/// knows (ADR-0137).
+fn image_profile(kernel: &[u8]) -> Option<&'static hyalos_profile::Profile> {
+    #[cfg(feature = "spike-contract")]
+    return spike::image_profile(kernel).ok();
+    #[cfg(not(feature = "spike-contract"))]
+    {
+        let _ = kernel;
+        Some(hyalos_profile::CURRENT)
     }
 }
 
@@ -683,10 +698,16 @@ const ATTACKS_NEED_TEST_SWITCHES: &str =
 /// kernel file.
 fn load_backend() -> Result<Backend, String> {
     match env::var("HYALOS_KERNEL") {
-        Ok(path) => Ok(Backend::Kvm {
-            kernel: fs::read(path).map_err(|_| "cannot read kernel")?,
-            limit: Duration::from_secs(30),
-        }),
+        Ok(path) => {
+            let kernel = fs::read(path).map_err(|_| "cannot read kernel")?;
+            // A spike build refuses, before boot, an image whose marker names no known profile.
+            #[cfg(feature = "spike-contract")]
+            spike::image_profile(&kernel)?;
+            Ok(Backend::Kvm {
+                kernel,
+                limit: Duration::from_secs(30),
+            })
+        }
         Err(_) => Ok(Backend::Process),
     }
 }
