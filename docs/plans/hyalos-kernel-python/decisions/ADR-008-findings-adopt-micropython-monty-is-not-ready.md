@@ -1,6 +1,6 @@
 # ADR-008: Findings: capsules should adopt MicroPython, and Monty is not ready
 
-**Status:** proposed
+**Status:** accepted (developer, 2026-11-25)
 
 **Proposed by:** executor, Slice 5 (#498), from the evidence of Slices 1 to 5
 

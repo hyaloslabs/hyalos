@@ -63,8 +63,9 @@ Run on 2026-11-25, KVM and Landlock required (`HYALOS_REQUIRE_KVM=1 HYALOS_REQUI
 - `cargo test … python_`: every binary ends `test result: ok`, with 24 passed in `task-kernel`'s
   and 3 in `release_switches`. `! grep '^skipped:'` passes, so nothing skipped.
 - `grep -c -e '-hostile-' expected.tsv`: `16`, which is 8 cases for each of the 2 runtimes.
-- The ADR `accepted` line: exit 1 until the developer approves the PR (5.3). It is set in the
-  PR's last commit.
+- The ADR `accepted` line: exit 1 until the developer approved the PR on 2026-11-25. After the
+  PR's last commit it prints
+  `ADR-008-…md:3:**Status:** accepted (developer, 2026-11-25)`.
 - The brief's citation: `pack-briefs.md:102`.
 - `cargo xtask lines` (hyalOS 9,347 / 12,000), `hyalos-unsafe` (`unsafe only in the 11 listed
   files`) and `docs` (`194 references in 3 pages`): exit 0.
@@ -108,8 +109,8 @@ Run on 2026-11-25, KVM and Landlock required (`HYALOS_REQUIRE_KVM=1 HYALOS_REQUI
   dispatch (#503). Recommending a change to it would change a default build, so the ADR lists it
   under what capsules must decide (the slice's last stop condition), with the local run that shows
   the fix works.
-- **ADR-008 is proposed until the developer approves the PR;** its Status becomes
-  `accepted (developer, <date>)` in the PR's last commit (5.3).
+- **ADR-008 was accepted by the developer on 2026-11-25,** who approved the PR. Its Status was
+  set in the PR's last commit (5.3).
 
 ## Discoveries
 
