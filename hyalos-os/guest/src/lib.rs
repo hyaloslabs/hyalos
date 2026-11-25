@@ -4,6 +4,8 @@
 //! title with `infer` (schema 0), and sends one digest through one `effect`.
 
 #![no_std]
+// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+#![allow(unsafe_code)]
 
 use core::arch::wasm32::unreachable;
 use core::panic::PanicInfo;
@@ -168,6 +170,9 @@ pub extern "C" fn run() {
     put_num(dig, &mut len, counts[LABEL_OTHER as usize]);
     put(dig, &mut len, b"\n");
 
+    // The index form is kept: the committed `digest.wasm`, whose hash every record names, is built
+    // from it, and the iterator form compiles to other bytes.
+    #[allow(clippy::needless_range_loop)]
     for k in 0..nsec {
         let e = &sec[k];
         // "#" digits " " title "\n"
