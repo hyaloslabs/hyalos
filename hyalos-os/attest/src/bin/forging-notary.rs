@@ -20,8 +20,12 @@ mod notary;
 
 /// The ticket extensions to sign in place of the real one.
 pub(crate) fn forged_ticket(real: &Ticket, sequence: u64) -> Vec<Vec<u8>> {
-    let Ok(said) = std::env::var("HYALOS_FORGE_TICKET") else { return vec![real.bytes()] };
-    let (first, said) = said.strip_prefix("later:").map_or((0, said.as_str()), |rest| (1, rest));
+    let Ok(said) = std::env::var("HYALOS_FORGE_TICKET") else {
+        return vec![real.bytes()];
+    };
+    let (first, said) = said
+        .strip_prefix("later:")
+        .map_or((0, said.as_str()), |rest| (1, rest));
     if sequence < first {
         return vec![real.bytes()];
     }
@@ -56,7 +60,9 @@ pub(crate) fn forged_ticket(real: &Ticket, sequence: u64) -> Vec<Vec<u8>> {
 /// The canary extensions to sign in place of the real one.
 pub(crate) fn forged_canary(real: u64, session: u64) -> Vec<Vec<u8>> {
     let pass = real.to_be_bytes().to_vec();
-    let Ok(said) = std::env::var("HYALOS_FORGE_CANARY") else { return vec![pass] };
+    let Ok(said) = std::env::var("HYALOS_FORGE_CANARY") else {
+        return vec![pass];
+    };
     match said.as_str() {
         "missing" => Vec::new(),
         "doubled" => vec![pass.clone(), pass],
@@ -74,7 +80,9 @@ pub(crate) fn forged_canary(real: u64, session: u64) -> Vec<Vec<u8>> {
 
 /// The session time the signing check judges.
 pub(crate) fn forged_session_time(real: u64) -> u64 {
-    std::env::var("HYALOS_FORGE_SESSION_LATER").map_or(real, |later| real + later.parse::<u64>().expect("a number of seconds"))
+    std::env::var("HYALOS_FORGE_SESSION_LATER").map_or(real, |later| {
+        real + later.parse::<u64>().expect("a number of seconds")
+    })
 }
 
 fn main() -> std::process::ExitCode {

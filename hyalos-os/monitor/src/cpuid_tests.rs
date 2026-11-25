@@ -15,8 +15,22 @@ use std::arch::x86_64::__cpuid_count;
 /// The input byte that asks the self-test kernel for its CPUID report (`CPUID_REPORT` in
 /// `kernel-image/src/main.rs`), and the leaves it reads, in order, each at subleaf 0.
 const CPUID_REPORT: u8 = 0x80;
-const REPORTED_LEAVES: [u32; 14] =
-    [0, 1, 4, 7, 0xb, 0xd, 0x4000_0000, 0x4000_0001, 0x8000_0000, 0x8000_0001, 0x8000_0002, 0x8000_0003, 0x8000_0004, 0x8000_0008];
+const REPORTED_LEAVES: [u32; 14] = [
+    0,
+    1,
+    4,
+    7,
+    0xb,
+    0xd,
+    0x4000_0000,
+    0x4000_0001,
+    0x8000_0000,
+    0x8000_0001,
+    0x8000_0002,
+    0x8000_0003,
+    0x8000_0004,
+    0x8000_0008,
+];
 const BRAND_LEAVES: [u32; 3] = [0x8000_0002, 0x8000_0003, 0x8000_0004];
 
 const PAE: u32 = 1 << 6; // leaf 1, EDX
@@ -33,11 +47,18 @@ type Leaf = [u32; 4];
 /// What CPUID shows the kernel inside the machine, by leaf.
 fn seen(test: &str) -> Option<Vec<(u32, Leaf)>> {
     let kernel = selftest_kvm_backend(test)?;
-    let report = execute(&kernel, &[CPUID_REPORT], vec![], Mode::Record { seed: 0 }).expect("the CPUID report ends with a result");
+    let report = execute(&kernel, &[CPUID_REPORT], vec![], Mode::Record { seed: 0 })
+        .expect("the CPUID report ends with a result");
     let bytes = unhex(&report.result_hex).unwrap();
     assert_eq!(bytes.len(), REPORTED_LEAVES.len() * 16);
     let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
-    Some(REPORTED_LEAVES.iter().enumerate().map(|(i, &leaf)| (leaf, [0, 1, 2, 3].map(|w| word(i * 16 + w * 4)))).collect())
+    Some(
+        REPORTED_LEAVES
+            .iter()
+            .enumerate()
+            .map(|(i, &leaf)| (leaf, [0, 1, 2, 3].map(|w| word(i * 16 + w * 4))))
+            .collect(),
+    )
 }
 
 fn leaf(seen: &[(u32, Leaf)], number: u32) -> Leaf {
@@ -53,7 +74,10 @@ fn host(number: u32) -> Leaf {
 /// Runs one self-test probe by name and returns how it ended.
 fn probe(test: &str, name: &str) -> Option<Result<(), Reason>> {
     let kernel = selftest_kvm_backend(test)?;
-    let index = PROBES.iter().position(|(n, _)| *n == name).unwrap_or_else(|| panic!("no probe {name}"));
+    let index = PROBES
+        .iter()
+        .position(|(n, _)| *n == name)
+        .unwrap_or_else(|| panic!("no probe {name}"));
     assert_eq!(PROBES[index].1, Reason::KernelFault, "{name}");
     Some(execute(&kernel, &[index as u8], vec![], Mode::Record { seed: 0 }).map(|_| ()))
 }
@@ -63,16 +87,33 @@ fn probe(test: &str, name: &str) -> Option<Result<(), Reason>> {
 /// which is how KVM answers a leaf past the highest, so nothing in it is the host's.
 #[test]
 fn core_s_03_1_the_kernel_sees_only_the_allowed_list() {
-    let Some(seen) = seen("core_s_03_1") else { return };
-    assert_eq!(leaf(&seen, 0), [1, 0, 0, 0], "highest basic leaf 1, no vendor");
+    let Some(seen) = seen("core_s_03_1") else {
+        return;
+    };
+    assert_eq!(
+        leaf(&seen, 0),
+        [1, 0, 0, 0],
+        "highest basic leaf 1, no vendor"
+    );
     assert_eq!(leaf(&seen, 1), [0, 0, 0, PAE], "leaf 1: only PAE");
-    assert_eq!(leaf(&seen, 0x8000_0000), [0x8000_0001, 0, 0, 0], "highest extended leaf");
+    assert_eq!(
+        leaf(&seen, 0x8000_0000),
+        [0x8000_0001, 0, 0, 0],
+        "highest extended leaf"
+    );
     let extended = leaf(&seen, 0x8000_0001);
     assert_eq!(extended[..3], [0, 0, 0]);
-    assert_eq!(extended[3] & !(NX | LONG_MODE), 0, "leaf 0x8000_0001: only long mode and NX");
+    assert_eq!(
+        extended[3] & !(NX | LONG_MODE),
+        0,
+        "leaf 0x8000_0001: only long mode and NX"
+    );
     for &(number, words) in &seen {
         if ![0, 1, 0x8000_0000, 0x8000_0001].contains(&number) {
-            assert!(words == [0; 4] || words == leaf(&seen, 1), "leaf {number:#x} holds {words:x?}");
+            assert!(
+                words == [0; 4] || words == leaf(&seen, 1),
+                "leaf {number:#x} holds {words:x?}"
+            );
         }
     }
     assert_eq!(leaf(&seen, 1)[2] & RDRAND, 0, "RDRAND");
@@ -80,17 +121,27 @@ fn core_s_03_1_the_kernel_sees_only_the_allowed_list() {
     assert_eq!(leaf(&seen, 7)[2] & RDPID, 0, "RDPID");
     assert_eq!(extended[3] & RDTSCP, 0, "RDTSCP");
     // Nothing that names the host reaches the machine: not its vendor, model or brand.
-    let named: Vec<u32> = [host(0)[1..].to_vec(), vec![host(1)[0]], BRAND_LEAVES.iter().flat_map(|&n| host(n)).collect()].concat();
+    let named: Vec<u32> = [
+        host(0)[1..].to_vec(),
+        vec![host(1)[0]],
+        BRAND_LEAVES.iter().flat_map(|&n| host(n)).collect(),
+    ]
+    .concat();
     for &(number, words) in &seen {
         for word in words {
-            assert!(word == 0 || !named.contains(&word), "leaf {number:#x} holds the host's {word:#x}");
+            assert!(
+                word == 0 || !named.contains(&word),
+                "leaf {number:#x} holds the host's {word:#x}"
+            );
         }
     }
 }
 
 #[test]
 fn core_s_03_1_e1_leaf_1_shows_no_rdrand() {
-    let Some(seen) = seen("core_s_03_1_e1") else { return };
+    let Some(seen) = seen("core_s_03_1_e1") else {
+        return;
+    };
     assert_eq!(leaf(&seen, 1)[2] & RDRAND, 0);
 }
 
@@ -98,19 +149,39 @@ fn core_s_03_1_e1_leaf_1_shows_no_rdrand() {
 /// filtered data, `PAE` alone. They never hold the host's brand string.
 #[test]
 fn core_s_03_1_e2_the_brand_leaves_hold_no_host_name() {
-    let Some(seen) = seen("core_s_03_1_e2") else { return };
-    let brand: Vec<u8> = BRAND_LEAVES.iter().flat_map(|&n| leaf(&seen, n)).flat_map(u32::to_le_bytes).collect();
-    let host_brand: Vec<u8> = BRAND_LEAVES.iter().flat_map(|&n| host(n)).flat_map(u32::to_le_bytes).collect();
-    assert!(brand.iter().all(|&b| b == 0 || b == PAE as u8), "{brand:x?}");
+    let Some(seen) = seen("core_s_03_1_e2") else {
+        return;
+    };
+    let brand: Vec<u8> = BRAND_LEAVES
+        .iter()
+        .flat_map(|&n| leaf(&seen, n))
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    let host_brand: Vec<u8> = BRAND_LEAVES
+        .iter()
+        .flat_map(|&n| host(n))
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    assert!(
+        brand.iter().all(|&b| b == 0 || b == PAE as u8),
+        "{brand:x?}"
+    );
     assert_ne!(brand, host_brand);
-    assert!(!brand.iter().any(u8::is_ascii_alphanumeric), "the brand leaves spell something: {brand:x?}");
+    assert!(
+        !brand.iter().any(u8::is_ascii_alphanumeric),
+        "the brand leaves spell something: {brand:x?}"
+    );
 }
 
 /// The CPU vendor string (CPUID leaf 0) and the KVM module that is loaded, as this process sees
 /// them, for the test output only: what a host traps is measured, not predicted from these.
 fn host_cpu() -> (String, &'static str) {
     let r = host(0);
-    let vendor = [r[1], r[3], r[2]].iter().flat_map(|w| w.to_le_bytes()).map(char::from).collect();
+    let vendor = [r[1], r[3], r[2]]
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .map(char::from)
+        .collect();
     let loaded = |m: &str| fs::metadata(format!("/sys/module/{m}")).is_ok();
     let module = match (loaded("kvm_intel"), loaded("kvm_amd")) {
         (true, false) => "kvm_intel",
@@ -126,10 +197,25 @@ fn host_cpu() -> (String, &'static str) {
 pub(crate) fn measured_host(test: &str) -> probe_host::Found {
     use std::io::Write;
     let (vendor, module) = host_cpu();
-    let brand: String = BRAND_LEAVES.iter().flat_map(|&n| host(n)).flat_map(u32::to_le_bytes).filter(|&b| b != 0).map(char::from).collect();
-    let found = probe_host::on_host(probe_host::KVM_DEVICE).unwrap_or_else(|_| panic!("{test}: the host probe could not test a host with KVM"));
-    let shown: Vec<String> = found.iter().map(|&(name, blocked)| format!("{name} {}", if blocked { "blocked" } else { "reachable" })).collect();
-    let _ = writeln!(std::io::stderr(), "{test}: host {vendor} ({}), {module}; the host probe found {}", brand.trim(), shown.join(", "));
+    let brand: String = BRAND_LEAVES
+        .iter()
+        .flat_map(|&n| host(n))
+        .flat_map(u32::to_le_bytes)
+        .filter(|&b| b != 0)
+        .map(char::from)
+        .collect();
+    let found = probe_host::on_host(probe_host::KVM_DEVICE)
+        .unwrap_or_else(|_| panic!("{test}: the host probe could not test a host with KVM"));
+    let shown: Vec<String> = found
+        .iter()
+        .map(|&(name, blocked)| format!("{name} {}", if blocked { "blocked" } else { "reachable" }))
+        .collect();
+    let _ = writeln!(
+        std::io::stderr(),
+        "{test}: host {vendor} ({}), {module}; the host probe found {}",
+        brand.trim(),
+        shown.join(", ")
+    );
     found
 }
 
@@ -150,11 +236,23 @@ fn hidden_bit(instruction: &str) -> (u32, usize, u32) {
 pub(crate) fn randomness(test: &str, name: &str) -> Option<bool> {
     let got = probe(test, name)?;
     let seen = seen(test)?;
-    let (_, instruction) = HOST_DEPENDENT.iter().find(|(probe, _)| *probe == name).unwrap();
+    let (_, instruction) = HOST_DEPENDENT
+        .iter()
+        .find(|(probe, _)| *probe == name)
+        .unwrap();
     let (number, word, bit) = hidden_bit(instruction);
-    assert_eq!(leaf(&seen, number)[word] & bit, 0, "{name}: the machine's CPUID offers it");
+    assert_eq!(
+        leaf(&seen, number)[word] & bit,
+        0,
+        "{name}: the machine's CPUID offers it"
+    );
     let found = measured_host(test);
-    match judge(name, got, Reason::KernelFault, blocked_here(name, Some(&found))) {
+    match judge(
+        name,
+        got,
+        Reason::KernelFault,
+        blocked_here(name, Some(&found)),
+    ) {
         Verdict::Pass => Some(true),
         Verdict::Reachable => Some(false),
         Verdict::Fail => panic!("{name}: {got:?} on a host the host probe measured as blocking it"),
@@ -163,7 +261,10 @@ pub(crate) fn randomness(test: &str, name: &str) -> Option<bool> {
 
 #[test]
 fn core_s_03_2_rdrand_and_rdpid_fault_where_the_host_traps_them() {
-    for name in ["randomness: hardware randomness (RDRAND)", "randomness: read the processor ID (RDPID)"] {
+    for name in [
+        "randomness: hardware randomness (RDRAND)",
+        "randomness: read the processor ID (RDPID)",
+    ] {
         randomness("core_s_03_2", name);
     }
 }
@@ -175,21 +276,50 @@ fn core_s_03_2_e1_rdrand_faults_where_the_host_traps_it() {
 
 #[test]
 fn core_s_03_2_e2_rdpid_faults_where_the_host_traps_it() {
-    randomness("core_s_03_2_e2", "randomness: read the processor ID (RDPID)");
+    randomness(
+        "core_s_03_2_e2",
+        "randomness: read the processor ID (RDPID)",
+    );
 }
 
 /// A host-dependent probe takes the host probe's measurement of its own instruction, and any other
 /// probe, or a host that could not be measured, takes none.
 #[test]
 fn core_s_03_2_each_randomness_probe_takes_its_own_instructions_measurement() {
-    let found = [("RDTSC", true), ("RDTSCP", true), ("RDRAND", true), ("RDSEED", false), ("RDPID", false)];
-    assert_eq!(blocked_here("randomness: hardware randomness (RDRAND)", Some(&found)), Some(true));
-    assert_eq!(blocked_here("randomness: read the processor ID (RDPID)", Some(&found)), Some(false));
-    assert_eq!(blocked_here("randomness: hardware seed (RDSEED)", Some(&found)), Some(false));
-    assert_eq!(blocked_here("randomness: hardware randomness (RDRAND)", None), None);
-    assert_eq!(blocked_here("privilege: read the time counter (RDTSC)", Some(&found)), None);
+    let found = [
+        ("RDTSC", true),
+        ("RDTSCP", true),
+        ("RDRAND", true),
+        ("RDSEED", false),
+        ("RDPID", false),
+    ];
+    assert_eq!(
+        blocked_here("randomness: hardware randomness (RDRAND)", Some(&found)),
+        Some(true)
+    );
+    assert_eq!(
+        blocked_here("randomness: read the processor ID (RDPID)", Some(&found)),
+        Some(false)
+    );
+    assert_eq!(
+        blocked_here("randomness: hardware seed (RDSEED)", Some(&found)),
+        Some(false)
+    );
+    assert_eq!(
+        blocked_here("randomness: hardware randomness (RDRAND)", None),
+        None
+    );
+    assert_eq!(
+        blocked_here("privilege: read the time counter (RDTSC)", Some(&found)),
+        None
+    );
     for (_, instruction) in HOST_DEPENDENT {
-        assert!(probe_host::INSTRUCTIONS.iter().any(|(name, _)| name == instruction), "{instruction}");
+        assert!(
+            probe_host::INSTRUCTIONS
+                .iter()
+                .any(|(name, _)| name == instruction),
+            "{instruction}"
+        );
     }
 }
 
@@ -200,16 +330,60 @@ fn core_s_03_2_each_randomness_probe_takes_its_own_instructions_measurement() {
 fn core_s_03_2_a_run_is_reachable_only_where_the_host_cannot_trap_it() {
     let rdrand = "randomness: hardware randomness (RDRAND)";
     let ran = Err(Reason::BadHypercall);
-    assert_eq!(judge(rdrand, Err(Reason::KernelFault), Reason::KernelFault, Some(true)), Verdict::Pass);
-    assert_eq!(judge(rdrand, Err(Reason::KernelFault), Reason::KernelFault, Some(false)), Verdict::Pass);
-    assert_eq!(judge(rdrand, ran, Reason::KernelFault, Some(true)), Verdict::Fail);
-    assert_eq!(judge(rdrand, ran, Reason::KernelFault, Some(false)), Verdict::Reachable);
-    assert_eq!(judge(rdrand, ran, Reason::KernelFault, None), Verdict::Reachable);
-    assert_eq!(judge(rdrand, Err(Reason::Timeout), Reason::KernelFault, None), Verdict::Fail);
-    assert_eq!(judge(rdrand, Ok(()), Reason::KernelFault, None), Verdict::Fail);
-    assert_eq!(judge("privilege: halt (HLT)", ran, Reason::KernelFault, Some(false)), Verdict::Fail);
+    assert_eq!(
+        judge(
+            rdrand,
+            Err(Reason::KernelFault),
+            Reason::KernelFault,
+            Some(true)
+        ),
+        Verdict::Pass
+    );
+    assert_eq!(
+        judge(
+            rdrand,
+            Err(Reason::KernelFault),
+            Reason::KernelFault,
+            Some(false)
+        ),
+        Verdict::Pass
+    );
+    assert_eq!(
+        judge(rdrand, ran, Reason::KernelFault, Some(true)),
+        Verdict::Fail
+    );
+    assert_eq!(
+        judge(rdrand, ran, Reason::KernelFault, Some(false)),
+        Verdict::Reachable
+    );
+    assert_eq!(
+        judge(rdrand, ran, Reason::KernelFault, None),
+        Verdict::Reachable
+    );
+    assert_eq!(
+        judge(rdrand, Err(Reason::Timeout), Reason::KernelFault, None),
+        Verdict::Fail
+    );
+    assert_eq!(
+        judge(rdrand, Ok(()), Reason::KernelFault, None),
+        Verdict::Fail
+    );
+    assert_eq!(
+        judge(
+            "privilege: halt (HLT)",
+            ran,
+            Reason::KernelFault,
+            Some(false)
+        ),
+        Verdict::Fail
+    );
     assert_eq!(HOST_DEPENDENT.len(), 3);
     for (name, _) in HOST_DEPENDENT {
-        assert!(PROBES.iter().any(|(n, want)| n == name && *want == Reason::KernelFault), "{name}");
+        assert!(
+            PROBES
+                .iter()
+                .any(|(n, want)| n == name && *want == Reason::KernelFault),
+            "{name}"
+        );
     }
 }

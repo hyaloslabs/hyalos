@@ -21,7 +21,11 @@ impl Drop for Rig {
 
 impl Rig {
     pub(super) fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("hyalos-audit-test-{}{label}-{}", super::fixture_tests::rig_prefix(), std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "hyalos-audit-test-{}{label}-{}",
+            super::fixture_tests::rig_prefix(),
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("ledger")).unwrap();
         fs::create_dir_all(root.join("log")).unwrap();
@@ -36,27 +40,72 @@ impl Rig {
     /// Copies of the first four real links and replies, with the real pinned key and operator key.
     fn real(&self) -> Auditor {
         for seq in 0..REAL_LINKS {
-            fs::copy(source(&format!("evidence/ledger/{seq:05}.json")), self.root.join(format!("ledger/{seq:05}.json"))).unwrap();
+            fs::copy(
+                source(&format!("evidence/ledger/{seq:05}.json")),
+                self.root.join(format!("ledger/{seq:05}.json")),
+            )
+            .unwrap();
             for dir in ["ledger", "log"] {
-                fs::copy(source(&format!("evidence/ledger/{seq:05}.rekor.json")), self.root.join(format!("{dir}/{seq:05}.rekor.json"))).unwrap();
+                fs::copy(
+                    source(&format!("evidence/ledger/{seq:05}.rekor.json")),
+                    self.root.join(format!("{dir}/{seq:05}.rekor.json")),
+                )
+                .unwrap();
             }
         }
-        let reply: Value = serde_json::from_slice(&fs::read(source("evidence/ledger/00000.rekor.json")).unwrap()).unwrap();
-        let body: Value = serde_json::from_slice(&B64.decode(reply.as_object().unwrap().values().next().unwrap()["body"].as_str().unwrap()).unwrap()).unwrap();
-        let operator = B64.decode(body["spec"]["signature"]["publicKey"]["content"].as_str().unwrap()).unwrap();
+        let reply: Value =
+            serde_json::from_slice(&fs::read(source("evidence/ledger/00000.rekor.json")).unwrap())
+                .unwrap();
+        let body: Value = serde_json::from_slice(
+            &B64.decode(
+                reply.as_object().unwrap().values().next().unwrap()["body"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let operator = B64
+            .decode(
+                body["spec"]["signature"]["publicKey"]["content"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
         fs::write(self.path("operator.pub"), operator).unwrap();
-        fs::write(self.path("log.pub"), public_pem(&B64.decode(REKOR_KEY).unwrap())).unwrap();
+        fs::write(
+            self.path("log.pub"),
+            public_pem(&B64.decode(REKOR_KEY).unwrap()),
+        )
+        .unwrap();
         self.auditor("operator.pub", "log.pub")
     }
 
     pub(super) fn auditor(&self, operator: &str, log_key: &str) -> Auditor {
-        Auditor::new(&self.path("ledger"), &self.path(operator), LogSource::StandIn(self.path("log"), self.path(log_key)), &crate::PlainFiles).unwrap()
+        Auditor::new(
+            &self.path("ledger"),
+            &self.path(operator),
+            LogSource::StandIn(self.path("log"), self.path(log_key)),
+            &crate::PlainFiles,
+        )
+        .unwrap()
     }
 
     /// Makes a P-256 key pair and returns the private key's path. The public key is `<name>.pub`.
     pub(super) fn key(&self, name: &str) -> String {
         let private = self.path(&format!("{name}.pem"));
-        assert!(openssl(&["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", &private]).is_some());
+        assert!(
+            openssl(&[
+                "genpkey",
+                "-algorithm",
+                "EC",
+                "-pkeyopt",
+                "ec_paramgen_curve:P-256",
+                "-out",
+                &private
+            ])
+            .is_some()
+        );
         let public = openssl(&["pkey", "-in", &private, "-pubout"]).unwrap();
         fs::write(self.path(&format!("{name}.pub")), public).unwrap();
         private
@@ -74,8 +123,18 @@ impl Rig {
     }
 
     /// The same reply, with the log signing `time` for the entry.
-    pub(super) fn entry_at(&self, log: &str, signer: &str, link: &[u8], index: u64, time: u64) -> Vec<u8> {
-        let log_der = public_der(&fs::read_to_string(format!("{}.pub", log.trim_end_matches(".pem"))).unwrap()).unwrap();
+    pub(super) fn entry_at(
+        &self,
+        log: &str,
+        signer: &str,
+        link: &[u8],
+        index: u64,
+        time: u64,
+    ) -> Vec<u8> {
+        let log_der = public_der(
+            &fs::read_to_string(format!("{}.pub", log.trim_end_matches(".pem"))).unwrap(),
+        )
+        .unwrap();
         let log_id = sha(&log_der);
         let signer_public = fs::read(format!("{}.pub", signer.trim_end_matches(".pem"))).unwrap();
         let body = json!({"apiVersion": "0.0.1", "kind": "hashedrekord", "spec": {
@@ -84,7 +143,9 @@ impl Rig {
         }});
         let body_bytes = serde_json::to_vec(&body).unwrap();
         let body_text = B64.encode(&body_bytes);
-        let canonical = format!("{{\"body\":\"{body_text}\",\"integratedTime\":{time},\"logID\":\"{log_id}\",\"logIndex\":{index}}}");
+        let canonical = format!(
+            "{{\"body\":\"{body_text}\",\"integratedTime\":{time},\"logID\":\"{log_id}\",\"logIndex\":{index}}}"
+        );
         let leaf = Sha256::digest([&[0u8], body_bytes.as_slice()].concat()).to_vec();
         let note = format!("test log\n1\n{}", B64.encode(&leaf));
         let note_signature = self.sign(log, format!("{note}\n").as_bytes());
@@ -140,12 +201,31 @@ const CHAIN_GUEST: &[u8] = b"\0asm\x01\0\0\0";
 /// the built verifier can reach the same chain check from a real file.
 fn chain_record(version: u32) -> crate::Transcript {
     let guest_sha256 = sha(CHAIN_GUEST);
-    let task = if version == 1 { String::new() } else { crate::task_for(version, None, &guest_sha256, &[]).unwrap() };
-    crate::Transcript { version, profile: None, task, guest_sha256, inputs_hex: Vec::new(), answers: Vec::new(), effects: Vec::new(), result_hex: String::new(), fuel_used: 1 }
+    let task = if version == 1 {
+        String::new()
+    } else {
+        crate::task_for(version, None, &guest_sha256, &[]).unwrap()
+    };
+    crate::Transcript {
+        version,
+        profile: None,
+        task,
+        guest_sha256,
+        inputs_hex: Vec::new(),
+        answers: Vec::new(),
+        effects: Vec::new(),
+        result_hex: String::new(),
+        fuel_used: 1,
+    }
 }
 
 fn commit(label: &str, version: u32) -> String {
-    sha([label.as_bytes(), &serde_json::to_vec(&chain_record(version)).unwrap()].concat().as_slice())
+    sha([
+        label.as_bytes(),
+        &serde_json::to_vec(&chain_record(version)).unwrap(),
+    ]
+    .concat()
+    .as_slice())
 }
 
 fn claim_for(version: u32, label: &str) -> Claim {
@@ -167,29 +247,49 @@ fn test_claim(label: &str) -> Claim {
 
 /// The real record's claim, recomputed from `evidence/out/live2.json`.
 fn real_claim() -> Claim {
-    let t: crate::Transcript = serde_json::from_slice(&fs::read(source("evidence/out/live2.json")).unwrap()).unwrap();
+    let t: crate::Transcript =
+        serde_json::from_slice(&fs::read(source("evidence/out/live2.json")).unwrap()).unwrap();
     crate::claim_of(&t, real_commitment()).unwrap()
 }
 
 /// The commitment of the real record that the second real link names.
 fn real_commitment() -> String {
-    let link: Value = serde_json::from_slice(&fs::read(source("evidence/ledger/00001.json")).unwrap()).unwrap();
+    let link: Value =
+        serde_json::from_slice(&fs::read(source("evidence/ledger/00001.json")).unwrap()).unwrap();
     link["transcript"].as_str().unwrap().to_string()
 }
 
 #[test]
 fn t_4_the_pinned_key_is_the_one_in_the_trusted_root_and_hashes_to_the_log_id() {
-    let root = fs::read_to_string(source("../core/hyalos/tests/fixtures/marketplace-r10/trusted-root.json")).unwrap();
-    assert_eq!(root.lines().nth(106).unwrap().split('"').nth(3), Some(REKOR_KEY));
-    assert_eq!(sha(&B64.decode(REKOR_KEY).unwrap()), "c0d23d6ad406973f9559f3ba2d1ca01f84147d8ffc5b8445c224f98b9591801d");
+    let root = fs::read_to_string(source(
+        "../core/hyalos/tests/fixtures/marketplace-r10/trusted-root.json",
+    ))
+    .unwrap();
+    assert_eq!(
+        root.lines().nth(106).unwrap().split('"').nth(3),
+        Some(REKOR_KEY)
+    );
+    assert_eq!(
+        sha(&B64.decode(REKOR_KEY).unwrap()),
+        "c0d23d6ad406973f9559f3ba2d1ca01f84147d8ffc5b8445c224f98b9591801d"
+    );
 }
 
 #[test]
 fn t_4_1_a_private_key_given_as_the_operator_key_is_refused() {
     let rig = Rig::new("t-4-1");
     let private = rig.key("someone");
-    let refused = Auditor::new(&rig.path("ledger"), &private, LogSource::Public, &crate::PlainFiles);
-    assert!(refused.err().is_some_and(|e| e.contains("not a readable public key")));
+    let refused = Auditor::new(
+        &rig.path("ledger"),
+        &private,
+        LogSource::Public,
+        &crate::PlainFiles,
+    );
+    assert!(
+        refused
+            .err()
+            .is_some_and(|e| e.contains("not a readable public key"))
+    );
 }
 
 #[test]
@@ -206,11 +306,18 @@ fn s_04_2_e2_an_altered_inclusion_proof_is_refused_naming_the_link() {
     let file = rig.root.join("ledger/00002.rekor.json");
     let mut reply: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
     let id = reply.as_object().unwrap().keys().next().unwrap().clone();
-    let hash = reply[&id]["verification"]["inclusionProof"]["hashes"][3].as_str().unwrap().to_string();
+    let hash = reply[&id]["verification"]["inclusionProof"]["hashes"][3]
+        .as_str()
+        .unwrap()
+        .to_string();
     let flipped = if hash.starts_with('0') { "1" } else { "0" };
-    reply[&id]["verification"]["inclusionProof"]["hashes"][3] = json!(format!("{flipped}{}", &hash[1..]));
+    reply[&id]["verification"]["inclusionProof"]["hashes"][3] =
+        json!(format!("{flipped}{}", &hash[1..]));
     fs::write(&file, serde_json::to_vec(&reply).unwrap()).unwrap();
-    assert_eq!(refused_real(&rig, &auditor), "link 2: the inclusion proof does not verify");
+    assert_eq!(
+        refused_real(&rig, &auditor),
+        "link 2: the inclusion proof does not verify"
+    );
 }
 
 #[test]
@@ -220,24 +327,49 @@ fn s_04_2_e3_a_link_signed_with_a_test_key_is_refused_naming_the_link() {
     let auditor = rig.real();
     let (log, stranger) = (rig.key("test-log"), rig.key("stranger"));
     let link = fs::read(rig.root.join("ledger/00001.json")).unwrap();
-    fs::write(rig.root.join("ledger/00001.rekor.json"), rig.entry(&log, &stranger, &link, 7)).unwrap();
-    assert_eq!(refused_real(&rig, &auditor), "link 1: the reply is not from the log's key");
+    fs::write(
+        rig.root.join("ledger/00001.rekor.json"),
+        rig.entry(&log, &stranger, &link, 7),
+    )
+    .unwrap();
+    assert_eq!(
+        refused_real(&rig, &auditor),
+        "link 1: the reply is not from the log's key"
+    );
 
     // Under a log that accepts it: only the operator's key can fail it.
     let rig = Rig::new("s-04-2-e3-log");
-    let (log, operator, stranger) = (rig.key("test-log"), rig.key("operator"), rig.key("stranger"));
+    let (log, operator, stranger) = (
+        rig.key("test-log"),
+        rig.key("operator"),
+        rig.key("stranger"),
+    );
     let commitment = rig.chain(&["intent", "result"], &log, &operator);
     let link = fs::read(rig.root.join("ledger/00001.json")).unwrap();
-    fs::write(rig.root.join("ledger/00001.rekor.json"), rig.entry(&log, &stranger, &link, 101)).unwrap();
-    assert_eq!(audit_of(&rig, &test_claim(&commitment)).err().unwrap(), "link 1: the link is not signed by the operator's key");
+    fs::write(
+        rig.root.join("ledger/00001.rekor.json"),
+        rig.entry(&log, &stranger, &link, 101),
+    )
+    .unwrap();
+    assert_eq!(
+        audit_of(&rig, &test_claim(&commitment)).err().unwrap(),
+        "link 1: the link is not signed by the operator's key"
+    );
 }
 
 #[test]
 fn t_4_a_reply_for_another_link_is_refused() {
     let rig = Rig::new("t-4-other");
     let auditor = rig.real();
-    fs::copy(rig.root.join("ledger/00000.rekor.json"), rig.root.join("ledger/00001.rekor.json")).unwrap();
-    assert_eq!(refused_real(&rig, &auditor), "link 1: the reply is for another link");
+    fs::copy(
+        rig.root.join("ledger/00000.rekor.json"),
+        rig.root.join("ledger/00001.rekor.json"),
+    )
+    .unwrap();
+    assert_eq!(
+        refused_real(&rig, &auditor),
+        "link 1: the reply is for another link"
+    );
 }
 
 #[test]
@@ -249,7 +381,10 @@ fn t_4_an_altered_signed_time_is_refused() {
     let id = reply.as_object().unwrap().keys().next().unwrap().clone();
     reply[&id]["integratedTime"] = json!(reply[&id]["integratedTime"].as_u64().unwrap() + 1);
     fs::write(&file, serde_json::to_vec(&reply).unwrap()).unwrap();
-    assert_eq!(refused_real(&rig, &auditor), "link 3: the signed time does not verify");
+    assert_eq!(
+        refused_real(&rig, &auditor),
+        "link 3: the signed time does not verify"
+    );
 }
 
 #[test]
@@ -258,13 +393,34 @@ fn s_04_5_e1_a_passing_report_lists_what_was_proven_then_the_five_limits() {
     let audited = rig.real().audit(&real_claim()).unwrap();
     let report = crate::audit_report(&audited, 8, false, None, 0, None);
     let lines: Vec<&str> = report.lines().collect();
-    let first_limit = lines.iter().position(|l| l.starts_with("not proven")).unwrap();
-    assert!(lines[..first_limit].iter().filter(|l| l.starts_with("proven: ")).count() == 5, "{report}");
-    assert!(lines[..first_limit].iter().any(|l| l.contains("all 8 answers were attested by the trusted notary for this run and position")), "{report}");
+    let first_limit = lines
+        .iter()
+        .position(|l| l.starts_with("not proven"))
+        .unwrap();
+    assert!(
+        lines[..first_limit]
+            .iter()
+            .filter(|l| l.starts_with("proven: "))
+            .count()
+            == 5,
+        "{report}"
+    );
+    assert!(
+        lines[..first_limit].iter().any(|l| l.contains(
+            "all 8 answers were attested by the trusted notary for this run and position"
+        )),
+        "{report}"
+    );
     assert!(!report.contains("not checked"), "{report}");
     let limits = &lines[first_limit..];
     assert_eq!(limits.len(), 5, "{report}");
-    for name in ["notary's independence", "model's name", "correctness", "every entry", "hidden bytes"] {
+    for name in [
+        "notary's independence",
+        "model's name",
+        "correctness",
+        "every entry",
+        "hidden bytes",
+    ] {
         assert!(limits.iter().any(|l| l.contains(name)), "{name}: {report}");
     }
 }
@@ -273,10 +429,19 @@ fn s_04_5_e1_a_passing_report_lists_what_was_proven_then_the_five_limits() {
 fn s_04_5_e3_the_report_counts_three_runs_of_one_task() {
     let rig = Rig::new("s-04-5-e3");
     let (log, operator) = (rig.key("test-log"), rig.key("operator"));
-    let commitment = rig.chain(&["intent", "result", "intent", "result", "intent", "result"], &log, &operator);
-    let audited = rig.auditor("operator.pub", "test-log.pub").audit(&test_claim(&commitment)).unwrap();
+    let commitment = rig.chain(
+        &["intent", "result", "intent", "result", "intent", "result"],
+        &log,
+        &operator,
+    );
+    let audited = rig
+        .auditor("operator.pub", "test-log.pub")
+        .audit(&test_claim(&commitment))
+        .unwrap();
     assert_eq!(audited.runs, 3);
-    assert!(crate::audit_report(&audited, 1, false, None, 0, None).contains("the task was run 3 times"));
+    assert!(
+        crate::audit_report(&audited, 1, false, None, 0, None).contains("the task was run 3 times")
+    );
 }
 
 #[test]
@@ -284,9 +449,16 @@ fn t_4_an_entry_the_chain_does_not_show_is_refused() {
     let rig = Rig::new("t-4-hidden");
     let (log, operator) = (rig.key("test-log"), rig.key("operator"));
     let commitment = rig.chain(&["intent", "result"], &log, &operator);
-    fs::write(rig.root.join("log/00099.rekor.json"), rig.entry(&log, &operator, b"a hidden link", 500)).unwrap();
+    fs::write(
+        rig.root.join("log/00099.rekor.json"),
+        rig.entry(&log, &operator, b"a hidden link", 500),
+    )
+    .unwrap();
     let refused = audit_of(&rig, &test_claim(&commitment)).err().unwrap();
-    assert!(refused.contains("the log lists 3 entries") && refused.contains("has 2"), "{refused}");
+    assert!(
+        refused.contains("the log lists 3 entries") && refused.contains("has 2"),
+        "{refused}"
+    );
 }
 
 #[test]
@@ -296,9 +468,18 @@ fn t_4_2_the_proofs_need_no_network_and_a_log_that_cannot_be_asked_refuses_the_a
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", closed.local_addr().unwrap());
     drop(closed);
-    let auditor = Auditor::new(&rig.path("ledger"), &rig.path("operator.pub"), LogSource::PublicAt(base), &crate::PlainFiles).unwrap();
+    let auditor = Auditor::new(
+        &rig.path("ledger"),
+        &rig.path("operator.pub"),
+        LogSource::PublicAt(base),
+        &crate::PlainFiles,
+    )
+    .unwrap();
     let refused = auditor.audit(&real_claim()).err().unwrap();
-    assert_eq!(refused, "the public log could not be asked which entries it holds under the operator's key");
+    assert_eq!(
+        refused,
+        "the public log could not be asked which entries it holds under the operator's key"
+    );
 }
 
 /// A test chain and its keys, for the forgeries below.
@@ -309,7 +490,10 @@ fn forged(label: &str) -> (Rig, String, String) {
 }
 
 fn audit_of(rig: &Rig, claim: &Claim) -> Result<Audited, String> {
-    let audited = rig.auditor("operator.pub", "test-log.pub").audit(claim).map_err(|failure| failure.message);
+    let audited = rig
+        .auditor("operator.pub", "test-log.pub")
+        .audit(claim)
+        .map_err(|failure| failure.message);
     if let Err(said) = &audited {
         keep_chain(rig, claim, said);
     }
@@ -319,14 +503,42 @@ fn audit_of(rig: &Rig, claim: &Claim) -> Result<Audited, String> {
 /// Keeps this refused chain as a case, over the real record file its result commits to.
 fn keep_chain(rig: &Rig, claim: &Claim, said: &str) {
     let links = read_links(&rig.root.join("ledger"));
-    let label = links.iter().filter_map(|link| serde_json::from_slice::<Value>(link).ok()).find(|link| link["transcript"] == claim.commitment.as_str()).and_then(|link| link["label"].as_str().map(str::to_string)).expect("a chain case names its record");
+    let label = links
+        .iter()
+        .filter_map(|link| serde_json::from_slice::<Value>(link).ok())
+        .find(|link| link["transcript"] == claim.commitment.as_str())
+        .and_then(|link| link["label"].as_str().map(str::to_string))
+        .expect("a chain case names its record");
     let record = rig.root.join("chain-record");
-    fs::write(&record, serde_json::to_vec(&chain_record(claim.version)).unwrap()).unwrap();
+    fs::write(
+        &record,
+        serde_json::to_vec(&chain_record(claim.version)).unwrap(),
+    )
+    .unwrap();
     fs::write(rig.root.join("chain-record.salt"), &label).unwrap();
     let guest = rig.root.join("chain-guest.wasm");
     fs::write(&guest, CHAIN_GUEST).unwrap();
-    let (ledger, log, log_key, operator) = (rig.root.join("ledger"), rig.root.join("log"), rig.root.join("test-log.pub"), rig.root.join("operator.pub"));
-    super::fixture_tests::keep(super::fixture_tests::Spec { record: &record, attest: false, links: Some(&ledger), log: Some(&log), log_key: Some(&log_key), operator: Some(&operator), notary: "021111111111111111111111111111111111111111111111111111111111111111", guest: (claim.version != 1).then_some(guest.as_path()), root: None, legacy: claim.version == 1 }, said);
+    let (ledger, log, log_key, operator) = (
+        rig.root.join("ledger"),
+        rig.root.join("log"),
+        rig.root.join("test-log.pub"),
+        rig.root.join("operator.pub"),
+    );
+    super::fixture_tests::keep(
+        super::fixture_tests::Spec {
+            record: &record,
+            attest: false,
+            links: Some(&ledger),
+            log: Some(&log),
+            log_key: Some(&log_key),
+            operator: Some(&operator),
+            notary: "021111111111111111111111111111111111111111111111111111111111111111",
+            guest: (claim.version != 1).then_some(guest.as_path()),
+            root: None,
+            legacy: claim.version == 1,
+        },
+        said,
+    );
 }
 
 /// The refusal of a changed copy of the real chain, kept as a case over the whole committed chain
@@ -346,8 +558,26 @@ fn refused_real(rig: &Rig, auditor: &Auditor) -> String {
         }
     }
     let notary = fs::read_to_string(source("evidence/out/two-machines-slice5/notary.pub")).unwrap();
-    let (record, log_key, operator) = (source("evidence/out/two-machines/record.json"), rig.root.join("log.pub"), rig.root.join("operator.pub"));
-    super::fixture_tests::keep(super::fixture_tests::Spec { record: &record, attest: false, links: Some(&links), log: Some(&log), log_key: Some(&log_key), operator: Some(&operator), notary: notary.trim(), guest: None, root: None, legacy: true }, &said);
+    let (record, log_key, operator) = (
+        source("evidence/out/two-machines/record.json"),
+        rig.root.join("log.pub"),
+        rig.root.join("operator.pub"),
+    );
+    super::fixture_tests::keep(
+        super::fixture_tests::Spec {
+            record: &record,
+            attest: false,
+            links: Some(&links),
+            log: Some(&log),
+            log_key: Some(&log_key),
+            operator: Some(&operator),
+            notary: notary.trim(),
+            guest: None,
+            root: None,
+            legacy: true,
+        },
+        &said,
+    );
     said
 }
 
@@ -355,9 +585,16 @@ fn refused_real(rig: &Rig, auditor: &Auditor) -> String {
 fn t_4_a_discarded_result_with_its_intent_respelled_is_refused() {
     let (rig, log, operator) = forged("t-4-respelled");
     let intent = rig.push(&log, &operator, intent_link());
-    rig.push(&log, &operator, result_link(&intent.to_uppercase(), "discarded"));
+    rig.push(
+        &log,
+        &operator,
+        result_link(&intent.to_uppercase(), "discarded"),
+    );
     rig.push(&log, &operator, result_link(&intent, "kept"));
-    assert_eq!(audit_of(&rig, &test_claim("kept")).err().unwrap(), "link 1: the result names no earlier intent");
+    assert_eq!(
+        audit_of(&rig, &test_claim("kept")).err().unwrap(),
+        "link 1: the result names no earlier intent"
+    );
 }
 
 #[test]
@@ -368,7 +605,10 @@ fn t_4_a_link_of_another_kind_is_refused() {
     hidden["kind"] = json!("Result");
     rig.push(&log, &operator, hidden);
     rig.push(&log, &operator, result_link(&intent, "kept"));
-    assert_eq!(audit_of(&rig, &test_claim("kept")).err().unwrap(), "link 1: it is neither an intent nor a result");
+    assert_eq!(
+        audit_of(&rig, &test_claim("kept")).err().unwrap(),
+        "link 1: it is neither an intent nor a result"
+    );
 }
 
 #[test]
@@ -378,7 +618,10 @@ fn t_4_a_second_result_for_one_run_is_refused_whichever_record_is_shown() {
     rig.push(&log, &operator, result_link(&intent, "first"));
     rig.push(&log, &operator, result_link(&intent, "second"));
     for shown in ["first", "second"] {
-        assert_eq!(audit_of(&rig, &test_claim(shown)).err().unwrap(), "link 2: a second result was logged for one run");
+        assert_eq!(
+            audit_of(&rig, &test_claim(shown)).err().unwrap(),
+            "link 2: a second result was logged for one run"
+        );
     }
 }
 
@@ -389,7 +632,10 @@ fn t_4_one_record_claimed_by_two_runs_is_refused() {
         let intent = rig.push(&log, &operator, intent_link());
         rig.push(&log, &operator, result_link(&intent, "same"));
     }
-    assert_eq!(audit_of(&rig, &test_claim("same")).err().unwrap(), "2 results claim this record");
+    assert_eq!(
+        audit_of(&rig, &test_claim("same")).err().unwrap(),
+        "2 results claim this record"
+    );
 }
 
 #[test]
@@ -398,7 +644,10 @@ fn t_4_a_result_naming_a_link_that_is_not_an_intent_is_refused() {
     let intent = rig.push(&log, &operator, intent_link());
     let result = rig.push(&log, &operator, result_link(&intent, "first"));
     rig.push(&log, &operator, result_link(&result, "second"));
-    assert_eq!(audit_of(&rig, &test_claim("second")).err().unwrap(), "link 2: the result names no earlier intent");
+    assert_eq!(
+        audit_of(&rig, &test_claim("second")).err().unwrap(),
+        "link 2: the result names no earlier intent"
+    );
 }
 
 #[test]
@@ -409,7 +658,10 @@ fn t_4_an_intent_labelled_with_another_task_or_guest_is_refused() {
         relabelled[field] = json!("something else");
         let intent = rig.push(&log, &operator, relabelled);
         rig.push(&log, &operator, result_link(&intent, "kept"));
-        assert_eq!(audit_of(&rig, &test_claim("kept")).err().unwrap(), "link 0: the intent names another task than this record's");
+        assert_eq!(
+            audit_of(&rig, &test_claim("kept")).err().unwrap(),
+            "link 0: the intent names another task than this record's"
+        );
     }
 }
 
@@ -425,7 +677,11 @@ fn t_4_a_run_relabelled_as_another_task_still_counts_in_the_total() {
     let audited = audit_of(&rig, &test_claim("kept")).unwrap();
     assert_eq!((audited.runs, audited.all_runs), (1, 2));
     let report = crate::audit_report(&audited, 1, false, None, 0, None);
-    assert!(report.contains("as the intent links name the task") && report.contains("the chain holds 2 run(s) of any task"), "{report}");
+    assert!(
+        report.contains("as the intent links name the task")
+            && report.contains("the chain holds 2 run(s) of any task"),
+        "{report}"
+    );
 }
 
 #[test]
@@ -435,12 +691,16 @@ fn t_4_a_record_whose_result_link_says_refused_is_refused() {
     let mut result = result_link(&intent, "kept");
     result["outcome"] = json!("refused:ModelRefused");
     rig.push(&log, &operator, result);
-    assert_eq!(audit_of(&rig, &test_claim("kept")).err().unwrap(), "this record's result link says the run was refused");
+    assert_eq!(
+        audit_of(&rig, &test_claim("kept")).err().unwrap(),
+        "this record's result link says the run was refused"
+    );
 }
 
 #[test]
 fn t_4_a_field_the_commitment_does_not_cover_is_refused() {
-    let mut record: Value = serde_json::from_slice(&fs::read(source("evidence/out/live2.json")).unwrap()).unwrap();
+    let mut record: Value =
+        serde_json::from_slice(&fs::read(source("evidence/out/live2.json")).unwrap()).unwrap();
     record["reviewed_by"] = json!("someone");
     assert!(serde_json::from_value::<crate::Transcript>(record.clone()).is_err());
     super::fixture_tests::parse_refused(&serde_json::to_vec(&record).unwrap());
@@ -470,7 +730,10 @@ fn record_s_01_4_e1_a_version_2_record_whose_intent_says_1_is_refused() {
     let mut result = result_link(&intent, "kept");
     result["transcript"] = json!(commit("kept", 2));
     rig.push(&log, &operator, result);
-    assert_eq!(audit_of(&rig, &claim_v2("kept")).err().unwrap(), "link 0: the run's links are not this record's version");
+    assert_eq!(
+        audit_of(&rig, &claim_v2("kept")).err().unwrap(),
+        "link 0: the run's links are not this record's version"
+    );
 }
 
 #[test]
@@ -480,7 +743,10 @@ fn record_s_01_4_e2_a_version_2_record_whose_result_says_1_is_refused() {
     let mut result = result_link(&intent, "kept");
     result["transcript"] = json!(commit("kept", 2));
     rig.push(&log, &operator, result);
-    assert_eq!(audit_of(&rig, &claim_v2("kept")).err().unwrap(), "link 1: its version is not its intent's");
+    assert_eq!(
+        audit_of(&rig, &claim_v2("kept")).err().unwrap(),
+        "link 1: its version is not its intent's"
+    );
 }
 
 #[test]
@@ -501,7 +767,10 @@ fn record_s_01_8_e1_another_link_of_an_unknown_version_is_refused() {
     let mut unknown = intent_v2(&rig);
     unknown["v"] = json!(99);
     rig.push(&log, &operator, unknown);
-    assert_eq!(audit_of(&rig, &claim_v2("kept")).err().unwrap(), "link 2: its version is not known");
+    assert_eq!(
+        audit_of(&rig, &claim_v2("kept")).err().unwrap(),
+        "link 2: its version is not known"
+    );
 }
 
 #[test]
@@ -511,7 +780,10 @@ fn record_s_01_8_e2_a_result_differing_from_its_intent_is_refused_for_any_record
     rig.push(&log, &operator, result_v2(&intent, "kept"));
     let other = rig.push(&log, &operator, intent_v2(&rig));
     rig.push(&log, &operator, result_link(&other, "other"));
-    assert_eq!(audit_of(&rig, &claim_v2("kept")).err().unwrap(), "link 3: its version is not its intent's");
+    assert_eq!(
+        audit_of(&rig, &claim_v2("kept")).err().unwrap(),
+        "link 3: its version is not its intent's"
+    );
 }
 
 #[test]
@@ -527,7 +799,10 @@ fn record_s_05_9_e1_an_intent_naming_another_key_is_refused() {
     other["operator"] = json!("ab".repeat(32));
     let intent = rig.push(&log, &operator, other);
     rig.push(&log, &operator, result_v2(&intent, "kept"));
-    assert_eq!(audit_of(&rig, &claim_v2("kept")).err().unwrap(), "link 0: the intent names another operator key");
+    assert_eq!(
+        audit_of(&rig, &claim_v2("kept")).err().unwrap(),
+        "link 0: the intent names another operator key"
+    );
 }
 
 #[test]
@@ -543,9 +818,22 @@ fn record_s_05_10_e1_one_run_is_counted_under_this_log_key_only() {
     let (rig, log, operator) = forged("r-05-10-e1");
     let intent = rig.push(&log, &operator, intent_v2(&rig));
     rig.push(&log, &operator, result_v2(&intent, "kept"));
-    let report = crate::audit_report(&audit_of(&rig, &claim_v2("kept")).unwrap(), 1, false, None, 0, None);
-    assert!(report.contains("the task was run 1 time under this log key only"), "{report}");
-    assert!(report.contains("the chain holds 1 run(s) of any task under this log key only"), "{report}");
+    let report = crate::audit_report(
+        &audit_of(&rig, &claim_v2("kept")).unwrap(),
+        1,
+        false,
+        None,
+        0,
+        None,
+    );
+    assert!(
+        report.contains("the task was run 1 time under this log key only"),
+        "{report}"
+    );
+    assert!(
+        report.contains("the chain holds 1 run(s) of any task under this log key only"),
+        "{report}"
+    );
 }
 
 #[test]
@@ -555,13 +843,30 @@ fn record_s_05_10_e2_three_runs_are_counted_under_this_log_key_only() {
         let intent = rig.push(&log, &operator, intent_v2(&rig));
         rig.push(&log, &operator, result_v2(&intent, &format!("run-{run}")));
     }
-    let report = crate::audit_report(&audit_of(&rig, &claim_v2("run-0")).unwrap(), 1, false, None, 0, None);
-    assert!(report.contains("the task was run 3 times under this log key only"), "{report}");
-    assert!(report.contains("the chain holds 3 run(s) of any task under this log key only"), "{report}");
+    let report = crate::audit_report(
+        &audit_of(&rig, &claim_v2("run-0")).unwrap(),
+        1,
+        false,
+        None,
+        0,
+        None,
+    );
+    assert!(
+        report.contains("the task was run 3 times under this log key only"),
+        "{report}"
+    );
+    assert!(
+        report.contains("the chain holds 3 run(s) of any task under this log key only"),
+        "{report}"
+    );
 }
 
 fn identity(inputs: &[&[u8]]) -> String {
-    crate::task_v2(&sha(b"a guest"), &inputs.iter().map(|i| i.to_vec()).collect::<Vec<_>>()).unwrap()
+    crate::task_v2(
+        &sha(b"a guest"),
+        &inputs.iter().map(|i| i.to_vec()).collect::<Vec<_>>(),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -581,7 +886,10 @@ fn record_s_02_1_e3_the_same_list_gives_the_same_identity() {
 
 #[test]
 fn record_s_02_2_e1_the_two_versions_of_one_task_differ() {
-    assert_ne!(identity(&[b"ab"]), crate::task_of(&sha(b"a guest"), &[b"ab".to_vec()]));
+    assert_ne!(
+        identity(&[b"ab"]),
+        crate::task_of(&sha(b"a guest"), &[b"ab".to_vec()])
+    );
 }
 
 #[test]
@@ -601,28 +909,88 @@ fn canary_3_3_a_version_3_intent_naming_another_key_is_refused() {
     result["v"] = json!(3);
     result["transcript"] = json!(commit("kept", 3));
     rig.push(&log, &operator, result);
-    assert_eq!(audit_of(&rig, &claim_for(3, "kept")).err().unwrap(), "link 0: the intent names another operator key");
+    assert_eq!(
+        audit_of(&rig, &claim_for(3, "kept")).err().unwrap(),
+        "link 0: the intent names another operator key"
+    );
 }
 
 /// The refusing tests whose audit calls `local_4_2_generate` keeps as fixtures.
 pub(super) const CORPUS: &[(&str, fn())] = &[
-    ("s_04_2_e2_an_altered_inclusion_proof_is_refused_naming_the_link", s_04_2_e2_an_altered_inclusion_proof_is_refused_naming_the_link),
-    ("s_04_2_e3_a_link_signed_with_a_test_key_is_refused_naming_the_link", s_04_2_e3_a_link_signed_with_a_test_key_is_refused_naming_the_link),
-    ("t_4_a_reply_for_another_link_is_refused", t_4_a_reply_for_another_link_is_refused),
-    ("t_4_an_altered_signed_time_is_refused", t_4_an_altered_signed_time_is_refused),
-    ("t_4_an_entry_the_chain_does_not_show_is_refused", t_4_an_entry_the_chain_does_not_show_is_refused),
-    ("t_4_a_discarded_result_with_its_intent_respelled_is_refused", t_4_a_discarded_result_with_its_intent_respelled_is_refused),
-    ("t_4_a_link_of_another_kind_is_refused", t_4_a_link_of_another_kind_is_refused),
-    ("t_4_a_second_result_for_one_run_is_refused_whichever_record_is_shown", t_4_a_second_result_for_one_run_is_refused_whichever_record_is_shown),
-    ("t_4_one_record_claimed_by_two_runs_is_refused", t_4_one_record_claimed_by_two_runs_is_refused),
-    ("t_4_a_result_naming_a_link_that_is_not_an_intent_is_refused", t_4_a_result_naming_a_link_that_is_not_an_intent_is_refused),
-    ("t_4_an_intent_labelled_with_another_task_or_guest_is_refused", t_4_an_intent_labelled_with_another_task_or_guest_is_refused),
-    ("t_4_a_record_whose_result_link_says_refused_is_refused", t_4_a_record_whose_result_link_says_refused_is_refused),
-    ("t_4_a_field_the_commitment_does_not_cover_is_refused", t_4_a_field_the_commitment_does_not_cover_is_refused),
-    ("record_s_01_4_e1_a_version_2_record_whose_intent_says_1_is_refused", record_s_01_4_e1_a_version_2_record_whose_intent_says_1_is_refused),
-    ("record_s_01_4_e2_a_version_2_record_whose_result_says_1_is_refused", record_s_01_4_e2_a_version_2_record_whose_result_says_1_is_refused),
-    ("record_s_01_8_e1_another_link_of_an_unknown_version_is_refused", record_s_01_8_e1_another_link_of_an_unknown_version_is_refused),
-    ("record_s_01_8_e2_a_result_differing_from_its_intent_is_refused_for_any_record", record_s_01_8_e2_a_result_differing_from_its_intent_is_refused_for_any_record),
-    ("record_s_05_9_e1_an_intent_naming_another_key_is_refused", record_s_05_9_e1_an_intent_naming_another_key_is_refused),
-    ("canary_3_3_a_version_3_intent_naming_another_key_is_refused", canary_3_3_a_version_3_intent_naming_another_key_is_refused),
+    (
+        "s_04_2_e2_an_altered_inclusion_proof_is_refused_naming_the_link",
+        s_04_2_e2_an_altered_inclusion_proof_is_refused_naming_the_link,
+    ),
+    (
+        "s_04_2_e3_a_link_signed_with_a_test_key_is_refused_naming_the_link",
+        s_04_2_e3_a_link_signed_with_a_test_key_is_refused_naming_the_link,
+    ),
+    (
+        "t_4_a_reply_for_another_link_is_refused",
+        t_4_a_reply_for_another_link_is_refused,
+    ),
+    (
+        "t_4_an_altered_signed_time_is_refused",
+        t_4_an_altered_signed_time_is_refused,
+    ),
+    (
+        "t_4_an_entry_the_chain_does_not_show_is_refused",
+        t_4_an_entry_the_chain_does_not_show_is_refused,
+    ),
+    (
+        "t_4_a_discarded_result_with_its_intent_respelled_is_refused",
+        t_4_a_discarded_result_with_its_intent_respelled_is_refused,
+    ),
+    (
+        "t_4_a_link_of_another_kind_is_refused",
+        t_4_a_link_of_another_kind_is_refused,
+    ),
+    (
+        "t_4_a_second_result_for_one_run_is_refused_whichever_record_is_shown",
+        t_4_a_second_result_for_one_run_is_refused_whichever_record_is_shown,
+    ),
+    (
+        "t_4_one_record_claimed_by_two_runs_is_refused",
+        t_4_one_record_claimed_by_two_runs_is_refused,
+    ),
+    (
+        "t_4_a_result_naming_a_link_that_is_not_an_intent_is_refused",
+        t_4_a_result_naming_a_link_that_is_not_an_intent_is_refused,
+    ),
+    (
+        "t_4_an_intent_labelled_with_another_task_or_guest_is_refused",
+        t_4_an_intent_labelled_with_another_task_or_guest_is_refused,
+    ),
+    (
+        "t_4_a_record_whose_result_link_says_refused_is_refused",
+        t_4_a_record_whose_result_link_says_refused_is_refused,
+    ),
+    (
+        "t_4_a_field_the_commitment_does_not_cover_is_refused",
+        t_4_a_field_the_commitment_does_not_cover_is_refused,
+    ),
+    (
+        "record_s_01_4_e1_a_version_2_record_whose_intent_says_1_is_refused",
+        record_s_01_4_e1_a_version_2_record_whose_intent_says_1_is_refused,
+    ),
+    (
+        "record_s_01_4_e2_a_version_2_record_whose_result_says_1_is_refused",
+        record_s_01_4_e2_a_version_2_record_whose_result_says_1_is_refused,
+    ),
+    (
+        "record_s_01_8_e1_another_link_of_an_unknown_version_is_refused",
+        record_s_01_8_e1_another_link_of_an_unknown_version_is_refused,
+    ),
+    (
+        "record_s_01_8_e2_a_result_differing_from_its_intent_is_refused_for_any_record",
+        record_s_01_8_e2_a_result_differing_from_its_intent_is_refused_for_any_record,
+    ),
+    (
+        "record_s_05_9_e1_an_intent_naming_another_key_is_refused",
+        record_s_05_9_e1_an_intent_naming_another_key_is_refused,
+    ),
+    (
+        "canary_3_3_a_version_3_intent_naming_another_key_is_refused",
+        canary_3_3_a_version_3_intent_naming_another_key_is_refused,
+    ),
 ];

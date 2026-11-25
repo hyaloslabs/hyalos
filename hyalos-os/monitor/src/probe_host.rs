@@ -40,14 +40,23 @@ pub(crate) type Found = Vec<(&'static str, bool)>;
 
 /// Runs the controls and then each instruction through `run`, which boots one machine per call.
 /// Anything but a clean ending, and any control that ends the wrong way, is a cause, not a verdict.
-pub(crate) fn measure(run: &mut dyn FnMut(&[u8]) -> Result<Ending, &'static str>) -> Result<Found, String> {
+pub(crate) fn measure(
+    run: &mut dyn FnMut(&[u8]) -> Result<Ending, &'static str>,
+) -> Result<Found, String> {
     if run(&sequence(NOP))? != Ending::Port {
-        return Err("the control (a nop) did not reach the monitor, so nothing can be shown blocked".into());
+        return Err(
+            "the control (a nop) did not reach the monitor, so nothing can be shown blocked".into(),
+        );
     }
     if run(&sequence(UD2))? != Ending::Fault {
-        return Err("the fault control (ud2) reached the monitor, so a fault cannot be seen".into());
+        return Err(
+            "the fault control (ud2) reached the monitor, so a fault cannot be seen".into(),
+        );
     }
-    INSTRUCTIONS.iter().map(|&(name, code)| Ok((name, run(&sequence(code))? == Ending::Fault))).collect()
+    INSTRUCTIONS
+        .iter()
+        .map(|&(name, code)| Ok((name, run(&sequence(code))? == Ending::Fault)))
+        .collect()
 }
 
 /// Measures this host through the KVM device at `device`.
@@ -66,7 +75,12 @@ pub(crate) fn on_host(device: &CStr) -> Result<Found, String> {
 pub(crate) fn report(found: &Result<Found, String>) -> (String, Option<String>, u8) {
     match found {
         Ok(found) => {
-            let lines: String = found.iter().map(|&(name, blocked)| format!("{name} {}\n", if blocked { "blocked" } else { "reachable" })).collect();
+            let lines: String = found
+                .iter()
+                .map(|&(name, blocked)| {
+                    format!("{name} {}\n", if blocked { "blocked" } else { "reachable" })
+                })
+                .collect();
             let reachable = found.iter().any(|&(_, blocked)| !blocked);
             (lines, None, u8::from(reachable))
         }

@@ -16,7 +16,13 @@
 //! every enrolled first message with `release`.
 
 use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
-use std::{io::Read, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
+use std::{
+    io::Read,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::{
     TlsAcceptor,
@@ -47,15 +53,22 @@ fn controls(mut args: impl Iterator<Item = String>) -> Result<Controls, Failure>
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--present" => controls.present = Some(args.next().ok_or("--present needs a name")?),
-            "--reply" => controls.chunked = match args.next().as_deref() {
-                Some("plain") => false,
-                Some("chunked") => true,
-                _ => return Err("--reply is plain or chunked".into()),
-            },
-            "--status" => controls.status = Some(args.next().ok_or("--status needs a code")?.parse()?),
+            "--reply" => {
+                controls.chunked = match args.next().as_deref() {
+                    Some("plain") => false,
+                    Some("chunked") => true,
+                    _ => return Err("--reply is plain or chunked".into()),
+                }
+            }
+            "--status" => {
+                controls.status = Some(args.next().ok_or("--status needs a code")?.parse()?)
+            }
             "--statuses" => {
                 let list = args.next().ok_or("--statuses needs a list")?;
-                let codes = list.split(',').map(str::parse).collect::<Result<Vec<u16>, _>>()?;
+                let codes = list
+                    .split(',')
+                    .map(str::parse)
+                    .collect::<Result<Vec<u16>, _>>()?;
                 controls.statuses = Some(Arc::new((codes, AtomicUsize::new(0))));
             }
             "--quiet" => controls.quiet = true,
@@ -70,23 +83,36 @@ fn acceptor(root_file: &str, name: &str) -> Result<TlsAcceptor, Failure> {
     let root_key = KeyPair::generate()?;
     let mut root = CertificateParams::new(Vec::<String>::new())?;
     root.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    root.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::DigitalSignature];
-    root.distinguished_name.push(DnType::CommonName, "hyalos stand-in test root");
+    root.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
+    root.distinguished_name
+        .push(DnType::CommonName, "hyalos stand-in test root");
     let root = root.self_signed(&root_key)?;
     let key = KeyPair::generate()?;
     let mut leaf = CertificateParams::new(vec![name.to_string()])?;
     leaf.distinguished_name.push(DnType::CommonName, name);
     let leaf = leaf.signed_by(&key, &root, &root_key)?;
     std::fs::write(root_file, root.der())?;
-    let config = ServerConfig::builder_with_provider(Arc::new(tokio_rustls::rustls::crypto::ring::default_provider()))
-        .with_protocol_versions(&[&tokio_rustls::rustls::version::TLS12])?
-        .with_no_client_auth()
-        .with_single_cert(vec![CertificateDer::from(leaf.der().to_vec())], PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())))?;
+    let config = ServerConfig::builder_with_provider(Arc::new(
+        tokio_rustls::rustls::crypto::ring::default_provider(),
+    ))
+    .with_protocol_versions(&[&tokio_rustls::rustls::version::TLS12])?
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![CertificateDer::from(leaf.der().to_vec())],
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
+    )?;
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
 /// Reads one request to the end of its body, then sends the fixed reply and closes.
-async fn serve(acceptor: TlsAcceptor, socket: tokio::net::TcpStream, controls: Controls) -> Result<(), Failure> {
+async fn serve(
+    acceptor: TlsAcceptor,
+    socket: tokio::net::TcpStream,
+    controls: Controls,
+) -> Result<(), Failure> {
     let mut tls = acceptor.accept(socket).await?;
     let mut request = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -96,10 +122,15 @@ async fn serve(acceptor: TlsAcceptor, socket: tokio::net::TcpStream, controls: C
             return Err("the request ended early".into());
         }
         request.extend_from_slice(&chunk[..read]);
-        let Some(head) = request.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+        let Some(head) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
+            continue;
+        };
         let length = String::from_utf8_lossy(&request[..head])
             .lines()
-            .find_map(|line| line.strip_prefix("content-length: ").and_then(|n| n.trim().parse::<usize>().ok()))
+            .find_map(|line| {
+                line.strip_prefix("content-length: ")
+                    .and_then(|n| n.trim().parse::<usize>().ok())
+            })
             .unwrap_or(0);
         if request.len() >= head + 4 + length {
             break;
@@ -112,15 +143,30 @@ async fn serve(acceptor: TlsAcceptor, socket: tokio::net::TcpStream, controls: C
         return Ok(());
     }
     let code = match &controls.statuses {
-        Some(listed) => Some(listed.0.get(listed.1.fetch_add(1, Ordering::SeqCst)).copied().unwrap_or(500)),
+        Some(listed) => Some(
+            listed
+                .0
+                .get(listed.1.fetch_add(1, Ordering::SeqCst))
+                .copied()
+                .unwrap_or(500),
+        ),
         None => controls.status,
     };
-    let status = code.filter(|code| *code != 200).map_or("200 OK".to_string(), |code| format!("{code} Refused"));
+    let status = code
+        .filter(|code| *code != 200)
+        .map_or("200 OK".to_string(), |code| format!("{code} Refused"));
     let reply = if controls.chunked {
         let (first, rest) = REPLY.split_at(REPLY.len() / 2);
-        format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n{:x}\r\n{first}\r\n{:x}\r\n{rest}\r\n0\r\n\r\n", first.len(), rest.len())
+        format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n{:x}\r\n{first}\r\n{:x}\r\n{rest}\r\n0\r\n\r\n",
+            first.len(),
+            rest.len()
+        )
     } else {
-        format!("HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{REPLY}", REPLY.len())
+        format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{REPLY}",
+            REPLY.len()
+        )
     };
     tls.write_all(reply.as_bytes()).await?;
     tls.shutdown().await?;
@@ -128,7 +174,10 @@ async fn serve(acceptor: TlsAcceptor, socket: tokio::net::TcpStream, controls: C
 }
 
 async fn other_release(directory: &str, operator: &str) -> Result<(), Failure> {
-    let me = attest::link::Identity::make_or_load(&std::path::Path::new(directory).join("transport.key")).map_err(|_| "no transport key")?;
+    let me = attest::link::Identity::make_or_load(
+        &std::path::Path::new(directory).join("transport.key"),
+    )
+    .map_err(|_| "no transport key")?;
     let acceptor = attest::link::acceptor(&me, operator).map_err(|_| "cannot set up the link")?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     println!("transport {}", me.public);
@@ -138,7 +187,9 @@ async fn other_release(directory: &str, operator: &str) -> Result<(), Failure> {
         let (socket, _) = listener.accept().await?;
         let acceptor = acceptor.clone();
         tokio::spawn(async move {
-            let Ok(mut tls) = acceptor.accept(socket).await else { return };
+            let Ok(mut tls) = acceptor.accept(socket).await else {
+                return;
+            };
             if attest::link::read_line(&mut tls, 256).await.is_ok() {
                 let _ = attest::link::write_line(&mut tls, "release").await;
                 let _ = tls.shutdown().await;

@@ -28,7 +28,8 @@ pub struct Scratch(pub PathBuf);
 
 impl Scratch {
     pub fn new(label: &str) -> Self {
-        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{label}-{}", std::process::id()));
+        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         Self(dir)
@@ -60,11 +61,28 @@ pub struct Standin {
 /// Starts a stand-in provider for `NAME`, with the given controls.
 pub fn standin(dir: &Path, controls: &[&str]) -> Standin {
     let root = dir.join("root.der");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_standin")).arg(&root).arg(NAME).args(controls).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_standin"))
+        .arg(&root)
+        .arg(NAME)
+        .args(controls)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
     let mut line = String::new();
-    BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
-    let address = line.trim().strip_prefix("listening ").expect("the stand-in did not start").to_string();
-    Standin { root, address, _child: Running(child) }
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let address = line
+        .trim()
+        .strip_prefix("listening ")
+        .expect("the stand-in did not start")
+        .to_string();
+    Standin {
+        root,
+        address,
+        _child: Running(child),
+    }
 }
 
 pub struct Notary {
@@ -80,7 +98,11 @@ pub struct Notary {
 
 impl Notary {
     pub fn lines(&self) -> Vec<String> {
-        std::fs::read_to_string(self.dir.join("sessions.log")).unwrap_or_default().lines().map(str::to_string).collect()
+        std::fs::read_to_string(self.dir.join("sessions.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
     }
 
     /// Waits for the session line that follows the `seen` already there.
@@ -90,7 +112,10 @@ impl Notary {
             if let Some(line) = self.lines().get(seen) {
                 return line.clone();
             }
-            assert!(started.elapsed() < Duration::from_secs(60), "no session line was written");
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "no session line was written"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -99,12 +124,20 @@ impl Notary {
 /// Starts a notary, or returns what it said when it refused to start.
 pub fn try_notary(dir: &Path, operator: &str, root: &Path) -> Result<Notary, String> {
     canary_pass(dir);
-    start_notary(Command::new(env!("CARGO_BIN_EXE_notary")), dir, operator, root)
+    start_notary(
+        Command::new(env!("CARGO_BIN_EXE_notary")),
+        dir,
+        operator,
+        root,
+    )
 }
 
 /// Writes the customer's provider check state, as `canary` would.
 pub fn write_canary(dir: &Path, word: &str, checked: u64) {
-    write_canary_text(dir, &format!("hyalos.canary/1\nstate {word}\nchecked {checked}\nend\n"));
+    write_canary_text(
+        dir,
+        &format!("hyalos.canary/1\nstate {word}\nchecked {checked}\nend\n"),
+    );
 }
 
 pub fn write_canary_text(dir: &Path, text: &str) {
@@ -116,7 +149,10 @@ pub fn write_canary_text(dir: &Path, text: &str) {
 }
 
 pub fn unix_now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 /// A fresh pass, unless the directory already holds a state. A path that cannot be a directory is
@@ -130,9 +166,23 @@ pub fn canary_pass(dir: &Path) {
 }
 
 /// Starts the given notary program on a directory as it stands.
-pub fn start_notary(mut program: Command, dir: &Path, operator: &str, root: &Path) -> Result<Notary, String> {
+pub fn start_notary(
+    mut program: Command,
+    dir: &Path,
+    operator: &str,
+    root: &Path,
+) -> Result<Notary, String> {
     let mut child = program
-        .args(["--listen", "127.0.0.1:0", "--approved-server", NAME, "--stop-on-stdin-close", "--operator-transport-public", operator, "--dir"])
+        .args([
+            "--listen",
+            "127.0.0.1:0",
+            "--approved-server",
+            NAME,
+            "--stop-on-stdin-close",
+            "--operator-transport-public",
+            operator,
+            "--dir",
+        ])
         .arg(dir)
         .arg("--root")
         .arg(root)
@@ -146,16 +196,28 @@ pub fn start_notary(mut program: Command, dir: &Path, operator: &str, root: &Pat
     let mut field = |name: &str| {
         let mut line = String::new();
         printed.read_line(&mut line).unwrap();
-        line.trim().strip_prefix(name).map(|value| value.trim().to_string())
+        line.trim()
+            .strip_prefix(name)
+            .map(|value| value.trim().to_string())
     };
-    let (Some(signing), Some(transport), Some(address)) = (field("signing"), field("transport"), field("listening")) else {
+    let (Some(signing), Some(transport), Some(address)) =
+        (field("signing"), field("transport"), field("listening"))
+    else {
         drop(stdin);
         let mut said = String::new();
         std::io::Read::read_to_string(child.stderr.as_mut().unwrap(), &mut said).unwrap();
         let _ = child.wait();
         return Err(said);
     };
-    Ok(Notary { dir: dir.to_path_buf(), signing, transport, address, authorisation: String::new(), _stdin: stdin, _child: Running(child) })
+    Ok(Notary {
+        dir: dir.to_path_buf(),
+        signing,
+        transport,
+        address,
+        authorisation: String::new(),
+        _stdin: stdin,
+        _child: Running(child),
+    })
 }
 
 pub fn notary(dir: &Path, operator: &str, root: &Path) -> Notary {
@@ -165,9 +227,17 @@ pub fn notary(dir: &Path, operator: &str, root: &Path) -> Notary {
 }
 
 /// The test-only notary, from the release build the slice's Verify makes first, with a passing state.
-pub fn forging_notary(dir: &Path, operator: &str, root: &Path, settings: &[(&str, &str)]) -> Notary {
+pub fn forging_notary(
+    dir: &Path,
+    operator: &str,
+    root: &Path,
+    settings: &[(&str, &str)],
+) -> Notary {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/release/forging-notary");
-    assert!(path.exists(), "forging-notary is not built: cargo build --release --manifest-path hyalos-os/Cargo.toml -p attest --features forge-ticket --bin forging-notary");
+    assert!(
+        path.exists(),
+        "forging-notary is not built: cargo build --release --manifest-path hyalos-os/Cargo.toml -p attest --features forge-ticket --bin forging-notary"
+    );
     canary_pass(dir);
     let mut program = Command::new(path);
     program.envs(settings.iter().copied());
@@ -179,12 +249,23 @@ pub fn forging_notary(dir: &Path, operator: &str, root: &Path, settings: &[(&str
 /// The directory's one authorisation, made with a generous budget on first use.
 fn authorised(dir: &Path) -> String {
     if let Ok(mut held) = std::fs::read_dir(dir.join("authorisations")) {
-        if let Some(entry) = held.find(|entry| entry.as_ref().is_ok_and(|e| e.file_name().len() == 64)) {
+        if let Some(entry) =
+            held.find(|entry| entry.as_ref().is_ok_and(|e| e.file_name().len() == 64))
+        {
             return entry.unwrap().file_name().into_string().unwrap();
         }
     }
-    let made = Command::new(env!("CARGO_BIN_EXE_notary")).args(["authorize", "--dir"]).arg(dir).args(["--task", TASK, "--attempts", "100"]).output().unwrap();
-    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let made = Command::new(env!("CARGO_BIN_EXE_notary"))
+        .args(["authorize", "--dir"])
+        .arg(dir)
+        .args(["--task", TASK, "--attempts", "100"])
+        .output()
+        .unwrap();
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
     String::from_utf8(made.stdout).unwrap().trim().to_string()
 }
 
@@ -198,15 +279,39 @@ pub struct Operator {
 pub fn operator(home: &Path) -> Operator {
     let config = home.join(".config/hyalos-spike");
     std::fs::create_dir_all(&config).unwrap();
-    std::fs::write(config.join("anthropic.key"), format!("{}\n", "x".repeat(106))).unwrap();
+    std::fs::write(
+        config.join("anthropic.key"),
+        format!("{}\n", "x".repeat(106)),
+    )
+    .unwrap();
     let key = home.join("operator-transport.key");
-    let made = Command::new(env!("CARGO_BIN_EXE_attest")).arg("link-key").arg(&key).output().unwrap();
-    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
-    Operator { home: home.to_path_buf(), key, public: String::from_utf8(made.stdout).unwrap().trim().to_string() }
+    let made = Command::new(env!("CARGO_BIN_EXE_attest"))
+        .arg("link-key")
+        .arg(&key)
+        .output()
+        .unwrap();
+    assert!(
+        made.status.success(),
+        "{}",
+        String::from_utf8_lossy(&made.stderr)
+    );
+    Operator {
+        home: home.to_path_buf(),
+        key,
+        public: String::from_utf8(made.stdout).unwrap().trim().to_string(),
+    }
 }
 
 /// The operator's tool, with test trust settings and the notary's address and public keys.
-pub fn tool(who: &Operator, root: &Path, provider: &str, address: &str, transport: &str, signing: &str, authorisation: &str) -> Command {
+pub fn tool(
+    who: &Operator,
+    root: &Path,
+    provider: &str,
+    address: &str,
+    transport: &str,
+    signing: &str,
+    authorisation: &str,
+) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_attest"));
     command
         .env("HOME", &who.home)
@@ -232,7 +337,12 @@ pub fn run_ask(mut command: Command, file: &Path, intent: &str, position: u64) -
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(b"The build fails on a clean checkout").unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"The build fails on a clean checkout")
+        .unwrap();
     let started = Instant::now();
     while child.try_wait().unwrap().is_none() {
         if started.elapsed() > Duration::from_secs(120) {
@@ -251,11 +361,30 @@ pub fn word(output: &Output) -> String {
 }
 
 pub fn said(output: &Output) -> serde_json::Value {
-    assert!(output.status.success(), "ask failed: {} {}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "ask failed: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-pub fn verify(who: &Operator, root: &Path, file: &Path, signing: &str) -> Result<serde_json::Value, String> {
-    let output = tool(who, root, "127.0.0.1:9", "127.0.0.1:9", "00", signing, "").arg("verify").arg(file).arg(signing).output().unwrap();
-    if output.status.success() { Ok(serde_json::from_slice(&output.stdout).unwrap()) } else { Err(String::from_utf8_lossy(&output.stderr).into_owned()) }
+pub fn verify(
+    who: &Operator,
+    root: &Path,
+    file: &Path,
+    signing: &str,
+) -> Result<serde_json::Value, String> {
+    let output = tool(who, root, "127.0.0.1:9", "127.0.0.1:9", "00", signing, "")
+        .arg("verify")
+        .arg(file)
+        .arg(signing)
+        .output()
+        .unwrap();
+    if output.status.success() {
+        Ok(serde_json::from_slice(&output.stdout).unwrap())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).into_owned())
+    }
 }
