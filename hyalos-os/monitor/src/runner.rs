@@ -4,9 +4,11 @@
 //! Every KVM run happens in a separate process, the machine runner: this program again, started
 //! with the hidden `machine-runner` command, an empty environment, `/` as its directory, standard
 //! output and error null, and one end of a Unix socket pair as its standard input. It opens KVM,
-//! reads one `Boot` frame, builds the machine and runs it, sending each of the kernel's requests to
-//! the holder and writing back the reply. It holds no credential, no file of the operator's and no
-//! tool.
+//! confines itself with Landlock, reads one `Boot` frame, builds the machine, installs its seccomp
+//! allow-list and only then runs it, sending each of the kernel's requests to the holder and writing
+//! back the reply. It holds no credential, no file of the operator's and no tool, and once sealed it
+//! can open no file, use no socket, start no program and signal no process (ADR-0132). A runner that
+//! cannot confine itself never runs a guest instruction.
 //!
 //! The holder is the process that started it. It keeps `Host`, the deadline, the model calls, the
 //! effect and the chain, and trusts nothing the runner sends: every frame is bounded, versioned
@@ -26,7 +28,7 @@ use hyalos_audit::{Host, Source};
 use std::{
     io::{ErrorKind, Read, Write},
     os::{
-        fd::{AsFd, OwnedFd},
+        fd::{AsFd, AsRawFd, OwnedFd, RawFd},
         unix::net::UnixStream,
     },
     path::PathBuf,
@@ -489,7 +491,8 @@ fn spawn(args: &[&str], stderr: Stdio) -> Option<Runner> {
 /// it writes there reaches this program's output: `read_trace` reads its timings back.
 pub(crate) fn start_traced() -> Option<(Runner, UnixStream)> {
     let (holder, runner) = UnixStream::pair().ok()?;
-    let started = spawn(&["--trace"], Stdio::from(OwnedFd::from(runner)))?;
+    let args = [&["--trace"][..], &injected()].concat();
+    let started = spawn(&args, Stdio::from(OwnedFd::from(runner)))?;
     Some((started, holder))
 }
 
@@ -594,7 +597,7 @@ pub(crate) fn run<S: Source>(
         let (runner, traced) = start_traced().ok_or(Reason::KernelFault)?;
         (runner, Some(traced))
     } else {
-        (start(&[]).ok_or(Reason::KernelFault)?, None)
+        (start(&injected()).ok_or(Reason::KernelFault)?, None)
     };
     let started = t0.elapsed();
     let mut timing = Timing::default();
@@ -622,22 +625,61 @@ pub(crate) fn run<S: Source>(
     outcome
 }
 
-/// Whether a machine runner starts here and can open KVM (`machine-runner --check`). A `live` run
-/// asks before its intent link is written, so a host that cannot run the machine writes no link.
+/// Whether a machine runner starts here, opens KVM and confines itself with both Landlock and its
+/// seccomp filter (`machine-runner --check`). A `live` run asks before its intent link is written,
+/// so a host that cannot run the machine, or cannot confine it, writes no link (S-04.3).
 pub(crate) fn check() -> Result<(), &'static str> {
-    let mut runner = start(&["--check"]).ok_or("the machine runner cannot be started")?;
+    let args = [&["--check"][..], &injected()].concat();
+    let mut runner = start(&args).ok_or("the machine runner cannot be started")?;
     let started = Instant::now();
     loop {
         match runner.child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                return match status.code() {
+                    Some(0) => Ok(()),
+                    Some(NO_KVM) => Err("the machine runner cannot open KVM"),
+                    Some(NO_LANDLOCK) => Err(NO_LANDLOCK_SAID),
+                    Some(NO_SECCOMP) => Err(NO_SECCOMP_SAID),
+                    _ => Err("the machine runner failed its check"),
+                };
+            }
             Ok(None) if started.elapsed() < Duration::from_secs(10) => {
                 std::thread::sleep(Duration::from_millis(2))
             }
             _ => {
                 runner.end();
-                return Err("the machine runner cannot open KVM");
+                return Err("the machine runner failed its check");
             }
         }
+    }
+}
+
+/// What a run on a host without Landlock, or whose seccomp filter does not install, is refused
+/// with. Nothing runs unconfined instead.
+pub(crate) const NO_LANDLOCK_SAID: &str = "the machine runner cannot be confined: this kernel has no Landlock, or it is turned off. Use Linux 5.13 or later with landlock in the kernel's lsm= list";
+pub(crate) const NO_SECCOMP_SAID: &str =
+    "the machine runner cannot be confined: its seccomp filter did not install";
+
+/// `machine-runner`'s exit codes besides `0`.
+pub(crate) const NO_KVM: i32 = 1;
+pub(crate) const BROKEN: i32 = 2;
+pub(crate) const NO_LANDLOCK: i32 = 3;
+pub(crate) const NO_SECCOMP: i32 = 4;
+
+/// The arguments the holder adds to every runner it starts: none, except in a build with the
+/// `test-switches` feature, where `HYALOS_TEST_NO_CONFINEMENT` (`landlock` or `seccomp`) makes the
+/// runner fail that confinement, as a host without it would (S-04.3).
+#[cfg(not(feature = "test-switches"))]
+fn injected() -> Vec<&'static str> {
+    Vec::new()
+}
+
+#[cfg(feature = "test-switches")]
+fn injected() -> Vec<&'static str> {
+    match std::env::var("HYALOS_TEST_NO_CONFINEMENT").as_deref() {
+        Ok("landlock") => vec!["--pretend-no-landlock"],
+        Ok("seccomp") => vec!["--pretend-no-seccomp"],
+        _ => Vec::new(),
     }
 }
 
@@ -708,34 +750,272 @@ fn close_inherited() -> bool {
     unsafe { libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) == 0 }
 }
 
-/// `task-kernel machine-runner [--check | --trace]`, the runner's whole life. It opens KVM before
-/// any byte of the run arrives, then reads `Boot`, builds and runs the machine, and sends how it
-/// ended. With `--check` it exits after opening KVM: `0` when it could, `1` when not. `--trace`
-/// prints the machine's timings, for `HYALOS_TRACE`. Any other failure exits `2`.
-pub(crate) fn command(check: bool, trace: bool) -> u8 {
+/// How `machine-runner` was asked to run.
+#[derive(Default)]
+pub(crate) struct Options {
+    check: bool,
+    trace: bool,
+    /// The confinement this runner fails on purpose, as a host without it would (S-04.3).
+    #[cfg(feature = "test-switches")]
+    unconfined: Option<Confinement>,
+    /// What this runner attempts once sealed, in place of running the machine (S-04.2).
+    #[cfg(feature = "test-switches")]
+    hostile: Option<hostile::Act>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Confinement {
+    Landlock,
+    Seccomp,
+}
+
+impl Options {
+    /// The arguments after `machine-runner`: nothing, `--check` or `--trace`, and in a build with
+    /// the `test-switches` feature the test-only arguments after them. `None` for anything else.
+    pub(crate) fn parse(args: &[String]) -> Option<Self> {
+        let mut options = Options::default();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let rest = match args.as_slice() {
+            ["--check", rest @ ..] => {
+                options.check = true;
+                rest
+            }
+            ["--trace", rest @ ..] => {
+                options.trace = true;
+                rest
+            }
+            rest => rest,
+        };
+        #[cfg(feature = "test-switches")]
+        let rest = options.test_switches(&rest)?;
+        rest.is_empty().then_some(options)
+    }
+
+    #[cfg(feature = "test-switches")]
+    fn test_switches<'a>(&mut self, mut rest: &'a [&'a str]) -> Option<&'a [&'a str]> {
+        loop {
+            match rest {
+                ["--pretend-no-landlock", more @ ..] if self.unconfined.is_none() => {
+                    self.unconfined = Some(Confinement::Landlock);
+                    rest = more;
+                }
+                ["--pretend-no-seccomp", more @ ..] if self.unconfined.is_none() => {
+                    self.unconfined = Some(Confinement::Seccomp);
+                    rest = more;
+                }
+                ["--hostile", act, more @ ..] if self.hostile.is_none() && !self.check => {
+                    self.hostile = Some(hostile::Act::named(act)?);
+                    rest = more;
+                }
+                _ => return Some(rest),
+            }
+        }
+    }
+
+    /// Whether this runner fails `confinement` on purpose. Never, without `test-switches`.
+    fn fails(&self, confinement: Confinement) -> bool {
+        #[cfg(feature = "test-switches")]
+        return self.unconfined == Some(confinement);
+        #[cfg(not(feature = "test-switches"))]
+        {
+            let _ = confinement;
+            false
+        }
+    }
+}
+
+/// Gives up every file right this kernel's Landlock can take away, with no rule granting any back,
+/// and, where the kernel has them, TCP, signals to other processes and abstract sockets. The
+/// first version's file rights are required; `false` when this kernel cannot enforce them.
+/// Descriptors already open, KVM and the channel, keep working.
+fn landlock(fail: bool) -> bool {
+    use landlock::{
+        ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, Ruleset, RulesetAttr,
+        RulesetStatus, Scope,
+    };
+    if fail {
+        // A ruleset that handles nothing is refused by the library, as an absent Landlock is.
+        return Ruleset::default().create().is_ok_and(|_| false);
+    }
+    let restricted = Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .handle_access(AccessFs::from_all(ABI::V1))
+        .and_then(|r| {
+            r.set_compatibility(CompatLevel::BestEffort)
+                .handle_access(AccessFs::from_all(ABI::V6))
+        })
+        .and_then(|r| r.handle_access(AccessNet::from_all(ABI::V6)))
+        .and_then(|r| r.scope(Scope::from_all(ABI::V6)))
+        .and_then(|r| r.create())
+        .and_then(|r| r.restrict_self());
+    matches!(restricted, Ok(status) if status.ruleset != RulesetStatus::NotEnforced)
+}
+
+/// `KVM_RUN`, `_IO(KVMIO, 0x80)`: the one request the sealed runner may make of KVM.
+const KVM_RUN: u64 = 0xae80;
+
+/// Every system call the sealed runner may make, and why (`design.md` §2 of
+/// `docs/plans/hyalos-kernel-core`, the seccomp allow-list, and ADR-0132). Any other, and any of
+/// these outside its restriction, kills the runner with `SIGSYS`. The list is what a traced runner
+/// made once sealed, on every path its tests and the `attacks` command take. A new entry needs a
+/// reason that holds: none may reach a file, a network, another process or executable memory.
+pub(crate) const ALLOWED: [(&str, i64); 9] = [
+    // Only `KVM_RUN`, only on the machine's virtual CPU.
+    ("ioctl", libc::SYS_ioctl),
+    // Only on the channel, a connected socket, and `sendto` with no address: how the standard
+    // library reads and writes a Unix stream.
+    ("recvfrom", libc::SYS_recvfrom),
+    ("sendto", libc::SYS_sendto),
+    // Only standard error, and only under `--trace`, for its one timing line.
+    ("write", libc::SYS_write),
+    // Memory for the frames: only anonymous, never executable.
+    ("mmap", libc::SYS_mmap),
+    ("munmap", libc::SYS_munmap),
+    ("brk", libc::SYS_brk),
+    // Tearing the machine down closes its descriptors; then the runner exits.
+    ("close", libc::SYS_close),
+    ("exit_group", libc::SYS_exit_group),
+];
+
+/// The seccomp program for a runner whose channel is `channel` and virtual CPU `vcpu`.
+fn filter(channel: RawFd, vcpu: RawFd, trace: bool) -> Option<seccompiler::BpfProgram> {
+    use seccompiler::{
+        SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
+        SeccompRule, TargetArch,
+    };
+    let when = |arg: u8, len: SeccompCmpArgLen, op: SeccompCmpOp, value: u64| {
+        SeccompCondition::new(arg, len, op, value).ok()
+    };
+    let fd = |arg: u8, fd: RawFd| {
+        when(
+            arg,
+            SeccompCmpArgLen::Dword,
+            SeccompCmpOp::Eq,
+            u64::from(fd as u32),
+        )
+    };
+    let rule = |conditions: Vec<Option<SeccompCondition>>| {
+        SeccompRule::new(conditions.into_iter().collect::<Option<_>>()?).ok()
+    };
+    let (exec, anonymous) = (libc::PROT_EXEC as u64, libc::MAP_ANONYMOUS as u64);
+    let mut rules = std::collections::BTreeMap::new();
+    for (name, number) in ALLOWED {
+        let conditions = match name {
+            "ioctl" => vec![rule(vec![
+                fd(0, vcpu),
+                when(1, SeccompCmpArgLen::Dword, SeccompCmpOp::Eq, KVM_RUN),
+            ])?],
+            "recvfrom" => vec![rule(vec![fd(0, channel)])?],
+            "sendto" => vec![rule(vec![
+                fd(0, channel),
+                when(4, SeccompCmpArgLen::Qword, SeccompCmpOp::Eq, 0),
+            ])?],
+            "write" if trace => vec![rule(vec![fd(0, 2)])?],
+            // An empty list would allow it unconditionally.
+            "write" => continue,
+            "mmap" => vec![rule(vec![
+                when(2, SeccompCmpArgLen::Qword, SeccompCmpOp::MaskedEq(exec), 0),
+                when(
+                    3,
+                    SeccompCmpArgLen::Qword,
+                    SeccompCmpOp::MaskedEq(anonymous),
+                    anonymous,
+                ),
+            ])?],
+            _ => Vec::new(),
+        };
+        rules.insert(number, conditions);
+    }
+    let filter = SeccompFilter::new(
+        rules,
+        SeccompAction::KillProcess,
+        SeccompAction::Allow,
+        TargetArch::x86_64,
+    )
+    .ok()?;
+    filter.try_into().ok()
+}
+
+/// Installs the seccomp filter. `fail` installs a program the kernel refuses instead, as a host
+/// whose seccomp cannot take the filter would (S-04.3).
+fn seal(channel: RawFd, vcpu: RawFd, trace: bool, fail: bool) -> bool {
+    let program = if fail {
+        // An instruction code no BPF machine has.
+        vec![seccompiler::sock_filter {
+            code: 0xffff,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        }]
+    } else {
+        match filter(channel, vcpu, trace) {
+            Some(program) => program,
+            None => return false,
+        }
+    };
+    seccompiler::apply_filter(&program).is_ok()
+}
+
+/// `task-kernel machine-runner [--check | --trace]`, the runner's whole life (ADR-0132). It closes
+/// what it inherited and opens KVM before any byte of the run arrives, gives up its file rights
+/// with Landlock, then reads `Boot`, builds the machine, installs its seccomp filter, and only then
+/// runs it and sends how it ended. With `--check` it exits after both confinements hold: `0`, or
+/// `NO_KVM`, `NO_LANDLOCK` or `NO_SECCOMP`. `--trace` prints the machine's timings, for
+/// `HYALOS_TRACE`. Any other failure exits `BROKEN`, and a run whose runner cannot confine itself
+/// ends in `KernelFault` before any guest instruction runs.
+pub(crate) fn command(options: &Options) -> u8 {
     if !close_inherited() {
-        return 2;
+        return BROKEN as u8;
     }
     let kvm = kvm_ioctls::Kvm::new();
-    if check {
-        return u8::from(kvm.is_err());
+    if options.check && kvm.is_err() {
+        return NO_KVM as u8;
     }
     let Ok(channel) = std::io::stdin().as_fd().try_clone_to_owned() else {
-        return 2;
+        return BROKEN as u8;
     };
     let mut channel = Channel(UnixStream::from(channel));
+    let fd = channel.0.as_raw_fd();
+    let seccomp_fails = options.fails(Confinement::Seccomp);
+    // Confined before any byte of the run arrives.
+    if !landlock(options.fails(Confinement::Landlock)) {
+        if !options.check {
+            let _ = channel
+                .0
+                .write_all(&Request::Failed(Reason::KernelFault).encode());
+        }
+        return NO_LANDLOCK as u8;
+    }
+    if options.check {
+        // The filter the run would install, which leaves this runner nothing but its exit.
+        return if seal(fd, -1, false, seccomp_fails) {
+            0
+        } else {
+            NO_SECCOMP as u8
+        };
+    }
     let Ok((BOOT, fields)) = read_frame(&mut channel.0, BOOT_LIMIT, None) else {
-        return 2;
+        return BROKEN as u8;
     };
     let Some((kernel, guest)) = split_boot(&fields) else {
-        return 2;
+        return BROKEN as u8;
     };
+    let trace = options.trace;
     kvm::machine_run(
         kvm.ok(),
         kernel,
         guest,
         &mut channel,
         trace,
+        |vcpu| {
+            let sealed = || seal(fd, vcpu.as_raw_fd(), trace, seccomp_fails);
+            // A hostile runner attempts what it may not once sealed, and never runs the machine.
+            #[cfg(feature = "test-switches")]
+            if let Some(act) = options.hostile {
+                hostile::attempt(act, guest, sealed);
+            }
+            sealed()
+        },
         |channel, outcome| {
             let ended = match outcome {
                 Ok((result, fuel)) => Request::Finished(result, fuel),
@@ -745,4 +1025,108 @@ pub(crate) fn command(check: bool, trace: bool) -> u8 {
         },
     );
     0
+}
+
+/// The hostile runner (S-04.2), in a build with the `test-switches` feature only: a runner taken
+/// over by code that, once the machine is built and the runner sealed, attempts one thing it may
+/// not, at the target the `Boot` frame's guest bytes name. It never runs the machine. Killed by
+/// `SIGSYS` is the expected end; an attempt that returns exits `SURVIVED`.
+#[cfg(feature = "test-switches")]
+pub(crate) mod hostile {
+    use std::{
+        ffi::OsStr,
+        os::unix::{ffi::OsStrExt, net::UnixStream, process::CommandExt},
+        process::Command,
+    };
+
+    /// The exit code of a hostile runner whose attempt returned instead of killing it.
+    pub(crate) const SURVIVED: i32 = 6;
+    /// The exit code of a hostile runner whose attempt Landlock refused.
+    pub(crate) const DENIED: i32 = 5;
+    /// The exit code of a hostile runner that could not seal itself.
+    pub(crate) const UNSEALED: i32 = 7;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Act {
+        /// Open the directory the target names, such as the operator's home.
+        Open,
+        /// Create the file the target names.
+        Create,
+        /// Connect to the Unix socket the target names.
+        Connect,
+        /// Start `/bin/sh` to create the file the target names.
+        Spawn,
+        /// Replace itself with `/bin/sh`, which would create the file the target names.
+        Exec,
+        /// Kill the process whose number the target is.
+        Signal,
+        /// Map memory it could execute.
+        MapExecutable,
+        /// Create the file the target names under Landlock alone, before the seccomp filter.
+        CreateUnderLandlock,
+    }
+
+    pub(crate) const ACTS: [(&str, Act); 8] = [
+        ("open", Act::Open),
+        ("create", Act::Create),
+        ("connect", Act::Connect),
+        ("spawn", Act::Spawn),
+        ("exec", Act::Exec),
+        ("signal", Act::Signal),
+        ("map-executable", Act::MapExecutable),
+        ("create-under-landlock", Act::CreateUnderLandlock),
+    ];
+
+    impl Act {
+        pub(crate) fn named(name: &str) -> Option<Self> {
+            ACTS.iter().find(|(n, _)| *n == name).map(|(_, act)| *act)
+        }
+    }
+
+    /// Makes the attempt and exits. Everything the attempt needs is prepared before `seal`, so the
+    /// attempt's first system call is the one under test.
+    pub(crate) fn attempt(act: Act, target: &[u8], seal: impl FnOnce() -> bool) -> ! {
+        let path = OsStr::from_bytes(target);
+        if act == Act::CreateUnderLandlock {
+            let created = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path);
+            std::process::exit(match created {
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => DENIED,
+                _ => SURVIVED,
+            });
+        }
+        let mut shell = Command::new("/bin/sh");
+        shell.arg("-c").arg(": > \"$0\"").arg(path);
+        let pid: Option<libc::pid_t> = std::str::from_utf8(target)
+            .ok()
+            .and_then(|t| t.parse().ok());
+        if !seal() {
+            std::process::exit(UNSEALED);
+        }
+        match act {
+            Act::Open => drop(std::fs::File::open(path)),
+            Act::Create => drop(std::fs::File::create(path)),
+            Act::Connect => drop(UnixStream::connect(path)),
+            Act::Spawn => drop(shell.spawn()),
+            Act::Exec => drop(shell.exec()),
+            Act::Signal => {
+                if let Some(pid) = pid {
+                    // SAFETY: a plain system call with plain arguments; this is the attempt.
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                }
+            }
+            Act::MapExecutable => {
+                let (read_exec, private) = (
+                    libc::PROT_READ | libc::PROT_EXEC,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                );
+                // SAFETY: a fresh anonymous mapping that nothing uses; this is the attempt.
+                unsafe { libc::mmap(std::ptr::null_mut(), 4096, read_exec, private, -1, 0) };
+            }
+            Act::CreateUnderLandlock => {}
+        }
+        std::process::exit(SURVIVED)
+    }
 }

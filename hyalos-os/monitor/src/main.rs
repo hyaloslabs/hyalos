@@ -561,13 +561,8 @@ fn main() -> ExitCode {
     // The machine runner, started by this program for each KVM run (`runner.rs`). Not listed in
     // the usage: only this program starts it.
     if env::args().nth(1).as_deref() == Some("machine-runner") {
-        let (check, trace) = match (env::args().nth(2).as_deref(), env::args().count()) {
-            (None, _) => (false, false),
-            (Some("--check"), 3) => (true, false),
-            (Some("--trace"), 3) => (false, true),
-            _ => return ExitCode::from(2),
-        };
-        return ExitCode::from(runner::command(check, trace));
+        let args: Vec<String> = env::args().skip(2).collect();
+        return ExitCode::from(runner::Options::parse(&args).map_or(runner::BROKEN as u8, |options| runner::command(&options)));
     }
     let outcome = main_inner();
     runner::wait_for_runners();
@@ -601,6 +596,9 @@ mod probe_host_tests;
 
 #[cfg(test)]
 mod runner_tests;
+
+#[cfg(test)]
+mod confine_tests;
 
 #[cfg(test)]
 mod report_tests {

@@ -1,0 +1,96 @@
+# Slice 7 progress
+
+- **Status:** done
+- **Issue:** #463
+- **PR:** this PR
+- **Executor model:** Claude Opus 5.5
+- **Date:** 2026-11-24
+
+## Preflight
+
+Checked on branch `issue/463`, forked from `origin/main` at `3c3f2ad` (Slice 6 merged). Symbols were found by name, as `context.md` asks.
+
+| Citation | Result |
+|---|---|
+| `design.md` §2, **Seccomp allow-list** (the contract) | Holds: no filter existed. What it must allow was measured (see Deviations) |
+| `design.md` §2, **Failure mapping** (the contract) | Holds: `runner::check` (`machine-runner --check`) ran before a `live` run's ledger opened (`main.rs:432`, after `record_is_fresh`), and a runner that dies or fails was `KernelFault` |
+| `design.md` §1, **Order inside the runner** (the contract) | Holds: Slice 6's runner closed inherited descriptors, opened KVM, then read `Boot`, built the machine and ran it, so Landlock and seccomp had a place on each side of `Boot` |
+| ADR-003 | Holds |
+| Dependencies: `landlock` `=0.4.4`, "the version `core/hyalos/Cargo.toml:43` uses" | Differs: `core/hyalos/Cargo.toml:43` asks `landlock = "0.4.4"`, a caret requirement, and the root lockfile resolves it to `0.4.7`. The contract's pin, `=0.4.4`, can still be honoured, and is (see Deviations) |
+| `seccompiler` `=0.5.0`, JSON feature off | Holds: `0.5.0` is published, `json` is not a default feature, and with it off its only dependency is `libc` |
+| `core/hyalos/src/confine.rs:67` (Landlock that fails closed) | Holds: `apply` at `:67`, `available` at `:99` |
+| `docs/adr/0121-no-broker-runs-without-landlock.md` | Holds |
+| `.github/workflows/ci.yml:248`, the `hyalos-os` test step | Holds (`:248`) |
+| `hyalos-os/deny.toml` | Holds |
+| `context.md` §2: `kvm.rs:41`, `:240`, `HYALOS_HUGE` and `HYALOS_TRACE` | Differs by line only: `HYALOS_HUGE` at `:51`, read in the runner; `HYALOS_TRACE` reaches the runner as `--trace` (Slice 6) |
+| Slice 6 Discoveries: `--check` only opens KVM, and is where both confinements go | Holds |
+| Slice 6 Discoveries: the runner's system-call list was read from the code, not traced | Holds; this slice measured it |
+| Slice 6 Discoveries: the runner's threads are exactly `["task-kernel"]`, KVM's `kvm-*` workers set aside | Holds; `core_s_04_1_e1` still passes under confinement |
+| Slice 6 Decisions: `close_range(3, ~0)` first, in one `unsafe` block | Holds; kept first, before KVM and both confinements |
+| `design.md`, **Modifier: infra**: the `test-switches` feature | Holds: it did not exist; this slice adds it |
+| `docs/adr/` numbering: "use the next free number" | `0131` was taken (the verifier release), so the ADR is `0132` |
+
+No difference touches this slice's contracts.
+
+**Base, recorded before any edit** (kept outside the repository): `3c3f2ad` built in a copy outside the checkout, `task-kernel run` of `guest/digest.wasm` on `evidence/fixtures/issues.tsv` gave SHA-256 `24d971b2…46a5` (seed 0) and `0c7b1259…cbc2` (seed 7) on KVM.
+
+## Acceptance
+
+Tests are in `hyalos-os/monitor/src/confine_tests.rs`. The hostile runner and the injected failures exist only with `test-switches`, so those tests run with `--features task-kernel/test-switches` and start the real `machine-runner` from the `task-kernel` binary beside the harness, behind Slice 1's KVM gate and a Landlock gate. They ran locally with `HYALOS_REQUIRE_KVM=1 HYALOS_REQUIRE_LANDLOCK=1` (this kernel has Landlock ABI 3, `CONFIG_SECURITY_LANDLOCK=y` and `landlock` first in `CONFIG_LSM`), so none could skip.
+
+| ID | How it was shown |
+|---|---|
+| S-04.2 | The hostile runner (`--hostile <act>`, `runner::hostile`) builds the machine as a run does, seals itself, then makes one attempt instead of running the virtual CPU. Each test asserts the runner ended by `SIGSYS`, the holder's `runner::serve` ended the run with `KernelFault`, the runner sent no frame and the source was asked nothing: `core_s_04_2_a_sealed_runner_that_signals_another_process_is_killed` (a `sleep` the test started is still alive), `core_s_04_2_a_sealed_runner_that_maps_executable_memory_is_killed`, and the three rows below. `core_s_04_2_a_running_runner_is_sealed`: while the digest guest waits on its first question, the runner's `/proc/<pid>/status` shows `Seccomp: 2` and `NoNewPrivs: 1`. `core_s_04_2_the_allow_list_is_pinned_and_reaches_nothing` pins the list, its numbers and each restriction in the source, and that none of `open`, `openat`, `openat2`, `creat`, `socket`, `connect`, `execve`, `execveat`, `fork`, `vfork`, `clone`, `clone3`, `kill`, `tkill`, `tgkill`, `mprotect`, `mremap`, `ptrace`, `process_vm_writev` or `read` is on it. Every existing KVM test now runs under both confinements, the `attacks` command's 63 lines included (`core_6_1`) |
+| S-04.2.e1 | `core_s_04_2_e1_a_sealed_runner_that_opens_the_home_directory_is_killed`: opening the test's home directory kills the runner, and so does creating a file, which does not appear. `core_s_04_2_e1_landlock_alone_refuses_a_file`: before the filter, under Landlock alone, creating the file fails with permission denied (`hostile::DENIED`), and it does not appear |
+| S-04.2.e2 | `core_s_04_2_e2_a_sealed_runner_that_connects_a_socket_is_killed`: the runner is killed, and a listening Unix socket the test bound is never reached (`accept` would block) |
+| S-04.2.e3 | `core_s_04_2_e3_a_sealed_runner_that_starts_a_program_is_killed`: spawning `/bin/sh`, and replacing itself with it, each kill the runner, and the file the shell would have made does not appear |
+| S-04.3 | `core_s_04_3_both_confinements_hold_before_any_guest_instruction` (structural): in `runner::command`, inherited descriptors are closed, then KVM opened, then Landlock applied, before the `Boot` frame is read; in `kvm::boot_and_run`, the machine is built, then `seal` runs and a failure returns `KernelFault`, before the one `vcpu.run()`. `core_s_04_3_the_runner_takes_its_test_arguments_strictly`. `core_s_04_3_the_ci_job_requires_landlock_and_runs_the_test_switches`. And the two rows below |
+| S-04.3.e1 | `core_s_04_3_e1_a_host_without_landlock_refuses_the_run_naming_landlock`: a runner whose Landlock fails (injected, `--pretend-no-landlock`) sends one frame, its refusal, so no guest instruction ran, exits `NO_LANDLOCK`, and the holder ends the run with `KernelFault`, asking nothing. `machine-runner --check` exits `3` for Landlock and `4` for seccomp. Through the holder (`HYALOS_TEST_NO_CONFINEMENT=landlock`), a `live` run on a real repository is refused with `refused: the machine runner cannot be confined: this kernel has no Landlock, …`, which names Landlock, and writes no ledger and no record; a `run` prints `refused: KernelFault` and writes no transcript. Without the injection the same host's check passes |
+| S-04.3.e2 | `core_s_04_3_e2_a_seccomp_filter_that_fails_to_install_refuses_before_the_guest_runs`: with `--pretend-no-seccomp` the runner installs a BPF program the kernel rejects (an instruction code no BPF machine has), so the install really fails; it sends only its refusal and never runs the machine, and the run ends in `KernelFault`. Through the holder, `live` is refused with the seccomp message before its chain, and `run` prints `refused: KernelFault` with no transcript |
+| 7.1 | `docs/adr/0132-the-hyalos-machine-runner-is-confined.md`, Proposed, listed in `docs/adr/README.md`; `core_7_1_a_repository_adr_records_the_confinement` checks both. `CLAUDE.md`'s `hyalos-os/` row names it |
+
+**Counter-checks** (each broken in a scratch edit, then restored): a `seal` that installs nothing fails the five hostile tests, the running-runner test and both S-04.3 rows; a Landlock that restricts nothing fails `core_s_04_2_e1_landlock_alone_refuses_a_file`; a machine that runs when `seal` fails fails the structural test and S-04.3.e2; a check that accepts a missing Landlock fails S-04.3.e1; an unconditional `mmap` fails the executable-memory test.
+
+**How the allow-list was measured.** This host has no `strace`, `perf` or `bpftrace`, and a filter in log mode (`SECCOMP_RET_LOG`) proved unusable: the kernel log rate-limits the audit lines, so a run of 400 calls showed about ten. Instead a small `ptrace` tracer (Python and `ctypes`, kept outside the repository) followed the program and every child it started, and recorded each system call a process made after its own successful `seccomp(SECCOMP_SET_MODE_FILTER)`, with its arguments. It ran a log-mode build first, so a missing call could not kill the run, then the real filter, which killed no runner by `SIGSYS`. Paths traced: `run` with seeds 0 and 7, with `HYALOS_TRACE`, and with a 3 MiB input (frames large enough for `mmap`); the `attacks` command with the kernel and the self-test kernel (63 runners, every guest and hostile kernel); `machine-runner --check`; and a runner that ends on its own, a one-byte `hlt` kernel from a stand-in holder, so the whole teardown and exit were seen (a real holder kills its runner after the outcome). The union was `ioctl` (only `0xae80`, `KVM_RUN`, on the virtual CPU's descriptor), `recvfrom` and `sendto` (only the channel, flags `MSG_NOSIGNAL`), `write` (only descriptor 2, only under `--trace`), `mmap` (anonymous, read and write), `munmap`, `brk`, `close` (the machine's descriptors at teardown) and `exit_group`. That is the list, with those restrictions. Four entries the tracer reported as `read(0, 0, 0)` with `rip` 0 were runners already gone when their registers were read; the real filter killed none of them.
+
+**Dry runs** (the slice's Verify block):
+
+- The Slice 2 differential under confinement: `task-kernel run` on KVM printed `ok: 40 inputs, 40 inferences, 1 effect, fuel 29845` (seed 0) and `… fuel 30886` (seed 7), SHA-256 `24d971b2…46a5` and `0c7b1259…cbc2`, byte-identical to the base. `core_s_02_1_e1` also pins them.
+
+**Verify**, run locally on KVM after CI's two `attest` builds:
+
+- `HYALOS_REQUIRE_KVM=1 HYALOS_REQUIRE_LANDLOCK=1 cargo test … --features …,task-kernel/test-switches core_s_04_2`: 8 passed. `… core_s_04_3`: 5 passed. No `skipped:` line.
+- The whole workspace, `HYALOS_REQUIRE_KVM=1`, `--no-fail-fast`, without `test-switches` (the Verify block's third command): 442 passed, none failed, ignored or skipped. With CI's features, `task-kernel/test-switches` added and `HYALOS_REQUIRE_LANDLOCK=1`: 452 passed (the 10 switch-only tests more), none failed, ignored or skipped. A later run of the monitor's tests alone hit the known flake `ledger::fixture_tests::local_4_2_generate` (one case's `answer 6` against `answer 7: the session is later than the run's result`), which also failed alone; the base commit, built in a copy, failed the same way with the same difference on one of two runs, so it is the existing timing flake and not this slice's.
+- CI's other `hyalos-os` steps: `fmt --check` on `profile`, `audit`, `attest-check` and `verify` (unchanged); `rustfmt --check` on `runner.rs`, `runner_tests.rs` and `confine_tests.rs`; `clippy` on the monitor, with and without the features, reports the same warnings as at base and none in the new code. Root checks: `cargo xtask layout`, `lines` and `docs` pass. The root workspace's code is not touched (only `CLAUDE.md` and `docs/adr/`), so its tests are CI's to run.
+- `cargo deny --all-features check` from `hyalos-os/` (the local `cargo-deny` rejects `--config`): advisories, bans, licences and sources ok, with no change to `hyalos-os/deny.toml`. `cargo tree -p seccompiler -e normal` shows only `libc`.
+
+## Deviations
+
+| Plan said | Reality | Why | Contract affected |
+|---|---|---|---|
+| `design.md` §2, allow-list: `read`, `write` "only the channel descriptor" | `recvfrom` and `sendto` on the channel (`sendto` with no address), and `write` only on standard error and only under `--trace`; `read` is not allowed | Measured: the standard library reads and writes a Unix stream with `recvfrom` and `sendto`. The restriction, the channel only, is the design's | n |
+| Allow-list: `mprotect`, `madvise`, `futex`, `rt_sigreturn`, `sigaltstack`, `exit` | Not allowed | Measured: no traced path made them. The runner has one thread, no signal handler and the main arena, so leaving them out fails closed if a host needs one, as ADR-003 accepts | n |
+| Allow-list: `mmap` "never with execute permission" | Also only anonymous | Measured: every `mmap` was anonymous. It keeps the runner from mapping its KVM or channel descriptors | n |
+| Allow-list has no `close` | `close` is allowed | Measured: tearing the machine down closes its descriptors after the runner has reported. Closing reaches nothing outside the runner. Without it a runner that ends on its own would die by `SIGSYS` after its outcome | n |
+| Dependency `landlock` `=0.4.4`, "the version `core/hyalos/Cargo.toml:43` uses" | Pinned `=0.4.4`, while the root workspace resolves `0.4.7` | The contract names the pin. The two workspaces have separate lockfiles (ADR-0130), so they may differ; `cargo deny` accepts `0.4.4` | n |
+| Files: modify `hyalos-os/deny.toml` | Unchanged | `landlock`, `enumflags2` and `seccompiler` are under licences it already allows (MIT, Apache-2.0, BSD-3-Clause) and have no advisory | n |
+| Files: create `docs/adr/0131-…` | `docs/adr/0132-the-hyalos-machine-runner-is-confined.md` | `0131` is the verifier release's; the plan said to use the next free number | n |
+| Files | Also `confine_tests.rs` (new), `kvm.rs`, `runner_tests.rs`, `CLAUDE.md` | `kvm::machine_run` takes the `seal` hook, so the filter goes on between the machine's build and its first run. `runner_tests`' check test now also needs Landlock. `CLAUDE.md`'s table names the new ADR | n |
+| Verify passes on its own | It needs CI's two `attest` builds first | As Slices 1 to 6 found | n |
+
+## Decisions
+
+- **Where seccomp goes.** `kvm::machine_run` takes a `seal` callback, called after `machine` builds the virtual CPU and before its first `run`, given the virtual CPU so the filter can name its descriptor. A `seal` that fails returns `KernelFault` and the machine never runs. The trace line's `vm setup` now includes installing the filter.
+- **Landlock's reach.** The first ABI's file rights are a hard requirement (as `core/hyalos/src/confine.rs:99` asks), and the rest of ABI 6's file rights, TCP and its signal and abstract-socket scopes are added where the kernel has them. Enforcement short of `NotEnforced` runs, as ADR-0121 allows a partial confinement. No rule grants anything back.
+- **`--check`** applies both confinements: it opens KVM (exit `1` without it), applies Landlock (`3`), installs the run's filter (`4`), and exits `0`. The holder maps each to its own message, so the refusal names what is missing. A real runner that fails Landlock sends `Failed(KernelFault)` before it reads `Boot`; one that fails seccomp sends it through the normal end of a run.
+- **Injection.** With `test-switches`, the runner takes `--pretend-no-landlock` or `--pretend-no-seccomp` after its own argument, and the holder adds one when `HYALOS_TEST_NO_CONFINEMENT` is `landlock` or `seccomp`, to every runner it starts, the check's included. The seccomp case installs a program the kernel rejects, so the real failure path runs. Slice 8 gates this with the other switches.
+- **The hostile runner** takes `--hostile <act>` (`open`, `create`, `connect`, `spawn`, `exec`, `signal`, `map-executable`, `create-under-landlock`), never with `--check`, and its target in the `Boot` frame's guest bytes, so the attempt is made by a runner exactly as sealed as a real one, with its machine built. It prepares everything before sealing, so the attempt's first system call is the one under test. It adds two `unsafe` blocks to `runner.rs` (`kill` and `mmap`), each with a `SAFETY` comment, both test-only.
+- **Formatting.** `runner.rs`, `runner_tests.rs` and `confine_tests.rs` are `rustfmt`-formatted and clippy-clean; `kvm.rs` and `main.rs` keep their style for Slice 9.
+
+## Discoveries
+
+- **Cold start: no change beyond noise.** Measured interleaved with the base binary, 21 runs per round, three rounds, seed 0: `boot to first call` medians 2.32, 2.21, 2.48 ms at base and 2.28, 2.63, 2.56 ms here; `vm setup`, which now includes installing the filter, 1.51 and 1.71 ms against 1.65 and 2.00 (one base round was disturbed, 18 ms); start to first call 8.03 and 8.88 ms against 8.12 and 8.20. Confinement costs a few tenths of a millisecond at most. This host was slower than Slice 6's (about 8 ms to first call against its 7).
+- **For Slice 8:** `--hostile`, `--pretend-no-*` and `HYALOS_TEST_NO_CONFINEMENT` are compiled only with `test-switches`, beside `HYALOS_TRACE`, `HYALOS_HUGE`, the self-test kernel and raw images, which it gates. CI now runs the whole workspace with `test-switches`, so nothing runs it without the feature until Slice 8's `release_switches` step; the Verify block's third command does locally.
+- **For Slice 10 and 12:** `runner.rs` now holds three `unsafe` blocks (`close_range`, and the test-only `kill` and `mmap`). The review package should list the allow-list and its restrictions (P2), and state that a runner killed by its filter may leave a core dump wherever the host's `core_pattern` sends it, holding the task's inputs. Making the runner non-dumpable would stop that, but also stops the holder and the tests reading `/proc/<runner>`, so it was left out.
+- **Hosts.** Landlock ABI 3 here, so TCP and the scopes are not enforced on this host; seccomp covers them. CI's kernel will show whether the newer rights change anything, and `HYALOS_REQUIRE_LANDLOCK` makes the job fail rather than skip if the runner's kernel lacks Landlock.
+- **Measuring system calls without `strace`:** `SECCOMP_RET_LOG` is rate-limited in the kernel log and drops most lines. A `ptrace` tracer that marks each process at its own `seccomp` call was reliable and small.

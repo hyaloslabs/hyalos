@@ -406,14 +406,17 @@ type Held = (VcpuFd, VmFd, Ram);
 /// so every reason stays the one a run gave when the monitor ran the machine itself. Tearing a
 /// machine down takes the host tens of milliseconds, so it happens only after `ended` has reported.
 /// `trace` prints the timings `HYALOS_TRACE` asks for, in the fields the monitor printed before.
-pub(crate) fn machine_run<C: Calls>(kvm: Option<Kvm>, kernel: &[u8], guest: &[u8], calls: &mut C, trace: bool, ended: impl FnOnce(&mut C, Result<(Vec<u8>, u64), Reason>)) {
+/// `seal` installs the runner's seccomp filter once the machine is built, given its virtual CPU, and
+/// says whether it holds: no guest instruction runs before it does, and a machine it fails for
+/// never runs (`KernelFault`).
+pub(crate) fn machine_run<C: Calls>(kvm: Option<Kvm>, kernel: &[u8], guest: &[u8], calls: &mut C, trace: bool, seal: impl FnOnce(&VcpuFd) -> bool, ended: impl FnOnce(&mut C, Result<(Vec<u8>, u64), Reason>)) {
     let mut held = None;
-    let outcome = boot_and_run(kvm, kernel, guest, calls, trace, &mut held);
+    let outcome = boot_and_run(kvm, kernel, guest, calls, trace, seal, &mut held);
     ended(calls, outcome);
     drop(held);
 }
 
-fn boot_and_run(kvm: Option<Kvm>, kernel: &[u8], guest: &[u8], calls: &mut impl Calls, trace: bool, held: &mut Option<Held>) -> Result<(Vec<u8>, u64), Reason> {
+fn boot_and_run(kvm: Option<Kvm>, kernel: &[u8], guest: &[u8], calls: &mut impl Calls, trace: bool, seal: impl FnOnce(&VcpuFd) -> bool, held: &mut Option<Held>) -> Result<(Vec<u8>, u64), Reason> {
     let t0 = Instant::now();
     if guest.len() as u64 > GUEST_MAX {
         return Err(Reason::TooLarge);
@@ -425,6 +428,10 @@ fn boot_and_run(kvm: Option<Kvm>, kernel: &[u8], guest: &[u8], calls: &mut impl 
     let t_mem = t0.elapsed();
     let kvm = kvm.ok_or(Reason::NoKvm)?;
     let (vm, vcpu) = machine(&kvm, &ram, entry, guest.len() as u64)?;
+    // Sealed: from here the runner may make only the system calls its filter allows (`runner.rs`).
+    if !seal(&vcpu) {
+        return Err(Reason::KernelFault);
+    }
     let t_vm = t0.elapsed();
     let (vcpu, _, ram) = held.insert((vcpu, vm, ram));
     let mut first = true;
