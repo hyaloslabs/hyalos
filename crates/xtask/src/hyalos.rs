@@ -38,9 +38,6 @@ pub const UNSAFE_FILES: &[&str] = &[
     "verify/tests/real.rs",
 ];
 
-/// The keyword is a use of `unsafe` when one of these follows it.
-const FOLLOWERS: &[&str] = &["{", "(", "fn", "impl", "trait", "extern"];
-
 /// How many lines above a use its `SAFETY` comment may be.
 const SAFETY_REACH: usize = 3;
 
@@ -64,6 +61,60 @@ pub fn per_crate(files: &[(String, String)]) -> BTreeMap<String, usize> {
         }
     }
     out
+}
+
+/// Every line of code `count_rust` would not see because it follows a `#[cfg(test)]` item, as
+/// `path:line: what`. The count stops at the first line starting `#[cfg(test)]`, so whatever comes
+/// after it must be test modules too: further `#[cfg(test)]` lines, attributes, a `mod name;` or a
+/// `mod name { ... }` closed by a `}` at the start of a line, blanks and comments. Anything else
+/// would leave real code out of the count, so it fails the check.
+pub fn hidden_findings(files: &[(String, String)]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (rel, text) in files {
+        if !counted(rel) {
+            continue;
+        }
+        if let Some(at) = hidden_after_test(text) {
+            out.push(format!(
+                "{rel}:{at}: code after #[cfg(test)] is not counted; move it above the tests"
+            ));
+        }
+    }
+    out
+}
+
+fn hidden_after_test(text: &str) -> Option<usize> {
+    let lines: Vec<&str> = text.lines().collect();
+    let first = lines.iter().position(|l| l.starts_with("#[cfg(test)]"))?;
+    let mut pending = true;
+    let mut in_block = false;
+    for (i, line) in lines.iter().enumerate().skip(first + 1) {
+        if in_block {
+            in_block = !line.starts_with('}');
+            continue;
+        }
+        let t = line.trim();
+        if t.is_empty() || t.starts_with("//") {
+            continue;
+        }
+        if line.starts_with("#[cfg(test)]") {
+            pending = true;
+            continue;
+        }
+        if line.starts_with("#[") {
+            continue;
+        }
+        let module = ["mod ", "pub mod ", "pub(crate) mod ", "pub(super) mod "]
+            .iter()
+            .any(|m| line.starts_with(m));
+        if pending && module {
+            pending = false;
+            in_block = !t.ends_with(';') && !t.ends_with('}');
+            continue;
+        }
+        return Some(i + 1);
+    }
+    None
 }
 
 /// Refuses a count over the budget, naming the budget.
@@ -130,8 +181,9 @@ fn explained(lines: &[&str], i: usize) -> bool {
     })
 }
 
-/// Whether a line uses the keyword: `unsafe` as a whole word, followed by a block, an attribute's
-/// argument, or an item, or at the end of the line. A line that is a comment is not code.
+/// Whether a line uses the keyword: `unsafe` as a whole word, on a line that is not a comment.
+/// Whatever follows it counts, so `unsafe /* a note */ {` or a form the design does not name is a
+/// use too: the check errs towards failing. The lint's name, `unsafe_code`, is not a whole word.
 fn uses_unsafe(line: &str) -> bool {
     if line.trim_start().starts_with("//") {
         return false;
@@ -142,27 +194,17 @@ fn uses_unsafe(line: &str) -> bool {
         let start = from + found;
         let end = start + "unsafe".len();
         from = end;
-        if line[..start].chars().next_back().is_some_and(word) {
-            continue;
-        }
-        let rest = line[end..].trim_start();
-        // What follows on the next line cannot be read here, so the keyword alone counts as a use.
-        if rest.is_empty() {
-            return true;
-        }
-        if FOLLOWERS.iter().any(|f| {
-            rest.strip_prefix(f).is_some_and(|after| {
-                !f.chars().all(word) || !after.chars().next().is_some_and(word)
-            })
-        }) {
+        if !line[..start].chars().next_back().is_some_and(word)
+            && !line[end..].chars().next().is_some_and(word)
+        {
             return true;
         }
     }
     false
 }
 
-/// The Rust files under `hyalos-os/`, relative to it, with their text. Build output (`target/`) and
-/// hidden directories are not hyalOS's code.
+/// The Rust files under `hyalos-os/`, relative to it, with their text. Build output (`target/`, or
+/// any directory Cargo tagged with `CACHEDIR.TAG`) and hidden directories are not hyalOS's code.
 pub fn read(root: &Path) -> Result<Vec<(String, String)>, String> {
     let base = root.join("hyalos-os");
     let mut paths = Vec::new();
@@ -185,7 +227,10 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
         let name = e.file_name();
         let name = name.to_string_lossy();
         if path.is_dir() {
-            if name != "target" && !name.starts_with('.') {
+            // Cargo marks every build directory with a `CACHEDIR.TAG`, whatever its name: the
+            // monitor's tests build the kernel image into `kernel-image/target-selftest/`.
+            let build = name == "target" || path.join("CACHEDIR.TAG").exists();
+            if !build && !name.starts_with('.') {
                 walk(&path, out)?;
             }
         } else if name.ends_with(".rs") {
@@ -197,7 +242,8 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
 
 /// `cargo xtask lines`' hyalOS half: reports the count against the budget and fails above it.
 pub fn lines(root: &Path) -> Result<(), String> {
-    let counts = per_crate(&read(root)?);
+    let files = read(root)?;
+    let counts = per_crate(&files);
     let total: usize = counts.values().sum();
     println!(
         "hyalOS: {total} / {BUDGET} lines ({:.1}%)",
@@ -205,6 +251,10 @@ pub fn lines(root: &Path) -> Result<(), String> {
     );
     for (name, n) in &counts {
         println!("  {name:<12} {n}");
+    }
+    let hidden = hidden_findings(&files);
+    if !hidden.is_empty() {
+        return Err(format!("{}\n(ADR-0133)", hidden.join("\n")));
     }
     within_budget(total)
 }
@@ -258,6 +308,50 @@ mod tests {
         let counts = per_crate(&files);
         assert_eq!(counts.get("monitor"), Some(&1));
         assert_eq!(counts.get("guest"), Some(&2));
+    }
+
+    #[test]
+    fn core_s_05_1_code_after_a_test_module_fails() {
+        let ok = "fn a() {}\n\n#[cfg(test)]\nmod a_tests;\n\n#[cfg(test)]\n#[path = \"x.rs\"]\n\
+                  mod x;\n// note\n#[cfg(test)]\nmod t {\n    fn b() {}\n}\n#[cfg(test)]\nmod u {}\n";
+        assert_eq!(
+            hidden_findings(&[file("monitor/src/main.rs", ok)]),
+            Vec::<String>::new()
+        );
+        for (text, at) in [
+            ("#[cfg(test)]\nmod a_tests;\n\nfn real() {}\n", 4),
+            (
+                "fn a() {}\n#[cfg(test)]\nmod t {\n}\n#[inline]\nfn real() {}\n",
+                6,
+            ),
+            ("#[cfg(test)]\nmod t;\nmod real;\n", 3),
+            ("#[cfg(test)]\nfn helper() {}\n", 2),
+        ] {
+            let findings = hidden_findings(&[file("monitor/src/main.rs", text)]);
+            assert_eq!(
+                findings,
+                [format!(
+                    "monitor/src/main.rs:{at}: code after #[cfg(test)] is not counted; move it above the tests"
+                )],
+                "{text}"
+            );
+        }
+        // A test file is not counted, so what follows its tests is not checked.
+        assert_eq!(
+            hidden_findings(&[file(
+                "monitor/src/a_tests.rs",
+                "#[cfg(test)]\nmod t;\nfn b() {}\n"
+            )]),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn core_s_05_1_hyalos_os_hides_no_code_after_its_tests() {
+        assert_eq!(
+            hidden_findings(&read(&crate::repo_root()).unwrap()),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -316,6 +410,9 @@ mod tests {
             "#[unsafe(no_mangle)]",
             "let a = unsafe{ x() };",
             "let a = unsafe\n{ x() };",
+            "let a = unsafe /* a note */ { x() };",
+            "type B = unsafe<'a> &'a u8;",
+            "pub(crate) unsafe static X: u8;",
         ] {
             let text = format!("// SAFETY: a comment does not admit a file.\n{code}\n");
             let files = [
