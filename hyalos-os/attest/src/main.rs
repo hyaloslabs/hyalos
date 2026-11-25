@@ -18,7 +18,8 @@
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use attest::{
-    Answer, CREDENTIAL_LENGTH, DEADLINE, END, MAX_QUESTION, MAX_RECV, MAX_SENT, Trust, answer, approved, binding, find,
+    Answer, CREDENTIAL_LENGTH, DEADLINE, END, MAX_QUESTION, MAX_RECV, MAX_SENT, Trust, answer,
+    approved, binding, find,
     link::{self, Identity, LinkFailure},
     pinned_credential, read_run_sequence, read_ticket, request, written_head,
 };
@@ -33,7 +34,10 @@ use std::{
     path::Path,
     pin::Pin,
     process::ExitCode,
-    sync::{Arc, atomic::{AtomicBool, Ordering}},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context as TaskContext, Poll},
     time::Instant,
 };
@@ -44,7 +48,10 @@ use tlsn::{
         presentation::{Presentation, PresentationOutput},
         request::{Request as AttestationRequest, RequestConfig},
     },
-    config::{prove::ProveConfig, prover::ProverConfig, tls::TlsClientConfig, tls_commit::mpc::MpcTlsConfig},
+    config::{
+        prove::ProveConfig, prover::ProverConfig, tls::TlsClientConfig,
+        tls_commit::mpc::MpcTlsConfig,
+    },
     connection::HandshakeData,
     prover::ProverOutput,
     transcript::TranscriptCommitConfig,
@@ -94,10 +101,27 @@ struct NotaryLink {
 
 impl NotaryLink {
     fn read() -> Result<Self> {
-        let set = |name: &str| env::var(name).ok().filter(|value| !value.is_empty()).with_context(|| format!("set {name}"));
-        let (address, transport, signer, authorisation) = (set("HYALOS_NOTARY_ADDRESS")?, set("HYALOS_NOTARY_TRANSPORT_PUBLIC")?, set("HYALOS_NOTARY_SIGNER_PUBLIC")?, set("HYALOS_NOTARY_AUTHORISATION")?);
-        let me = Identity::load(Path::new(&set("HYALOS_OPERATOR_TRANSPORT_KEY")?)).map_err(|_| anyhow!("cannot use the operator's transport key"))?;
-        Ok(Self { address, transport, signer, authorisation, me })
+        let set = |name: &str| {
+            env::var(name)
+                .ok()
+                .filter(|value| !value.is_empty())
+                .with_context(|| format!("set {name}"))
+        };
+        let (address, transport, signer, authorisation) = (
+            set("HYALOS_NOTARY_ADDRESS")?,
+            set("HYALOS_NOTARY_TRANSPORT_PUBLIC")?,
+            set("HYALOS_NOTARY_SIGNER_PUBLIC")?,
+            set("HYALOS_NOTARY_AUTHORISATION")?,
+        );
+        let me = Identity::load(Path::new(&set("HYALOS_OPERATOR_TRANSPORT_KEY")?))
+            .map_err(|_| anyhow!("cannot use the operator's transport key"))?;
+        Ok(Self {
+            address,
+            transport,
+            signer,
+            authorisation,
+            me,
+        })
     }
 }
 
@@ -109,9 +133,15 @@ struct Watched<S> {
 }
 
 impl<S: AsyncRead + Unpin> AsyncRead for Watched<S> {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>, buf: &mut [u8]) -> Poll<std::io::Result<usize>> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
         let polled = Pin::new(&mut self.inner).poll_read(cx, buf);
-        if matches!(&polled, Poll::Ready(Err(_))) || matches!(&polled, Poll::Ready(Ok(0)) if !buf.is_empty()) {
+        if matches!(&polled, Poll::Ready(Err(_)))
+            || matches!(&polled, Poll::Ready(Ok(0)) if !buf.is_empty())
+        {
             self.broke.store(true, Ordering::SeqCst);
         }
         polled
@@ -119,7 +149,11 @@ impl<S: AsyncRead + Unpin> AsyncRead for Watched<S> {
 }
 
 impl<S: AsyncWrite + Unpin> AsyncWrite for Watched<S> {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
         let polled = Pin::new(&mut self.inner).poll_write(cx, buf);
         if matches!(&polled, Poll::Ready(Err(_))) {
             self.broke.store(true, Ordering::SeqCst);
@@ -135,21 +169,47 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Watched<S> {
 }
 
 fn home(file: &str) -> Result<String> {
-    Ok(format!("{}/.config/hyalos-spike/{file}", env::var("HOME").context("no home")?))
+    Ok(format!(
+        "{}/.config/hyalos-spike/{file}",
+        env::var("HOME").context("no home")?
+    ))
 }
 
 fn credential() -> Result<String> {
-    let text = fs::read_to_string(home("anthropic.key")?).map_err(|_| anyhow!("cannot use the credential file"))?;
-    let line = text.lines().find(|l| !l.trim().is_empty()).context("cannot use the credential file")?.trim();
-    let value = line.split_once('=').map_or(line, |(_, v)| v).trim().trim_matches(['"', '\'']);
-    ensure!(!value.is_empty() && value.bytes().all(|b| b.is_ascii_graphic()), "cannot use the credential file");
+    let text = fs::read_to_string(home("anthropic.key")?)
+        .map_err(|_| anyhow!("cannot use the credential file"))?;
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .context("cannot use the credential file")?
+        .trim();
+    let value = line
+        .split_once('=')
+        .map_or(line, |(_, v)| v)
+        .trim()
+        .trim_matches(['"', '\'']);
+    ensure!(
+        !value.is_empty() && value.bytes().all(|b| b.is_ascii_graphic()),
+        "cannot use the credential file"
+    );
     Ok(value.to_string())
 }
 
 /// Asks one question through a notarized session and returns the answer with its presentation.
-async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &str, notary: &NotaryLink, broke: &Arc<AtomicBool>) -> Result<(Answer, Vec<u8>)> {
+async fn ask(
+    title: &str,
+    binding: &str,
+    run: &str,
+    trust: &Trust,
+    credential: &str,
+    notary: &NotaryLink,
+    broke: &Arc<AtomicBool>,
+) -> Result<(Answer, Vec<u8>)> {
     let (bytes, hidden) = request(title, binding, &trust.server, credential);
-    ensure!(bytes.len() <= MAX_SENT - 256, "the question is too large to attest");
+    ensure!(
+        bytes.len() <= MAX_SENT - 256,
+        "the question is too large to attest"
+    );
 
     let said = |failure| match failure {
         LinkFailure::PeerKey => Word::NotaryKey,
@@ -159,22 +219,38 @@ async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &
         LinkFailure::Spent => Word::Spent,
         LinkFailure::Canary => Word::Canary,
     };
-    let mut stream = link::connect(&notary.address, &notary.me, &notary.transport).await.map_err(said)?;
-    if !link::open(&mut stream, run, &notary.authorisation).await.map_err(said)? {
+    let mut stream = link::connect(&notary.address, &notary.me, &notary.transport)
+        .await
+        .map_err(said)?;
+    if !link::open(&mut stream, run, &notary.authorisation)
+        .await
+        .map_err(said)?
+    {
         return Err(Word::Release.into());
     }
 
-    let session = Session::new(Watched { inner: stream.compat(), broke: broke.clone() });
+    let session = Session::new(Watched {
+        inner: stream.compat(),
+        broke: broke.clone(),
+    });
     let (driver, mut handle) = session.split();
     let driver_task = tokio::spawn(driver);
     let prover = handle
         .new_prover(ProverConfig::builder().build()?)?
-        .commit(MpcTlsConfig::builder().max_sent_data(MAX_SENT).max_recv_data(MAX_RECV).build()?)
+        .commit(
+            MpcTlsConfig::builder()
+                .max_sent_data(MAX_SENT)
+                .max_recv_data(MAX_RECV)
+                .build()?,
+        )
         .await?;
     let client_socket = tokio::net::TcpStream::connect(trust.address.as_str()).await?;
     client_socket.set_nodelay(true)?;
     let (mut tls, prover) = prover.connect(
-        TlsClientConfig::builder().server_name(trust.name()?).root_store(trust.roots.clone()).build()?,
+        TlsClientConfig::builder()
+            .server_name(trust.name()?)
+            .root_store(trust.roots.clone())
+            .build()?,
         client_socket.compat(),
     )?;
     let prover_task = tokio::spawn(prover.into_future());
@@ -192,8 +268,14 @@ async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &
     let mut prover = prover_task.await??;
 
     // What the session really carried, not what this function believes it sent or read.
-    let (sent, received) = (prover.transcript().sent().to_vec(), prover.transcript().received().to_vec());
-    ensure!(sent == bytes, "the session did not carry the request as written");
+    let (sent, received) = (
+        prover.transcript().sent().to_vec(),
+        prover.transcript().received().to_vec(),
+    );
+    ensure!(
+        sent == bytes,
+        "the session did not carry the request as written"
+    );
     let line = find(&received, b"\r\n").context("the reply has no status line")?;
     let blank = find(&received, END).context("the reply has no body")?;
 
@@ -210,8 +292,15 @@ async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &
     // For the test of an operator who asks the notary to sign an extension of its own. It is no
     // door: a forger can change this program the same way, and the notary refuses the request.
     if let Some(which) = env::var_os("HYALOS_TEST_REQUEST_EXTENSION") {
-        let (id, length) = if which == "canary" { (attest::CANARY, 8) } else { (attest::TICKET, 144) };
-        request_config.extension(tlsn::attestation::Extension { id: id.to_vec(), value: vec![0; length] });
+        let (id, length) = if which == "canary" {
+            (attest::CANARY, 8)
+        } else {
+            (attest::TICKET, 144)
+        };
+        request_config.extension(tlsn::attestation::Extension {
+            id: id.to_vec(),
+            value: vec![0; length],
+        });
     }
     let request_config = request_config.build()?;
     let mut prove = ProveConfig::builder(prover.transcript());
@@ -220,16 +309,27 @@ async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &
     if let Some(config) = request_config.transcript_commit() {
         prove.transcript_commit(config.clone());
     }
-    let ProverOutput { transcript_commitments, transcript_secrets, .. } = prover.prove(&prove.build()?).await?;
-    let (transcript, tls_transcript) = (prover.transcript().clone(), prover.tls_transcript().clone());
+    let ProverOutput {
+        transcript_commitments,
+        transcript_secrets,
+        ..
+    } = prover.prove(&prove.build()?).await?;
+    let (transcript, tls_transcript) =
+        (prover.transcript().clone(), prover.tls_transcript().clone());
     prover.close().await?;
 
     let mut builder = AttestationRequest::builder(&request_config);
     builder
         .server_name(trust.name()?)
         .handshake_data(HandshakeData {
-            certs: tls_transcript.server_cert_chain().context("no certificate chain")?.to_vec(),
-            sig: tls_transcript.server_signature().context("no server signature")?.clone(),
+            certs: tls_transcript
+                .server_cert_chain()
+                .context("no certificate chain")?
+                .to_vec(),
+            sig: tls_transcript
+                .server_signature()
+                .context("no server signature")?
+                .clone(),
             binding: tls_transcript.certificate_binding().clone(),
         })
         .transcript(transcript)
@@ -246,8 +346,11 @@ async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &
     if attestation_bytes.is_empty() {
         return Err(Word::Provider.into());
     }
-    let attestation: Attestation = bincode::deserialize(&attestation_bytes).map_err(|_| Word::Provider)?;
-    request.validate(&attestation, &provider).map_err(|_| Word::Provider)?;
+    let attestation: Attestation =
+        bincode::deserialize(&attestation_bytes).map_err(|_| Word::Provider)?;
+    request
+        .validate(&attestation, &provider)
+        .map_err(|_| Word::Provider)?;
 
     // The secrets hold the credential. They are used once, here, and never stored.
     let mut proof = secrets.transcript_proof_builder();
@@ -256,7 +359,9 @@ async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &
     proof.reveal_recv(&(0..line))?;
     proof.reveal_recv(&(blank..received.len()))?;
     let mut presentation = attestation.presentation_builder(&provider);
-    presentation.identity_proof(secrets.identity_proof()).transcript_proof(proof.build()?);
+    presentation
+        .identity_proof(secrets.identity_proof())
+        .transcript_proof(proof.build()?);
     let presentation: Presentation = presentation.build()?;
     if hex::encode(&presentation.verifying_key().data) != notary.signer {
         return Err(Word::NotaryKey.into());
@@ -270,33 +375,73 @@ async fn ask(title: &str, binding: &str, run: &str, trust: &Trust, credential: &
 fn verify(bytes: &[u8], trusted_notary: &str, trust: &Trust) -> Result<Value> {
     let presentation: Presentation = bincode::deserialize(bytes).context("not a presentation")?;
     let notary = hex::encode(&presentation.verifying_key().data);
-    ensure!(notary == trusted_notary, "signed by a notary that is not the trusted one");
-    let mut provider = CryptoProvider::default();
-    provider.cert = ServerCertVerifier::new(&trust.roots).map_err(|_| anyhow!("cannot use the trusted roots"))?;
-    let PresentationOutput { server_name, connection_info, transcript, extensions, .. } =
-        presentation.verify(&provider).map_err(|_| anyhow!("the presentation does not verify"))?;
+    ensure!(
+        notary == trusted_notary,
+        "signed by a notary that is not the trusted one"
+    );
+    let provider = CryptoProvider {
+        cert: ServerCertVerifier::new(&trust.roots)
+            .map_err(|_| anyhow!("cannot use the trusted roots"))?,
+        ..CryptoProvider::default()
+    };
+    let PresentationOutput {
+        server_name,
+        connection_info,
+        transcript,
+        extensions,
+        ..
+    } = presentation
+        .verify(&provider)
+        .map_err(|_| anyhow!("the presentation does not verify"))?;
     let server = server_name.context("no server identity")?.to_string();
-    ensure!(server == trust.server, "the session was with another server");
+    ensure!(
+        server == trust.server,
+        "the session was with another server"
+    );
     let (run, sequence) = read_run_sequence(&extensions)?;
     let ticket = read_ticket(&extensions)?;
     let canary = attest::read_canary(&extensions)?;
     let transcript = transcript.context("no transcript")?;
 
     // Sent: everything is shown except one run of bytes, which must be the credential's value.
-    let sent = transcript.sent_unsafe(transcript.len_sent()).map_err(|_| anyhow!("bad transcript"))?;
+    let sent = transcript
+        .sent_unsafe(transcript.len_sent())
+        .map_err(|_| anyhow!("bad transcript"))?;
     let shown: Vec<Range<usize>> = transcript.sent_authed().clone().into_inner();
-    ensure!(shown.len() == 2 && shown[0].start == 0 && shown[1].end == sent.len(), "the request is not shown as expected");
+    ensure!(
+        shown.len() == 2 && shown[0].start == 0 && shown[1].end == sent.len(),
+        "the request is not shown as expected"
+    );
     let head_end = find(&sent, END).context("no request body")?;
-    ensure!(shown[1].start == head_end, "something other than the last header's value is hidden");
-    ensure!(shown[1].start - shown[0].end == CREDENTIAL_LENGTH, "the hidden bytes are not a credential's length");
+    ensure!(
+        shown[1].start == head_end,
+        "something other than the last header's value is hidden"
+    );
+    ensure!(
+        shown[1].start - shown[0].end == CREDENTIAL_LENGTH,
+        "the hidden bytes are not a credential's length"
+    );
     let body_bytes = &sent[head_end + END.len()..];
     let (title, intent, position) = approved(body_bytes)?;
-    ensure!(written_head(&sent[..shown[0].end], &title, &binding(&intent, position)?, &trust.server), "the request's head is not the one this tool writes");
+    ensure!(
+        written_head(
+            &sent[..shown[0].end],
+            &title,
+            &binding(&intent, position)?,
+            &trust.server
+        ),
+        "the request's head is not the one this tool writes"
+    );
 
     // Received: the status line and everything from the blank line on.
-    let received = transcript.received_unsafe(transcript.len_received()).map_err(|_| anyhow!("bad transcript"))?;
+    let received = transcript
+        .received_unsafe(transcript.len_received())
+        .map_err(|_| anyhow!("bad transcript"))?;
     let shown: Vec<Range<usize>> = transcript.received_authed().clone().into_inner();
-    ensure!(shown.len() == 2 && shown[0].start == 0 && shown[1].end == received.len(), "the reply is not shown as expected");
+    ensure!(
+        shown.len() == 2 && shown[0].start == 0 && shown[1].end == received.len(),
+        "the reply is not shown as expected"
+    );
     let answer = answer(&received[shown[0].clone()], &received[shown[1].clone()])?;
 
     let mut report = json!({
@@ -341,16 +486,26 @@ async fn run() -> Result<ExitCode> {
             let usage = "usage: ask <presentation file> <intent hash> <position>, the question on standard input";
             let out = args.get(2).context(usage)?;
             let intent = args.get(3).context(usage)?;
-            let position: u64 = args.get(4).context(usage)?.parse().map_err(|_| anyhow!("the position is not a number"))?;
+            let position: u64 = args
+                .get(4)
+                .context(usage)?
+                .parse()
+                .map_err(|_| anyhow!("the position is not a number"))?;
             let binding = binding(intent, position)?;
             let trust = Trust::read()?;
             let notary = NotaryLink::read()?;
             let mut title = String::new();
-            std::io::stdin().take(MAX_QUESTION as u64 + 1).read_to_string(&mut title).context("the question is not text")?;
+            std::io::stdin()
+                .take(MAX_QUESTION as u64 + 1)
+                .read_to_string(&mut title)
+                .context("the question is not text")?;
             ensure!(title.len() <= MAX_QUESTION, "the question is too large");
             let credential = credential()?;
             // Test settings can point anywhere, so a credential shaped like a real one never follows them.
-            ensure!(!(trust.test && credential.starts_with("sk-ant-")), "refusing to send a real credential under test trust settings");
+            ensure!(
+                !(trust.test && credential.starts_with("sk-ant-")),
+                "refusing to send a real credential under test trust settings"
+            );
             // Refused before anything is sent: verify would refuse the presentation anyway.
             pinned_credential(&credential)?;
             // For the test of an operator who tells the notary another run. It is no door: a forger
@@ -358,16 +513,32 @@ async fn run() -> Result<ExitCode> {
             let told = match env::var("HYALOS_TEST_TOLD_RUN") {
                 Ok(run) => run,
                 Err(env::VarError::NotPresent) => intent.clone(),
-                Err(env::VarError::NotUnicode(_)) => bail!("the run to tell the notary is not text"),
+                Err(env::VarError::NotUnicode(_)) => {
+                    bail!("the run to tell the notary is not text")
+                }
             };
             let started = Instant::now();
             let broke = Arc::new(AtomicBool::new(false));
-            let call = tokio::time::timeout(DEADLINE, ask(&title, &binding, &told, &trust, &credential, &notary, &broke)).await;
+            let call = tokio::time::timeout(
+                DEADLINE,
+                ask(
+                    &title,
+                    &binding,
+                    &told,
+                    &trust,
+                    &credential,
+                    &notary,
+                    &broke,
+                ),
+            )
+            .await;
             let checked = match call {
                 Err(_) => Err(Word::Deadline),
                 Ok(Err(error)) => Err(word_for(&error, started, &broke)),
                 // The sequence number is read back from the presentation, as an auditor would read it.
-                Ok(Ok((answer, presentation))) if find(&presentation, credential.as_bytes()).is_none() => {
+                Ok(Ok((answer, presentation)))
+                    if find(&presentation, credential.as_bytes()).is_none() =>
+                {
                     // For the audit's tests of a presentation this check refuses. It is no door: a
                     // forger can change this program the same way, and the audit refuses the file.
                     if env::var_os("HYALOS_TEST_KEEP_PRESENTATION").is_some() {
@@ -396,8 +567,20 @@ async fn run() -> Result<ExitCode> {
             println!("{said}");
         }
         Some("verify") => {
-            let bytes = fs::read(args.get(2).context("usage: verify <presentation file> <trusted notary public key>")?).context("cannot read")?;
-            println!("{}", verify(&bytes, args.get(3).context("name the notary public key you trust")?, &Trust::read()?)?);
+            let bytes = fs::read(
+                args.get(2)
+                    .context("usage: verify <presentation file> <trusted notary public key>")?,
+            )
+            .context("cannot read")?;
+            println!(
+                "{}",
+                verify(
+                    &bytes,
+                    args.get(3)
+                        .context("name the notary public key you trust")?,
+                    &Trust::read()?
+                )?
+            );
         }
         Some("link-key") => {
             // The operator's own transport key: made once, owner-only. Prints only its public half.
@@ -423,7 +606,12 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{io::BufRead, os::unix::fs::DirBuilderExt, process::{Child, Command, Stdio}, time::{Duration, SystemTime, UNIX_EPOCH}};
+    use std::{
+        io::BufRead,
+        os::unix::fs::DirBuilderExt,
+        process::{Child, Command, Stdio},
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
 
     /// Removes a test's directory and ends its programs however the test ends.
     struct Rig(std::path::PathBuf, Vec<Child>);
@@ -441,26 +629,61 @@ mod tests {
     /// request's hidden bytes, and what verify says about its presentation. It needs the built
     /// programs, so run these with plain `cargo test`: a filter such as `--bin attest` skips them.
     async fn session_hiding(credential: &str, position: u64) -> Result<Value> {
-        let dir = std::env::temp_dir().join(format!("hyalos-attest-hidden-{}-{position}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "hyalos-attest-hidden-{}-{position}",
+            std::process::id()
+        ));
         fs::create_dir_all(&dir)?;
         let mut rig = Rig(dir.clone(), Vec::new());
         let root_file = dir.join("root.der");
         // Beside this test binary's directory, where cargo builds the crate's programs.
-        let built = env::current_exe()?.parent().and_then(|deps| deps.parent()).context("no build directory")?.to_path_buf();
-        ensure!(built.join("standin").exists() && built.join("notary").exists(), "the stand-in or the notary is not built");
-        let mut standin = Command::new(built.join("standin")).arg(&root_file).arg("provider.test").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
+        let built = env::current_exe()?
+            .parent()
+            .and_then(|deps| deps.parent())
+            .context("no build directory")?
+            .to_path_buf();
+        ensure!(
+            built.join("standin").exists() && built.join("notary").exists(),
+            "the stand-in or the notary is not built"
+        );
+        let mut standin = Command::new(built.join("standin"))
+            .arg(&root_file)
+            .arg("provider.test")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?;
         let mut line = String::new();
-        std::io::BufReader::new(standin.stdout.take().context("no output")?).read_line(&mut line)?;
+        std::io::BufReader::new(standin.stdout.take().context("no output")?)
+            .read_line(&mut line)?;
         rig.1.push(standin);
-        let address = line.trim().strip_prefix("listening ").context("the stand-in did not start")?.to_string();
+        let address = line
+            .trim()
+            .strip_prefix("listening ")
+            .context("the stand-in did not start")?
+            .to_string();
         let me = Identity::make_or_load(&dir.join("operator.key"))?;
         // The notary holds every session without a fresh pass of the customer's provider check.
         let notary_dir = dir.join("notary");
-        fs::DirBuilder::new().recursive(true).mode(0o700).create(&notary_dir)?;
-        let passed = attest::canary::State { standing: attest::canary::Standing::Passed, checked: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() };
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&notary_dir)?;
+        let passed = attest::canary::State {
+            standing: attest::canary::Standing::Passed,
+            checked: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+        };
         attest::canary::write_new(&attest::canary::path(&notary_dir), passed.text().as_bytes())?;
         let mut child = Command::new(built.join("notary"))
-            .args(["--listen", "127.0.0.1:0", "--approved-server", "provider.test", "--stop-on-stdin-close", "--operator-transport-public", &me.public, "--dir"])
+            .args([
+                "--listen",
+                "127.0.0.1:0",
+                "--approved-server",
+                "provider.test",
+                "--stop-on-stdin-close",
+                "--operator-transport-public",
+                &me.public,
+                "--dir",
+            ])
             .arg(dir.join("notary"))
             .arg("--root")
             .arg(&root_file)
@@ -472,21 +695,51 @@ mod tests {
         let mut field = |name: &str| -> Result<String> {
             let mut line = String::new();
             printed.read_line(&mut line)?;
-            Ok(line.trim().strip_prefix(name).context("the notary did not start")?.trim().to_string())
+            Ok(line
+                .trim()
+                .strip_prefix(name)
+                .context("the notary did not start")?
+                .trim()
+                .to_string())
         };
-        let (signer, transport, notary_address) = (field("signing")?, field("transport")?, field("listening")?);
-        let authorised = Command::new(built.join("notary")).args(["authorize", "--dir"]).arg(dir.join("notary")).args(["--task", &"b".repeat(64), "--attempts", "1"]).output()?;
+        let (signer, transport, notary_address) =
+            (field("signing")?, field("transport")?, field("listening")?);
+        let authorised = Command::new(built.join("notary"))
+            .args(["authorize", "--dir"])
+            .arg(dir.join("notary"))
+            .args(["--task", &"b".repeat(64), "--attempts", "1"])
+            .output()?;
         ensure!(authorised.status.success(), "the task was not authorised");
         let authorisation = String::from_utf8(authorised.stdout)?.trim().to_string();
         let mut roots = tlsn::webpki::RootCertStore::mozilla();
-        roots.roots.push(tlsn::webpki::CertificateDer(fs::read(&root_file)?));
-        let trust = Trust { server: "provider.test".to_string(), roots, address, test: true };
+        roots
+            .roots
+            .push(tlsn::webpki::CertificateDer(fs::read(&root_file)?));
+        let trust = Trust {
+            server: "provider.test".to_string(),
+            roots,
+            address,
+            test: true,
+        };
         let run = "a".repeat(64);
         let carried = attest::binding(&run, position)?;
-        let notary = NotaryLink { address: notary_address, transport, signer: signer.clone(), authorisation, me };
+        let notary = NotaryLink {
+            address: notary_address,
+            transport,
+            signer: signer.clone(),
+            authorisation,
+            me,
+        };
         let broke = Arc::new(AtomicBool::new(false));
-        let attested = tokio::time::timeout(Duration::from_secs(120), ask("A title", &carried, &run, &trust, credential, &notary, &broke)).await;
-        let (_, presentation) = attested.map_err(|_| anyhow!("the attested call did not finish in 120 seconds"))??;
+        let attested = tokio::time::timeout(
+            Duration::from_secs(120),
+            ask(
+                "A title", &carried, &run, &trust, credential, &notary, &broke,
+            ),
+        )
+        .await;
+        let (_, presentation) =
+            attested.map_err(|_| anyhow!("the attested call did not finish in 120 seconds"))??;
         verify(&presentation, &signer, &trust)
     }
 

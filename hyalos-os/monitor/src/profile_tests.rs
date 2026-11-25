@@ -1,7 +1,10 @@
 //! Record version 4 and the one execution profile both backends build from (S-02).
 
 use super::*;
-use std::{path::{Path, PathBuf}, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
@@ -12,7 +15,13 @@ fn committed(path: &str) -> Vec<u8> {
 }
 
 fn fixture_inputs() -> Vec<Vec<u8>> {
-    read_inputs(root().join("evidence/fixtures/issues.tsv").to_str().unwrap()).unwrap()
+    read_inputs(
+        root()
+            .join("evidence/fixtures/issues.tsv")
+            .to_str()
+            .unwrap(),
+    )
+    .unwrap()
 }
 
 fn guest() -> Vec<u8> {
@@ -20,7 +29,13 @@ fn guest() -> Vec<u8> {
 }
 
 fn v4_run() -> Transcript {
-    execute(&Backend::Process, &guest(), fixture_inputs(), Mode::Record { seed: 0 }).unwrap()
+    execute(
+        &Backend::Process,
+        &guest(),
+        fixture_inputs(),
+        Mode::Record { seed: 0 },
+    )
+    .unwrap()
 }
 
 fn with_field(t: &Transcript, field: &str, value: serde_json::Value) -> Vec<u8> {
@@ -50,21 +65,33 @@ fn kvm_gate(usable: bool, required: bool) -> KvmGate {
 /// another test reads it.
 fn built_kernel(selftest: bool) -> Option<Vec<u8>> {
     let dir = root().join("kernel-image");
-    let target = if selftest { "target-selftest" } else { "target" };
+    let target = if selftest {
+        "target-selftest"
+    } else {
+        "target"
+    };
     let mut build = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
-    build.current_dir(&dir).args(["build", "--release", "--locked", "--target-dir", target]);
+    build
+        .current_dir(&dir)
+        .args(["build", "--release", "--locked", "--target-dir", target]);
     if selftest {
         build.args(["--features", "selftest"]);
     }
     for (name, _) in env::vars_os() {
-        if name.to_str().is_some_and(|n| n.starts_with("CARGO") && n != "CARGO_HOME" || n == "RUSTFLAGS" || n == "RUSTC") {
+        if name.to_str().is_some_and(|n| {
+            n.starts_with("CARGO") && n != "CARGO_HOME" || n == "RUSTFLAGS" || n == "RUSTC"
+        }) {
             build.env_remove(name);
         }
     }
     if !build.output().ok()?.status.success() {
         return None;
     }
-    fs::read(dir.join(target).join("x86_64-unknown-none/release/hyalos-kernel")).ok()
+    fs::read(
+        dir.join(target)
+            .join("x86_64-unknown-none/release/hyalos-kernel"),
+    )
+    .ok()
 }
 
 /// The KVM backend, or `None` when this host reports the comparison as skipped.
@@ -79,7 +106,11 @@ pub(crate) fn selftest_kvm_backend(test: &str) -> Option<Backend> {
 }
 
 fn gated_kvm_backend(test: &str, selftest: bool) -> Option<Backend> {
-    let usable = fs::OpenOptions::new().read(true).write(true).open("/dev/kvm").is_ok();
+    let usable = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/kvm")
+        .is_ok();
     let required = env::var_os("HYALOS_REQUIRE_KVM").is_some();
     match kvm_gate(usable, required) {
         KvmGate::Skip => {
@@ -90,8 +121,13 @@ fn gated_kvm_backend(test: &str, selftest: bool) -> Option<Backend> {
         KvmGate::Run => {}
     }
     match built_kernel(selftest) {
-        Some(kernel) => Some(Backend::Kvm { kernel, limit: Duration::from_secs(30) }),
-        None if required => panic!("{test}: HYALOS_REQUIRE_KVM is set and the kernel image did not build"),
+        Some(kernel) => Some(Backend::Kvm {
+            kernel,
+            limit: Duration::from_secs(30),
+        }),
+        None if required => {
+            panic!("{test}: HYALOS_REQUIRE_KVM is set and the kernel image did not build")
+        }
         None => {
             eprintln!("skipped: {test} needs the x86_64-unknown-none target");
             None
@@ -101,7 +137,11 @@ fn gated_kvm_backend(test: &str, selftest: bool) -> Option<Backend> {
 
 /// The lines of a backend's mapping from a profile to its `wasmi` settings.
 fn mapping(source: &str) -> Vec<&str> {
-    let lines = source.lines().map(str::trim).filter(|l| l.starts_with('.') && !l.starts_with(".set_fuel") && l.contains("(profile.")).collect::<Vec<_>>();
+    let lines = source
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with('.') && !l.starts_with(".set_fuel") && l.contains("(profile."))
+        .collect::<Vec<_>>();
     assert_eq!(lines.len(), 15, "{lines:?}");
     lines
 }
@@ -113,8 +153,15 @@ fn s_02_1_e1_both_backends_map_one_profile_the_same_way() {
     assert_eq!(mapping(process), mapping(kernel));
     assert!(kernel.contains("const PROFILE: Profile = PROFILE_1;"));
     for source in [process, include_str!("main.rs"), kernel] {
-        for literal in [concat!("200_", "000_000"), concat!("4 * 1024", " * 1024"), concat!(".floats(", "false)")] {
-            assert!(!source.contains(literal), "a setting is defined outside the profile: {literal}");
+        for literal in [
+            concat!("200_", "000_000"),
+            concat!("4 * 1024", " * 1024"),
+            concat!(".floats(", "false)"),
+        ] {
+            assert!(
+                !source.contains(literal),
+                "a setting is defined outside the profile: {literal}"
+            );
         }
     }
 }
@@ -122,26 +169,55 @@ fn s_02_1_e1_both_backends_map_one_profile_the_same_way() {
 #[test]
 fn s_02_1_e2_a_float_guest_is_refused_on_either_backend() {
     let wasm = wat::parse_str(with_run("(drop (f64.div (f64.const 0) (f64.const 0)))")).unwrap();
-    assert_eq!(execute(&Backend::Process, &wasm, vec![], Mode::Record { seed: 0 }).err(), Some(Reason::InvalidModule));
+    assert_eq!(
+        execute(&Backend::Process, &wasm, vec![], Mode::Record { seed: 0 }).err(),
+        Some(Reason::InvalidModule)
+    );
     if let Some(kvm) = kvm_backend("s_02_1_e2") {
-        assert_eq!(execute(&kvm, &wasm, vec![], Mode::Record { seed: 0 }).err(), Some(Reason::InvalidModule));
+        assert_eq!(
+            execute(&kvm, &wasm, vec![], Mode::Record { seed: 0 }).err(),
+            Some(Reason::InvalidModule)
+        );
     }
 }
 
 #[test]
 fn s_02_2_e1_a_new_run_is_version_4_and_names_profile_1() {
     let t = v4_run();
-    assert_eq!((t.version, t.profile.as_deref()), (4, Some("hyalos.profile/1")));
-    let written: serde_json::Value = serde_json::from_slice(&serde_json::to_vec(&t).unwrap()).unwrap();
-    assert_eq!((&written["version"], &written["profile"]), (&serde_json::json!(4), &serde_json::json!("hyalos.profile/1")));
-    assert_eq!(replay(&Backend::Process, &guest(), &read_transcript(&serde_json::to_vec(&t).unwrap()).unwrap()), Ok(()));
+    assert_eq!(
+        (t.version, t.profile.as_deref()),
+        (4, Some("hyalos.profile/1"))
+    );
+    let written: serde_json::Value =
+        serde_json::from_slice(&serde_json::to_vec(&t).unwrap()).unwrap();
+    assert_eq!(
+        (&written["version"], &written["profile"]),
+        (
+            &serde_json::json!(4),
+            &serde_json::json!("hyalos.profile/1")
+        )
+    );
+    assert_eq!(
+        replay(
+            &Backend::Process,
+            &guest(),
+            &read_transcript(&serde_json::to_vec(&t).unwrap()).unwrap()
+        ),
+        Ok(())
+    );
 }
 
 #[test]
 fn s_02_2_e2_two_profile_names_give_two_task_identities() {
     let (hash, inputs) = (sha(&guest()), fixture_inputs());
-    assert_ne!(task_v4("hyalos.profile/1", &hash, &inputs), task_v4("hyalos.profile/2", &hash, &inputs));
-    assert_ne!(task_v4("hyalos.profile/1", &hash, &inputs), task_v2(&hash, &inputs));
+    assert_ne!(
+        task_v4("hyalos.profile/1", &hash, &inputs),
+        task_v4("hyalos.profile/2", &hash, &inputs)
+    );
+    assert_ne!(
+        task_v4("hyalos.profile/1", &hash, &inputs),
+        task_v2(&hash, &inputs)
+    );
 }
 
 #[test]
@@ -157,16 +233,27 @@ fn s_02_2_the_version_4_identity_is_the_documented_frame() {
     frame.extend(3u64.to_be_bytes());
     frame.extend(b"one");
     frame.extend(0u64.to_be_bytes());
-    assert_eq!(task_v4("hyalos.profile/1", &hash, &inputs), Some(sha(&frame)));
+    assert_eq!(
+        task_v4("hyalos.profile/1", &hash, &inputs),
+        Some(sha(&frame))
+    );
 }
 
 #[test]
 fn s_02_3_e1_every_committed_older_record_replays_byte_identically() {
-    for (path, version) in [("evidence/out/live3.json", 1), ("evidence/out/two-machines-record/record.json", 2), ("evidence/out/two-machines-canary/record.json", 3)] {
+    for (path, version) in [
+        ("evidence/out/live3.json", 1),
+        ("evidence/out/two-machines-record/record.json", 2),
+        ("evidence/out/two-machines-canary/record.json", 3),
+    ] {
         let bytes = committed(path);
         let t = read_transcript(&bytes).unwrap();
         assert_eq!((t.version, t.profile.as_deref()), (version, None), "{path}");
-        assert_eq!(serde_json::to_vec_pretty(&t).unwrap(), bytes.trim_ascii_end(), "{path}");
+        assert_eq!(
+            serde_json::to_vec_pretty(&t).unwrap(),
+            bytes.trim_ascii_end(),
+            "{path}"
+        );
         assert_eq!(replay(&Backend::Process, &guest(), &t), Ok(()), "{path}");
     }
 }
@@ -175,43 +262,72 @@ fn s_02_3_e1_every_committed_older_record_replays_byte_identically() {
 fn s_02_3_e2_a_version_3_record_holding_a_profile_is_refused() {
     let t = read_transcript(&committed("evidence/out/two-machines-canary/record.json")).unwrap();
     let bytes = with_field(&t, "profile", "hyalos.profile/1".into());
-    assert_eq!(read_transcript(&bytes).unwrap_err(), "unknown field `profile` in a version 3 record");
+    assert_eq!(
+        read_transcript(&bytes).unwrap_err(),
+        "unknown field `profile` in a version 3 record"
+    );
 }
 
 #[test]
 fn s_02_3_e2_a_profile_field_holding_null_is_refused_on_any_version() {
-    let older = read_transcript(&committed("evidence/out/two-machines-canary/record.json")).unwrap();
+    let older =
+        read_transcript(&committed("evidence/out/two-machines-canary/record.json")).unwrap();
     for t in [&older, &v4_run()] {
-        assert_eq!(read_transcript(&with_field(t, "profile", serde_json::Value::Null)).unwrap_err(), "cannot parse", "version {}", t.version);
+        assert_eq!(
+            read_transcript(&with_field(t, "profile", serde_json::Value::Null)).unwrap_err(),
+            "cannot parse",
+            "version {}",
+            t.version
+        );
     }
 }
 
 #[test]
 fn s_02_4_e1_an_unknown_profile_is_refused_and_named() {
     let bytes = with_field(&v4_run(), "profile", "hyalos.profile/9".into());
-    assert_eq!(read_transcript(&bytes).unwrap_err(), "unknown profile hyalos.profile/9");
+    assert_eq!(
+        read_transcript(&bytes).unwrap_err(),
+        "unknown profile hyalos.profile/9"
+    );
 }
 
 #[test]
 fn s_02_4_a_profile_name_that_is_not_plain_is_not_echoed() {
     let bytes = with_field(&v4_run(), "profile", "secret\nvalue".into());
-    assert_eq!(read_transcript(&bytes).unwrap_err(), "unknown profile <not a profile name>");
+    assert_eq!(
+        read_transcript(&bytes).unwrap_err(),
+        "unknown profile <not a profile name>"
+    );
 }
 
 #[test]
 fn s_02_4_e2_a_version_4_record_with_no_profile_is_refused() {
     let mut record = serde_json::to_value(v4_run()).unwrap();
     record.as_object_mut().unwrap().remove("profile");
-    assert_eq!(read_transcript(&serde_json::to_vec(&record).unwrap()).unwrap_err(), "version 4 record names no profile");
+    assert_eq!(
+        read_transcript(&serde_json::to_vec(&record).unwrap()).unwrap_err(),
+        "version 4 record names no profile"
+    );
 }
 
 #[test]
 fn s_02_5_e1_both_backends_write_byte_identical_records() {
-    let Some(kvm) = kvm_backend("s_02_5_e1") else { return };
+    let Some(kvm) = kvm_backend("s_02_5_e1") else {
+        return;
+    };
     let (guest, inputs) = (guest(), fixture_inputs());
-    let process = execute(&Backend::Process, &guest, inputs.clone(), Mode::Record { seed: 0 }).unwrap();
+    let process = execute(
+        &Backend::Process,
+        &guest,
+        inputs.clone(),
+        Mode::Record { seed: 0 },
+    )
+    .unwrap();
     let kernel = execute(&kvm, &guest, inputs, Mode::Record { seed: 0 }).unwrap();
-    assert_eq!(serde_json::to_vec_pretty(&process).unwrap(), serde_json::to_vec_pretty(&kernel).unwrap());
+    assert_eq!(
+        serde_json::to_vec_pretty(&process).unwrap(),
+        serde_json::to_vec_pretty(&kernel).unwrap()
+    );
     assert_eq!(replay(&kvm, &guest, &process), Ok(()));
 }
 
@@ -222,13 +338,25 @@ fn s_02_5_e2_no_kvm_reports_skipped_unless_it_is_required() {
     assert_eq!(kvm_gate(true, false), KvmGate::Run);
     assert_eq!(kvm_gate(true, true), KvmGate::Run);
     let ci = fs::read_to_string(root().join("../.github/workflows/ci.yml")).unwrap();
-    let job = ci.split("\n  hyalos-os:\n").nth(1).unwrap().split("\n\n  #").next().unwrap();
-    assert!(job.contains("HYALOS_REQUIRE_KVM: \"1\""), "the CI job must not skip the comparison");
+    let job = ci
+        .split("\n  hyalos-os:\n")
+        .nth(1)
+        .unwrap()
+        .split("\n\n  #")
+        .next()
+        .unwrap();
+    assert!(
+        job.contains("HYALOS_REQUIRE_KVM: \"1\""),
+        "the CI job must not skip the comparison"
+    );
 }
 
 /// The one `wasmi` version a lockfile holds.
 fn locked_wasmi(lock: &str) -> &str {
-    let mut versions = lock.split("[[package]]").filter(|p| p.contains("name = \"wasmi\"\n")).filter_map(|p| p.split("version = \"").nth(1)?.split('"').next());
+    let mut versions = lock
+        .split("[[package]]")
+        .filter(|p| p.contains("name = \"wasmi\"\n"))
+        .filter_map(|p| p.split("version = \"").nth(1)?.split('"').next());
     let version = versions.next().expect("no wasmi in the lockfile");
     assert_eq!(versions.next(), None, "two wasmi versions");
     version

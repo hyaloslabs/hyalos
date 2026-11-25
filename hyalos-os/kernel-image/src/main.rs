@@ -5,6 +5,8 @@
 
 #![no_std]
 #![no_main]
+// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+#![allow(unsafe_code)]
 
 extern crate alloc;
 
@@ -98,7 +100,14 @@ struct Request {
 }
 
 fn hypercall(op: u64, a: u64, b: u64, c: u64, d: u64) -> i64 {
-    let mut request = Request { op, a, b, c, d, ret: 0 };
+    let mut request = Request {
+        op,
+        a,
+        b,
+        c,
+        d,
+        ret: 0,
+    };
     let address = &raw mut request as u32;
     unsafe {
         asm!("out dx, eax", in("dx") 0x1000u16, in("eax") address, options(nostack, preserves_flags));
@@ -135,7 +144,10 @@ fn span(caller: &mut Caller<'_, Host>, ptr: i32) -> (u64, u64) {
     if ptr > data.len() {
         return (0, 0);
     }
-    (data.as_mut_ptr() as u64 + ptr as u64, (data.len() - ptr) as u64)
+    (
+        data.as_mut_ptr() as u64 + ptr as u64,
+        (data.len() - ptr) as u64,
+    )
 }
 
 fn fits(available: u64, len: i32) -> u64 {
@@ -146,28 +158,62 @@ fn linker(engine: &Engine) -> Result<Linker<Host>, u64> {
     let mut linker = Linker::new(engine);
     let bad = |_| INVALID_MODULE;
     linker
-        .func_wrap("hyalos", "read", |mut c: Caller<'_, Host>, index: i32, ptr: i32, cap: i32| -> i32 {
-            let (address, available) = span(&mut c, ptr);
-            hypercall(READ, u64::from(index as u32), address, u64::from(cap as u32), available) as i32
-        })
+        .func_wrap(
+            "hyalos",
+            "read",
+            |mut c: Caller<'_, Host>, index: i32, ptr: i32, cap: i32| -> i32 {
+                let (address, available) = span(&mut c, ptr);
+                hypercall(
+                    READ,
+                    u64::from(index as u32),
+                    address,
+                    u64::from(cap as u32),
+                    available,
+                ) as i32
+            },
+        )
         .map_err(bad)?;
     linker
-        .func_wrap("hyalos", "infer", |mut c: Caller<'_, Host>, schema: i32, ptr: i32, len: i32| -> i32 {
-            let (address, available) = span(&mut c, ptr);
-            hypercall(INFER, u64::from(schema as u32), address, u64::from(len as u32), fits(available, len)) as i32
-        })
+        .func_wrap(
+            "hyalos",
+            "infer",
+            |mut c: Caller<'_, Host>, schema: i32, ptr: i32, len: i32| -> i32 {
+                let (address, available) = span(&mut c, ptr);
+                hypercall(
+                    INFER,
+                    u64::from(schema as u32),
+                    address,
+                    u64::from(len as u32),
+                    fits(available, len),
+                ) as i32
+            },
+        )
         .map_err(bad)?;
     linker
-        .func_wrap("hyalos", "effect", |mut c: Caller<'_, Host>, kind: i32, ptr: i32, len: i32| -> i32 {
-            let (address, available) = span(&mut c, ptr);
-            hypercall(EFFECT, u64::from(kind as u32), address, u64::from(len as u32), fits(available, len)) as i32
-        })
+        .func_wrap(
+            "hyalos",
+            "effect",
+            |mut c: Caller<'_, Host>, kind: i32, ptr: i32, len: i32| -> i32 {
+                let (address, available) = span(&mut c, ptr);
+                hypercall(
+                    EFFECT,
+                    u64::from(kind as u32),
+                    address,
+                    u64::from(len as u32),
+                    fits(available, len),
+                ) as i32
+            },
+        )
         .map_err(bad)?;
     linker
-        .func_wrap("hyalos", "return", |mut c: Caller<'_, Host>, ptr: i32, len: i32| -> Result<(), Error> {
-            c.data_mut().result = Some((ptr as u32, len as u32));
-            Err(Error::i32_exit(0))
-        })
+        .func_wrap(
+            "hyalos",
+            "return",
+            |mut c: Caller<'_, Host>, ptr: i32, len: i32| -> Result<(), Error> {
+                c.data_mut().result = Some((ptr as u32, len as u32));
+                Err(Error::i32_exit(0))
+            },
+        )
         .map_err(bad)?;
     Ok(linker)
 }
@@ -205,7 +251,11 @@ fn run(guest: &[u8]) -> u64 {
     let has = |name: &str, func: bool| {
         module.exports().any(|e| {
             e.name() == name
-                && if func { matches!(e.ty(), ExternType::Func(_)) } else { matches!(e.ty(), ExternType::Memory(_)) }
+                && if func {
+                    matches!(e.ty(), ExternType::Func(_))
+                } else {
+                    matches!(e.ty(), ExternType::Memory(_))
+                }
         })
     };
     if !has("run", true) || !has("memory", false) {
@@ -219,7 +269,13 @@ fn run(guest: &[u8]) -> u64 {
         .instances(profile.instances)
         .trap_on_grow_failure(profile.trap_on_grow_failure)
         .build();
-    let mut store = Store::new(&engine, Host { limits, result: None });
+    let mut store = Store::new(
+        &engine,
+        Host {
+            limits,
+            result: None,
+        },
+    );
     store.limiter(|h| &mut h.limits);
     if store.set_fuel(profile.fuel).is_err() {
         return INVALID_MODULE;
@@ -243,19 +299,39 @@ fn run(guest: &[u8]) -> u64 {
     let Ok(left) = store.get_fuel() else {
         return GUEST_TRAP;
     };
-    let (Some((ptr, len)), Some(memory)) = (store.data().result, instance.get_memory(&store, "memory")) else {
+    let (Some((ptr, len)), Some(memory)) =
+        (store.data().result, instance.get_memory(&store, "memory"))
+    else {
         return NO_RESULT;
     };
     let data = memory.data(&store);
-    let inside = (ptr as usize).checked_add(len as usize).is_some_and(|end| end <= data.len());
-    let address = if inside { data.as_ptr() as u64 + u64::from(ptr) } else { 0 };
-    hypercall(RETURN, address, u64::from(len), u64::from(inside), profile.fuel - left);
+    let inside = (ptr as usize)
+        .checked_add(len as usize)
+        .is_some_and(|end| end <= data.len());
+    let address = if inside {
+        data.as_ptr() as u64 + u64::from(ptr)
+    } else {
+        0
+    };
+    hypercall(
+        RETURN,
+        address,
+        u64::from(len),
+        u64::from(inside),
+        profile.fuel - left,
+    );
     NO_RESULT
 }
 
 /// The monitor enters here in 64-bit ring 3 with the guest's bytes in the first two arguments.
+///
+/// # Safety
+///
+/// Only the monitor calls this, once, as the image's entry point, with `guest` pointing at `len`
+/// bytes it placed in the kernel's memory and maps read-only for the whole run (`kvm.rs`, `map`).
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(guest: *const u8, len: usize) -> ! {
+pub unsafe extern "C" fn _start(guest: *const u8, len: usize) -> ! {
+    // SAFETY: the monitor placed `len` bytes at `guest`, mapped read-only for the whole run.
     let guest = unsafe { core::slice::from_raw_parts(guest, len) };
     #[cfg(feature = "selftest")]
     probe(guest);
@@ -280,8 +356,20 @@ const CPUID_REPORT: u8 = 0x80;
 /// the same list.
 #[cfg(feature = "selftest")]
 const REPORTED_LEAVES: [u32; 14] = [
-    0, 1, 4, 7, 0xb, 0xd, 0x4000_0000, 0x4000_0001, 0x8000_0000, 0x8000_0001, 0x8000_0002, 0x8000_0003,
-    0x8000_0004, 0x8000_0008,
+    0,
+    1,
+    4,
+    7,
+    0xb,
+    0xd,
+    0x4000_0000,
+    0x4000_0001,
+    0x8000_0000,
+    0x8000_0001,
+    0x8000_0002,
+    0x8000_0003,
+    0x8000_0004,
+    0x8000_0008,
 ];
 
 /// Returns, as the run's result, `EAX`, `EBX`, `ECX` and `EDX` of each reported leaf, little-endian.
@@ -296,7 +384,13 @@ fn report_cpuid() {
             unsafe { ptr::write_volatile(out.add(at * 4 + word), value) };
         }
     }
-    hypercall(RETURN, HEAP_START as u64, (REPORTED_LEAVES.len() * 16) as u64, 1, 0);
+    hypercall(
+        RETURN,
+        HEAP_START as u64,
+        (REPORTED_LEAVES.len() * 16) as u64,
+        1,
+        0,
+    );
 }
 
 /// The bytes that ask the self-test kernel to read `RDSEED` and then ask one question: one whose
@@ -313,7 +407,9 @@ fn rdseed() -> u64 {
     for _ in 0..1_000_000 {
         let (value, ready): (u64, u8);
         // SAFETY: reads a register and the carry flag, and touches no memory.
-        unsafe { asm!("rdseed {v}", "setc {r}", v = out(reg) value, r = out(reg_byte) ready, options(nomem, nostack)) };
+        unsafe {
+            asm!("rdseed {v}", "setc {r}", v = out(reg) value, r = out(reg_byte) ready, options(nomem, nostack))
+        };
         if ready != 0 {
             return value;
         }
@@ -352,14 +448,17 @@ fn probe(guest: &[u8]) {
     let table = [0u64; 2]; // an empty descriptor table to load
     unsafe {
         match guest.first().copied().unwrap_or(0) {
-            1 => ptr::write_volatile(_start as usize as *mut u8, 0x90), // change its own code
+            1 => ptr::write_volatile(
+                _start as unsafe extern "C" fn(*const u8, usize) -> ! as usize as *mut u8,
+                0x90,
+            ), // change its own code
             2 => {
                 ptr::write_volatile(HEAP_START as *mut u8, 0xc3); // run bytes it wrote
                 core::mem::transmute::<usize, extern "C" fn()>(HEAP_START)();
             }
             3 => ptr::write_volatile(0x1000 as *mut u64, 0), // change its page tables
             4 => ptr::write_volatile(0x1c0_0000 as *mut u8, 1), // run off the stack
-            5 => drop(ptr::read_volatile(8 as *const u8)), // follow a null pointer
+            5 => drop(ptr::read_volatile(8 as *const u8)),   // follow a null pointer
             6 => ptr::write_volatile(guest.as_ptr() as *mut u8, 0), // change the signed guest
             7 => drop(ptr::read_volatile(0x200_0000 as *const u8)), // read past its memory
             8 => asm!("rdtsc", out("eax") _, out("edx") _, options(nomem, nostack)), // read the clock
@@ -388,7 +487,9 @@ fn probe(guest: &[u8]) {
             13 => asm!("lgdt [{}]", in(reg) table.as_ptr(), options(nostack)),
             14 => asm!("lidt [{}]", in(reg) table.as_ptr(), options(nostack)),
             // Write the time counter's model-specific register.
-            15 => asm!("wrmsr", in("ecx") 0x10u32, in("eax") 0u32, in("edx") 0u32, options(nostack)),
+            15 => {
+                asm!("wrmsr", in("ecx") 0x10u32, in("eax") 0u32, in("edx") 0u32, options(nostack))
+            }
             16 => asm!("hlt", options(nomem, nostack)),
             17 => asm!("rdrand rax", out("rax") _, options(nomem, nostack)), // hardware randomness
             18 => asm!("rdpid rax", out("rax") _, options(nomem, nostack)), // read the processor ID

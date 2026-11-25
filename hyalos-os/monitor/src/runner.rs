@@ -20,6 +20,9 @@
 //! A frame is a 4-byte little-endian length, counting every byte after it, then the version byte,
 //! the type byte and the fields.
 
+// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+#![allow(unsafe_code)]
+
 use crate::{
     MAX_RESULT, Reason,
     kvm::{self, Calls, GUEST_MAX, RECORD_MAX},
@@ -137,7 +140,8 @@ pub(crate) fn boot(kernel: &[u8], guest: &[u8]) -> Option<Vec<u8>> {
         .then(|| frame(BOOT, &[&len.to_le_bytes(), kernel, guest]))
 }
 
-fn split_boot(fields: &[u8]) -> Option<(&[u8], &[u8])> {
+/// The kernel and the guest of a `Boot` frame's fields, or `None` when its kernel length is short.
+pub(crate) fn split_boot(fields: &[u8]) -> Option<(&[u8], &[u8])> {
     let len = u32::from_le_bytes(fields.get(..4)?.try_into().ok()?) as usize;
     let rest = &fields[4..];
     (len <= rest.len()).then(|| rest.split_at(len))
@@ -815,7 +819,7 @@ impl Options {
             rest => rest,
         };
         #[cfg(feature = "test-switches")]
-        let rest = options.test_switches(&rest)?;
+        let rest = options.test_switches(rest)?;
         rest.is_empty().then_some(options)
     }
 

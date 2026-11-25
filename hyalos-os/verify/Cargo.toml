@@ -17,3 +17,6 @@ libc = "0.2"
 attest-check = { path = "../attest-check" }
 base64 = "0.22"
 serde_json = "1"
+
+[lints]
+workspace = true

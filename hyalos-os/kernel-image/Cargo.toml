@@ -19,3 +19,13 @@ panic = "abort"
 
 [profile.dev]
 panic = "abort"
+
+# The lints of hyalOS's workspace (`../Cargo.toml`), repeated, since this is a workspace of its own.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[lints]
+workspace = true

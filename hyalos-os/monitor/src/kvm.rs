@@ -11,8 +11,14 @@
 //! pack), which asks the holder for every answer through `Calls`. The host probe's fixed sequences
 //! are the one machine built in the monitor's own process.
 
+// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+#![allow(unsafe_code)]
+
 use crate::{MAX_RESULT, Reason};
-use kvm_bindings::{CpuId, KVM_MAX_CPUID_ENTRIES, Msrs, kvm_cpuid_entry2, kvm_dtable, kvm_msr_entry, kvm_regs, kvm_segment, kvm_sregs, kvm_userspace_memory_region};
+use kvm_bindings::{
+    CpuId, KVM_MAX_CPUID_ENTRIES, Msrs, kvm_cpuid_entry2, kvm_dtable, kvm_msr_entry, kvm_regs,
+    kvm_segment, kvm_sregs, kvm_userspace_memory_region,
+};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use std::{
     io::Write as _,
@@ -44,7 +50,16 @@ impl Ram {
     fn new() -> Option<Self> {
         let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE;
         // SAFETY: a fresh anonymous mapping, owned by this value until it is dropped.
-        let at = unsafe { libc::mmap(ptr::null_mut(), RAM as usize, libc::PROT_READ | libc::PROT_WRITE, flags, -1, 0) };
+        let at = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                RAM as usize,
+                libc::PROT_READ | libc::PROT_WRITE,
+                flags,
+                -1,
+                0,
+            )
+        };
         if at == libc::MAP_FAILED {
             return None;
         }
@@ -92,12 +107,18 @@ struct Ticker;
 
 impl Ticker {
     fn set(micros: i64) {
-        let every = libc::timeval { tv_sec: 0, tv_usec: micros };
-        let timer = libc::itimerval { it_interval: every, it_value: every };
+        let every = libc::timeval {
+            tv_sec: 0,
+            tv_usec: micros,
+        };
+        let timer = libc::itimerval {
+            it_interval: every,
+            it_value: every,
+        };
         // SAFETY: plain libc calls with valid arguments; the handler does nothing.
         unsafe {
             let mut action: libc::sigaction = std::mem::zeroed();
-            action.sa_sigaction = tick as usize;
+            action.sa_sigaction = tick as extern "C" fn(libc::c_int) as usize;
             libc::sigaction(libc::SIGALRM, &action, ptr::null_mut());
             libc::setitimer(libc::ITIMER_REAL, &timer, ptr::null_mut());
         }
@@ -119,11 +140,14 @@ fn field(bytes: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
 }
 
+/// A loaded segment: its first address, the address after it, and its ELF flags.
+type Segment = (u64, u64, u32);
+
 /// Copies the kernel image into memory and returns its entry point. An image is an ELF file. In a
 /// build with the `test-switches` feature it may also be raw machine code placed at the kernel's
 /// base, for the hostile-kernel tests; a release build refuses that (`None`, so `KernelFault`), so a
 /// replaced kernel file never gets writable, executable memory (S-05.4, P7).
-fn load(kernel: &[u8], ram: &Ram) -> Option<(u64, Vec<(u64, u64, u32)>)> {
+fn load(kernel: &[u8], ram: &Ram) -> Option<(u64, Vec<Segment>)> {
     let mut segments = Vec::new();
     if !kernel.starts_with(b"\x7fELF") {
         #[cfg(not(feature = "test-switches"))]
@@ -154,7 +178,9 @@ fn load(kernel: &[u8], ram: &Ram) -> Option<(u64, Vec<(u64, u64, u32)>)> {
         let flags = u32::from_le_bytes(header.get(4..8)?.try_into().ok()?);
         segments.push((at, at + in_memory, flags));
     }
-    (KERNEL_LOW..KERNEL_HIGH).contains(&entry).then_some((entry, segments))
+    (KERNEL_LOW..KERNEL_HIGH)
+        .contains(&entry)
+        .then_some((entry, segments))
 }
 
 // Page entry bits: present, writable, reachable from ring 3, a 2 MiB page, and not executable.
@@ -169,7 +195,7 @@ const NX: u64 = 1 << 63;
 /// these page tables), the gap below the stack, and anything past the machine's memory. Every
 /// entry on the way to a page the kernel may reach carries the user bit, since the kernel runs in
 /// ring 3. The rights are the ones it had in ring 0.
-fn map(ram: &Ram, segments: &[(u64, u64, u32)], guest_len: u64) -> Option<()> {
+fn map(ram: &Ram, segments: &[Segment], guest_len: u64) -> Option<()> {
     let mut small = vec![0u64; 4 * 512]; // 4 KiB pages for the first 8 MiB: kernel image and guest
     let mut page = |at: u64, entry: u64| {
         let slot = small.get_mut((at >> 12) as usize)?;
@@ -177,7 +203,10 @@ fn map(ram: &Ram, segments: &[(u64, u64, u32)], guest_len: u64) -> Option<()> {
         (*slot == 0 || *slot == at | entry).then(|| *slot = at | entry)
     };
     for &(start, end, flags) in segments {
-        let entry = PRESENT | USER | if flags & 2 != 0 { WRITABLE } else { 0 } | if flags & 1 != 0 { 0 } else { NX };
+        let entry = PRESENT
+            | USER
+            | if flags & 2 != 0 { WRITABLE } else { 0 }
+            | if flags & 1 != 0 { 0 } else { NX };
         for at in ((start & !0xfff)..end).step_by(4096) {
             page(at, entry)?;
         }
@@ -191,10 +220,15 @@ fn map(ram: &Ram, segments: &[(u64, u64, u32)], guest_len: u64) -> Option<()> {
         *slot = match index {
             0..4 => (0x4000 + index as u64 * 0x1000) | table,
             4..12 | 15 => ((index as u64) << 21) | table | LARGE | NX, // heap, and the stack at the top
-            _ => 0,                                                       // the guard below the stack
+            _ => 0,                                                    // the guard below the stack
         };
     }
-    let bytes = |values: &[u64]| values.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+    let bytes = |values: &[u64]| {
+        values
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<u8>>()
+    };
     ram.write(0x1000, &bytes(&[0x2000 | table]))?;
     ram.write(0x2000, &bytes(&[0x3000 | table]))?;
     ram.write(0x3000, &bytes(&large))?;
@@ -211,15 +245,42 @@ fn start_state(sregs: &mut kvm_sregs, entry: u64, guest_len: u64) -> kvm_regs {
     const CR4_PAE: u64 = 1 << 5;
     const EFER: u64 = 0xd00; // long mode, active, and no-execute
     const IOPL_3: u64 = 3 << 12;
-    let code = kvm_segment { limit: 0xffff_ffff, selector: 8 | 3, type_: 11, present: 1, dpl: 3, s: 1, l: 1, g: 1, ..Default::default() };
-    let data = kvm_segment { selector: 16 | 3, type_: 3, db: 1, l: 0, ..code };
+    let code = kvm_segment {
+        limit: 0xffff_ffff,
+        selector: 8 | 3,
+        type_: 11,
+        present: 1,
+        dpl: 3,
+        s: 1,
+        l: 1,
+        g: 1,
+        ..Default::default()
+    };
+    let data = kvm_segment {
+        selector: 16 | 3,
+        type_: 3,
+        db: 1,
+        l: 0,
+        ..code
+    };
     sregs.cs = code;
     (sregs.ds, sregs.es, sregs.fs, sregs.gs, sregs.ss) = (data, data, data, data, data);
     (sregs.cr0, sregs.cr3, sregs.cr4, sregs.efer) = (CR0, 0x1000, CR4_PAE | CR4_TSD, EFER);
-    let none = kvm_dtable { base: 0, limit: 0, ..Default::default() };
+    let none = kvm_dtable {
+        base: 0,
+        limit: 0,
+        ..Default::default()
+    };
     (sregs.gdt, sregs.idt) = (none, none);
     // Bit 1 of `RFLAGS` is always set. Interrupts stay off.
-    kvm_regs { rip: entry, rsp: RAM - 8, rflags: IOPL_3 | 2, rdi: GUEST_AT, rsi: guest_len, ..Default::default() }
+    kvm_regs {
+        rip: entry,
+        rsp: RAM - 8,
+        rflags: IOPL_3 | 2,
+        rdi: GUEST_AT,
+        rsi: guest_len,
+        ..Default::default()
+    }
 }
 
 /// The only CPUID the machine sees (`design.md` §2 of `docs/plans/hyalos-kernel-core`, the CPUID
@@ -233,8 +294,18 @@ fn allowed_cpuid(supported: &[kvm_cpuid_entry2]) -> Vec<kvm_cpuid_entry2> {
     const PAE: u32 = 1 << 6; // leaf 1, EDX
     const NX: u32 = 1 << 20; // leaf 0x8000_0001, EDX
     const LONG_MODE: u32 = 1 << 29; // leaf 0x8000_0001, EDX
-    let edx = |function: u32| supported.iter().find(|e| e.function == function && e.index == 0).map_or(0, |e| e.edx);
-    let leaf = |function: u32, eax: u32, edx: u32| kvm_cpuid_entry2 { function, eax, edx, ..Default::default() };
+    let edx = |function: u32| {
+        supported
+            .iter()
+            .find(|e| e.function == function && e.index == 0)
+            .map_or(0, |e| e.edx)
+    };
+    let leaf = |function: u32, eax: u32, edx: u32| kvm_cpuid_entry2 {
+        function,
+        eax,
+        edx,
+        ..Default::default()
+    };
     vec![
         leaf(0, 1, 0),
         leaf(1, 0, edx(1) & PAE),
@@ -266,7 +337,8 @@ pub(crate) trait Calls {
 
 impl<S: hyalos_audit::Source> Calls for hyalos_audit::Host<S> {
     fn input(&mut self, index: i32) -> Result<Option<(u64, Vec<u8>)>, Reason> {
-        Ok(hyalos_audit::Host::input(self, index).map(|record| (record.len() as u64, record.to_vec())))
+        Ok(hyalos_audit::Host::input(self, index)
+            .map(|record| (record.len() as u64, record.to_vec())))
     }
     fn pre_infer(&mut self, schema: i32) -> Result<usize, Reason> {
         hyalos_audit::Host::pre_infer(self, schema)
@@ -355,11 +427,17 @@ fn machine(kvm: &Kvm, ram: &Ram, entry: u64, guest_len: u64) -> Result<(VmFd, Vc
     unsafe { vm.set_user_memory_region(region) }.map_err(no)?;
     let vcpu = vm.create_vcpu(0).map_err(no)?;
     let supported = kvm.get_supported_cpuid(KVM_MAX_CPUID_ENTRIES).map_err(no)?;
-    let cpuid = CpuId::from_entries(&allowed_cpuid(supported.as_slice())).map_err(|_| Reason::NoKvm)?;
+    let cpuid =
+        CpuId::from_entries(&allowed_cpuid(supported.as_slice())).map_err(|_| Reason::NoKvm)?;
     vcpu.set_cpuid2(&cpuid).map_err(no)?;
     // KVM shows leaf 1's `APIC` bit while the APIC base says enabled, though the machine has no
     // interrupt controller. Disabling it keeps the bit clear, so CPUID holds only the list.
-    let apic_off = Msrs::from_entries(&[kvm_msr_entry { index: APIC_BASE, data: 0, ..Default::default() }]).map_err(|_| Reason::NoKvm)?;
+    let apic_off = Msrs::from_entries(&[kvm_msr_entry {
+        index: APIC_BASE,
+        data: 0,
+        ..Default::default()
+    }])
+    .map_err(|_| Reason::NoKvm)?;
     if vcpu.set_msrs(&apic_off).map_err(no)? != 1 {
         return Err(Reason::NoKvm);
     }
@@ -387,9 +465,12 @@ pub(crate) enum Ending {
 /// base, so the probe never runs an image from outside. `Err` says why the machine could not tell.
 pub(crate) fn probe(kvm: &Kvm, code: &[u8]) -> Result<Ending, &'static str> {
     let ram = Ram::new().ok_or("no memory for a probe machine")?;
-    ram.write(KERNEL_LOW, code).ok_or("a probe sequence does not fit")?;
-    map(&ram, &[(KERNEL_LOW, KERNEL_LOW + code.len() as u64, 5)], 0).ok_or("a probe sequence does not fit")?;
-    let (_vm, mut vcpu) = machine(kvm, &ram, KERNEL_LOW, 0).map_err(|_| "KVM refused the machine")?;
+    ram.write(KERNEL_LOW, code)
+        .ok_or("a probe sequence does not fit")?;
+    map(&ram, &[(KERNEL_LOW, KERNEL_LOW + code.len() as u64, 5)], 0)
+        .ok_or("a probe sequence does not fit")?;
+    let (_vm, mut vcpu) =
+        machine(kvm, &ram, KERNEL_LOW, 0).map_err(|_| "KVM refused the machine")?;
     let (start, _ticker) = (Instant::now(), Ticker::start());
     loop {
         if start.elapsed() > Duration::from_secs(2) {
@@ -419,14 +500,30 @@ type Held = (VcpuFd, VmFd, Ram);
 /// `seal` installs the runner's seccomp filter once the machine is built, given its virtual CPU, and
 /// says whether it holds: no guest instruction runs before it does, and a machine it fails for
 /// never runs (`KernelFault`).
-pub(crate) fn machine_run<C: Calls>(kvm: Option<Kvm>, kernel: &[u8], guest: &[u8], calls: &mut C, trace: bool, seal: impl FnOnce(&VcpuFd) -> bool, ended: impl FnOnce(&mut C, Result<(Vec<u8>, u64), Reason>)) {
+pub(crate) fn machine_run<C: Calls>(
+    kvm: Option<Kvm>,
+    kernel: &[u8],
+    guest: &[u8],
+    calls: &mut C,
+    trace: bool,
+    seal: impl FnOnce(&VcpuFd) -> bool,
+    ended: impl FnOnce(&mut C, Result<(Vec<u8>, u64), Reason>),
+) {
     let mut held = None;
     let outcome = boot_and_run(kvm, kernel, guest, calls, trace, seal, &mut held);
     ended(calls, outcome);
     drop(held);
 }
 
-fn boot_and_run(kvm: Option<Kvm>, kernel: &[u8], guest: &[u8], calls: &mut impl Calls, trace: bool, seal: impl FnOnce(&VcpuFd) -> bool, held: &mut Option<Held>) -> Result<(Vec<u8>, u64), Reason> {
+fn boot_and_run(
+    kvm: Option<Kvm>,
+    kernel: &[u8],
+    guest: &[u8],
+    calls: &mut impl Calls,
+    trace: bool,
+    seal: impl FnOnce(&VcpuFd) -> bool,
+    held: &mut Option<Held>,
+) -> Result<(Vec<u8>, u64), Reason> {
     let t0 = Instant::now();
     if guest.len() as u64 > GUEST_MAX {
         return Err(Reason::TooLarge);
@@ -447,7 +544,7 @@ fn boot_and_run(kvm: Option<Kvm>, kernel: &[u8], guest: &[u8], calls: &mut impl 
     let mut first = true;
     loop {
         let at = match vcpu.run() {
-            Ok(VcpuExit::IoOut(PORT, data)) => match <[u8; 4]>::try_from(&*data) {
+            Ok(VcpuExit::IoOut(PORT, data)) => match <[u8; 4]>::try_from(data) {
                 Ok(bytes) => u64::from(u32::from_le_bytes(bytes)),
                 Err(_) => return Err(Reason::BadHypercall),
             },
@@ -461,11 +558,19 @@ fn boot_and_run(kvm: Option<Kvm>, kernel: &[u8], guest: &[u8], calls: &mut impl 
         if trace && first {
             let ms = |d: Duration| d.as_secs_f64() * 1e3;
             // The holder reads this line back and prints it only if it has this exact form.
-            let _ = writeln!(std::io::stderr(), "trace ms: memory+load {:.2}, vm setup {:.2}, boot to first call {:.2}", ms(t_mem), ms(t_vm - t_mem), ms(t0.elapsed() - t_vm));
+            let _ = writeln!(
+                std::io::stderr(),
+                "trace ms: memory+load {:.2}, vm setup {:.2}, boot to first call {:.2}",
+                ms(t_mem),
+                ms(t_vm - t_mem),
+                ms(t0.elapsed() - t_vm)
+            );
         }
         first = false;
         match answer(ram, calls, at)? {
-            Step::Reply(value) => ram.write(at + 40, &value.to_le_bytes()).ok_or(Reason::BadPointer)?,
+            Step::Reply(value) => ram
+                .write(at + 40, &value.to_le_bytes())
+                .ok_or(Reason::BadPointer)?,
             Step::Done(result, fuel) => return Ok((result, fuel)),
         }
     }
@@ -497,9 +602,17 @@ pub(crate) fn fuzz(mut host: impl FnMut() -> crate::Host, rounds: u64) -> Option
         // Most blocks and half the buffers land in the heap, so the checks behind the range check
         // are reached too.
         let span = HEAP.end - HEAP.start;
-        let at = if wide % 4 == 0 { at } else { HEAP.start + at % span };
+        let at = if wide % 4 == 0 {
+            at
+        } else {
+            HEAP.start + at % span
+        };
         let buffer = edge(RAM);
-        let buffer = if wide % 2 == 0 { buffer } else { HEAP.start + edge(span) % (span + 64) };
+        let buffer = if wide % 2 == 0 {
+            buffer
+        } else {
+            HEAP.start + edge(span) % (span + 64)
+        };
         let words = [edge(7) % 7, edge(4), buffer, edge(70_000), edge(RAM), 0];
         let block: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let _ = ram.write(at, &block);
@@ -521,7 +634,10 @@ mod tests {
     fn core_s_02_the_machine_starts_in_ring_3_with_tsd_and_iopl_3() {
         let mut sregs = kvm_sregs::default();
         let regs = start_state(&mut sregs, 0x10_1000, 5);
-        assert_eq!((sregs.cs.selector, sregs.cs.dpl, sregs.cs.l, sregs.cs.type_), (11, 3, 1, 11));
+        assert_eq!(
+            (sregs.cs.selector, sregs.cs.dpl, sregs.cs.l, sregs.cs.type_),
+            (11, 3, 1, 11)
+        );
         for data in [sregs.ds, sregs.es, sregs.fs, sregs.gs, sregs.ss] {
             assert_eq!((data.selector, data.dpl, data.type_), (19, 3, 3));
         }
@@ -533,22 +649,56 @@ mod tests {
 
     /// A host that offers every bit of every leaf, with a vendor and brand string of its own.
     fn generous_host() -> Vec<kvm_cpuid_entry2> {
-        let all = |function: u32| kvm_cpuid_entry2 { function, eax: !0, ebx: !0, ecx: !0, edx: !0, ..Default::default() };
+        let all = |function: u32| kvm_cpuid_entry2 {
+            function,
+            eax: !0,
+            ebx: !0,
+            ecx: !0,
+            edx: !0,
+            ..Default::default()
+        };
         let text = |function: u32, words: [&[u8; 4]; 4]| {
             let [eax, ebx, ecx, edx] = words.map(|w| u32::from_le_bytes(*w));
-            kvm_cpuid_entry2 { function, eax, ebx, ecx, edx, ..Default::default() }
+            kvm_cpuid_entry2 {
+                function,
+                eax,
+                ebx,
+                ecx,
+                edx,
+                ..Default::default()
+            }
         };
-        let mut host: Vec<_> = [1, 4, 7, 0xb, 0xd, 0x4000_0000, 0x4000_0001, 0x8000_0001, 0x8000_0008].map(all).to_vec();
+        let mut host: Vec<_> = [
+            1,
+            4,
+            7,
+            0xb,
+            0xd,
+            0x4000_0000,
+            0x4000_0001,
+            0x8000_0001,
+            0x8000_0008,
+        ]
+        .map(all)
+        .to_vec();
         host.push(text(0, [b"\x20\0\0\0", b"Genu", b"ntel", b"ineI"]));
-        host.push(text(0x8000_0000, [b"\x08\0\0\x80", b"\0\0\0\0", b"\0\0\0\0", b"\0\0\0\0"]));
+        host.push(text(
+            0x8000_0000,
+            [b"\x08\0\0\x80", b"\0\0\0\0", b"\0\0\0\0", b"\0\0\0\0"],
+        ));
         host.push(text(0x8000_0002, [b"Inte", b"l(R)", b" Cor", b"e(TM"]));
         host.push(text(0x8000_0003, [b") i9", b"-139", b"00K ", b"CPU "]));
-        host.push(text(0x8000_0004, [b"@ 3.", b"00GH", b"z\0\0\0", b"\0\0\0\0"]));
+        host.push(text(
+            0x8000_0004,
+            [b"@ 3.", b"00GH", b"z\0\0\0", b"\0\0\0\0"],
+        ));
         host
     }
 
     fn words(list: &[kvm_cpuid_entry2], function: u32) -> Option<[u32; 4]> {
-        list.iter().find(|e| e.function == function).map(|e| [e.eax, e.ebx, e.ecx, e.edx])
+        list.iter()
+            .find(|e| e.function == function)
+            .map(|e| [e.eax, e.ebx, e.ecx, e.edx])
     }
 
     /// From a host offering everything, the list keeps four leaves: the highest basic and
@@ -556,12 +706,26 @@ mod tests {
     #[test]
     fn core_s_03_1_the_list_holds_only_the_allowed_leaves_and_bits() {
         let list = allowed_cpuid(&generous_host());
-        let leaves: Vec<_> = list.iter().map(|e| (e.function, e.index, e.flags, e.padding)).collect();
-        assert_eq!(leaves, [0, 1, 0x8000_0000, 0x8000_0001].map(|f| (f, 0, 0, [0; 3])));
-        assert_eq!(words(&list, 0), Some([1, 0, 0, 0]), "highest basic leaf 1, vendor zeroed");
+        let leaves: Vec<_> = list
+            .iter()
+            .map(|e| (e.function, e.index, e.flags, e.padding))
+            .collect();
+        assert_eq!(
+            leaves,
+            [0, 1, 0x8000_0000, 0x8000_0001].map(|f| (f, 0, 0, [0; 3]))
+        );
+        assert_eq!(
+            words(&list, 0),
+            Some([1, 0, 0, 0]),
+            "highest basic leaf 1, vendor zeroed"
+        );
         assert_eq!(words(&list, 1), Some([0, 0, 0, 1 << 6]), "only PAE");
         assert_eq!(words(&list, 0x8000_0000), Some([0x8000_0001, 0, 0, 0]));
-        assert_eq!(words(&list, 0x8000_0001), Some([0, 0, 0, (1 << 29) | (1 << 20)]), "only long mode and NX");
+        assert_eq!(
+            words(&list, 0x8000_0001),
+            Some([0, 0, 0, (1 << 29) | (1 << 20)]),
+            "only long mode and NX"
+        );
         for hidden in [7, 0xb, 0xd, 0x4000_0000] {
             assert_eq!(words(&list, hidden), None, "leaf {hidden:#x}");
         }
@@ -581,12 +745,18 @@ mod tests {
     fn core_s_03_1_e2_no_brand_leaf_and_no_host_name() {
         let host = generous_host();
         let list = allowed_cpuid(&host);
-        let named: Vec<u32> = [0, 0x8000_0002, 0x8000_0003, 0x8000_0004].iter().flat_map(|&f| words(&host, f).unwrap()[1..].to_vec()).collect();
+        let named: Vec<u32> = [0, 0x8000_0002, 0x8000_0003, 0x8000_0004]
+            .iter()
+            .flat_map(|&f| words(&host, f).unwrap()[1..].to_vec())
+            .collect();
         for entry in &list {
             assert!(!(0x8000_0002..=0x8000_0004).contains(&entry.function));
             for word in [entry.eax, entry.ebx, entry.ecx, entry.edx] {
                 // The message names nothing from the list, so no word of a host reaches the output.
-                assert!(word == 0 || !named.contains(&word), "a leaf holds a word of the host's name");
+                assert!(
+                    word == 0 || !named.contains(&word),
+                    "a leaf holds a word of the host's name"
+                );
             }
         }
     }
@@ -595,7 +765,10 @@ mod tests {
     /// rather than pretending.
     #[test]
     fn core_s_03_1_a_bit_the_host_lacks_is_not_offered() {
-        let host: Vec<_> = generous_host().into_iter().filter(|e| e.function != 0x8000_0001).collect();
+        let host: Vec<_> = generous_host()
+            .into_iter()
+            .filter(|e| e.function != 0x8000_0001)
+            .collect();
         assert_eq!(words(&allowed_cpuid(&host), 0x8000_0001), Some([0; 4]));
     }
 
@@ -604,14 +777,29 @@ mod tests {
     #[test]
     fn core_s_02_every_reachable_page_is_a_user_page_and_the_tables_are_unmapped() {
         let ram = Ram::new().unwrap();
-        let segments = [(KERNEL_LOW, KERNEL_LOW + 0x2000, 5), (KERNEL_LOW + 0x2000, KERNEL_LOW + 0x3000, 6)];
+        let segments = [
+            (KERNEL_LOW, KERNEL_LOW + 0x2000, 5),
+            (KERNEL_LOW + 0x2000, KERNEL_LOW + 0x3000, 6),
+        ];
         map(&ram, &segments, 10).unwrap();
         let entry = |at: u64| field(&ram.read(at, 8).unwrap(), 0).unwrap();
         assert_eq!((entry(0x1000), entry(0x2000)), (0x2007, 0x3007));
         let small = |at: u64| entry(0x4000 + (at >> 12) * 8);
-        assert_eq!(small(KERNEL_LOW), KERNEL_LOW | 5, "code: read-only, executable");
-        assert_eq!(small(KERNEL_LOW + 0x2000), (KERNEL_LOW + 0x2000) | 7 | NX, "data: writable, not executable");
-        assert_eq!(small(GUEST_AT), GUEST_AT | 5 | NX, "the guest: read-only, not executable");
+        assert_eq!(
+            small(KERNEL_LOW),
+            KERNEL_LOW | 5,
+            "code: read-only, executable"
+        );
+        assert_eq!(
+            small(KERNEL_LOW + 0x2000),
+            (KERNEL_LOW + 0x2000) | 7 | NX,
+            "data: writable, not executable"
+        );
+        assert_eq!(
+            small(GUEST_AT),
+            GUEST_AT | 5 | NX,
+            "the guest: read-only, not executable"
+        );
         for table in [0x1000, 0x2000, 0x3000, 0x4000, 0x5000, 0x6000, 0x7000] {
             assert_eq!(small(table), 0, "page table at {table:#x} is mapped");
         }

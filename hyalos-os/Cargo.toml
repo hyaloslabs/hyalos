@@ -7,3 +7,13 @@ exclude = ["kernel-image", "guest"]
 
 [profile.release]
 opt-level = 3
+
+# Every crate holds to clippy's default set, and `unsafe` stays in the files that allow it at their
+# top (S-05.3 and design.md §2 of docs/plans/hyalos-kernel-core). `deny`, not the root's `forbid`,
+# since a file-level allow cannot override `forbid`. The kernel image and the guest are workspaces
+# of their own, so each repeats this table.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

@@ -2,6 +2,9 @@
 //! tool and the customer's notary, and one notification channel. This process never holds the
 //! model credential. Only the tool reads it.
 
+// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+#![allow(unsafe_code)]
+
 use crate::{Reason, sha};
 use serde_json::Value;
 use std::{
@@ -25,7 +28,13 @@ const PAST_INTENT: u64 = 2;
 /// The longest that wait may be. A log's time further ahead of this clock refuses the run.
 const MAX_WAIT: u64 = 10;
 /// What the tool needs to reach the notary. A run with any of them missing is refused.
-const NOTARY_SETTINGS: [&str; 5] = ["HYALOS_NOTARY_ADDRESS", "HYALOS_NOTARY_TRANSPORT_PUBLIC", "HYALOS_NOTARY_SIGNER_PUBLIC", "HYALOS_NOTARY_AUTHORISATION", "HYALOS_OPERATOR_TRANSPORT_KEY"];
+const NOTARY_SETTINGS: [&str; 5] = [
+    "HYALOS_NOTARY_ADDRESS",
+    "HYALOS_NOTARY_TRANSPORT_PUBLIC",
+    "HYALOS_NOTARY_SIGNER_PUBLIC",
+    "HYALOS_NOTARY_AUTHORISATION",
+    "HYALOS_OPERATOR_TRANSPORT_KEY",
+];
 
 /// The attestation tool, where its presentations go, and the settings it is started with.
 pub(crate) struct Attest {
@@ -37,12 +46,23 @@ pub(crate) struct Attest {
 impl Attest {
     /// `None` unless the tool and every notary setting are configured.
     pub(crate) fn from_env(record: &str) -> Option<Self> {
-        let tool = env::var("HYALOS_ATTEST").ok().filter(|tool| !tool.is_empty())?;
+        let tool = env::var("HYALOS_ATTEST")
+            .ok()
+            .filter(|tool| !tool.is_empty())?;
         let settings = NOTARY_SETTINGS
             .iter()
-            .map(|name| Some((name.to_string(), env::var(name).ok().filter(|value| !value.is_empty())?)))
+            .map(|name| {
+                Some((
+                    name.to_string(),
+                    env::var(name).ok().filter(|value| !value.is_empty())?,
+                ))
+            })
             .collect::<Option<Vec<_>>>()?;
-        Some(Self { tool, dir: format!("{record}.attest"), settings })
+        Some(Self {
+            tool,
+            dir: format!("{record}.attest"),
+            settings,
+        })
     }
 }
 
@@ -62,7 +82,12 @@ pub(crate) struct Live {
 /// Waits until this clock reaches `second`. A clock that cannot be read, or a wait longer than
 /// `MAX_WAIT`, refuses the run.
 fn wait_until(second: u64) -> Result<(), Reason> {
-    let now = || SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).map_err(|_| Reason::LedgerFailed);
+    let now = || {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .map_err(|_| Reason::LedgerFailed)
+    };
     if second.saturating_sub(now()?) > MAX_WAIT {
         return Err(Reason::LedgerFailed);
     }
@@ -98,9 +123,19 @@ fn end_group(pid: u32) {
 /// started still holds its output at the limit.
 fn run_tool(mut command: Command, question: &[u8]) -> Result<(bool, Vec<u8>), Reason> {
     let no = |_| Reason::ModelUnavailable;
-    let mut child = command.process_group(0).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(no)?;
+    let mut child = command
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(no)?;
     let pid = child.id();
-    let written = child.stdin.take().ok_or(Reason::ModelUnavailable).and_then(|mut stdin| stdin.write_all(question).map_err(no));
+    let written = child
+        .stdin
+        .take()
+        .ok_or(Reason::ModelUnavailable)
+        .and_then(|mut stdin| stdin.write_all(question).map_err(no));
     let stdout = child.stdout.take().ok_or(Reason::ModelUnavailable);
     let (Ok(()), Ok(stdout)) = (written, stdout) else {
         end_group(pid);
@@ -117,7 +152,9 @@ fn run_tool(mut command: Command, question: &[u8]) -> Result<(bool, Vec<u8>), Re
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < TOOL_LIMIT => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) if started.elapsed() < TOOL_LIMIT => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
             _ => {
                 end_group(pid);
                 let _ = child.wait();
@@ -145,8 +182,17 @@ pub(crate) fn record_is_fresh(record: &str) -> bool {
 
 impl Live {
     pub(crate) fn new(repo: &str, issue: u64, attest: Option<Attest>) -> Option<Self> {
-        let repo_ok = repo.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b));
-        repo_ok.then(|| Self { repo: repo.to_string(), issue, attest, asked: 0, intent: String::new(), not_before: None })
+        let repo_ok = repo
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b));
+        repo_ok.then(|| Self {
+            repo: repo.to_string(),
+            issue,
+            attest,
+            asked: 0,
+            intent: String::new(),
+            not_before: None,
+        })
     }
 
     /// False when no notary is configured, and so the run must not start.
@@ -163,7 +209,10 @@ impl Live {
 
     /// One question, one typed answer that names its presentation. Anything else is a refusal,
     /// and a call is never retried: a retry would take the next sequence number.
-    pub(crate) fn infer(&mut self, question: &[u8]) -> Result<(i32, String, String, String), Reason> {
+    pub(crate) fn infer(
+        &mut self,
+        question: &[u8],
+    ) -> Result<(i32, String, String, String), Reason> {
         std::str::from_utf8(question).map_err(|_| Reason::ModelRefused)?;
         let attest = self.attest.as_ref().ok_or(Reason::NotaryUnreachable)?;
         if self.asked == 0 {
@@ -174,13 +223,18 @@ impl Live {
         let file = format!("{}/{:03}.presentation", attest.dir, self.asked);
         self.asked += 1;
         let mut command = Command::new(&attest.tool);
-        command.args(["ask", &file, &self.intent, &position]).envs(attest.settings.iter().map(|(name, value)| (name, value)));
+        command
+            .args(["ask", &file, &self.intent, &position])
+            .envs(attest.settings.iter().map(|(name, value)| (name, value)));
         let (succeeded, output) = run_tool(command, question)?;
         if !succeeded {
             return Err(refusal(&output));
         }
         let said: Value = serde_json::from_slice(&output).map_err(|_| Reason::ModelRefused)?;
-        let label = said["label"].as_i64().filter(|l| (0..LABELS.len() as i64).contains(l)).ok_or(Reason::ModelRefused)?;
+        let label = said["label"]
+            .as_i64()
+            .filter(|l| (0..LABELS.len() as i64).contains(l))
+            .ok_or(Reason::ModelRefused)?;
         let named = |key: &str| said[key].as_str().unwrap_or_default().to_string();
         // An answer counts only with the presentation that attests it.
         let presentation = named("presentation_sha256");
@@ -188,7 +242,12 @@ impl Live {
         if presentation.is_empty() || sha(&kept) != presentation {
             return Err(Reason::ModelRefused);
         }
-        Ok((label as i32, named("model"), named("response_id"), presentation))
+        Ok((
+            label as i32,
+            named("model"),
+            named("response_id"),
+            presentation,
+        ))
     }
 
     /// Posts the digest as one issue comment, inside a fixed template the task cannot change. The
@@ -198,17 +257,34 @@ impl Live {
         if text.contains(FENCE) {
             return Err(Reason::EffectFailed);
         }
-        let comment = format!("Digest sent by one bounded task on the hyalOS kernel spike.\n\n{FENCE}text\n{text}\n{FENCE}\n");
+        let comment = format!(
+            "Digest sent by one bounded task on the hyalOS kernel spike.\n\n{FENCE}text\n{text}\n{FENCE}\n"
+        );
         let mut child = Command::new("gh")
-            .args(["issue", "comment", &self.issue.to_string(), "--repo", &self.repo, "--body-file", "-"])
+            .args([
+                "issue",
+                "comment",
+                &self.issue.to_string(),
+                "--repo",
+                &self.repo,
+                "--body-file",
+                "-",
+            ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .map_err(|_| Reason::EffectFailed)?;
-        child.stdin.take().ok_or(Reason::EffectFailed)?.write_all(comment.as_bytes()).map_err(|_| Reason::EffectFailed)?;
+        child
+            .stdin
+            .take()
+            .ok_or(Reason::EffectFailed)?
+            .write_all(comment.as_bytes())
+            .map_err(|_| Reason::EffectFailed)?;
         let output = child.wait_with_output().map_err(|_| Reason::EffectFailed)?;
         let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        (output.status.success() && url.starts_with("https://github.com/")).then_some(url).ok_or(Reason::EffectFailed)
+        (output.status.success() && url.starts_with("https://github.com/"))
+            .then_some(url)
+            .ok_or(Reason::EffectFailed)
     }
 }

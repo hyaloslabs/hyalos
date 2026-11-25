@@ -1,6 +1,9 @@
 //! The customer's provider check, run as a program against the stand-in. No test contacts a real
 //! provider. Every credential here is made up.
 
+// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+#![allow(unsafe_code)]
+
 mod common;
 
 use attest::CREDENTIAL_LENGTH;
@@ -39,7 +42,12 @@ impl Rig {
         let credential = scratch.0.join("credential");
         fs::write(&credential, &value).unwrap();
         fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).unwrap();
-        Self { scratch, dir, credential, value }
+        Self {
+            scratch,
+            dir,
+            credential,
+            value,
+        }
     }
 
     fn put(&self, text: &str) {
@@ -63,12 +71,22 @@ impl Rig {
     fn command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_canary"));
         command.env_remove("HYALOS_TEST_CANARY_FAIL_RENAME");
-        command.arg("check").arg("--dir").arg(&self.dir).arg("--credential").arg(&self.credential);
+        command
+            .arg("check")
+            .arg("--dir")
+            .arg(&self.dir)
+            .arg("--credential")
+            .arg(&self.credential);
         command
     }
 
     fn check(&self, provider: &Standin) -> Output {
-        self.command().env("HYALOS_TRUST_SERVER_NAME", NAME).env("HYALOS_TRUST_ROOT", &provider.root).env("HYALOS_TRUST_PROVIDER_ADDRESS", &provider.address).output().unwrap()
+        self.command()
+            .env("HYALOS_TRUST_SERVER_NAME", NAME)
+            .env("HYALOS_TRUST_ROOT", &provider.root)
+            .env("HYALOS_TRUST_PROVIDER_ADDRESS", &provider.address)
+            .output()
+            .unwrap()
     }
 
     /// Runs a check that must make no connection, and returns its output.
@@ -76,13 +94,26 @@ impl Rig {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap().to_string();
-        let output = self.command().env("HYALOS_TRUST_SERVER_NAME", NAME).env("HYALOS_TRUST_PROVIDER_ADDRESS", address).output().unwrap();
-        assert!(listener.accept().is_err(), "the check contacted the provider");
+        let output = self
+            .command()
+            .env("HYALOS_TRUST_SERVER_NAME", NAME)
+            .env("HYALOS_TRUST_PROVIDER_ADDRESS", address)
+            .output()
+            .unwrap();
+        assert!(
+            listener.accept().is_err(),
+            "the check contacted the provider"
+        );
         output
     }
 
     fn reset(&self) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_canary")).arg("reset").arg("--dir").arg(&self.dir).output().unwrap()
+        Command::new(env!("CARGO_BIN_EXE_canary"))
+            .arg("reset")
+            .arg("--dir")
+            .arg(&self.dir)
+            .output()
+            .unwrap()
     }
 }
 
@@ -95,11 +126,19 @@ fn complained(output: &Output) -> String {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 fn standing(rig: &Rig) -> String {
-    rig.state().expect("no state").lines().nth(1).unwrap().to_string()
+    rig.state()
+        .expect("no state")
+        .lines()
+        .nth(1)
+        .unwrap()
+        .to_string()
 }
 
 #[test]
@@ -111,11 +150,23 @@ fn canary_s_01_1_e1_only_200_400_200_is_a_pass() {
     assert_eq!(output.status.code(), Some(0), "{}", complained(&output));
     assert!(said(&output).contains("verdict: the provider refused the forged body"));
     let state = rig.state().unwrap();
-    let checked: u64 = state.lines().nth(2).unwrap().strip_prefix("checked ").unwrap().parse().unwrap();
+    let checked: u64 = state
+        .lines()
+        .nth(2)
+        .unwrap()
+        .strip_prefix("checked ")
+        .unwrap()
+        .parse()
+        .unwrap();
     assert!((before..=after).contains(&checked));
     assert_eq!(state, state_text("passed", checked));
     assert!(rig.marked(), "a pass leaves the marker");
-    for staged in ["canary.new", "canary.init.new", "canary.held.new", "canary.latched.new"] {
+    for staged in [
+        "canary.new",
+        "canary.init.new",
+        "canary.held.new",
+        "canary.latched.new",
+    ] {
         assert!(!rig.dir.join(staged).exists(), "{staged} was left behind");
     }
 }
@@ -154,7 +205,10 @@ fn canary_s_01_2_e2_a_failed_control_removes_an_earlier_pass() {
     rig.put(&state_text("passed", EARLIER));
     let output = rig.check(&rig.provider("500"));
     assert_eq!(output.status.code(), Some(2));
-    assert!(!said(&output).contains("small body followed"), "the check went on after the control failed");
+    assert!(
+        !said(&output).contains("small body followed"),
+        "the check went on after the control failed"
+    );
     assert_eq!(standing(&rig), "state held");
 }
 
@@ -200,7 +254,14 @@ fn canary_s_01_2_e7_a_failed_rename_removes_the_pass() {
     let rig = Rig::new("canary-2-e7");
     rig.put(&state_text("passed", EARLIER));
     let provider = rig.provider("500");
-    let output = rig.command().env("HYALOS_TEST_CANARY_FAIL_RENAME", "1").env("HYALOS_TRUST_SERVER_NAME", NAME).env("HYALOS_TRUST_ROOT", &provider.root).env("HYALOS_TRUST_PROVIDER_ADDRESS", &provider.address).output().unwrap();
+    let output = rig
+        .command()
+        .env("HYALOS_TEST_CANARY_FAIL_RENAME", "1")
+        .env("HYALOS_TRUST_SERVER_NAME", NAME)
+        .env("HYALOS_TRUST_ROOT", &provider.root)
+        .env("HYALOS_TRUST_PROVIDER_ADDRESS", &provider.address)
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(rig.state(), None, "a pass survived");
     assert!(rig.marked());
@@ -211,7 +272,10 @@ fn canary_s_01_2_e7_a_failed_rename_removes_the_pass() {
 
 #[test]
 fn canary_s_01_3_e1_the_credential_is_never_echoed() {
-    for (index, statuses) in [REFUSES, ACCEPTS, "500", "200,500,200"].into_iter().enumerate() {
+    for (index, statuses) in [REFUSES, ACCEPTS, "500", "200,500,200"]
+        .into_iter()
+        .enumerate()
+    {
         let rig = Rig::new(&format!("canary-3-e1-{index}"));
         let output = rig.check(&rig.provider(statuses));
         for text in [said(&output), complained(&output), rig.state().unwrap()] {
@@ -226,7 +290,10 @@ fn canary_s_01_3_e2_a_credential_of_another_length_is_refused() {
     fs::write(&rig.credential, &rig.value[..105]).unwrap();
     let output = rig.check_with_no_connection();
     assert_eq!(output.status.code(), Some(2));
-    assert_eq!(complained(&output).trim(), "refused: the credential is not the length verify is pinned to");
+    assert_eq!(
+        complained(&output).trim(),
+        "refused: the credential is not the length verify is pinned to"
+    );
     assert_eq!(rig.state(), None);
 }
 
@@ -236,7 +303,10 @@ fn canary_s_01_3_e3_an_open_credential_file_is_refused() {
     fs::set_permissions(&rig.credential, fs::Permissions::from_mode(0o644)).unwrap();
     let output = rig.check_with_no_connection();
     assert_eq!(output.status.code(), Some(2));
-    assert_eq!(complained(&output).trim(), "refused: cannot read the credential file, or its access is too open");
+    assert_eq!(
+        complained(&output).trim(),
+        "refused: cannot read the credential file, or its access is too open"
+    );
     assert_eq!(rig.state(), None);
 }
 
@@ -279,7 +349,10 @@ fn canary_s_01_4_e3_a_malformed_state_is_refused_and_kept() {
     rig.put(damaged);
     let output = rig.check_with_no_connection();
     assert_eq!(output.status.code(), Some(2));
-    assert_eq!(complained(&output).trim(), "refused: the canary state is unreadable or malformed");
+    assert_eq!(
+        complained(&output).trim(),
+        "refused: the canary state is unreadable or malformed"
+    );
     assert_eq!(rig.state().unwrap(), damaged);
 }
 
@@ -310,7 +383,14 @@ fn canary_s_01_4_e6_a_lost_latch_is_not_cleared_by_a_pass() {
     rig.put(&state_text("passed", EARLIER));
     assert!(!rig.marked());
     let provider = rig.provider(ACCEPTS);
-    let output = rig.command().env("HYALOS_TEST_CANARY_FAIL_RENAME", "1").env("HYALOS_TRUST_SERVER_NAME", NAME).env("HYALOS_TRUST_ROOT", &provider.root).env("HYALOS_TRUST_PROVIDER_ADDRESS", &provider.address).output().unwrap();
+    let output = rig
+        .command()
+        .env("HYALOS_TEST_CANARY_FAIL_RENAME", "1")
+        .env("HYALOS_TRUST_SERVER_NAME", NAME)
+        .env("HYALOS_TRUST_ROOT", &provider.root)
+        .env("HYALOS_TRUST_PROVIDER_ADDRESS", &provider.address)
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(rig.state(), None);
     assert!(rig.marked());
@@ -334,12 +414,24 @@ fn canary_s_01_4_e7_a_marker_that_cannot_be_made_stops_the_check() {
 #[test]
 fn canary_1_2_a_second_check_is_refused_by_the_lock() {
     let rig = Rig::new("canary-1-2");
-    let lock = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(rig.dir.join("canary.lock")).unwrap();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(rig.dir.join("canary.lock"))
+        .unwrap();
     // SAFETY: the descriptor belongs to `lock`, which is alive for this call.
-    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
     let output = rig.check_with_no_connection();
     assert_eq!(output.status.code(), Some(2));
-    assert_eq!(complained(&output).trim(), "refused: another canary check or reset holds the lock");
+    assert_eq!(
+        complained(&output).trim(),
+        "refused: another canary check or reset holds the lock"
+    );
     assert_eq!(rig.state(), None);
     drop(lock);
 }
@@ -349,7 +441,14 @@ fn canary_1_2_a_second_check_is_refused_by_the_lock() {
 fn canary_1_3_a_default_build_ignores_the_rename_failure_setting() {
     let rig = Rig::new("canary-1-3");
     let provider = rig.provider(ACCEPTS);
-    let output = rig.command().env("HYALOS_TEST_CANARY_FAIL_RENAME", "1").env("HYALOS_TRUST_SERVER_NAME", NAME).env("HYALOS_TRUST_ROOT", &provider.root).env("HYALOS_TRUST_PROVIDER_ADDRESS", &provider.address).output().unwrap();
+    let output = rig
+        .command()
+        .env("HYALOS_TEST_CANARY_FAIL_RENAME", "1")
+        .env("HYALOS_TRUST_SERVER_NAME", NAME)
+        .env("HYALOS_TRUST_ROOT", &provider.root)
+        .env("HYALOS_TRUST_PROVIDER_ADDRESS", &provider.address)
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(standing(&rig), "state latched");
 }
@@ -360,10 +459,16 @@ fn canary_a_missing_directory_is_not_called_a_held_lock() {
     fs::remove_dir(&rig.dir).unwrap();
     let output = rig.check_with_no_connection();
     assert_eq!(output.status.code(), Some(2));
-    assert_eq!(complained(&output).trim(), "refused: the notary directory's lock file cannot be opened");
+    assert_eq!(
+        complained(&output).trim(),
+        "refused: the notary directory's lock file cannot be opened"
+    );
     let output = rig.reset();
     assert_eq!(output.status.code(), Some(2));
-    assert_eq!(complained(&output).trim(), "refused: the notary directory's lock file cannot be opened");
+    assert_eq!(
+        complained(&output).trim(),
+        "refused: the notary directory's lock file cannot be opened"
+    );
 }
 
 #[test]
@@ -375,7 +480,13 @@ fn canary_the_reset_needs_a_state_or_a_marker() {
 }
 
 fn status(rig: &Rig) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_canary")).arg("status").arg("--dir").arg(&rig.dir).env_remove("HYALOS_TRUST_SERVER_NAME").output().unwrap()
+    Command::new(env!("CARGO_BIN_EXE_canary"))
+        .arg("status")
+        .arg("--dir")
+        .arg(&rig.dir)
+        .env_remove("HYALOS_TRUST_SERVER_NAME")
+        .output()
+        .unwrap()
 }
 
 #[test]
@@ -383,23 +494,48 @@ fn canary_4_1_status_is_fresh_only_on_a_fresh_pass() {
     let rig = Rig::new("canary-4-1");
     rig.put(&state_text("passed", now() - 60));
     let output = status(&rig);
-    assert_eq!((output.status.code(), said(&output).trim()), (Some(0), "fresh"));
-    assert!(!rig.dir.join("canary.lock").exists(), "status takes no lock");
+    assert_eq!(
+        (output.status.code(), said(&output).trim()),
+        (Some(0), "fresh")
+    );
+    assert!(
+        !rig.dir.join("canary.lock").exists(),
+        "status takes no lock"
+    );
     let window = attest::canary::CANARY_WINDOW_SECONDS;
-    for text in [state_text("passed", now() - window - 1), state_text("passed", now() + 3600), state_text("held", now()), state_text("latched", now()), "not a state".to_string()] {
+    for text in [
+        state_text("passed", now() - window - 1),
+        state_text("passed", now() + 3600),
+        state_text("held", now()),
+        state_text("latched", now()),
+        "not a state".to_string(),
+    ] {
         rig.put(&text);
         let output = status(&rig);
-        assert_eq!((output.status.code(), said(&output).trim()), (Some(1), "not fresh"), "{text}");
+        assert_eq!(
+            (output.status.code(), said(&output).trim()),
+            (Some(1), "not fresh"),
+            "{text}"
+        );
     }
     fs::remove_file(rig.dir.join("canary")).unwrap();
     let output = status(&rig);
-    assert_eq!((output.status.code(), said(&output).trim()), (Some(1), "not fresh"));
+    assert_eq!(
+        (output.status.code(), said(&output).trim()),
+        (Some(1), "not fresh")
+    );
 }
 
 #[test]
 fn canary_4_1_status_names_no_credential() {
     let source = include_str!("../src/bin/canary.rs");
-    let body = source.split("fn status(dir: &Path)").nth(1).unwrap().split("#[tokio::main]").next().unwrap();
+    let body = source
+        .split("fn status(dir: &Path)")
+        .nth(1)
+        .unwrap()
+        .split("#[tokio::main]")
+        .next()
+        .unwrap();
     assert!(!body.contains("credential"), "{body}");
 }
 
@@ -414,7 +550,11 @@ fn canary_s_04_1_e1_the_format_names_the_canary() {
 
 #[test]
 fn canary_s_04_1_e2_the_format_states_the_latch_and_the_limit() {
-    for named in ["canary reset", "does not close the hidden API-key case", "the state was not updated"] {
+    for named in [
+        "canary reset",
+        "does not close the hidden API-key case",
+        "the state was not updated",
+    ] {
         assert!(RECORD.contains(named), "RECORD.md does not state {named}");
     }
 }
@@ -424,14 +564,27 @@ fn canary_s_04_1_e2_the_format_states_the_latch_and_the_limit() {
 /// third value is what the stub monitor's `live` saw as `HYALOS_KERNEL`, one line per run, and
 /// is empty when `live` never ran. `kernel_builds` chooses whether the stub `cargo` leaves a
 /// kernel image behind.
-fn probe(label: &str, canary_exit: u8, kernel_builds: bool) -> Option<(Output, String, String, bool)> {
+fn probe(
+    label: &str,
+    canary_exit: u8,
+    kernel_builds: bool,
+) -> Option<(Output, String, String, bool)> {
     if !std::path::Path::new("/usr/bin/time").exists() {
         eprintln!("skipped: this host has no /usr/bin/time");
         return None;
     }
     let scratch = Scratch::new(label);
-    let (work, stubs, home) = (scratch.0.join("work"), scratch.0.join("stubs"), scratch.0.join("home"));
-    for dir in [work.join("target/release"), work.join("kernel-image"), stubs.clone(), home.clone()] {
+    let (work, stubs, home) = (
+        scratch.0.join("work"),
+        scratch.0.join("stubs"),
+        scratch.0.join("home"),
+    );
+    for dir in [
+        work.join("target/release"),
+        work.join("kernel-image"),
+        stubs.clone(),
+        home.clone(),
+    ] {
         fs::create_dir_all(dir).unwrap();
     }
     let (log, live) = (scratch.0.join("ssh.log"), scratch.0.join("live.log"));
@@ -441,60 +594,112 @@ fn probe(label: &str, canary_exit: u8, kernel_builds: bool) -> Option<(Output, S
         fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
     };
-    write(stubs.join("ssh"), format!(
-        "echo \"$*\" >> '{}'\ncase \"$*\" in\n-G*) printf 'hostname 127.0.0.1\\nport {port}\\n' ;;\n*'canary status'*) exit {canary_exit} ;;\n*'-L '*) printf 'signing aa\\ntransport bb\\nlistening 127.0.0.1:7047\\n'; exec 2>/dev/null; exec sleep 3 ;;\n*authorize*) echo an-authorisation ;;\nesac",
-        log.display()
-    ));
+    write(
+        stubs.join("ssh"),
+        format!(
+            "echo \"$*\" >> '{}'\ncase \"$*\" in\n-G*) printf 'hostname 127.0.0.1\\nport {port}\\n' ;;\n*'canary status'*) exit {canary_exit} ;;\n*'-L '*) printf 'signing aa\\ntransport bb\\nlistening 127.0.0.1:7047\\n'; exec 2>/dev/null; exec sleep 3 ;;\n*authorize*) echo an-authorisation ;;\nesac",
+            log.display()
+        ),
+    );
     write(stubs.join("scp"), "exit 0".to_string());
     write(work.join("target/release/attest"), "case \"$1\" in\nlink-key) echo an-operator-key ;;\nask) cat > /dev/null; echo '{}' ;;\nesac".to_string());
     write(work.join("target/release/notary"), "exit 0".to_string());
     write(work.join("target/release/canary"), "exit 0".to_string());
-    write(work.join("target/release/task-kernel"), format!("case \"$1\" in\ntask) echo a-task ;;\nlive) echo \"$HYALOS_KERNEL\" >> '{}' ;;\nesac", live.display()));
+    write(
+        work.join("target/release/task-kernel"),
+        format!(
+            "case \"$1\" in\ntask) echo a-task ;;\nlive) echo \"$HYALOS_KERNEL\" >> '{}' ;;\nesac",
+            live.display()
+        ),
+    );
     // The script builds the kernel image in `kernel-image`, where the real one lands.
-    let built = if kernel_builds { "mkdir -p target/x86_64-unknown-none/release && echo a-kernel > target/x86_64-unknown-none/release/hyalos-kernel" } else { "exit 101" };
+    let built = if kernel_builds {
+        "mkdir -p target/x86_64-unknown-none/release && echo a-kernel > target/x86_64-unknown-none/release/hyalos-kernel"
+    } else {
+        "exit 101"
+    };
     write(stubs.join("cargo"), built.to_string());
     let path = format!("{}:{}", stubs.display(), std::env::var("PATH").unwrap());
     let script = concat!(env!("CARGO_MANIFEST_DIR"), "/probes/two_machines.sh");
-    let output = Command::new("bash").arg(script).args(["a-host", "owner/repo", "1"]).current_dir(&work).env("PATH", path).env("HOME", &home).env_remove("HYALOS_KERNEL").output().unwrap();
+    let output = Command::new("bash")
+        .arg(script)
+        .args(["a-host", "owner/repo", "1"])
+        .current_dir(&work)
+        .env("PATH", path)
+        .env("HOME", &home)
+        .env_remove("HYALOS_KERNEL")
+        .output()
+        .unwrap();
     drop(listener);
-    Some((output, fs::read_to_string(&log).unwrap_or_default(), fs::read_to_string(&live).unwrap_or_default(), work.join("evidence/out/two-machines").exists()))
+    Some((
+        output,
+        fs::read_to_string(&log).unwrap_or_default(),
+        fs::read_to_string(&live).unwrap_or_default(),
+        work.join("evidence/out/two-machines").exists(),
+    ))
 }
 
 #[test]
 fn canary_s_04_2_e1_with_a_fresh_pass_the_probe_reaches_the_run() {
-    let Some((output, calls, ran, _)) = probe("canary-4-2-e1", 0, true) else { return };
+    let Some((output, calls, ran, _)) = probe("canary-4-2-e1", 0, true) else {
+        return;
+    };
     assert!(output.status.success(), "{}", complained(&output));
     assert!(!ran.is_empty(), "the run was not reached");
-    let (gate, notary) = (calls.find("canary status").unwrap(), calls.find("--listen").unwrap());
-    assert!(gate < notary, "the gate comes before the notary starts: {calls}");
+    let (gate, notary) = (
+        calls.find("canary status").unwrap(),
+        calls.find("--listen").unwrap(),
+    );
+    assert!(
+        gate < notary,
+        "the gate comes before the notary starts: {calls}"
+    );
 }
 
 #[test]
 fn canary_s_04_2_e2_without_a_pass_the_probe_stops_before_anything_public() {
-    let Some((output, calls, ran, made)) = probe("canary-4-2-e2", 1, true) else { return };
+    let Some((output, calls, ran, made)) = probe("canary-4-2-e2", 1, true) else {
+        return;
+    };
     assert_eq!(output.status.code(), Some(2), "{}", complained(&output));
     assert!(said(&output).contains("no fresh customer canary pass"));
     assert!(ran.is_empty(), "the run went ahead");
-    assert!(!calls.contains("--listen") && !calls.contains("authorize"), "{calls}");
-    assert!(!made, "a stopped run left its output directory, which would block the retry");
+    assert!(
+        !calls.contains("--listen") && !calls.contains("authorize"),
+        "{calls}"
+    );
+    assert!(
+        !made,
+        "a stopped run left its output directory, which would block the retry"
+    );
 }
 
 /// S-04.5 of `docs/plans/hyalos-kernel-core`: the script's `live` run is on the KVM kernel it
 /// built, so the monitor's guard never refuses it after an authorised attempt is spent.
 #[test]
 fn core_s_04_5_the_probe_script_runs_live_on_the_kernel_it_built() {
-    let Some((output, _, ran, _)) = probe("core-4-5-kernel", 0, true) else { return };
+    let Some((output, _, ran, _)) = probe("core-4-5-kernel", 0, true) else {
+        return;
+    };
     assert!(output.status.success(), "{}", complained(&output));
     let kernel = ran.trim();
-    assert!(kernel.ends_with("/kernel-image/target/x86_64-unknown-none/release/hyalos-kernel"), "live ran without the built kernel");
-    assert!(Path::new(kernel).is_absolute(), "the kernel path does not depend on the monitor's directory");
+    assert!(
+        kernel.ends_with("/kernel-image/target/x86_64-unknown-none/release/hyalos-kernel"),
+        "live ran without the built kernel"
+    );
+    assert!(
+        Path::new(kernel).is_absolute(),
+        "the kernel path does not depend on the monitor's directory"
+    );
 }
 
 /// S-04.5: without a kernel image the script stops before the notary starts, any authorised
 /// attempt is spent or anything is published.
 #[test]
 fn core_s_04_5_the_probe_script_stops_before_anything_without_a_kernel() {
-    let Some((output, calls, ran, made)) = probe("core-4-5-no-kernel", 0, false) else { return };
+    let Some((output, calls, ran, made)) = probe("core-4-5-no-kernel", 0, false) else {
+        return;
+    };
     assert_eq!(output.status.code(), Some(2), "{}", complained(&output));
     assert!(said(&output).contains("the kernel image did not build"));
     assert!(calls.is_empty(), "the other machine was contacted: {calls}");

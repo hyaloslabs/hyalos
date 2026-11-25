@@ -4,6 +4,8 @@
 //! title with `infer` (schema 0), and sends one digest through one `effect`.
 
 #![no_std]
+// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+#![allow(unsafe_code)]
 
 use core::arch::wasm32::unreachable;
 use core::panic::PanicInfo;
@@ -134,9 +136,8 @@ pub extern "C" fn run() {
                 Some(number) => {
                     let title = &line[tab + 1..];
                     let tl = core::cmp::min(title.len(), TITLE_MAX);
-                    let answer = unsafe {
-                        host_infer(0, title.as_ptr() as usize as i32, tl as i32)
-                    };
+                    let answer =
+                        unsafe { host_infer(0, title.as_ptr() as usize as i32, tl as i32) };
                     let label = if (LABEL_BUG..=LABEL_SECURITY).contains(&answer) {
                         answer
                     } else {
@@ -169,14 +170,16 @@ pub extern "C" fn run() {
     put_num(dig, &mut len, counts[LABEL_OTHER as usize]);
     put(dig, &mut len, b"\n");
 
+    // The index form is kept: the committed `digest.wasm`, whose hash every record names, is built
+    // from it, and the iterator form compiles to other bytes.
+    #[allow(clippy::needless_range_loop)]
     for k in 0..nsec {
         let e = &sec[k];
         // "#" digits " " title "\n"
         let line_len = 1 + num_len(e.num) + 1 + e.len + 1;
         let last = k + 1 == nsec;
         // Keep room for the truncation line unless nothing follows this line.
-        if len + line_len + TRUNC_LINE.len() <= DIGEST_MAX
-            || (last && len + line_len <= DIGEST_MAX)
+        if len + line_len + TRUNC_LINE.len() <= DIGEST_MAX || (last && len + line_len <= DIGEST_MAX)
         {
             put(dig, &mut len, b"#");
             put_num(dig, &mut len, e.num);

@@ -14,10 +14,22 @@ use std::{
 };
 
 const NAME: &str = "provider.test";
-const QUESTIONS: [&str; 8] = ["Question zero", "Question one", "The same question", "Question three", "Question four", "The same question", "Question six", "Question seven"];
+const QUESTIONS: [&str; 8] = [
+    "Question zero",
+    "Question one",
+    "The same question",
+    "Question three",
+    "Question four",
+    "The same question",
+    "Question six",
+    "Question seven",
+];
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }
 
 /// A test notary, the stand-in provider, an operator's home and a chain of the operator's own.
@@ -49,7 +61,10 @@ fn asking(questions: &[&str]) -> Vec<u8> {
     let (mut data, mut calls, mut at) = (String::new(), String::new(), 1);
     for question in questions {
         data.push_str(&format!("(data (i32.const {at}) \"{question}\")"));
-        calls.push_str(&format!("(drop (call $infer (i32.const 0) (i32.const {at}) (i32.const {})))", question.len()));
+        calls.push_str(&format!(
+            "(drop (call $infer (i32.const 0) (i32.const {at}) (i32.const {})))",
+            question.len()
+        ));
         at += question.len();
     }
     wat::parse_str(format!(
@@ -72,14 +87,23 @@ impl Drop for World {
 
 /// Starts a program and reads the lines it prints before it serves.
 fn start(children: &mut Vec<Child>, mut command: Command, fields: &[&str]) -> Vec<String> {
-    let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
     let mut printed = BufReader::new(child.stdout.take().unwrap());
     let values = fields
         .iter()
         .map(|field| {
             let mut line = String::new();
             printed.read_line(&mut line).unwrap();
-            line.trim().strip_prefix(field).unwrap_or_else(|| panic!("no {field}")).trim().to_string()
+            line.trim()
+                .strip_prefix(field)
+                .unwrap_or_else(|| panic!("no {field}"))
+                .trim()
+                .to_string()
         })
         .collect();
     children.push(child);
@@ -102,17 +126,33 @@ impl World {
     }
 
     /// A world whose notary also signs the canary `canary` names.
-    fn signing_canary(label: &str, version: u32, asks: usize, forge: Option<&str>, canary: Option<&str>) -> Self {
-        let forge_canary = canary.or((version < 3).then_some("missing")).map(str::to_string);
+    fn signing_canary(
+        label: &str,
+        version: u32,
+        asks: usize,
+        forge: Option<&str>,
+        canary: Option<&str>,
+    ) -> Self {
+        let forge_canary = canary
+            .or((version < 3).then_some("missing"))
+            .map(str::to_string);
         // A version 1 record is from before tickets, so its notary signs none unless told to.
         let forge = forge.or((version == 1).then_some("missing"));
         let rig = Rig::new(&format!("forgery-{label}"));
         let (log, ledger_key) = (rig.key("test-log"), rig.key("operator"));
         let home = rig.root.join("home");
         fs::create_dir_all(home.join(".config/hyalos-spike")).unwrap();
-        fs::write(home.join(".config/hyalos-spike/anthropic.key"), format!("{}\n", "x".repeat(106))).unwrap();
+        fs::write(
+            home.join(".config/hyalos-spike/anthropic.key"),
+            format!("{}\n", "x".repeat(106)),
+        )
+        .unwrap();
         let transport_key = rig.root.join("operator-transport.key");
-        let made = Command::new(built("attest")).arg("link-key").arg(&transport_key).output().unwrap();
+        let made = Command::new(built("attest"))
+            .arg("link-key")
+            .arg(&transport_key)
+            .output()
+            .unwrap();
         assert!(made.status.success());
         let operator_transport = String::from_utf8(made.stdout).unwrap().trim().to_string();
 
@@ -126,9 +166,26 @@ impl World {
             ("HYALOS_TRUST_SERVER_NAME".to_string(), NAME.to_string()),
             ("HYALOS_TRUST_ROOT".to_string(), root.display().to_string()),
             ("HYALOS_TRUST_PROVIDER_ADDRESS".to_string(), provider),
-            ("HYALOS_OPERATOR_TRANSPORT_KEY".to_string(), transport_key.display().to_string()),
+            (
+                "HYALOS_OPERATOR_TRANSPORT_KEY".to_string(),
+                transport_key.display().to_string(),
+            ),
         ];
-        let mut world = Self { rig, log, ledger_key, children, settings, signer: String::new(), operator_transport, version, guest: asking(&QUESTIONS[..asks]), authorisation: String::new(), input: b"one input".to_vec(), forge: forge.map(str::to_string), forge_canary };
+        let mut world = Self {
+            rig,
+            log,
+            ledger_key,
+            children,
+            settings,
+            signer: String::new(),
+            operator_transport,
+            version,
+            guest: asking(&QUESTIONS[..asks]),
+            authorisation: String::new(),
+            input: b"one input".to_vec(),
+            forge: forge.map(str::to_string),
+            forge_canary,
+        };
         fs::write(world.rig.path("guest.wasm"), &world.guest).unwrap();
         let (signer, transport, address) = world.notary("notary");
         world.signer = signer;
@@ -140,7 +197,13 @@ impl World {
     /// Starts a notary of its own directory, and gives its signing key, transport key and address.
     fn notary(&mut self, dir: &str) -> (String, String, String) {
         crate::live_tests::canary_pass(&self.rig.root.join(dir));
-        let mut command = Command::new(built(if self.forge.is_some() || self.forge_canary.is_some() { "forging-notary" } else { "notary" }));
+        let mut command = Command::new(built(
+            if self.forge.is_some() || self.forge_canary.is_some() {
+                "forging-notary"
+            } else {
+                "notary"
+            },
+        ));
         if let Some(forge) = &self.forge {
             command.env("HYALOS_FORGE_TICKET", forge);
         }
@@ -148,13 +211,41 @@ impl World {
             command.env("HYALOS_FORGE_CANARY", canary);
         }
         command
-            .args(["--listen", "127.0.0.1:0", "--approved-server", NAME, "--stop-on-stdin-close", "--operator-transport-public", &self.operator_transport, "--dir"])
+            .args([
+                "--listen",
+                "127.0.0.1:0",
+                "--approved-server",
+                NAME,
+                "--stop-on-stdin-close",
+                "--operator-transport-public",
+                &self.operator_transport,
+                "--dir",
+            ])
             .arg(self.rig.root.join(dir))
             .arg("--root")
             .arg(self.rig.root.join("root.der"));
-        let mut values = start(&mut self.children, command, &["signing", "transport", "listening"]);
-        let task = if self.version == 1 { crate::task_v2(&sha(&self.guest), &[self.input.clone()]).unwrap() } else { crate::task_for(self.version, self.profile(), &sha(&self.guest), &[self.input.clone()]).unwrap() };
-        let made = Command::new(built("notary")).args(["authorize", "--dir"]).arg(self.rig.root.join(dir)).args(["--task", &task, "--attempts", "100"]).output().unwrap();
+        let mut values = start(
+            &mut self.children,
+            command,
+            &["signing", "transport", "listening"],
+        );
+        let task = if self.version == 1 {
+            crate::task_v2(&sha(&self.guest), std::slice::from_ref(&self.input)).unwrap()
+        } else {
+            crate::task_for(
+                self.version,
+                self.profile(),
+                &sha(&self.guest),
+                std::slice::from_ref(&self.input),
+            )
+            .unwrap()
+        };
+        let made = Command::new(built("notary"))
+            .args(["authorize", "--dir"])
+            .arg(self.rig.root.join(dir))
+            .args(["--task", &task, "--attempts", "100"])
+            .output()
+            .unwrap();
         assert!(made.status.success());
         self.authorisation = String::from_utf8(made.stdout).unwrap().trim().to_string();
         let address = values.remove(2);
@@ -163,34 +254,89 @@ impl World {
     }
 
     fn point_at(&mut self, transport: &str, address: &str, signer: &str) {
-        self.settings.retain(|(name, _)| !name.starts_with("HYALOS_NOTARY_"));
-        self.settings.push(("HYALOS_NOTARY_ADDRESS".to_string(), address.to_string()));
-        self.settings.push(("HYALOS_NOTARY_TRANSPORT_PUBLIC".to_string(), transport.to_string()));
-        self.settings.push(("HYALOS_NOTARY_SIGNER_PUBLIC".to_string(), signer.to_string()));
-        self.settings.push(("HYALOS_NOTARY_AUTHORISATION".to_string(), self.authorisation.clone()));
+        self.settings
+            .retain(|(name, _)| !name.starts_with("HYALOS_NOTARY_"));
+        self.settings
+            .push(("HYALOS_NOTARY_ADDRESS".to_string(), address.to_string()));
+        self.settings.push((
+            "HYALOS_NOTARY_TRANSPORT_PUBLIC".to_string(),
+            transport.to_string(),
+        ));
+        self.settings.push((
+            "HYALOS_NOTARY_SIGNER_PUBLIC".to_string(),
+            signer.to_string(),
+        ));
+        self.settings.push((
+            "HYALOS_NOTARY_AUTHORISATION".to_string(),
+            self.authorisation.clone(),
+        ));
     }
 
     /// One real attested call through `ask`. `told` is the run the notary is told, when it is not
     /// the request's.
-    fn ask(&self, file: &str, intent: &str, position: usize, question: &str, told: Option<&str>) -> Value {
+    fn ask(
+        &self,
+        file: &str,
+        intent: &str,
+        position: usize,
+        question: &str,
+        told: Option<&str>,
+    ) -> Value {
         let mut command = Command::new(built("attest"));
-        command.args(["ask", file, intent, &position.to_string()]).env_clear().envs(self.settings.iter().map(|(n, v)| (n, v)));
+        command
+            .args(["ask", file, intent, &position.to_string()])
+            .env_clear()
+            .envs(self.settings.iter().map(|(n, v)| (n, v)));
         if let Some(run) = told {
             command.env("HYALOS_TEST_TOLD_RUN", run);
         }
-        let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
-        child.stdin.take().unwrap().write_all(question.as_bytes()).unwrap();
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(question.as_bytes())
+            .unwrap();
         let output = child.wait_with_output().unwrap();
-        assert!(output.status.success(), "ask refused: {}", String::from_utf8_lossy(&output.stdout));
+        assert!(
+            output.status.success(),
+            "ask refused: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
         serde_json::from_slice(&output.stdout).unwrap()
     }
 
     /// One call that may be refused, keeping any presentation the tool's own check refuses.
-    fn try_ask(&self, file: &str, intent: &str, position: usize, question: &str) -> std::process::Output {
+    fn try_ask(
+        &self,
+        file: &str,
+        intent: &str,
+        position: usize,
+        question: &str,
+    ) -> std::process::Output {
         let mut command = Command::new(built("attest"));
-        command.args(["ask", file, intent, &position.to_string()]).env_clear().envs(self.settings.iter().map(|(n, v)| (n, v))).env("HYALOS_TEST_KEEP_PRESENTATION", "1");
-        let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
-        child.stdin.take().unwrap().write_all(question.as_bytes()).unwrap();
+        command
+            .args(["ask", file, intent, &position.to_string()])
+            .env_clear()
+            .envs(self.settings.iter().map(|(n, v)| (n, v)))
+            .env("HYALOS_TEST_KEEP_PRESENTATION", "1");
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(question.as_bytes())
+            .unwrap();
         child.wait_with_output().unwrap()
     }
 
@@ -214,7 +360,17 @@ impl World {
     /// The transcript's frame, before a run's answers and what the guest did with them.
     fn frame(&self) -> Transcript {
         let guest_sha256 = sha(&self.guest);
-        let task = if self.version == 1 { String::new() } else { crate::task_for(self.version, self.profile(), &guest_sha256, &[self.input.clone()]).unwrap() };
+        let task = if self.version == 1 {
+            String::new()
+        } else {
+            crate::task_for(
+                self.version,
+                self.profile(),
+                &guest_sha256,
+                std::slice::from_ref(&self.input),
+            )
+            .unwrap()
+        };
         Transcript {
             version: self.version,
             profile: self.profile().map(str::to_string),
@@ -235,7 +391,8 @@ impl World {
         let intent = if self.version == 1 {
             json!({"v": 1, "kind": "intent", "task": crate::task_of(&frame.guest_sha256, &inputs), "guest_sha256": frame.guest_sha256})
         } else {
-            let key = public_der(&fs::read_to_string(self.rig.path("operator.pub")).unwrap()).unwrap();
+            let key =
+                public_der(&fs::read_to_string(self.rig.path("operator.pub")).unwrap()).unwrap();
             json!({"v": self.version, "kind": "intent", "task": frame.task, "guest_sha256": frame.guest_sha256, "operator": sha(&key)})
         };
         self.rig.push(&self.log, &self.ledger_key, intent)
@@ -247,15 +404,26 @@ impl World {
         let mut t = self.frame();
         // What the guest does with these answers, when it can run on them. A record it cannot
         // run on keeps the frame's, and a forgery that reaches replay diverges there.
-        let mode = Mode::Replay { answers: answers.clone(), effects: Vec::new() };
-        if let Ok(run) = crate::execute_as(self.version, &Backend::Process, &self.guest, vec![self.input.clone()], mode) {
+        let mode = Mode::Replay {
+            answers: answers.clone(),
+            effects: Vec::new(),
+        };
+        if let Ok(run) = crate::execute_as(
+            self.version,
+            &Backend::Process,
+            &self.guest,
+            vec![self.input.clone()],
+            mode,
+        ) {
             (t.result_hex, t.fuel_used) = (run.result_hex, run.fuel_used);
         }
         t.answers = answers;
         let salt = random_salt();
         fs::write(self.record(), serde_json::to_vec_pretty(&t).unwrap()).unwrap();
         fs::write(format!("{}.salt", self.record()), &salt).unwrap();
-        let commitment = sha([salt.as_bytes(), &serde_json::to_vec(&t).unwrap()].concat().as_slice());
+        let commitment = sha([salt.as_bytes(), &serde_json::to_vec(&t).unwrap()]
+            .concat()
+            .as_slice());
         self.rig.push(&self.log, &self.ledger_key, json!({"v": self.version, "kind": "result", "intent": intent, "outcome": "ok", "transcript": commitment}));
         self.sign_times(intent_time, result_time);
     }
@@ -264,9 +432,15 @@ impl World {
     fn sign_times(&self, intent_time: u64, result_time: u64) {
         for (seq, time) in [(0usize, intent_time), (1, result_time)] {
             let link = fs::read(self.rig.root.join(format!("ledger/{seq:05}.json"))).unwrap();
-            let reply = self.rig.entry_at(&self.log, &self.ledger_key, &link, 100 + seq as u64, time);
+            let reply =
+                self.rig
+                    .entry_at(&self.log, &self.ledger_key, &link, 100 + seq as u64, time);
             for dir in ["ledger", "log"] {
-                fs::write(self.rig.root.join(format!("{dir}/{seq:05}.rekor.json")), &reply).unwrap();
+                fs::write(
+                    self.rig.root.join(format!("{dir}/{seq:05}.rekor.json")),
+                    &reply,
+                )
+                .unwrap();
             }
         }
     }
@@ -287,13 +461,46 @@ impl World {
             legacy,
             guest,
         };
-        let trust: Vec<(String, std::ffi::OsString)> = self.settings.iter().filter(|(name, _)| name.starts_with("HYALOS_TRUST_")).map(|(n, v)| (n.clone(), v.into())).collect();
+        let trust: Vec<(String, std::ffi::OsString)> = self
+            .settings
+            .iter()
+            .filter(|(name, _)| name.starts_with("HYALOS_TRUST_"))
+            .map(|(n, v)| (n.clone(), v.into()))
+            .collect();
         let verifier = Verifier::from_settings(&trust).unwrap();
-        let audited = crate::audit_record(&self.record(), &inputs, LogSource::StandIn(self.rig.path("log"), self.rig.path("test-log.pub")), &verifier, &crate::PlainFiles).map_err(|failure| failure.message);
+        let audited = crate::audit_record(
+            &self.record(),
+            &inputs,
+            LogSource::StandIn(self.rig.path("log"), self.rig.path("test-log.pub")),
+            &verifier,
+            &crate::PlainFiles,
+        )
+        .map_err(|failure| failure.message);
         if let Err(said) = &audited {
-            let (record, links, log, log_key, operator, root) = (PathBuf::from(self.record()), self.rig.root.join("ledger"), self.rig.root.join("log"), self.rig.root.join("test-log.pub"), self.rig.root.join("operator.pub"), self.rig.root.join("root.der"));
+            let (record, links, log, log_key, operator, root) = (
+                PathBuf::from(self.record()),
+                self.rig.root.join("ledger"),
+                self.rig.root.join("log"),
+                self.rig.root.join("test-log.pub"),
+                self.rig.root.join("operator.pub"),
+                self.rig.root.join("root.der"),
+            );
             let guest = inputs.guest.as_ref().map(PathBuf::from);
-            super::fixture_tests::keep(super::fixture_tests::Spec { record: &record, attest: true, links: Some(&links), log: Some(&log), log_key: Some(&log_key), operator: Some(&operator), notary: &self.signer, guest: guest.as_deref(), root: Some(&root), legacy }, said);
+            super::fixture_tests::keep(
+                super::fixture_tests::Spec {
+                    record: &record,
+                    attest: true,
+                    links: Some(&links),
+                    log: Some(&log),
+                    log_key: Some(&log_key),
+                    operator: Some(&operator),
+                    notary: &self.signer,
+                    guest: guest.as_deref(),
+                    root: Some(&root),
+                    legacy,
+                },
+                said,
+            );
         }
         audited
     }
@@ -305,10 +512,14 @@ impl World {
     /// Asks each position once, in order, with its presentation kept at that position.
     fn honest(&self, intent: &str, questions: &[&str]) -> Vec<Answer> {
         fs::create_dir_all(format!("{}.attest", self.record())).unwrap();
-        questions.iter().enumerate().map(|(position, question)| {
-            let file = self.presentation(position);
-            answer_from(&self.ask(&file, intent, position, question, None), question)
-        }).collect()
+        questions
+            .iter()
+            .enumerate()
+            .map(|(position, question)| {
+                let file = self.presentation(position);
+                answer_from(&self.ask(&file, intent, position, question, None), question)
+            })
+            .collect()
     }
 }
 
@@ -336,26 +547,53 @@ fn honest_eight(label: &str) -> (World, String, Vec<Answer>, u64) {
 }
 
 #[test]
-fn s_03_2_e1_s_03_3_e1_s_03_5_e1_s_04_3_e1_an_honest_record_of_eight_passes_and_others_are_refused() {
+fn s_03_2_e1_s_03_3_e1_s_03_5_e1_s_04_3_e1_an_honest_record_of_eight_passes_and_others_are_refused()
+{
     let _one = locked();
     let (world, intent, answers, before) = honest_eight("honest");
 
     // S-03.2.e1, S-03.3.e1, S-03.5.e1, S-04.3.e1, S-04.5.e1.
     let report = world.audit().unwrap();
-    assert!(report.contains("all 8 answers were attested by the trusted notary for this run and position"), "{report}");
-    assert!(report.contains("test trust settings: the provider here is a stand-in"), "{report}");
-    assert_eq!(report.lines().filter(|l| l.starts_with("not proven")).count(), 8, "{report}");
+    assert!(
+        report.contains(
+            "all 8 answers were attested by the trusted notary for this run and position"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains("test trust settings: the provider here is a stand-in"),
+        "{report}"
+    );
+    assert_eq!(
+        report
+            .lines()
+            .filter(|l| l.starts_with("not proven"))
+            .count(),
+        8,
+        "{report}"
+    );
     assert!(!report.contains("not checked"), "{report}");
 
     // S-03.3.e2: the log signed the intent after the sessions.
     let (first, last) = session_times(&world, answers.len());
     world.sign_times(first, last + 1);
-    assert_eq!(world.refused(), "answer 0: the session is not later than the run's intent", "a session in the intent's own second");
+    assert_eq!(
+        world.refused(),
+        "answer 0: the session is not later than the run's intent",
+        "a session in the intent's own second"
+    );
     world.sign_times(last + 1, last + 2);
-    assert_eq!(world.refused(), "answer 0: the session is not later than the run's intent");
+    assert_eq!(
+        world.refused(),
+        "answer 0: the session is not later than the run's intent"
+    );
     // S-03.3.e3: the log signed the result before the last session.
     world.sign_times(first - 1, last - 1);
-    assert!(world.refused().ends_with("the session is later than the run's result"));
+    assert!(
+        world
+            .refused()
+            .ends_with("the session is later than the run's result")
+    );
     // The window's own edge: a session in the result's second is inside it.
     world.sign_times(first - 1, last);
     assert!(world.audit().is_ok());
@@ -367,20 +605,29 @@ fn s_03_2_e1_s_03_3_e1_s_03_5_e1_s_04_3_e1_an_honest_record_of_eight_passes_and_
     let mut reused = answers.clone();
     reused[5] = answers[2].clone();
     rewrite(&world, &intent, reused);
-    assert_eq!(world.refused(), "answer 5: the binding names another position");
+    assert_eq!(
+        world.refused(),
+        "answer 5: the binding names another position"
+    );
     fs::write(world.presentation(5), kept).unwrap();
 
     // S-04.3.e2: one answer names no presentation.
     let mut unnamed = answers.clone();
     unnamed[3].attestation.clear();
     rewrite(&world, &intent, unnamed);
-    assert_eq!(world.refused(), "answer 3: the attestation is not the one the record names");
+    assert_eq!(
+        world.refused(),
+        "answer 3: the attestation is not the one the record names"
+    );
 
     // An answer the notary did not see, under its real presentation.
     let mut changed = answers.clone();
     changed[1].label = (changed[1].label + 1) % 4;
     rewrite(&world, &intent, changed);
-    assert_eq!(world.refused(), "answer 1: the notary saw a different question or answer than the record claims");
+    assert_eq!(
+        world.refused(),
+        "answer 1: the notary saw a different question or answer than the record claims"
+    );
 
     // A record with no answers proves nothing about any.
     rewrite(&world, &intent, Vec::new());
@@ -399,8 +646,13 @@ fn rewrite(world: &World, intent: &str, answers: Vec<Answer>) {
 }
 
 fn signed(world: &World, seq: usize) -> u64 {
-    let reply: Value = serde_json::from_slice(&fs::read(world.rig.root.join(format!("ledger/{seq:05}.rekor.json"))).unwrap()).unwrap();
-    reply.as_object().unwrap().values().next().unwrap()["integratedTime"].as_u64().unwrap()
+    let reply: Value = serde_json::from_slice(
+        &fs::read(world.rig.root.join(format!("ledger/{seq:05}.rekor.json"))).unwrap(),
+    )
+    .unwrap();
+    reply.as_object().unwrap().values().next().unwrap()["integratedTime"]
+        .as_u64()
+        .unwrap()
 }
 
 /// The earliest and latest session times among the answers, as verify reports them.
@@ -410,10 +662,18 @@ fn session_times(world: &World, count: usize) -> (u64, u64) {
             let output = Command::new(built("attest"))
                 .args(["verify", &world.presentation(index), &world.signer])
                 .env_clear()
-                .envs(world.settings.iter().filter(|(name, _)| name.starts_with("HYALOS_TRUST_")).map(|(n, v)| (n, v)))
+                .envs(
+                    world
+                        .settings
+                        .iter()
+                        .filter(|(name, _)| name.starts_with("HYALOS_TRUST_"))
+                        .map(|(n, v)| (n, v)),
+                )
                 .output()
                 .unwrap();
-            serde_json::from_slice::<Value>(&output.stdout).unwrap()["time"].as_u64().unwrap()
+            serde_json::from_slice::<Value>(&output.stdout).unwrap()["time"]
+                .as_u64()
+                .unwrap()
         })
         .collect();
     (*times.iter().min().unwrap(), *times.iter().max().unwrap())
@@ -427,7 +687,12 @@ fn s_03_2_e2_s_04_4_e2_a_real_presentation_from_another_run_is_refused() {
     let earlier = "ab".repeat(32);
     let said = world.ask(&world.presentation(0), &earlier, 0, QUESTIONS[0], None);
     let intent = world.declare();
-    world.close(&intent, vec![answer_from(&said, QUESTIONS[0])], now() - 60, now() + 1);
+    world.close(
+        &intent,
+        vec![answer_from(&said, QUESTIONS[0])],
+        now() - 60,
+        now() + 1,
+    );
     assert_eq!(world.refused(), "answer 0: the binding names another run");
 }
 
@@ -439,10 +704,22 @@ fn s_03_5_e2_a_question_asked_twice_with_the_first_answer_discarded_is_refused()
     fs::create_dir_all(format!("{}.attest", world.record())).unwrap();
     let before = now() - 1;
     let mut answers = world.honest(&intent, &QUESTIONS[..3]);
-    let _discarded = world.ask(&world.scratch_file("discarded"), &intent, 3, QUESTIONS[3], None);
-    answers.push(answer_from(&world.ask(&world.presentation(3), &intent, 3, QUESTIONS[3], None), QUESTIONS[3]));
+    let _discarded = world.ask(
+        &world.scratch_file("discarded"),
+        &intent,
+        3,
+        QUESTIONS[3],
+        None,
+    );
+    answers.push(answer_from(
+        &world.ask(&world.presentation(3), &intent, 3, QUESTIONS[3], None),
+        QUESTIONS[3],
+    ));
     world.close(&intent, answers, before, now() + 1);
-    assert_eq!(world.refused(), "answer 3: the sequence number is not the answer's position, so an attestation is unaccounted for");
+    assert_eq!(
+        world.refused(),
+        "answer 3: the sequence number is not the answer's position, so an attestation is unaccounted for"
+    );
 }
 
 #[test]
@@ -453,11 +730,23 @@ fn s_03_5_e4_the_first_question_asked_three_times_is_refused() {
     fs::create_dir_all(format!("{}.attest", world.record())).unwrap();
     let before = now() - 1;
     for attempt in 0..2 {
-        world.ask(&world.scratch_file(&format!("discarded-{attempt}")), &intent, 0, QUESTIONS[0], None);
+        world.ask(
+            &world.scratch_file(&format!("discarded-{attempt}")),
+            &intent,
+            0,
+            QUESTIONS[0],
+            None,
+        );
     }
-    let kept = answer_from(&world.ask(&world.presentation(0), &intent, 0, QUESTIONS[0], None), QUESTIONS[0]);
+    let kept = answer_from(
+        &world.ask(&world.presentation(0), &intent, 0, QUESTIONS[0], None),
+        QUESTIONS[0],
+    );
     world.close(&intent, vec![kept], before, now() + 1);
-    assert_eq!(world.refused(), "answer 0: the sequence number is not the answer's position, so an attestation is unaccounted for");
+    assert_eq!(
+        world.refused(),
+        "answer 0: the sequence number is not the answer's position, so an attestation is unaccounted for"
+    );
 }
 
 #[test]
@@ -469,22 +758,50 @@ fn adr_014_a_session_left_after_reading_the_reply_cannot_be_asked_again() {
     let before = now() - 1;
     // The forger reads the answer, dislikes it, and leaves before the proof.
     let mut leaving = Command::new(built("attest"));
-    leaving.args(["ask", &world.scratch_file("left"), &intent, "0"]).env_clear().envs(world.settings.iter().map(|(n, v)| (n, v))).env("HYALOS_TEST_LEAVE_AFTER_REPLY", "1");
-    let mut child = leaving.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
-    child.stdin.take().unwrap().write_all(QUESTIONS[0].as_bytes()).unwrap();
+    leaving
+        .args(["ask", &world.scratch_file("left"), &intent, "0"])
+        .env_clear()
+        .envs(world.settings.iter().map(|(n, v)| (n, v)))
+        .env("HYALOS_TEST_LEAVE_AFTER_REPLY", "1");
+    let mut child = leaving
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(QUESTIONS[0].as_bytes())
+        .unwrap();
     let left = child.wait_with_output().unwrap();
     assert!(!left.status.success());
     // The notary holds its one session until it sees the link close, and turns a call away as busy
     // until then. It writes the session's line after releasing it.
     let sessions = world.rig.root.join("notary/sessions.log");
     let waited = std::time::Instant::now();
-    while fs::read_to_string(&sessions).unwrap_or_default().lines().next().is_none() {
-        assert!(waited.elapsed() < std::time::Duration::from_secs(30), "the notary never ended the session that left");
+    while fs::read_to_string(&sessions)
+        .unwrap_or_default()
+        .lines()
+        .next()
+        .is_none()
+    {
+        assert!(
+            waited.elapsed() < std::time::Duration::from_secs(30),
+            "the notary never ended the session that left"
+        );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    let kept = answer_from(&world.ask(&world.presentation(0), &intent, 0, QUESTIONS[0], None), QUESTIONS[0]);
+    let kept = answer_from(
+        &world.ask(&world.presentation(0), &intent, 0, QUESTIONS[0], None),
+        QUESTIONS[0],
+    );
     world.close(&intent, vec![kept], before, now() + 1);
-    assert_eq!(world.refused(), "answer 0: the sequence number is not the answer's position, so an attestation is unaccounted for");
+    assert_eq!(
+        world.refused(),
+        "answer 0: the sequence number is not the answer's position, so an attestation is unaccounted for"
+    );
 }
 
 #[test]
@@ -495,8 +812,19 @@ fn s_03_5_e5_an_operator_who_tells_the_notary_another_run_is_refused() {
     fs::create_dir_all(format!("{}.attest", world.record())).unwrap();
     let before = now() - 1;
     let other = "cd".repeat(32);
-    let said = world.ask(&world.presentation(0), &intent, 0, QUESTIONS[0], Some(&other));
-    world.close(&intent, vec![answer_from(&said, QUESTIONS[0])], before, now() + 1);
+    let said = world.ask(
+        &world.presentation(0),
+        &intent,
+        0,
+        QUESTIONS[0],
+        Some(&other),
+    );
+    world.close(
+        &intent,
+        vec![answer_from(&said, QUESTIONS[0])],
+        before,
+        now() + 1,
+    );
     assert_eq!(world.refused(), "answer 0: the notary was told another run");
 }
 
@@ -511,9 +839,17 @@ fn s_04_4_e1_an_answer_attested_by_the_forgers_own_notary_is_refused() {
     fs::create_dir_all(format!("{}.attest", world.record())).unwrap();
     let before = now() - 1;
     let said = world.ask(&world.presentation(0), &intent, 0, QUESTIONS[0], None);
-    world.close(&intent, vec![answer_from(&said, QUESTIONS[0])], before, now() + 1);
+    world.close(
+        &intent,
+        vec![answer_from(&said, QUESTIONS[0])],
+        before,
+        now() + 1,
+    );
     assert_eq!(world.signer, trusted);
-    assert_eq!(world.refused(), "answer 0: not attested by the trusted notary");
+    assert_eq!(
+        world.refused(),
+        "answer 0: not attested by the trusted notary"
+    );
 }
 
 #[test]
@@ -525,25 +861,56 @@ fn s_04_4_e3_an_attestation_obtained_before_the_intent_was_logged_is_refused() {
     fs::create_dir_all(format!("{}.attest", world.record())).unwrap();
     let said = world.ask(&world.presentation(0), &intent, 0, QUESTIONS[0], None);
     let (_, session) = session_times(&world, 1);
-    world.close(&intent, vec![answer_from(&said, QUESTIONS[0])], session + 1, session + 5);
-    assert_eq!(world.refused(), "answer 0: the session is not later than the run's intent");
+    world.close(
+        &intent,
+        vec![answer_from(&said, QUESTIONS[0])],
+        session + 1,
+        session + 5,
+    );
+    assert_eq!(
+        world.refused(),
+        "answer 0: the session is not later than the run's intent"
+    );
 }
 
 #[test]
 fn s_03_2_e4_an_attestation_whose_request_carries_no_binding_is_refused() {
     // What verify reports for a request with no binding has neither field. Verify itself refuses
     // such a request: `s_03_4_a_request_with_no_binding_or_a_loose_one_is_refused` in `attest/src/lib.rs`.
-    let answer = Answer { schema: 0, question_sha256: "q".into(), label: 0, model: "m".into(), response_id: "r".into(), attestation: "a".into(), provider_proofs: Vec::new() };
+    let answer = Answer {
+        schema: 0,
+        question_sha256: "q".into(),
+        label: 0,
+        model: "m".into(),
+        response_id: "r".into(),
+        attestation: "a".into(),
+        provider_proofs: Vec::new(),
+    };
     let seen = json!({"run": "r", "sequence": 0, "question_sha256": "q", "label": 0, "model": "m", "response_id": "r", "time": 5});
-    assert_eq!(crate::check_answer(&seen, &answer, 0, "r", Some((1, 9))).unwrap_err(), "answer 0: the binding names another run");
+    assert_eq!(
+        crate::check_answer(&seen, &answer, 0, "r", Some((1, 9))).unwrap_err(),
+        "answer 0: the binding names another run"
+    );
 }
 
 #[test]
 fn t_5_the_window_is_strict_at_the_intent_and_inclusive_at_the_result() {
-    let answer = Answer { schema: 0, question_sha256: "q".into(), label: 0, model: "m".into(), response_id: "r".into(), attestation: "a".into(), provider_proofs: Vec::new() };
+    let answer = Answer {
+        schema: 0,
+        question_sha256: "q".into(),
+        label: 0,
+        model: "m".into(),
+        response_id: "r".into(),
+        attestation: "a".into(),
+        provider_proofs: Vec::new(),
+    };
     let at = |time: u64| json!({"intent_hash": "r", "position": 0, "run": "r", "sequence": 0, "question_sha256": "q", "label": 0, "model": "m", "response_id": "r", "time": time});
     for (time, passes) in [(9, false), (10, false), (11, true), (20, true), (21, false)] {
-        assert_eq!(crate::check_answer(&at(time), &answer, 0, "r", Some((10, 20))).is_ok(), passes, "{time}");
+        assert_eq!(
+            crate::check_answer(&at(time), &answer, 0, "r", Some((10, 20))).is_ok(),
+            passes,
+            "{time}"
+        );
     }
 }
 
@@ -557,28 +924,64 @@ fn s_04_1_the_whole_audit_passes_with_an_empty_home() {
     world.close(&intent, answers, before, now() + 1);
     let empty = world.rig.root.join("auditor-home");
     fs::create_dir_all(&empty).unwrap();
-    let program = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("task-kernel");
-    assert!(program.exists(), "the monitor is not built: run cargo build --release");
+    let program = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("task-kernel");
+    assert!(
+        program.exists(),
+        "the monitor is not built: run cargo build --release"
+    );
     let output = Command::new(program)
         .arg("audit")
         .arg(world.record())
         .arg(world.rig.path("ledger"))
-        .args(["--operator-public", &world.rig.path("operator.pub"), "--notary-public", &world.rig.path("notary.pub"), "--guest", &world.rig.path("guest.wasm")])
+        .args([
+            "--operator-public",
+            &world.rig.path("operator.pub"),
+            "--notary-public",
+            &world.rig.path("notary.pub"),
+            "--guest",
+            &world.rig.path("guest.wasm"),
+        ])
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
         .env("HOME", &empty)
         .env("HYALOS_KERNEL", "/nonexistent/hyalos-kernel")
         .env("HYALOS_TRUST_LOG_DIR", world.rig.path("log"))
         .env("HYALOS_TRUST_LOG_KEY", world.rig.path("test-log.pub"))
-        .envs(world.settings.iter().filter(|(name, _)| name.starts_with("HYALOS_TRUST_")).map(|(n, v)| (n, v)))
+        .envs(
+            world
+                .settings
+                .iter()
+                .filter(|(name, _)| name.starts_with("HYALOS_TRUST_"))
+                .map(|(n, v)| (n, v)),
+        )
         .stdin(Stdio::null())
         .output()
         .unwrap();
     let report = String::from_utf8(output.stdout).unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(report.starts_with("audit passed\ntest trust settings"), "{report}");
-    assert!(!report.contains("public log"), "a stand-in report claims nothing of the public log: {report}");
-    assert_eq!(fs::read_dir(&empty).unwrap().count(), 0, "the home directory stays empty");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        report.starts_with("audit passed\ntest trust settings"),
+        "{report}"
+    );
+    assert!(
+        !report.contains("public log"),
+        "a stand-in report claims nothing of the public log: {report}"
+    );
+    assert_eq!(
+        fs::read_dir(&empty).unwrap().count(),
+        0,
+        "the home directory stays empty"
+    );
 }
 
 #[test]
@@ -598,8 +1001,21 @@ fn one_answer(label: &str, version: u32) -> World {
 
 /// The audit of a record file that its version check refuses, so no key or log is reached.
 fn audit_file(record: &str, legacy: bool) -> Result<String, String> {
-    let inputs = AuditInputs { dir: None, operator: Some("/nonexistent".into()), notary: format!("02{}", "11".repeat(32)), legacy, guest: None };
-    let audited = crate::audit_record(record, &inputs, LogSource::Public, &Verifier::real(), &crate::PlainFiles).map_err(|failure| failure.message);
+    let inputs = AuditInputs {
+        dir: None,
+        operator: Some("/nonexistent".into()),
+        notary: format!("02{}", "11".repeat(32)),
+        legacy,
+        guest: None,
+    };
+    let audited = crate::audit_record(
+        record,
+        &inputs,
+        LogSource::Public,
+        &Verifier::real(),
+        &crate::PlainFiles,
+    )
+    .map_err(|failure| failure.message);
     if let Err(said) = &audited {
         super::fixture_tests::keep_version(Path::new(record), legacy, said);
     }
@@ -616,14 +1032,23 @@ fn record_of_version(rig: &Rig, version: u32) -> String {
 fn record_s_01_1_e1_an_unknown_version_is_refused_and_named() {
     let rig = Rig::new("r-01-1-e1");
     let record = record_of_version(&rig, 5);
-    assert_eq!(audit_file(&record, false).unwrap_err(), "record version 5 is not known");
-    assert_eq!(crate::read_transcript(&fs::read(&record).unwrap()).unwrap_err(), "record version 5 is not known");
+    assert_eq!(
+        audit_file(&record, false).unwrap_err(),
+        "record version 5 is not known"
+    );
+    assert_eq!(
+        crate::read_transcript(&fs::read(&record).unwrap()).unwrap_err(),
+        "record version 5 is not known"
+    );
 }
 
 #[test]
 fn record_s_01_1_e2_version_0_is_refused_even_with_the_legacy_option() {
     let rig = Rig::new("r-01-1-e2");
-    assert_eq!(audit_file(&record_of_version(&rig, 0), true).unwrap_err(), "record version 0 is not known");
+    assert_eq!(
+        audit_file(&record_of_version(&rig, 0), true).unwrap_err(),
+        "record version 0 is not known"
+    );
 }
 
 #[test]
@@ -643,7 +1068,10 @@ fn record_s_01_2_e2_a_version_2_record_is_not_refused_for_its_version() {
 fn record_s_01_3_e1_a_valid_version_1_record_passes_as_legacy() {
     let _one = locked();
     let report = one_answer("r-01-3-e1", 1).audit_with(true).unwrap();
-    assert_eq!(report.lines().next(), Some("legacy audit passed: no attempt budget"));
+    assert_eq!(
+        report.lines().next(),
+        Some("legacy audit passed: no attempt budget")
+    );
 }
 
 #[test]
@@ -672,7 +1100,10 @@ fn record_s_01_7_e2_a_version_2_pass_opens_with_audit_passed() {
 fn record_s_05_8_e1_a_version_2_audit_with_no_guest_is_refused() {
     let _one = locked();
     let world = one_answer("r-05-8-e1", 2);
-    assert_eq!(world.audit_on(false, None).unwrap_err(), "the guest is not given: --guest <file>");
+    assert_eq!(
+        world.audit_on(false, None).unwrap_err(),
+        "the guest is not given: --guest <file>"
+    );
 }
 
 #[test]
@@ -683,7 +1114,10 @@ fn record_s_05_8_e2_a_guest_with_one_byte_changed_is_refused() {
     *changed.last_mut().unwrap() ^= 1;
     let file = world.rig.path("changed.wasm");
     fs::write(&file, changed).unwrap();
-    assert_eq!(world.audit_on(false, Some(file)).unwrap_err(), "the guest is not this record's");
+    assert_eq!(
+        world.audit_on(false, Some(file)).unwrap_err(),
+        "the guest is not this record's"
+    );
 }
 
 #[test]
@@ -719,21 +1153,30 @@ fn record_s_05_7_e7_a_reworded_question_diverges() {
 fn record_2_1_a_version_1_record_needs_no_guest() {
     let _one = locked();
     let report = one_answer("r-2-1", 1).audit_on(true, None).unwrap();
-    assert_eq!(report.lines().next(), Some("legacy audit passed: no attempt budget"));
+    assert_eq!(
+        report.lines().next(),
+        Some("legacy audit passed: no attempt budget")
+    );
 }
 
 #[test]
 fn record_s_01_6_e1_a_ticketed_attestation_in_a_version_1_record_is_refused() {
     let _one = locked();
     let world = forged_world(World::signing("r-01-6-e1", 1, 1, Some("budget=100")), 1);
-    assert_eq!(world.audit_with(true).unwrap_err(), "answer 0: a version 1 record cannot carry a ticket");
+    assert_eq!(
+        world.audit_with(true).unwrap_err(),
+        "answer 0: a version 1 record cannot carry a ticket"
+    );
 }
 
 #[test]
 fn record_s_01_6_e2_a_version_1_record_with_no_ticket_passes_as_legacy() {
     let _one = locked();
     let report = one_answer("r-01-6-e2", 1).audit_with(true).unwrap();
-    assert_eq!(report.lines().next(), Some("legacy audit passed: no attempt budget"));
+    assert_eq!(
+        report.lines().next(),
+        Some("legacy audit passed: no attempt budget")
+    );
 }
 
 /// A version 2 run of `asks` answers against a notary that signs the ticket `forge` names. A
@@ -747,15 +1190,27 @@ fn forged_world(world: World, asks: usize) -> World {
     let intent = world.declare();
     let before = now() - 1;
     fs::create_dir_all(format!("{}.attest", world.record())).unwrap();
-    let answers = QUESTIONS[..asks].iter().enumerate().map(|(position, question)| {
-        let file = world.presentation(position);
-        let output = world.try_ask(&file, &intent, position, question);
-        if output.status.success() {
-            answer_from(&serde_json::from_slice(&output.stdout).unwrap(), question)
-        } else {
-            Answer { schema: 0, question_sha256: sha(question.as_bytes()), label: 0, model: String::new(), response_id: String::new(), attestation: sha(&fs::read(&file).unwrap()), provider_proofs: Vec::new() }
-        }
-    }).collect();
+    let answers = QUESTIONS[..asks]
+        .iter()
+        .enumerate()
+        .map(|(position, question)| {
+            let file = world.presentation(position);
+            let output = world.try_ask(&file, &intent, position, question);
+            if output.status.success() {
+                answer_from(&serde_json::from_slice(&output.stdout).unwrap(), question)
+            } else {
+                Answer {
+                    schema: 0,
+                    question_sha256: sha(question.as_bytes()),
+                    label: 0,
+                    model: String::new(),
+                    response_id: String::new(),
+                    attestation: sha(&fs::read(&file).unwrap()),
+                    provider_proofs: Vec::new(),
+                }
+            }
+        })
+        .collect();
     world.close(&intent, answers, before, now() + 1);
     world
 }
@@ -763,32 +1218,47 @@ fn forged_world(world: World, asks: usize) -> World {
 #[test]
 fn record_s_05_1_e1_no_ticket_extension_is_refused() {
     let _one = locked();
-    assert_eq!(forged("r-05-1-e1", 1, "missing").refused(), "answer 0: the attestation carries no ticket");
+    assert_eq!(
+        forged("r-05-1-e1", 1, "missing").refused(),
+        "answer 0: the attestation carries no ticket"
+    );
 }
 
 #[test]
 fn record_s_05_1_e2_two_ticket_extensions_are_refused() {
     let _one = locked();
-    assert_eq!(forged("r-05-1-e2", 1, "doubled").refused(), "answer 0: the attestation does not verify");
+    assert_eq!(
+        forged("r-05-1-e2", 1, "doubled").refused(),
+        "answer 0: the attestation does not verify"
+    );
 }
 
 #[test]
 fn record_s_05_1_e3_a_ticket_one_byte_short_is_refused() {
     let _one = locked();
-    assert_eq!(forged("r-05-1-e3", 1, "short").refused(), "answer 0: the attestation does not verify");
+    assert_eq!(
+        forged("r-05-1-e3", 1, "short").refused(),
+        "answer 0: the attestation does not verify"
+    );
 }
 
 #[test]
 fn record_s_05_2_e1_another_ticket_on_a_later_answer_is_refused() {
     let _one = locked();
-    assert_eq!(forged("r-05-2-e1", 2, "later:ticket=1").refused(), "answer 1: the ticket is not the one answer 0 carries");
+    assert_eq!(
+        forged("r-05-2-e1", 2, "later:ticket=1").refused(),
+        "answer 1: the ticket is not the one answer 0 carries"
+    );
 }
 
 #[test]
 fn record_s_05_2_e2_another_authorisation_on_a_later_answer_is_refused() {
     let _one = locked();
     let forge = format!("later:authorisation={}", "c".repeat(64));
-    assert_eq!(forged("r-05-2-e2", 2, &forge).refused(), "answer 1: the ticket is not the one answer 0 carries");
+    assert_eq!(
+        forged("r-05-2-e2", 2, &forge).refused(),
+        "answer 1: the ticket is not the one answer 0 carries"
+    );
 }
 
 #[test]
@@ -806,7 +1276,10 @@ fn record_s_05_2_e3_answers_with_the_same_values_are_not_refused() {
 fn record_s_05_3_e1_a_ticket_for_another_task_is_refused() {
     let _one = locked();
     let forge = format!("task={}", "d".repeat(64));
-    assert_eq!(forged("r-05-3-e1", 1, &forge).refused(), "the ticket's task is not this record's");
+    assert_eq!(
+        forged("r-05-3-e1", 1, &forge).refused(),
+        "the ticket's task is not this record's"
+    );
 }
 
 #[test]
@@ -818,19 +1291,28 @@ fn record_s_05_3_e2_a_ticket_for_the_records_task_is_not_refused() {
 #[test]
 fn record_s_05_4_e1_ticket_2_of_budget_2_is_refused() {
     let _one = locked();
-    assert_eq!(forged("r-05-4-e1", 1, "budget=2,ticket=2").refused(), "answer 0: the ticket is not inside its budget");
+    assert_eq!(
+        forged("r-05-4-e1", 1, "budget=2,ticket=2").refused(),
+        "answer 0: the ticket is not inside its budget"
+    );
 }
 
 #[test]
 fn record_s_05_4_e2_budget_0_is_refused() {
     let _one = locked();
-    assert_eq!(forged("r-05-4-e2", 1, "budget=0").refused(), "answer 0: the ticket is not inside its budget");
+    assert_eq!(
+        forged("r-05-4-e2", 1, "budget=0").refused(),
+        "answer 0: the ticket is not inside its budget"
+    );
 }
 
 #[test]
 fn record_s_05_4_e3_budget_101_is_refused() {
     let _one = locked();
-    assert_eq!(forged("r-05-4-e3", 1, "budget=101").refused(), "answer 0: the ticket is not inside its budget");
+    assert_eq!(
+        forged("r-05-4-e3", 1, "budget=101").refused(),
+        "answer 0: the ticket is not inside its budget"
+    );
 }
 
 #[test]
@@ -843,7 +1325,9 @@ fn record_s_05_5_e1_the_report_states_the_first_attempt() {
 #[test]
 fn record_s_05_5_e2_the_report_states_a_later_attempt_and_earlier_budget() {
     let _one = locked();
-    let report = forged("r-05-5-e2", 1, "budget=5,round=1,prior=3,ticket=2").audit().unwrap();
+    let report = forged("r-05-5-e2", 1, "budget=5,round=1,prior=3,ticket=2")
+        .audit()
+        .unwrap();
     assert!(report.contains("attempt 3 of at most 5 under this authorisation, 3 authorised earlier, for this exact task on this notary"), "{report}");
 }
 
@@ -851,18 +1335,30 @@ fn record_s_05_5_e2_the_report_states_a_later_attempt_and_earlier_budget() {
 fn record_s_05_6_e1_a_pass_names_the_seven_limits() {
     let _one = locked();
     let report = one_answer("r-05-6-e1", 2).audit().unwrap();
-    let limits: Vec<&str> = report.lines().filter(|line| line.starts_with("not proven")).collect();
+    let limits: Vec<&str> = report
+        .lines()
+        .filter(|line| line.starts_with("not proven"))
+        .collect();
     assert_eq!(limits.len(), 8, "{report}");
     assert_eq!(limits[7], "not proven: this record has no provider canary");
-    assert_eq!(limits[5], "not proven: the operator may have asked the provider directly, away from the notary");
-    assert_eq!(limits[6], "not proven: the customer did not authorise this task again after this attestation");
+    assert_eq!(
+        limits[5],
+        "not proven: the operator may have asked the provider directly, away from the notary"
+    );
+    assert_eq!(
+        limits[6],
+        "not proven: the customer did not authorise this task again after this attestation"
+    );
 }
 
 #[test]
 fn record_s_05_6_e2_a_failing_record_states_no_proof() {
     let _one = locked();
     let refused = forged("r-05-6-e2", 1, "missing").refused();
-    assert!(!refused.contains("proven") && !refused.contains("audit passed"), "{refused}");
+    assert!(
+        !refused.contains("proven") && !refused.contains("audit passed"),
+        "{refused}"
+    );
 }
 
 #[test]
@@ -872,8 +1368,19 @@ fn record_s_05_7_e1_an_attestation_from_another_run_is_refused() {
     let intent = world.declare();
     let before = now() - 1;
     fs::create_dir_all(format!("{}.attest", world.record())).unwrap();
-    let said = world.ask(&world.presentation(0), &"a".repeat(64), 0, QUESTIONS[0], None);
-    world.close(&intent, vec![answer_from(&said, QUESTIONS[0])], before, now() + 1);
+    let said = world.ask(
+        &world.presentation(0),
+        &"a".repeat(64),
+        0,
+        QUESTIONS[0],
+        None,
+    );
+    world.close(
+        &intent,
+        vec![answer_from(&said, QUESTIONS[0])],
+        before,
+        now() + 1,
+    );
     assert_eq!(world.refused(), "answer 0: the binding names another run");
 }
 
@@ -897,10 +1404,19 @@ fn record_s_05_7_e3_presenting_work_as_version_1_avoids_no_budget() {
     assert!(world.audit().unwrap_err().contains("--legacy-v1"));
     // With the option, what is truly ticketless reports that it has no budget.
     let report = world.audit_with(true).unwrap();
-    assert_eq!(report.lines().next(), Some("legacy audit passed: no attempt budget"));
+    assert_eq!(
+        report.lines().next(),
+        Some("legacy audit passed: no attempt budget")
+    );
     // The same work under a notary that signed a ticket is refused.
-    let world = forged_world(World::signing("r-05-7-e3-ticket", 1, 1, Some("budget=100")), 1);
-    assert_eq!(world.audit_with(true).unwrap_err(), "answer 0: a version 1 record cannot carry a ticket");
+    let world = forged_world(
+        World::signing("r-05-7-e3-ticket", 1, 1, Some("budget=100")),
+        1,
+    );
+    assert_eq!(
+        world.audit_with(true).unwrap_err(),
+        "answer 0: a version 1 record cannot carry a ticket"
+    );
 }
 
 #[test]
@@ -915,12 +1431,26 @@ fn record_s_05_7_e4_a_second_log_key_gets_no_more_attempts() {
         .unwrap();
     assert!(made.status.success());
     let identifier = String::from_utf8(made.stdout).unwrap().trim().to_string();
-    world.settings.retain(|(name, _)| name != "HYALOS_NOTARY_AUTHORISATION");
-    world.settings.push(("HYALOS_NOTARY_AUTHORISATION".to_string(), identifier));
+    world
+        .settings
+        .retain(|(name, _)| name != "HYALOS_NOTARY_AUTHORISATION");
+    world
+        .settings
+        .push(("HYALOS_NOTARY_AUTHORISATION".to_string(), identifier));
     // The notary never sees a log key: a run under a second key is one more new run to it.
-    let first = world.try_ask(&world.scratch_file("first"), &"1".repeat(64), 0, QUESTIONS[0]);
+    let first = world.try_ask(
+        &world.scratch_file("first"),
+        &"1".repeat(64),
+        0,
+        QUESTIONS[0],
+    );
     assert!(first.status.success());
-    let second = world.try_ask(&world.scratch_file("second"), &"2".repeat(64), 0, QUESTIONS[0]);
+    let second = world.try_ask(
+        &world.scratch_file("second"),
+        &"2".repeat(64),
+        0,
+        QUESTIONS[0],
+    );
     assert!(!second.status.success());
     assert_eq!(String::from_utf8_lossy(&second.stdout).trim(), "spent");
 }
@@ -934,7 +1464,10 @@ fn record_s_05_7_e5_an_edited_budget_in_a_stored_attestation_is_refused() {
     let mut answers = world.honest(&intent, &QUESTIONS[..1]);
     world.close(&intent, answers.clone(), before, now() + 1);
     let mut bytes = fs::read(world.presentation(0)).unwrap();
-    let at = bytes.windows(64).position(|w| w == world.authorisation.as_bytes()).expect("the ticket's bytes are in the presentation");
+    let at = bytes
+        .windows(64)
+        .position(|w| w == world.authorisation.as_bytes())
+        .expect("the ticket's bytes are in the presentation");
     bytes[at + 128 + 3] = 101;
     fs::write(world.presentation(0), &bytes).unwrap();
     answers[0].attestation = sha(&bytes);
@@ -952,17 +1485,27 @@ fn record_s_05_7_e8_a_run_under_another_log_key_cannot_back_this_chain() {
     let link = fs::read_to_string(world.rig.root.join("ledger/00000.json")).unwrap();
     let key = public_der(&fs::read_to_string(world.rig.path("operator.pub")).unwrap()).unwrap();
     assert!(link.contains(&sha(&key)));
-    let other = sha(link.replace(&sha(&key), &sha(b"a second operator key")).as_bytes());
+    let other = sha(link
+        .replace(&sha(&key), &sha(b"a second operator key"))
+        .as_bytes());
     fs::create_dir_all(format!("{}.attest", world.record())).unwrap();
     let said = world.ask(&world.presentation(0), &other, 0, QUESTIONS[0], None);
-    world.close(&intent, vec![answer_from(&said, QUESTIONS[0])], before, now() + 1);
+    world.close(
+        &intent,
+        vec![answer_from(&said, QUESTIONS[0])],
+        before,
+        now() + 1,
+    );
     assert_eq!(world.refused(), "answer 0: the binding names another run");
 }
 
 const AN_UNKNOWN_KIND: &str = "example.provider/proof-9";
 
 fn a_proof() -> crate::ProviderProof {
-    crate::ProviderProof { kind: AN_UNKNOWN_KIND.to_string(), sha256: "ab".repeat(32) }
+    crate::ProviderProof {
+        kind: AN_UNKNOWN_KIND.to_string(),
+        sha256: "ab".repeat(32),
+    }
 }
 
 /// A world holding one attested answer that names a provider proof.
@@ -1002,8 +1545,17 @@ fn record_s_06_1_e2_a_version_1_record_replays_byte_identically() {
     let bytes = fs::read(root.join("evidence/out/live3.json")).unwrap();
     let t = crate::read_transcript(&bytes).unwrap();
     assert_eq!(t.version, 1);
-    assert!(!serde_json::to_string(&t).unwrap().contains("provider_proofs"));
-    crate::replay(&Backend::Process, &fs::read(root.join("guest/digest.wasm")).unwrap(), &t).unwrap();
+    assert!(
+        !serde_json::to_string(&t)
+            .unwrap()
+            .contains("provider_proofs")
+    );
+    crate::replay(
+        &Backend::Process,
+        &fs::read(root.join("guest/digest.wasm")).unwrap(),
+        &t,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -1012,8 +1564,14 @@ fn record_s_06_2_e1_an_unknown_proof_passes_and_is_counted_without_its_kind() {
     let (world, ..) = answer_with_a_proof("r-06-2-e1");
     let report = world.audit().unwrap();
     assert_eq!(report.lines().next(), Some("audit passed"));
-    assert!(report.contains("unchecked provider proofs: 1, which prove nothing"), "{report}");
-    assert!(!report.contains(AN_UNKNOWN_KIND) && !report.contains("example.provider"), "{report}");
+    assert!(
+        report.contains("unchecked provider proofs: 1, which prove nothing"),
+        "{report}"
+    );
+    assert!(
+        !report.contains(AN_UNKNOWN_KIND) && !report.contains("example.provider"),
+        "{report}"
+    );
 }
 
 #[test]
@@ -1022,25 +1580,64 @@ fn record_s_06_2_e2_a_proof_does_not_rescue_a_record_that_fails_another_check() 
     let (world, intent, mut answers) = answer_with_a_proof("r-06-2-e2");
     answers[0].label = (answers[0].label + 1) % 4;
     rewrite(&world, &intent, answers);
-    assert_eq!(world.refused(), "answer 0: the notary saw a different question or answer than the record claims");
+    assert_eq!(
+        world.refused(),
+        "answer 0: the notary saw a different question or answer than the record claims"
+    );
 }
 
 #[test]
 fn record_s_06_3_e1_a_proof_with_a_bad_kind_or_shape_is_refused() {
     let digest = "ab".repeat(32);
-    assert!(crate::read_transcript(&record_with_proofs(2, json!([{"kind": "a.kind", "sha256": digest}]))).is_ok(), "the control");
-    for kind in [String::new(), "x".repeat(65), "Upper".to_string(), "a kind".to_string(), "kind\n".to_string()] {
-        let refused = super::fixture_tests::parse_refused(&record_with_proofs(2, json!([{"kind": kind, "sha256": digest}])));
+    assert!(
+        crate::read_transcript(&record_with_proofs(
+            2,
+            json!([{"kind": "a.kind", "sha256": digest}])
+        ))
+        .is_ok(),
+        "the control"
+    );
+    for kind in [
+        String::new(),
+        "x".repeat(65),
+        "Upper".to_string(),
+        "a kind".to_string(),
+        "kind\n".to_string(),
+    ] {
+        let refused = super::fixture_tests::parse_refused(&record_with_proofs(
+            2,
+            json!([{"kind": kind, "sha256": digest}]),
+        ));
         assert_eq!(refused, "a provider proof is malformed");
     }
-    assert_eq!(super::fixture_tests::parse_refused(&record_with_proofs(2, json!([{"kind": "a.kind", "sha256": digest, "extra": 1}]))), "cannot parse");
-    assert_eq!(super::fixture_tests::parse_refused(&record_with_proofs(1, json!([{"kind": "a.kind", "sha256": digest}]))), "a version 1 record cannot carry a provider proof");
+    assert_eq!(
+        super::fixture_tests::parse_refused(&record_with_proofs(
+            2,
+            json!([{"kind": "a.kind", "sha256": digest, "extra": 1}])
+        )),
+        "cannot parse"
+    );
+    assert_eq!(
+        super::fixture_tests::parse_refused(&record_with_proofs(
+            1,
+            json!([{"kind": "a.kind", "sha256": digest}])
+        )),
+        "a version 1 record cannot carry a provider proof"
+    );
 }
 
 #[test]
 fn record_s_06_3_e2_a_proof_whose_digest_is_not_64_lowercase_hex_is_refused() {
-    for digest in ["ab".repeat(31), "ab".repeat(33), "AB".repeat(32), "zz".repeat(32)] {
-        let refused = super::fixture_tests::parse_refused(&record_with_proofs(2, json!([{"kind": "a.kind", "sha256": digest}])));
+    for digest in [
+        "ab".repeat(31),
+        "ab".repeat(33),
+        "AB".repeat(32),
+        "zz".repeat(32),
+    ] {
+        let refused = super::fixture_tests::parse_refused(&record_with_proofs(
+            2,
+            json!([{"kind": "a.kind", "sha256": digest}]),
+        ));
         assert_eq!(refused, "a provider proof is malformed");
     }
 }
@@ -1049,15 +1646,26 @@ fn record_s_06_3_e2_a_proof_whose_digest_is_not_64_lowercase_hex_is_refused() {
 fn record_s_06_4_e1_a_proof_does_not_remove_the_model_name_limit() {
     let _one = locked();
     let (world, ..) = answer_with_a_proof("r-06-4-e1");
-    assert!(world.audit().unwrap().contains("not proven: the model's name is the provider's claim"));
+    assert!(
+        world
+            .audit()
+            .unwrap()
+            .contains("not proven: the model's name is the provider's claim")
+    );
 }
 
 #[test]
 fn record_s_06_4_e2_with_no_proof_the_model_name_limit_is_stated() {
     let _one = locked();
     let report = one_answer("r-06-4-e2", 2).audit().unwrap();
-    assert!(report.contains("not proven: the model's name is the provider's claim"), "{report}");
-    assert!(report.contains("unchecked provider proofs: 0, which prove nothing"), "{report}");
+    assert!(
+        report.contains("not proven: the model's name is the provider's claim"),
+        "{report}"
+    );
+    assert!(
+        report.contains("unchecked provider proofs: 0, which prove nothing"),
+        "{report}"
+    );
 }
 
 /// A version 3 record of one answer whose notary signs the canary `canary` names.
@@ -1070,49 +1678,78 @@ const NO_FRESH_PASS: &str = "answer 0: the canary is not fresh at its session";
 #[test]
 fn canary_s_03_1_e1_a_pass_an_hour_before_its_session_passes() {
     let _one = locked();
-    assert!(canary_record("canary-3-1-e1", "before=3600").audit().unwrap().starts_with("audit passed"));
+    assert!(
+        canary_record("canary-3-1-e1", "before=3600")
+            .audit()
+            .unwrap()
+            .starts_with("audit passed")
+    );
 }
 
 #[test]
 fn canary_s_03_1_e2_no_canary_is_refused_naming_the_answer() {
     let _one = locked();
-    assert_eq!(canary_record("canary-3-1-e2", "missing").refused(), "answer 0: the attestation carries no canary");
+    assert_eq!(
+        canary_record("canary-3-1-e2", "missing").refused(),
+        "answer 0: the attestation carries no canary"
+    );
 }
 
 #[test]
 fn canary_s_03_1_e3_two_canaries_are_refused() {
     let _one = locked();
-    assert_eq!(canary_record("canary-3-1-e3", "doubled").refused(), "answer 0: the attestation does not verify");
+    assert_eq!(
+        canary_record("canary-3-1-e3", "doubled").refused(),
+        "answer 0: the attestation does not verify"
+    );
 }
 
 #[test]
 fn canary_s_03_1_e4_a_canary_of_the_wrong_length_is_refused() {
     let _one = locked();
-    assert_eq!(canary_record("canary-3-1-e4", "malformed").refused(), "answer 0: the attestation does not verify");
+    assert_eq!(
+        canary_record("canary-3-1-e4", "malformed").refused(),
+        "answer 0: the attestation does not verify"
+    );
 }
 
 #[test]
 fn canary_s_03_1_e5_a_pass_after_its_session_is_refused() {
     let _one = locked();
-    assert_eq!(canary_record("canary-3-1-e5", &format!("at={}", now() + 3600)).refused(), NO_FRESH_PASS);
+    assert_eq!(
+        canary_record("canary-3-1-e5", &format!("at={}", now() + 3600)).refused(),
+        NO_FRESH_PASS
+    );
 }
 
 #[test]
 fn canary_s_03_1_e6_a_pass_a_second_past_the_window_is_refused() {
     let _one = locked();
-    assert_eq!(canary_record("canary-3-1-e6", "before=86401").refused(), NO_FRESH_PASS);
+    assert_eq!(
+        canary_record("canary-3-1-e6", "before=86401").refused(),
+        NO_FRESH_PASS
+    );
 }
 
 #[test]
 fn canary_s_03_1_e7_a_pass_exactly_at_the_window_passes() {
     let _one = locked();
-    assert!(canary_record("canary-3-1-e7", "before=86400").audit().unwrap().starts_with("audit passed"));
+    assert!(
+        canary_record("canary-3-1-e7", "before=86400")
+            .audit()
+            .unwrap()
+            .starts_with("audit passed")
+    );
 }
 
 /// Writes the state a real notary reads for its next session.
 fn set_pass(world: &World, checked: u64) {
     let path = world.rig.root.join("notary/canary");
-    fs::write(path, format!("hyalos.canary/1\nstate passed\nchecked {checked}\nend\n")).unwrap();
+    fs::write(
+        path,
+        format!("hyalos.canary/1\nstate passed\nchecked {checked}\nend\n"),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -1123,15 +1760,37 @@ fn canary_s_03_2_e1_the_report_names_the_oldest_pass() {
     let before = now() - 1;
     let (older, newer) = (now() - 7200, now() - 60);
     fs::create_dir_all(format!("{}.attest", world.record())).unwrap();
-    let answers = [older, newer].iter().enumerate().map(|(position, pass)| {
-        set_pass(&world, *pass);
-        answer_from(&world.ask(&world.presentation(position), &intent, position, QUESTIONS[position], None), QUESTIONS[position])
-    }).collect();
+    let answers = [older, newer]
+        .iter()
+        .enumerate()
+        .map(|(position, pass)| {
+            set_pass(&world, *pass);
+            answer_from(
+                &world.ask(
+                    &world.presentation(position),
+                    &intent,
+                    position,
+                    QUESTIONS[position],
+                    None,
+                ),
+                QUESTIONS[position],
+            )
+        })
+        .collect();
     world.close(&intent, answers, before, now() + 1);
     let report = world.audit().unwrap();
-    let line = format!("provider canary: forged body refused at {} UTC, the oldest pass in this record, checked by the customer on this notary", crate::utc(older));
+    let line = format!(
+        "provider canary: forged body refused at {} UTC, the oldest pass in this record, checked by the customer on this notary",
+        crate::utc(older)
+    );
     assert!(report.lines().any(|l| l == line), "{report}");
-    let (attempt, canary) = (report.lines().position(|l| l.starts_with("attempt ")).unwrap(), report.lines().position(|l| l == line).unwrap());
+    let (attempt, canary) = (
+        report
+            .lines()
+            .position(|l| l.starts_with("attempt "))
+            .unwrap(),
+        report.lines().position(|l| l == line).unwrap(),
+    );
     assert_eq!(canary, attempt + 1, "{report}");
 }
 
@@ -1139,7 +1798,10 @@ fn canary_s_03_2_e1_the_report_names_the_oldest_pass() {
 fn canary_s_03_2_e2_a_pass_keeps_the_hidden_bytes_limit_and_adds_its_own() {
     let _one = locked();
     let report = one_answer("canary-3-2-e2", 3).audit().unwrap();
-    assert!(report.lines().any(|l| l == crate::HIDDEN_BYTES_LIMIT), "{report}");
+    assert!(
+        report.lines().any(|l| l == crate::HIDDEN_BYTES_LIMIT),
+        "{report}"
+    );
     assert!(report.lines().any(|l| l == "not proven: the canary tested one forged shape, with the customer's credential, at the time stated"), "{report}");
     assert!(!report.contains("no provider canary"), "{report}");
 }
@@ -1148,33 +1810,57 @@ fn canary_s_03_2_e2_a_pass_keeps_the_hidden_bytes_limit_and_adds_its_own() {
 fn canary_s_03_3_e1_a_version_2_record_states_it_has_no_canary() {
     let _one = locked();
     let committed = include_bytes!("../../evidence/out/two-machines-record/record.json");
-    assert_eq!(crate::read_transcript(committed).unwrap().version, 2, "the committed record");
+    assert_eq!(
+        crate::read_transcript(committed).unwrap().version,
+        2,
+        "the committed record"
+    );
     let report = one_answer("canary-3-3-e1", 2).audit().unwrap();
     assert!(report.starts_with("audit passed"), "{report}");
-    assert!(report.lines().any(|l| l == "not proven: this record has no provider canary"), "{report}");
+    assert!(
+        report
+            .lines()
+            .any(|l| l == "not proven: this record has no provider canary"),
+        "{report}"
+    );
     assert!(!report.contains("provider canary: forged"), "{report}");
 }
 
 #[test]
 fn canary_s_03_3_e2_a_version_2_record_cannot_carry_a_canary() {
     let _one = locked();
-    let world = forged_world(World::signing_canary("canary-3-3-e2", 2, 1, None, Some("before=60")), 1);
-    assert_eq!(world.refused(), "answer 0: a version 2 record cannot carry a canary");
+    let world = forged_world(
+        World::signing_canary("canary-3-3-e2", 2, 1, None, Some("before=60")),
+        1,
+    );
+    assert_eq!(
+        world.refused(),
+        "answer 0: a version 2 record cannot carry a canary"
+    );
 }
 
 #[test]
 fn canary_s_03_3_e3_a_version_1_record_keeps_its_legacy_audit() {
     let _one = locked();
     let report = one_answer("canary-3-3-e3", 1).audit_with(true).unwrap();
-    assert!(report.starts_with("legacy audit passed: no attempt budget"), "{report}");
+    assert!(
+        report.starts_with("legacy audit passed: no attempt budget"),
+        "{report}"
+    );
     assert!(!report.contains("canary"), "{report}");
 }
 
 #[test]
 fn canary_a_version_1_record_cannot_carry_a_canary() {
     let _one = locked();
-    let world = forged_world(World::signing_canary("canary-v1", 1, 1, None, Some("before=60")), 1);
-    assert_eq!(world.audit_with(true).unwrap_err(), "answer 0: a version 1 record cannot carry a canary");
+    let world = forged_world(
+        World::signing_canary("canary-v1", 1, 1, None, Some("before=60")),
+        1,
+    );
+    assert_eq!(
+        world.audit_with(true).unwrap_err(),
+        "answer 0: a version 1 record cannot carry a canary"
+    );
 }
 
 #[test]
@@ -1186,9 +1872,15 @@ fn canary_3_1_the_monitors_window_is_the_notarys() {
 
 #[test]
 fn canary_3_2_provider_proofs_are_checked_on_version_3() {
-    let good = crate::read_transcript(&record_with_proofs(3, json!([{"kind": AN_UNKNOWN_KIND, "sha256": "ab".repeat(32)}])));
+    let good = crate::read_transcript(&record_with_proofs(
+        3,
+        json!([{"kind": AN_UNKNOWN_KIND, "sha256": "ab".repeat(32)}]),
+    ));
     assert_eq!(good.unwrap().version, 3);
-    let bad = super::fixture_tests::parse_refused(&record_with_proofs(3, json!([{"kind": "NOT A KIND", "sha256": "ab".repeat(32)}])));
+    let bad = super::fixture_tests::parse_refused(&record_with_proofs(
+        3,
+        json!([{"kind": "NOT A KIND", "sha256": "ab".repeat(32)}]),
+    ));
     assert_eq!(bad, "a provider proof is malformed");
 }
 
@@ -1212,7 +1904,10 @@ fn s_02_2_a_version_4_record_passes_the_whole_audit_with_its_canary() {
     let _one = locked();
     let report = one_answer("p-02-2", 4).audit().unwrap();
     assert!(report.starts_with("audit passed"), "{report}");
-    assert!(report.contains("provider canary: forged body refused"), "{report}");
+    assert!(
+        report.contains("provider canary: forged body refused"),
+        "{report}"
+    );
 }
 
 #[test]
@@ -1220,11 +1915,17 @@ fn s_02_6_e1_a_version_4_record_relabelled_version_3_is_refused() {
     let _one = locked();
     let world = one_answer("p-02-6-e1", 4);
     with_record_field(&world, "version", json!(3));
-    assert_eq!(world.refused(), "unknown field `profile` in a version 3 record");
+    assert_eq!(
+        world.refused(),
+        "unknown field `profile` in a version 3 record"
+    );
     let mut record: Value = serde_json::from_slice(&fs::read(world.record()).unwrap()).unwrap();
     record.as_object_mut().unwrap().remove("profile");
     fs::write(world.record(), serde_json::to_vec_pretty(&record).unwrap()).unwrap();
-    assert_eq!(world.refused(), "this record's task is not the one its guest and inputs give");
+    assert_eq!(
+        world.refused(),
+        "this record's task is not the one its guest and inputs give"
+    );
 }
 
 #[test]
@@ -1248,13 +1949,29 @@ fn s_02_6_e2_a_version_4_record_with_its_profile_changed_is_refused() {
 fn s_03_7_e2_a_release_build_refuses_a_stand_in_providers_record() {
     let _one = locked();
     let world = one_answer("s-03-7-e2", 4);
-    assert!(world.audit().is_ok(), "the record passes under the stand-in");
+    assert!(
+        world.audit().is_ok(),
+        "the record passes under the stand-in"
+    );
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let target = root.join("target/no-test-trust");
     let mut build = std::process::Command::new(std::env::var_os("CARGO").unwrap());
-    build.current_dir(&root).args(["build", "--release", "--locked", "-p", "hyalos-verify", "--target-dir"]).arg(&target);
+    build
+        .current_dir(&root)
+        .args([
+            "build",
+            "--release",
+            "--locked",
+            "-p",
+            "hyalos-verify",
+            "--target-dir",
+        ])
+        .arg(&target);
     for (name, _) in std::env::vars_os() {
-        if name.to_str().is_some_and(|n| n.starts_with("CARGO") && n != "CARGO_HOME" || n == "RUSTFLAGS") {
+        if name
+            .to_str()
+            .is_some_and(|n| n.starts_with("CARGO") && n != "CARGO_HOME" || n == "RUSTFLAGS")
+        {
             build.env_remove(name);
         }
     }
@@ -1265,18 +1982,36 @@ fn s_03_7_e2_a_release_build_refuses_a_stand_in_providers_record() {
     command
         .arg(world.record())
         .arg(world.rig.path("ledger"))
-        .args(["--operator-public", &world.rig.path("operator.pub"), "--notary-public", &notary, "--guest", &world.rig.path("guest.wasm")])
+        .args([
+            "--operator-public",
+            &world.rig.path("operator.pub"),
+            "--notary-public",
+            &notary,
+            "--guest",
+            &world.rig.path("guest.wasm"),
+        ])
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap())
         .env("HYALOS_TRUST_LOG_DIR", world.rig.path("log"))
         .env("HYALOS_TRUST_LOG_KEY", world.rig.path("test-log.pub"));
-    for (name, value) in world.settings.iter().filter(|(name, _)| name.starts_with("HYALOS_TRUST_")) {
+    for (name, value) in world
+        .settings
+        .iter()
+        .filter(|(name, _)| name.starts_with("HYALOS_TRUST_"))
+    {
         command.env(name, value);
     }
     let output = command.output().unwrap();
-    assert_eq!(output.status.code(), Some(1), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(output.stdout.is_empty(), "no pass line");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("the reply is not from the log's key"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("the reply is not from the log's key")
+    );
 }
 
 /// The two passing records the verifier's tests read: one with an unknown provider proof, through
@@ -1284,11 +2019,36 @@ fn s_03_7_e2_a_release_build_refuses_a_stand_in_providers_record() {
 pub(super) fn pass_fixtures(into: &Path) {
     let _one = locked();
     let keep = |world: &World, name: &str| {
-        let (record, links, log, log_key, operator, guest, root) = (PathBuf::from(world.record()), world.rig.root.join("ledger"), world.rig.root.join("log"), world.rig.root.join("test-log.pub"), world.rig.root.join("operator.pub"), world.rig.root.join("guest.wasm"), world.rig.root.join("root.der"));
-        super::fixture_tests::keep_pass(into, name, super::fixture_tests::Spec { record: &record, attest: true, links: Some(&links), log: Some(&log), log_key: Some(&log_key), operator: Some(&operator), notary: &world.signer, guest: Some(&guest), root: Some(&root), legacy: false })
+        let (record, links, log, log_key, operator, guest, root) = (
+            PathBuf::from(world.record()),
+            world.rig.root.join("ledger"),
+            world.rig.root.join("log"),
+            world.rig.root.join("test-log.pub"),
+            world.rig.root.join("operator.pub"),
+            world.rig.root.join("guest.wasm"),
+            world.rig.root.join("root.der"),
+        );
+        super::fixture_tests::keep_pass(
+            into,
+            name,
+            super::fixture_tests::Spec {
+                record: &record,
+                attest: true,
+                links: Some(&links),
+                log: Some(&log),
+                log_key: Some(&log_key),
+                operator: Some(&operator),
+                notary: &world.signer,
+                guest: Some(&guest),
+                root: Some(&root),
+                legacy: false,
+            },
+        )
     };
     let (world, ..) = answer_with_a_proof("fixture-unknown-proof");
-    assert!(keep(&world, "unknown-proof").contains("unchecked provider proofs: 1, which prove nothing"));
+    assert!(
+        keep(&world, "unknown-proof").contains("unchecked provider proofs: 1, which prove nothing")
+    );
     let world = World::asking("fixture-five", crate::CURRENT_VERSION, 5);
     let intent = world.declare();
     let before = now() - 1;

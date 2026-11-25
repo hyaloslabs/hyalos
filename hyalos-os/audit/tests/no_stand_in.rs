@@ -1,6 +1,9 @@
 //! In a build without `test-trust`, no stand-in provider setting changes whom the check trusts.
 
 #![cfg(not(feature = "test-trust"))]
+// Not yet on the `unsafe` list of design.md §2 (docs/plans/hyalos-kernel-core), which predates
+// this test; Slice 10's list takes it in or this test drops its `unsafe` (progress/slice-09.md).
+#![allow(unsafe_code)]
 
 use attest_check::Trust;
 use hyalos_audit::Verifier;
