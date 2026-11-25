@@ -151,7 +151,8 @@ fn s_02_1_e1_both_backends_map_one_profile_the_same_way() {
     let process = include_str!("../../audit/src/replay.rs");
     let kernel = include_str!("../../kernel-image/src/main.rs");
     assert_eq!(mapping(process), mapping(kernel));
-    assert!(kernel.contains("const PROFILE: Profile = PROFILE_1;"));
+    assert!(kernel.contains("const PROFILE: Profile = PROFILE_2;"));
+    assert_eq!(hyalos_profile::CURRENT, &hyalos_profile::PROFILE_2);
     for source in [process, include_str!("main.rs"), kernel] {
         for literal in [
             concat!("200_", "000_000"),
@@ -182,11 +183,11 @@ fn s_02_1_e2_a_float_guest_is_refused_on_either_backend() {
 }
 
 #[test]
-fn s_02_2_e1_a_new_run_is_version_4_and_names_profile_1() {
+fn s_02_2_e1_a_new_run_is_version_4_and_names_profile_2() {
     let t = v4_run();
     assert_eq!(
         (t.version, t.profile.as_deref()),
-        (4, Some("hyalos.profile/1"))
+        (4, Some("hyalos.profile/2"))
     );
     let written: serde_json::Value =
         serde_json::from_slice(&serde_json::to_vec(&t).unwrap()).unwrap();
@@ -194,7 +195,7 @@ fn s_02_2_e1_a_new_run_is_version_4_and_names_profile_1() {
         (&written["version"], &written["profile"]),
         (
             &serde_json::json!(4),
-            &serde_json::json!("hyalos.profile/1")
+            &serde_json::json!("hyalos.profile/2")
         )
     );
     assert_eq!(
@@ -367,5 +368,5 @@ fn local_2_2_the_kernel_images_wasmi_is_the_workspaces_and_the_profiles() {
     let workspace = fs::read_to_string(root().join("Cargo.lock")).unwrap();
     let kernel = fs::read_to_string(root().join("kernel-image/Cargo.lock")).unwrap();
     assert_eq!(locked_wasmi(&kernel), locked_wasmi(&workspace));
-    assert_eq!(locked_wasmi(&workspace), hyalos_profile::PROFILE_1.wasmi);
+    assert_eq!(locked_wasmi(&workspace), hyalos_profile::CURRENT.wasmi);
 }

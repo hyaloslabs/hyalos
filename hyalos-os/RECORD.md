@@ -17,9 +17,11 @@ A reader refuses any `version` other than 1, 2, 3 or 4, and names it. A record c
 
 Version 3 has the same fields as version 2, with `version: 3` and links of `v: 3`. Its task identity, operator field and provider-proof slot are version 2's. What it adds is in its attestations: every answer must carry one signed canary.
 
-Version 4 has version 3's fields and rules, including the canary, with `version: 4`, links of `v: 4`, a required `profile` and its own task identity. `profile` names the execution profile the run used. The only known name is `hyalos.profile/1`, and a reader refuses any other, naming it (`unknown profile <name>`), and a version 4 record with none (`version 4 record names no profile`). Versions 1 to 3 ran under `hyalos.profile/1` without naming it, leave the field out of their bytes, and are refused if they hold it.
+Version 4 has version 3's fields and rules, including the canary, with `version: 4`, links of `v: 4`, a required `profile` and its own task identity. `profile` names the execution profile the run used. The known names are `hyalos.profile/1` and `hyalos.profile/2`, and new runs name `hyalos.profile/2`. A reader refuses any other, naming it (`unknown profile <name>`), and a version 4 record with none (`version 4 record names no profile`). Versions 1 to 3 ran under `hyalos.profile/1` without naming it, leave the field out of their bytes, and are refused if they hold it.
 
 `hyalos.profile/1` is `wasmi` 2.0.2 with fuel metering on, floats off, a start function refused, custom sections ignored, and memory64, multi-memory, tail call, wide arithmetic and custom page sizes off. Its limits are 200,000,000 fuel, 4 MiB of memory, one memory, one table, 4,096 table elements and one instance, and a failed growth traps. A profile's contents never change: a change is a new name. `profile/src/lib.rs` is the one definition both backends build from.
+
+`hyalos.profile/2` is `hyalos.profile/1`'s settings and limits on `wasmi` 2.0.3, which fixes GHSA-qrr7-2g7f-r9rg. A record replays only on the `wasmi` its profile names, or on one checked equal to it. `wasmi` 2.0.2 and 2.0.3 were checked equal, so records under `hyalos.profile/1` still replay and audit on 2.0.3 (ADR-0134). The version 4 task identity includes the profile's name, so a run under `hyalos.profile/2` has another task than the same guest and inputs under `hyalos.profile/1`, and needs its own authorisation.
 
 | Field | Version 1 | Version 2 |
 |---|---|---|
