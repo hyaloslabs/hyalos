@@ -77,14 +77,32 @@ pub const SPIKE_1: Profile = Profile {
     ..PROFILE_2
 };
 
+/// `hyalos.spike/2`: `hyalos.spike/1` with the limits the Monty guest needs (Slice 4 of
+/// docs/plans/hyalos-kernel-python, ADR-0137). Floats are allowed, and every spike build turns on
+/// `wasmi`'s deterministic float results, so a NaN has one bit pattern on every host (ADR-007 of
+/// that pack); profiles 1 and 2 still refuse every float instruction at load. `max_memory` is the
+/// smallest whole number of MiB at which the triage fixture's seed-0 run ends with a result, and
+/// `fuel` is twice that run's `fuel_used` (413,701,352) rounded up to the next ten million
+/// (spikes/438/README.md, `monty profile:`). Only a build with the `spike-contract` feature knows it.
+#[cfg(feature = "spike-contract")]
+pub const SPIKE_2: Profile = Profile {
+    name: "hyalos.spike/2",
+    floats: true,
+    fuel: 830_000_000,
+    max_memory: 5 * 1024 * 1024,
+    ..SPIKE_1
+};
+
 /// The profiles this build knows.
-const KNOWN_COUNT: usize = 2 + cfg!(feature = "spike-contract") as usize;
+const KNOWN_COUNT: usize = 2 + 2 * cfg!(feature = "spike-contract") as usize;
 
 static KNOWN: [Profile; KNOWN_COUNT] = [
     PROFILE_1,
     PROFILE_2,
     #[cfg(feature = "spike-contract")]
     SPIKE_1,
+    #[cfg(feature = "spike-contract")]
+    SPIKE_2,
 ];
 
 /// Pairs of an older `wasmi` and the linked one whose runs were checked equal: the same fuel and
@@ -224,6 +242,27 @@ mod tests {
         assert!(SPIKE_1.same_settings(&PROFILE_2) && SPIKE_1.replays_here());
         assert!(SPIKE_1.enforces_contract());
         assert!(!PROFILE_1.enforces_contract() && !PROFILE_2.enforces_contract());
-        assert_eq!(lookup("hyalos.spike/2"), None);
+        assert_eq!(lookup("hyalos.spike/3"), None);
+    }
+
+    /// `hyalos.spike/2` is `hyalos.spike/1` with floats and Monty's measured memory and fuel, and
+    /// nothing else changed.
+    #[cfg(feature = "spike-contract")]
+    #[test]
+    fn python_spike_2_is_spike_1_with_floats_and_monty_s_limits() {
+        assert_eq!(
+            SPIKE_2,
+            Profile {
+                name: "hyalos.spike/2",
+                floats: true,
+                fuel: 830_000_000,
+                max_memory: 5_242_880,
+                ..SPIKE_1
+            }
+        );
+        assert_eq!(lookup("hyalos.spike/2"), Some(&SPIKE_2));
+        assert!(SPIKE_2.replays_here() && SPIKE_2.enforces_contract());
+        assert!(!SPIKE_2.same_settings(&PROFILE_2));
+        const { assert!(!PROFILE_1.floats && !PROFILE_2.floats && !SPIKE_1.floats) };
     }
 }

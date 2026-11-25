@@ -17,7 +17,9 @@ use core::{
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
-use hyalos_profile::{PROFILE_2, Profile};
+#[cfg(not(feature = "spike-profile-2"))]
+use hyalos_profile::PROFILE_2;
+use hyalos_profile::Profile;
 use wasmi::{
     Caller, Config, Engine, Error, Extern, ExternType, Linker, Module, Store, StoreLimits,
     StoreLimitsBuilder, TrapCode,
@@ -29,7 +31,17 @@ use wasmi::{
 const ABI: &str = "hyalos.abi/1";
 
 // The one definition both backends build from, so the two produce the same transcript.
+#[cfg(not(feature = "spike-profile-2"))]
 const PROFILE: Profile = PROFILE_2;
+#[cfg(feature = "spike-profile-2")]
+const PROFILE: Profile = hyalos_profile::SPIKE_2;
+
+/// A spike image reports the profile it was built for in its own bytes: the marker, the profile's
+/// name, then a zero byte (`design.md` §2 of docs/plans/hyalos-kernel-python, KVM under a spike
+/// profile). The monitor reads it before boot; a default image has none. `run` names it, so the
+/// linker keeps it.
+#[cfg(feature = "spike-profile-2")]
+static PROFILE_MARKER: [u8; 38] = *b"\0hyalos-kernel-profile=hyalos.spike/2\0";
 
 const HEAP_START: usize = 0x80_0000;
 const HEAP_END: usize = 0x180_0000;
@@ -246,6 +258,8 @@ fn config(profile: &Profile) -> Config {
 }
 
 fn run(guest: &[u8]) -> u64 {
+    #[cfg(feature = "spike-profile-2")]
+    core::hint::black_box(&PROFILE_MARKER);
     let profile = &PROFILE;
     let engine = Engine::new(&config(profile));
     let Ok(module) = Module::new(&engine, guest) else {

@@ -60,22 +60,23 @@ fn kvm_gate(usable: bool, required: bool) -> KvmGate {
     }
 }
 
-/// Builds the kernel image from this tree, so the comparison never runs a stale one. The
-/// self-test kernel has its own target directory, so it never replaces the real one while
-/// another test reads it.
-fn built_kernel(selftest: bool) -> Option<Vec<u8>> {
+/// Builds the kernel image from this tree, so the comparison never runs a stale one. An image
+/// built with a feature (the self-test kernel, or a spike profile's image) has its own target
+/// directory, so it never replaces the real one while another test reads it.
+fn built_kernel(feature: Option<&str>) -> Option<Vec<u8>> {
     let dir = root().join("kernel-image");
-    let target = if selftest {
-        "target-selftest"
-    } else {
-        "target"
+    let target = match feature {
+        None => "target",
+        Some("selftest") => "target-selftest",
+        Some("spike-profile-2") => "target-spike-2",
+        Some(other) => panic!("no target directory for the kernel image feature {other}"),
     };
     let mut build = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     build
         .current_dir(&dir)
         .args(["build", "--release", "--locked", "--target-dir", target]);
-    if selftest {
-        build.args(["--features", "selftest"]);
+    if let Some(feature) = feature {
+        build.args(["--features", feature]);
     }
     for (name, _) in env::vars_os() {
         if name.to_str().is_some_and(|n| {
@@ -96,16 +97,23 @@ fn built_kernel(selftest: bool) -> Option<Vec<u8>> {
 
 /// The KVM backend, or `None` when this host reports the comparison as skipped.
 pub(crate) fn kvm_backend(test: &str) -> Option<Backend> {
-    gated_kvm_backend(test, false)
+    gated_kvm_backend(test, None)
 }
 
 /// The KVM backend with the self-test kernel, whose first input byte chooses a probe, behind the
 /// same gate.
 pub(crate) fn selftest_kvm_backend(test: &str) -> Option<Backend> {
-    gated_kvm_backend(test, true)
+    gated_kvm_backend(test, Some("selftest"))
 }
 
-fn gated_kvm_backend(test: &str, selftest: bool) -> Option<Backend> {
+/// The KVM backend with the image a spike profile's kernel image feature builds, behind the same
+/// gate (ADR-0137).
+#[cfg(feature = "spike-contract")]
+pub(crate) fn spike_kvm_backend(test: &str, feature: &str) -> Option<Backend> {
+    gated_kvm_backend(test, Some(feature))
+}
+
+fn gated_kvm_backend(test: &str, feature: Option<&str>) -> Option<Backend> {
     let usable = fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -120,7 +128,7 @@ fn gated_kvm_backend(test: &str, selftest: bool) -> Option<Backend> {
         KvmGate::Fail => panic!("{test}: HYALOS_REQUIRE_KVM is set and /dev/kvm cannot be opened"),
         KvmGate::Run => {}
     }
-    match built_kernel(selftest) {
+    match built_kernel(feature) {
         Some(kernel) => Some(Backend::Kvm {
             kernel,
             limit: Duration::from_secs(30),

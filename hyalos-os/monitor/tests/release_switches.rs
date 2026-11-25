@@ -80,11 +80,20 @@ fn machine_gate(test: &str) -> bool {
 
 /// The kernel image, built from this tree as the monitor's own tests build it.
 fn built_kernel(test: &str) -> Vec<u8> {
+    built_kernel_with(test, &[], "target")
+}
+
+/// The kernel image built with `features` into its own target directory, as `built_kernel`
+/// builds the default one (`spikes/438/kernel.sh` uses the same directories).
+fn built_kernel_with(test: &str, features: &[&str], target: &str) -> Vec<u8> {
     let dir = root().join("kernel-image");
     let mut build = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     build
         .current_dir(&dir)
-        .args(["build", "--release", "--locked", "--target-dir", "target"]);
+        .args(["build", "--release", "--locked", "--target-dir", target]);
+    for feature in features {
+        build.args(["--features", feature]);
+    }
     for (name, _) in env::vars_os() {
         if name.to_str().is_some_and(|n| {
             n.starts_with("CARGO") && n != "CARGO_HOME" || n == "RUSTFLAGS" || n == "RUSTC"
@@ -96,7 +105,11 @@ fn built_kernel(test: &str) -> Vec<u8> {
         build.output().unwrap().status.success(),
         "{test}: the kernel image did not build"
     );
-    fs::read(dir.join("target/x86_64-unknown-none/release/hyalos-kernel")).unwrap()
+    fs::read(
+        dir.join(target)
+            .join("x86_64-unknown-none/release/hyalos-kernel"),
+    )
+    .unwrap()
 }
 
 /// `task-kernel run` of the committed guest on the fixtures, on the kernel image at `kernel`.
@@ -474,5 +487,75 @@ fn python_1_5_spike_task_equals_record_task() {
             "refused: BadContract\n"
         );
         assert!(!record.exists());
+    }
+}
+
+/// 4.2 (`design.md` §2 of docs/plans/hyalos-kernel-python, KVM under a spike profile, ADR-0137): a
+/// spike build runs a profile on KVM only on an image built for that profile's settings. The
+/// default image, which carries no marker, still runs profile 2 and `hyalos.spike/1`; the
+/// `spike-profile-2` image runs `hyalos.spike/2` and neither of those; a run on the wrong image
+/// ends `ReplayDiverged` with no record; and an image whose marker names an unknown profile is
+/// refused before boot, with a message and no record.
+#[cfg(feature = "spike-contract")]
+#[test]
+fn python_4_2_a_spike_profile_runs_only_on_its_own_image() {
+    if !machine_gate("python_4_2 images") {
+        return;
+    }
+    let scratch = Scratch::new("spike-images");
+    let files = spike_files(&scratch);
+    let default = scratch.0.join("default-kernel");
+    fs::write(&default, built_kernel("python_4_2 images")).unwrap();
+    let spike_2 = built_kernel_with("python_4_2 images", &["spike-profile-2"], "target-spike-2");
+    let unknown = scratch.0.join("unknown-kernel");
+    let at = spike_2
+        .windows(14)
+        .position(|w| w == b"hyalos.spike/2")
+        .unwrap();
+    let mut renamed = spike_2.clone();
+    renamed[at + 13] = b'9';
+    fs::write(&unknown, renamed).unwrap();
+    let spike_2_path = scratch.0.join("spike-2-kernel");
+    fs::write(&spike_2_path, spike_2).unwrap();
+    // One run on `kernel`: `spike-run` under `profile`, or `run` under profile 2 when it is `None`.
+    let run = |kernel: &Path, profile: Option<&str>| -> (String, bool) {
+        let record = scratch.0.join("record.json");
+        let _ = fs::remove_file(&record);
+        let mut command = program();
+        match profile {
+            Some(name) => command
+                .arg("spike-run")
+                .args(&files)
+                .arg(&record)
+                .env("HYALOS_SPIKE_PROFILE", name),
+            None => command
+                .arg("run")
+                .arg(root().join("guest/digest.wasm"))
+                .arg(root().join("evidence/fixtures/issues.tsv"))
+                .arg(&record),
+        };
+        let output = command.env("HYALOS_KERNEL", kernel).output().unwrap();
+        let said = [output.stdout, output.stderr].concat();
+        let first = String::from_utf8_lossy(&said)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string();
+        (first, record.exists())
+    };
+    let ok = |(line, recorded): (String, bool)| line.starts_with("ok: ") && recorded;
+    let diverged = (String::from("refused: ReplayDiverged"), false);
+    assert!(ok(run(&default, None)));
+    assert!(ok(run(&default, Some("hyalos.spike/1"))));
+    assert_eq!(run(&default, Some("hyalos.spike/2")), diverged);
+    assert!(ok(run(&spike_2_path, Some("hyalos.spike/2"))));
+    assert_eq!(run(&spike_2_path, Some("hyalos.spike/1")), diverged);
+    assert_eq!(run(&spike_2_path, None), diverged);
+    let refused = (
+        String::from("refused: the kernel image names no profile this build knows"),
+        false,
+    );
+    for profile in [None, Some("hyalos.spike/1"), Some("hyalos.spike/2")] {
+        assert_eq!(run(&unknown, profile), refused, "{profile:?}");
     }
 }

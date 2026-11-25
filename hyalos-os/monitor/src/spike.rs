@@ -31,6 +31,38 @@ pub(crate) fn profile() -> Result<&'static Profile, String> {
     }
 }
 
+/// What comes before the profile's name in a spike kernel image (`kernel-image/src/main.rs`,
+/// `PROFILE_MARKER`). The name ends at the next zero byte.
+pub(crate) const KERNEL_MARKER: &[u8] = b"\0hyalos-kernel-profile=";
+
+/// The profile a kernel image was built for, read from its own bytes before boot (`design.md` §2
+/// of docs/plans/hyalos-kernel-python, KVM under a spike profile): an image with no marker is the
+/// default image, built for `CURRENT`; one marker must name a profile this build knows; an image
+/// with more than one marker, or whose marker names no known profile, is refused.
+pub(crate) fn image_profile(kernel: &[u8]) -> Result<&'static Profile, String> {
+    let refused = || "the kernel image names no profile this build knows".to_string();
+    let mut found = kernel
+        .windows(KERNEL_MARKER.len())
+        .enumerate()
+        .filter(|(_, window)| *window == KERNEL_MARKER)
+        .map(|(at, _)| at + KERNEL_MARKER.len());
+    let Some(start) = found.next() else {
+        return Ok(hyalos_profile::CURRENT);
+    };
+    if found.next().is_some() {
+        return Err(refused());
+    }
+    let name = kernel[start..]
+        .split(|b| *b == 0)
+        .next()
+        .filter(|_| kernel[start..].contains(&0))
+        .ok_or_else(refused)?;
+    core::str::from_utf8(name)
+        .ok()
+        .and_then(hyalos_profile::lookup)
+        .ok_or_else(refused)
+}
+
 /// A spike run's input records. An SDK, script or data file that cannot be read, or an empty SDK
 /// or script, is a usage error. An unreadable contract is not: it is no contract, which the run
 /// refuses with `BadContract` before its guest loads.

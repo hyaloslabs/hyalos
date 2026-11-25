@@ -31,8 +31,10 @@ test-trust = ["hyalos-audit/test-trust"]
 test-switches = []
 # The Python guest spike (ADR-0136, ADR-001 and ADR-006 of docs/plans/hyalos-kernel-python): the
 # draft contract check, `hyalos.spike/1`, `BadContract` and the `spike-run` and `spike-task`
-# commands. Off by default, and a build without it knows none of them.
-spike-contract = ["hyalos-audit/spike-contract", "hyalos-profile/spike-contract"]
+# commands, `hyalos.spike/2` with `wasmi`'s deterministic float results (ADR-007 of that pack,
+# ADR-0137) and the kernel image's profile marker. Off by default, and a build without it knows
+# none of them.
+spike-contract = ["hyalos-audit/spike-contract", "hyalos-profile/spike-contract", "wasmi/deterministic"]
 
 [lints]
 workspace = true

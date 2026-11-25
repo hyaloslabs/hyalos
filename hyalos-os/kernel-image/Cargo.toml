@@ -12,6 +12,10 @@ wasmi = { version = "=2.0.3", default-features = false, features = ["stable", "v
 
 [features]
 selftest = []
+# The Python guest spike's `hyalos.spike/2` (Slice 4 of docs/plans/hyalos-kernel-python, ADR-0137):
+# the image runs that profile, with `wasmi`'s deterministic float results (ADR-007 of that pack),
+# and carries the profile's name after a marker the monitor reads. A default image has neither.
+spike-profile-2 = ["hyalos-profile/spike-contract", "wasmi/deterministic"]
 
 [profile.release]
 opt-level = 3
