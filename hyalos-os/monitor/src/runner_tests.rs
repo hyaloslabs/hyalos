@@ -619,6 +619,189 @@ fn core_s_04_4_a_fuzzed_channel_never_panics_or_performs_an_unasked_effect() {
     );
 }
 
+/// The frame fuzzer's fixed seed (S-05.5): a failure is the change's, never luck, and the frame it
+/// names replays from this constant alone.
+const FRAME_FUZZ_SEED: u64 = 0x5eed_0505_c4a7_f00d;
+
+/// How many frames the fuzzer sends (`plan.md`, Slice 9's contract).
+const FRAME_FUZZ_FRAMES: u32 = 100_000;
+
+/// The xorshift generator the handler's fuzzer uses (`kvm::fuzz`), from `seed`.
+fn generator(seed: u64) -> impl FnMut() -> u64 {
+    let mut state = seed;
+    move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    }
+}
+
+/// A field value near the edges where the decoders' length checks live.
+fn edge_word(next: &mut impl FnMut() -> u64) -> i32 {
+    match next() % 6 {
+        0 => -1,
+        1 => 0,
+        2 => 1,
+        3 => i32::MIN,
+        4 => i32::MAX,
+        _ => next() as i32,
+    }
+}
+
+/// Bytes of a length near the decoders' fixed field widths, or a short random length.
+fn edge_bytes(next: &mut impl FnMut() -> u64) -> Vec<u8> {
+    let len = match next() % 10 {
+        0..=7 => [0, 1, 3, 4, 5, 7, 8, 9][(next() % 8) as usize],
+        8 => (next() % 512) as usize,
+        _ => (next() % 8192) as usize,
+    };
+    (0..len).map(|_| next() as u8).collect()
+}
+
+/// A well-formed frame of either direction, with fields drawn at their edges.
+fn well_formed(next: &mut impl FnMut() -> u64) -> Vec<u8> {
+    let word = edge_word(next);
+    let bytes = edge_bytes(next);
+    let reason = runner::REASONS[(next() % runner::REASONS.len() as u64) as usize];
+    match next() % 14 {
+        0 => Request::Input(word).encode(),
+        1 => Request::PreInfer(word).encode(),
+        2 => Request::PreEffect(word).encode(),
+        3 => Request::Infer(word, bytes).encode(),
+        4 => Request::Effect(word, bytes).encode(),
+        5 => Request::Finished(bytes, next()).encode(),
+        6 => Request::Failed(reason).encode(),
+        7 => Reply::Record(bytes.len() as u64, bytes).encode(),
+        8 => Reply::NoRecord.encode(),
+        9 => Reply::Limit(next()).encode(),
+        10 => Reply::Label(word).encode(),
+        11 => Reply::Ok.encode(),
+        12 => Reply::Refused(reason).encode(),
+        _ => {
+            let kernel = edge_bytes(next);
+            runner::boot(&kernel, &bytes).unwrap()
+        }
+    }
+}
+
+/// One hostile frame: a well-formed one, one bent at its length, version, type or fields, or noise.
+fn hostile_frame(next: &mut impl FnMut() -> u64) -> Vec<u8> {
+    let mut frame = well_formed(next);
+    match next() % 9 {
+        0 | 1 => {}
+        // One bit flipped anywhere, the length field included.
+        2 => {
+            let at = (next() as usize) % frame.len();
+            frame[at] ^= 1 << (next() % 8);
+        }
+        // Cut short, so the length field promises more than arrives.
+        3 => frame.truncate((next() as usize) % frame.len()),
+        // Trailing bytes, which belong to the next frame and not to this one.
+        4 => frame.extend(edge_bytes(next)),
+        // A length field at an edge of the limits, whatever the body says.
+        5 => {
+            let limit = [
+                runner::REQUEST_LIMIT,
+                runner::REPLY_LIMIT,
+                runner::BOOT_LIMIT,
+            ][(next() % 3) as usize] as u32;
+            let len = [0, 1, 2, 3, limit - 1, limit, limit + 1, u32::MAX][(next() % 8) as usize];
+            frame[..4].copy_from_slice(&len.to_le_bytes());
+        }
+        // Another version.
+        6 => frame[4] = (next() % 256) as u8,
+        // Any type byte, with fields of the shapes the decoders look for: a tag, then edge bytes.
+        7 => {
+            let fields = [&[(next() % 8) as u8][..], &edge_bytes(next)].concat();
+            frame = runner::frame((next() % 12) as u8, &[&fields]);
+        }
+        _ => frame = (0..next() % 24).map(|_| next() as u8).collect(),
+    }
+    frame
+}
+
+/// What `read_frame` must give for `bytes` under `limit`, from the channel's definition in
+/// `design.md` §2: a 4-byte little-endian length counting every byte after it, at least the version
+/// and type bytes and at most `limit`, then the version, the type and the fields.
+fn frame_by_definition(bytes: &[u8], limit: usize) -> Option<(u8, Vec<u8>)> {
+    let len = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?) as usize;
+    let body = bytes
+        .get(4..4 + len)
+        .filter(|_| (2..=limit).contains(&len))?;
+    (body[0] == runner::VERSION).then(|| (body[1], body[2..].to_vec()))
+}
+
+/// S-05.5: the channel's frame parser and both directions' decoders on 100,000 hostile frames from
+/// a fixed seed, each sent on a socket pair that then closes. None panics, `read_frame` gives
+/// exactly the frame the channel's definition gives, or refuses it, and a frame decodes only when
+/// it is the one encoding of what it decodes to, so no byte of it is ignored and no two frames mean
+/// the same message. The holder's whole side of a run is fuzzed by the S-04.4 test above.
+#[test]
+fn core_s_05_5_frame_fuzzer() {
+    let mut next = generator(FRAME_FUZZ_SEED);
+    let limits = [
+        runner::REQUEST_LIMIT,
+        runner::REPLY_LIMIT,
+        runner::BOOT_LIMIT,
+    ];
+    // How often each request type, reply tag and the boot frame decoded, and how often a frame was
+    // refused, so a generator that stops reaching a decoder fails the test.
+    let (mut requests, mut replies, mut boots, mut refused) = ([0u32; 7], [0u32; 6], 0u32, 0u32);
+    for at in 0..FRAME_FUZZ_FRAMES {
+        let bytes = hostile_frame(&mut next);
+        let limit = limits[(next() % 3) as usize];
+        let deadline = next()
+            .is_multiple_of(2)
+            .then(|| Instant::now() + Duration::from_secs(10));
+        let (mut holder, mut peer) = UnixStream::pair().unwrap();
+        peer.write_all(&bytes).unwrap();
+        drop(peer);
+        let read = runner::read_frame(&mut holder, limit, deadline);
+        let want = frame_by_definition(&bytes, limit);
+        assert!(
+            read.as_ref().ok() == want.as_ref(),
+            "frame {at}: read_frame differs from the definition"
+        );
+        let Some((kind, fields)) = want else {
+            assert!(
+                read == Err(runner::Broken::Fault),
+                "frame {at}: a refused frame is not a fault"
+            );
+            refused += 1;
+            continue;
+        };
+        let sent = &bytes[..6 + fields.len()];
+        if let Some(request) = Request::decode(kind, &fields) {
+            assert!(
+                request.encode() == sent,
+                "frame {at}: a request decoded from another encoding"
+            );
+            requests[usize::from(kind - runner::INPUT)] += 1;
+        }
+        if let Some(reply) = Reply::decode(kind, &fields) {
+            assert!(
+                reply.encode() == sent,
+                "frame {at}: a reply decoded from another encoding"
+            );
+            replies[usize::from(fields[0])] += 1;
+        }
+        if kind == runner::BOOT
+            && let Some((kernel, guest)) = runner::split_boot(&fields)
+        {
+            assert!(
+                runner::boot(kernel, guest).as_deref() == Some(sent),
+                "frame {at}: a boot frame split from another encoding"
+            );
+            boots += 1;
+        }
+    }
+    assert!(
+        requests.iter().chain(&replies).all(|n| *n > 0) && boots > 0 && refused > 0,
+        "the frames reached every decoder: {requests:?} requests, {replies:?} replies, {boots} boots, {refused} refused"
+    );
+}
+
 /// The entries of `/proc/<pid>/fd`, by where each points.
 fn open_files(pid: u32) -> Vec<String> {
     let mut found: Vec<String> = fs::read_dir(format!("/proc/{pid}/fd"))

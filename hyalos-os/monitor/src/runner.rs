@@ -140,7 +140,8 @@ pub(crate) fn boot(kernel: &[u8], guest: &[u8]) -> Option<Vec<u8>> {
         .then(|| frame(BOOT, &[&len.to_le_bytes(), kernel, guest]))
 }
 
-fn split_boot(fields: &[u8]) -> Option<(&[u8], &[u8])> {
+/// The kernel and the guest of a `Boot` frame's fields, or `None` when its kernel length is short.
+pub(crate) fn split_boot(fields: &[u8]) -> Option<(&[u8], &[u8])> {
     let len = u32::from_le_bytes(fields.get(..4)?.try_into().ok()?) as usize;
     let rest = &fields[4..];
     (len <= rest.len()).then(|| rest.split_at(len))
