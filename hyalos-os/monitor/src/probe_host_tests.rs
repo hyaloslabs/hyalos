@@ -188,7 +188,7 @@ fn core_s_03_3_e3_no_access_to_kvm_names_the_cause_and_exits_2() {
     fs::create_dir_all(&dir).unwrap();
     let device = dir.join("kvm");
     fs::write(&device, b"").unwrap();
-    fs::set_permissions(&device, std::os::unix::fs::PermissionsExt::from_mode(0)).unwrap();
+    fs::set_permissions(&device, std::os::unix::fs::PermissionsExt::from_mode(0o0)).unwrap();
     if fs::File::open(&device).is_err() {
         let path = std::ffi::CString::new(device.to_str().unwrap()).unwrap();
         let (out, err, code) = probe_host::report(&probe_host::on_host(&path));

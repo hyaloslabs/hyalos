@@ -11,6 +11,9 @@
 //! pack), which asks the holder for every answer through `Calls`. The host probe's fixed sequences
 //! are the one machine built in the monitor's own process.
 
+// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+#![allow(unsafe_code)]
+
 use crate::{MAX_RESULT, Reason};
 use kvm_bindings::{
     CpuId, KVM_MAX_CPUID_ENTRIES, Msrs, kvm_cpuid_entry2, kvm_dtable, kvm_msr_entry, kvm_regs,
@@ -115,7 +118,7 @@ impl Ticker {
         // SAFETY: plain libc calls with valid arguments; the handler does nothing.
         unsafe {
             let mut action: libc::sigaction = std::mem::zeroed();
-            action.sa_sigaction = tick as usize;
+            action.sa_sigaction = tick as extern "C" fn(libc::c_int) as usize;
             libc::sigaction(libc::SIGALRM, &action, ptr::null_mut());
             libc::setitimer(libc::ITIMER_REAL, &timer, ptr::null_mut());
         }
@@ -137,11 +140,14 @@ fn field(bytes: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
 }
 
+/// A loaded segment: its first address, the address after it, and its ELF flags.
+type Segment = (u64, u64, u32);
+
 /// Copies the kernel image into memory and returns its entry point. An image is an ELF file. In a
 /// build with the `test-switches` feature it may also be raw machine code placed at the kernel's
 /// base, for the hostile-kernel tests; a release build refuses that (`None`, so `KernelFault`), so a
 /// replaced kernel file never gets writable, executable memory (S-05.4, P7).
-fn load(kernel: &[u8], ram: &Ram) -> Option<(u64, Vec<(u64, u64, u32)>)> {
+fn load(kernel: &[u8], ram: &Ram) -> Option<(u64, Vec<Segment>)> {
     let mut segments = Vec::new();
     if !kernel.starts_with(b"\x7fELF") {
         #[cfg(not(feature = "test-switches"))]
@@ -189,7 +195,7 @@ const NX: u64 = 1 << 63;
 /// these page tables), the gap below the stack, and anything past the machine's memory. Every
 /// entry on the way to a page the kernel may reach carries the user bit, since the kernel runs in
 /// ring 3. The rights are the ones it had in ring 0.
-fn map(ram: &Ram, segments: &[(u64, u64, u32)], guest_len: u64) -> Option<()> {
+fn map(ram: &Ram, segments: &[Segment], guest_len: u64) -> Option<()> {
     let mut small = vec![0u64; 4 * 512]; // 4 KiB pages for the first 8 MiB: kernel image and guest
     let mut page = |at: u64, entry: u64| {
         let slot = small.get_mut((at >> 12) as usize)?;
@@ -538,7 +544,7 @@ fn boot_and_run(
     let mut first = true;
     loop {
         let at = match vcpu.run() {
-            Ok(VcpuExit::IoOut(PORT, data)) => match <[u8; 4]>::try_from(&*data) {
+            Ok(VcpuExit::IoOut(PORT, data)) => match <[u8; 4]>::try_from(data) {
                 Ok(bytes) => u64::from(u32::from_le_bytes(bytes)),
                 Err(_) => return Err(Reason::BadHypercall),
             },

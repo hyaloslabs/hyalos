@@ -20,6 +20,9 @@
 //! A frame is a 4-byte little-endian length, counting every byte after it, then the version byte,
 //! the type byte and the fields.
 
+// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+#![allow(unsafe_code)]
+
 use crate::{
     MAX_RESULT, Reason,
     kvm::{self, Calls, GUEST_MAX, RECORD_MAX},
@@ -815,7 +818,7 @@ impl Options {
             rest => rest,
         };
         #[cfg(feature = "test-switches")]
-        let rest = options.test_switches(&rest)?;
+        let rest = options.test_switches(rest)?;
         rest.is_empty().then_some(options)
     }
 

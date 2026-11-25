@@ -230,13 +230,13 @@ impl World {
             &["signing", "transport", "listening"],
         );
         let task = if self.version == 1 {
-            crate::task_v2(&sha(&self.guest), &[self.input.clone()]).unwrap()
+            crate::task_v2(&sha(&self.guest), std::slice::from_ref(&self.input)).unwrap()
         } else {
             crate::task_for(
                 self.version,
                 self.profile(),
                 &sha(&self.guest),
-                &[self.input.clone()],
+                std::slice::from_ref(&self.input),
             )
             .unwrap()
         };
@@ -367,7 +367,7 @@ impl World {
                 self.version,
                 self.profile(),
                 &guest_sha256,
-                &[self.input.clone()],
+                std::slice::from_ref(&self.input),
             )
             .unwrap()
         };

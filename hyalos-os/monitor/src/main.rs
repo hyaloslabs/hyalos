@@ -568,6 +568,9 @@ fn run_attacks(backend: &Backend, guest: &[u8], inputs: &[Vec<u8>]) -> Result<bo
 
 /// One declared run: its intent link, its execution, and a result link that says how it ended.
 /// A record is written only for a run that was not refused.
+// Each argument is one part of the declaration its callers already hold apart; gathering them in
+// a type would only move the list.
+#[allow(clippy::too_many_arguments)]
 fn declared_run(
     append: &mut dyn FnMut(serde_json::Value) -> Result<(usize, String), Reason>,
     backend: &Backend,

@@ -235,7 +235,7 @@ impl Rig {
             &|_| Some(0),
         )
         .unwrap();
-        let reason = outcome.err().expect("the run must be refused");
+        let reason = outcome.expect_err("the run must be refused");
         (reason, links)
     }
 
@@ -658,7 +658,8 @@ fn record_s_02_3_e1_the_task_command_prints_what_the_run_logs() {
         Ok((links.len() - 1, hash))
     };
     let inputs = read_inputs(inputs_file.to_str().unwrap()).unwrap();
-    declared_run(
+    // This test reads the intent link; how the run then ended is not what it checks.
+    let _ = declared_run(
         &mut append,
         &Backend::Process,
         &fs::read(&guest_file).unwrap(),
