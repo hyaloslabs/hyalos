@@ -170,9 +170,3 @@ mod forgery_tests;
 #[cfg(all(test, feature = "test-trust"))]
 #[path = "fixture_tests.rs"]
 mod fixture_tests;
-
-// TEMPORARY (Slice 9 dry run, S-05.3.e2): a clippy warning CI must fail on. Removed before merge.
-#[allow(dead_code)]
-fn planted_lint(v: &Vec<u8>) -> usize {
-    v.len()
-}
