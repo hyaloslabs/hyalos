@@ -46,3 +46,6 @@ name = "forging-notary"
 path = "src/bin/forging-notary.rs"
 required-features = ["forge-ticket"]
 test = false
+
+[lints]
+workspace = true

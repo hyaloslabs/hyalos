@@ -16,6 +16,9 @@
 //!
 //! `notary tickets --dir <directory>` prints each authorisation and what has been spent of it.
 
+// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+#![allow(unsafe_code)]
+
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use attest::{
     CANARY, DEADLINE, MAX_RECV, MAX_SENT, RELEASE, RUN_SEQUENCE, SERVER, TICKET, Ticket, binding,

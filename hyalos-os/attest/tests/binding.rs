@@ -7,7 +7,11 @@
 mod common;
 
 use common::{INTENT, NAME, Notary, Operator, Scratch, Standin};
-use std::{path::PathBuf, process::Command, sync::OnceLock};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+    sync::OnceLock,
+};
 
 const POSITION: u64 = 3;
 
@@ -23,9 +27,9 @@ struct Call {
     _programs: (Standin, Notary, Scratch),
 }
 
-fn tool(call: &Call, home: &PathBuf, provider: &str) -> Command {
+fn tool(call: &Call, home: &Path, provider: &str) -> Command {
     let who = Operator {
-        home: home.clone(),
+        home: home.to_path_buf(),
         key: call.who.key.clone(),
         public: call.who.public.clone(),
     };
@@ -73,7 +77,7 @@ fn call() -> &'static Call {
     })
 }
 
-fn verify(call: &Call, file: &PathBuf) -> Result<serde_json::Value, String> {
+fn verify(call: &Call, file: &Path) -> Result<serde_json::Value, String> {
     let output = tool(call, &call.home, "127.0.0.1:9")
         .args(["verify", file.to_str().unwrap(), &call.notary])
         .output()

@@ -878,7 +878,7 @@ fn canary_s_02_3_e1_a_credential_beside_the_notary_is_not_needed() {
     let rig = Rig::new("canary-2-3-e1", &[]);
     let beside = rig.notary.dir.join("anthropic.key");
     std::fs::write(&beside, format!("test-{}", "c".repeat(101))).unwrap();
-    std::fs::set_permissions(&beside, std::fs::Permissions::from_mode(0)).unwrap();
+    std::fs::set_permissions(&beside, std::fs::Permissions::from_mode(0o0)).unwrap();
     assert_eq!(said(&rig.ask("one.presentation", INTENT, 0))["label"], 0);
     assert_eq!(mode(&beside), 0);
 }

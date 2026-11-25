@@ -22,7 +22,7 @@ fn directory(scratch: &Scratch) -> PathBuf {
     fs::create_dir_all(&dir).unwrap();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(dir.join("signing.key"), "not a key").unwrap();
-    fs::set_permissions(dir.join("signing.key"), fs::Permissions::from_mode(0)).unwrap();
+    fs::set_permissions(dir.join("signing.key"), fs::Permissions::from_mode(0o0)).unwrap();
     fs::write(dir.join("sequences"), "hyalos.sequences/2\nend 0\n").unwrap();
     dir
 }
@@ -352,7 +352,8 @@ fn record_s_03_7_tickets_reads_a_directory_the_notary_is_serving() {
 
 /// A serving notary with no authorisation of its own, and the operator enrolled on it.
 struct Serving {
-    scratch: Scratch,
+    /// Held so the scratch directory lives as long as the notary, and goes when it does.
+    _scratch: Scratch,
     who: common::Operator,
     root: PathBuf,
     dir: PathBuf,
@@ -368,7 +369,7 @@ impl Serving {
         let dir = scratch.0.join("notary");
         let notary = Some(common::try_notary(&dir, &who.public, &root).unwrap());
         Self {
-            scratch,
+            _scratch: scratch,
             who,
             root,
             dir,
@@ -629,7 +630,7 @@ async fn record_s_04_7_e2_a_run_from_old_state_is_refused() {
     let notary = common::try_notary(&dir, &who.public, &root).unwrap();
     let identifier = kept(&dir, TASK, "3", false);
     let serving = Serving {
-        scratch,
+        _scratch: scratch,
         who,
         root,
         dir,

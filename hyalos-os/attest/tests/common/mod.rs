@@ -248,12 +248,11 @@ pub fn forging_notary(
 
 /// The directory's one authorisation, made with a generous budget on first use.
 fn authorised(dir: &Path) -> String {
-    if let Ok(mut held) = std::fs::read_dir(dir.join("authorisations")) {
-        if let Some(entry) =
+    if let Ok(mut held) = std::fs::read_dir(dir.join("authorisations"))
+        && let Some(entry) =
             held.find(|entry| entry.as_ref().is_ok_and(|e| e.file_name().len() == 64))
-        {
-            return entry.unwrap().file_name().into_string().unwrap();
-        }
+    {
+        return entry.unwrap().file_name().into_string().unwrap();
     }
     let made = Command::new(env!("CARGO_BIN_EXE_notary"))
         .args(["authorize", "--dir"])

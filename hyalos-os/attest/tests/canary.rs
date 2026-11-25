@@ -1,6 +1,9 @@
 //! The customer's provider check, run as a program against the stand-in. No test contacts a real
 //! provider. Every credential here is made up.
 
+// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+#![allow(unsafe_code)]
+
 mod common;
 
 use attest::CREDENTIAL_LENGTH;

@@ -379,9 +379,11 @@ fn verify(bytes: &[u8], trusted_notary: &str, trust: &Trust) -> Result<Value> {
         notary == trusted_notary,
         "signed by a notary that is not the trusted one"
     );
-    let mut provider = CryptoProvider::default();
-    provider.cert = ServerCertVerifier::new(&trust.roots)
-        .map_err(|_| anyhow!("cannot use the trusted roots"))?;
+    let provider = CryptoProvider {
+        cert: ServerCertVerifier::new(&trust.roots)
+            .map_err(|_| anyhow!("cannot use the trusted roots"))?,
+        ..CryptoProvider::default()
+    };
     let PresentationOutput {
         server_name,
         connection_info,

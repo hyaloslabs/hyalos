@@ -1027,7 +1027,7 @@ mod tests {
         for loose in [
             format!("{INTENT}.02"),
             format!("{}.2", INTENT.to_uppercase()),
-            format!("{INTENT}"),
+            INTENT.to_string(),
             format!("{INTENT}.2.2"),
         ] {
             assert!(
@@ -1100,8 +1100,8 @@ mod tests {
             &carried,
             SERVER
         ));
-        for shape in ["other"] {
-            let (bytes, hidden) = request("A title", &carried, SERVER, shape);
+        {
+            let (bytes, hidden) = request("A title", &carried, SERVER, "other");
             let head = &bytes[..hidden.start];
             assert!(written_head(head, "A title", &carried, SERVER));
             // Another header before the credential's, a body of another length, another server.
