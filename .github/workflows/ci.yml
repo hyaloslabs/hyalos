@@ -244,10 +244,13 @@ jobs:
             sudo udevadm control --reload-rules
             sudo udevadm trigger --name-match=kvm
           fi
+      # The test-only switches (the hostile machine runner and the injected confinement failures)
+      # run here, and the runner's confinement must hold on this kernel (ADR-0132).
       - name: Test the workspace
-        run: cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace --features task-kernel/test-trust,hyalos-audit/test-trust
+        run: cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace --features task-kernel/test-trust,hyalos-audit/test-trust,task-kernel/test-switches
         env:
           HYALOS_REQUIRE_KVM: "1"
+          HYALOS_REQUIRE_LANDLOCK: "1"
       # What the runner's KVM leaves a taken-over kernel (S-03.3 of docs/plans/hyalos-kernel-core). A
       # reachable instruction is a stated limit (exit 1); a probe that could not test (exit 2) fails.
       - name: Probe what the runner's KVM exposes

@@ -925,9 +925,9 @@ fn core_s_04_1_a_kernel_that_spins_is_stopped_at_the_deadline() {
     );
 }
 
-/// S-04.1: `machine-runner --check` starts a runner and opens KVM, and a `live` run asks it
-/// before its chain is touched. On this host KVM opens, so the run passes the check and stops at
-/// the next step, the missing home; on a host without KVM it is refused by the check instead.
+/// S-04.1: `machine-runner --check` starts a runner, opens KVM and confines itself, and a `live`
+/// run asks it before its chain is touched. On this host it passes, so the run stops at the next
+/// step, the missing home; on a host without KVM or Landlock it is refused by the check instead.
 #[test]
 fn core_s_04_1_a_live_run_checks_the_runner_before_its_chain() {
     let usable = fs::OpenOptions::new()
@@ -935,6 +935,8 @@ fn core_s_04_1_a_live_run_checks_the_runner_before_its_chain() {
         .write(true)
         .open("/dev/kvm")
         .is_ok();
+    // The check also needs Landlock and seccomp (S-04.3, `confine_tests.rs`).
+    let usable = usable && crate::confine_tests::landlock_available();
     assert_eq!(runner::check().is_ok(), usable);
     let dir = env::temp_dir().join(format!("hyalos-runner-check-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -963,9 +965,12 @@ fn core_s_04_1_a_live_run_checks_the_runner_before_its_chain() {
     let want = if usable {
         "refused: no home"
     } else {
-        "refused: the machine runner cannot open KVM"
+        "refused: the machine runner "
     };
-    assert!(said == want, "the live run did not stop where expected");
+    assert!(
+        said.starts_with(want),
+        "the live run did not stop where expected"
+    );
     assert!(!dir.join("ledger").exists());
     let _ = fs::remove_dir_all(&dir);
     // The command takes nothing but `--check` or `--trace`.
