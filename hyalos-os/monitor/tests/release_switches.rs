@@ -348,3 +348,131 @@ fn core_s_05_4_ci_runs_this_file_without_the_feature() {
         env.contains("HYALOS_REQUIRE_KVM: \"1\"") && env.contains("HYALOS_REQUIRE_LANDLOCK: \"1\"")
     );
 }
+
+/// Whether this test binary, and so the `task-kernel` binary beside it, is a spike build
+/// (ADR-0136, `docs/plans/hyalos-kernel-python`).
+const SPIKE: bool = cfg!(feature = "spike-contract");
+
+/// The five files a spike command reads: the committed guest, the draft contract, an SDK, a
+/// script and the issue fixture.
+fn spike_files(scratch: &Scratch) -> Vec<PathBuf> {
+    let file = |name: &str, bytes: &[u8]| {
+        let path = scratch.0.join(name);
+        fs::write(&path, bytes).unwrap();
+        path
+    };
+    vec![
+        root().join("guest/digest.wasm"),
+        file("contract", br#"{"asks":[0],"may_touch":[0]}"#),
+        file("sdk.py", b"def _nothing():\n    pass\n"),
+        file("script.py", b"from hyalos import task\n"),
+        root().join("evidence/fixtures/issues.tsv"),
+    ]
+}
+
+/// S-01.4: a default build has no `spike-run` or `spike-task` command, and `HYALOS_SPIKE_PROFILE`
+/// changes nothing `run` does. Built with the feature, both commands run.
+#[test]
+fn python_s_01_4_a_default_build_has_no_spike_command_and_ignores_its_variable() {
+    let scratch = Scratch::new("spike-commands");
+    let files = spike_files(&scratch);
+    let usage = "refused: usage: run|replay|task|attacks|bench|probe-host ...\n";
+    let record = scratch.0.join("spike.json");
+    for (command, out) in [("spike-task", None), ("spike-run", Some(&record))] {
+        let output = program()
+            .arg(command)
+            .args(&files)
+            .args(out)
+            .output()
+            .unwrap();
+        if SPIKE {
+            assert!(output.status.success(), "{command}");
+        } else {
+            assert!(!output.status.success(), "{command}");
+            assert_eq!(String::from_utf8_lossy(&output.stderr), usage);
+            assert!(output.stdout.is_empty());
+        }
+    }
+    assert_eq!(record.exists(), SPIKE);
+    let run = |out: &str, variable: Option<&str>| {
+        let mut command = program();
+        command
+            .arg("run")
+            .arg(root().join("guest/digest.wasm"))
+            .arg(root().join("evidence/fixtures/issues.tsv"))
+            .arg(scratch.0.join(out));
+        if let Some(name) = variable {
+            command.env("HYALOS_SPIKE_PROFILE", name);
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        (output.stdout, fs::read(scratch.0.join(out)).unwrap())
+    };
+    let plain = run("plain.json", None);
+    assert_eq!(plain, run("spike.json", Some("hyalos.spike/1")));
+    assert!(String::from_utf8_lossy(&plain.1).contains("\"profile\": \"hyalos.profile/2\""));
+}
+
+/// 1.5: `spike-task` prints the task `spike-run` records for the same five files, and a spike run
+/// prints its timing after its `ok:` line. A profile variable that names no spike profile is
+/// refused before anything runs, with no record.
+#[cfg(feature = "spike-contract")]
+#[test]
+fn python_1_5_spike_task_equals_record_task() {
+    let scratch = Scratch::new("spike-task");
+    let files = spike_files(&scratch);
+    let task = program().arg("spike-task").args(&files).output().unwrap();
+    assert!(task.status.success());
+    let record = scratch.0.join("record.json");
+    let run = program()
+        .arg("spike-run")
+        .args(&files)
+        .arg(&record)
+        .output()
+        .unwrap();
+    assert!(run.status.success());
+    let written: serde_json::Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+    assert_eq!(written["profile"], "hyalos.spike/1");
+    assert_eq!(
+        String::from_utf8_lossy(&task.stdout).trim_end(),
+        written["task"].as_str().unwrap()
+    );
+    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
+    let mut lines = stdout.lines();
+    assert!(lines.next().unwrap().starts_with("ok: 43 inputs, "));
+    assert!(lines.next().unwrap().starts_with("timing: cold_start "));
+    for name in ["hyalos.profile/2", "hyalos.spike/9", "nonsense"] {
+        let refused = scratch.0.join("refused.json");
+        let output = program()
+            .arg("spike-run")
+            .args(&files)
+            .arg(&refused)
+            .env("HYALOS_SPIKE_PROFILE", name)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{name}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "refused: HYALOS_SPIKE_PROFILE does not name a known spike profile\n"
+        );
+        assert!(!refused.exists());
+    }
+    // A contract that is not one is refused, BadContract, by both commands, with no record.
+    let bad = scratch.0.join("contract");
+    fs::write(&bad, b"{\"asks\":[0], \"may_touch\":[0]}").unwrap();
+    for (command, out) in [("spike-task", None), ("spike-run", Some(&record))] {
+        let _ = fs::remove_file(&record);
+        let output = program()
+            .arg(command)
+            .args(&files)
+            .args(out)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{command}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "refused: BadContract\n"
+        );
+        assert!(!record.exists());
+    }
+}

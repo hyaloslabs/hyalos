@@ -68,7 +68,24 @@ pub const PROFILE_2: Profile = Profile {
 /// lockfiles.
 pub const CURRENT: &Profile = &PROFILE_2;
 
-static KNOWN: [Profile; 2] = [PROFILE_1, PROFILE_2];
+/// `hyalos.spike/1`: profile 2's settings and limits under the Python guest spike's draft contract,
+/// which the audit enforces from a run's input record 0 (ADR-0136). Only a build with the
+/// `spike-contract` feature knows it.
+#[cfg(feature = "spike-contract")]
+pub const SPIKE_1: Profile = Profile {
+    name: "hyalos.spike/1",
+    ..PROFILE_2
+};
+
+/// The profiles this build knows.
+const KNOWN_COUNT: usize = 2 + cfg!(feature = "spike-contract") as usize;
+
+static KNOWN: [Profile; KNOWN_COUNT] = [
+    PROFILE_1,
+    PROFILE_2,
+    #[cfg(feature = "spike-contract")]
+    SPIKE_1,
+];
 
 /// Pairs of an older `wasmi` and the linked one whose runs were checked equal: the same fuel and
 /// the same transcripts for every committed guest and record, and no change to the code a profile's
@@ -90,6 +107,13 @@ impl Profile {
             wasmi: other.wasmi,
             ..*self
         } == *other
+    }
+
+    /// Whether a run under this profile is held to a draft contract read from its input record 0.
+    /// Every `hyalos.spike/` profile is (ADR-0136).
+    #[cfg(feature = "spike-contract")]
+    pub fn enforces_contract(&self) -> bool {
+        self.name.starts_with("hyalos.spike/")
     }
 }
 
@@ -175,5 +199,31 @@ mod tests {
         ] {
             assert_eq!(lookup(unknown), None, "{unknown}");
         }
+    }
+
+    /// S-01.4.e1: a default build knows no spike profile.
+    #[cfg(not(feature = "spike-contract"))]
+    #[test]
+    fn python_s_01_4_e1_a_default_build_knows_no_spike_profile() {
+        assert_eq!(lookup("hyalos.spike/1"), None);
+        assert!(KNOWN.iter().all(|p| !p.name.starts_with("hyalos.spike/")));
+    }
+
+    /// `hyalos.spike/1` is profile 2's settings and `wasmi` under another name, enforcing a contract.
+    #[cfg(feature = "spike-contract")]
+    #[test]
+    fn python_spike_1_is_profile_2_with_a_contract() {
+        assert_eq!(
+            SPIKE_1,
+            Profile {
+                name: "hyalos.spike/1",
+                ..PROFILE_2
+            }
+        );
+        assert_eq!(lookup("hyalos.spike/1"), Some(&SPIKE_1));
+        assert!(SPIKE_1.same_settings(&PROFILE_2) && SPIKE_1.replays_here());
+        assert!(SPIKE_1.enforces_contract());
+        assert!(!PROFILE_1.enforces_contract() && !PROFILE_2.enforces_contract());
+        assert_eq!(lookup("hyalos.spike/2"), None);
     }
 }

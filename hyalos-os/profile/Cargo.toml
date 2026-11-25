@@ -8,5 +8,10 @@ publish = false
 path = "src/lib.rs"
 doctest = false
 
+[features]
+# The Python guest spike's profiles (ADR-0136, ADR-006 of docs/plans/hyalos-kernel-python). Off by
+# default: a build without it knows no `hyalos.spike/` name.
+spike-contract = []
+
 [lints]
 workspace = true

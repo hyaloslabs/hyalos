@@ -11,6 +11,9 @@ doctest = false
 [features]
 # The stand-in log and provider settings. A release build of `hyalos-verify` never enables this.
 test-trust = []
+# The Python guest spike's draft contract and its profiles (ADR-0136, ADR-001 and ADR-006 of
+# docs/plans/hyalos-kernel-python). Off by default: a default build is unchanged.
+spike-contract = ["hyalos-profile/spike-contract"]
 
 [dependencies]
 hyalos-profile = { path = "../profile" }

@@ -65,7 +65,9 @@ jobs:
             echo "sigstore_library=$(touches '^Cargo\.lock$')"
             echo "mcp=$(touches '^(core/|crates/mcp-conformance/)')"
             # hyalOS is its own workspace (ADR-0130), so the main workspace's manifests do not reach it.
-            echo "hyalos_os=$(grep -qE '^(hyalos-os/|rust-toolchain\.toml$|\.github/workflows/ci\.yml$|\.github/scripts/(build-verifier|check-verifier-rebuild)\.sh$)' <<<"$changed" && echo true || echo false)"
+            # `spikes/438/` holds the Python guest spike's committed evidence, which hyalOS's tests
+            # replay (ADR-0136).
+            echo "hyalos_os=$(grep -qE '^(hyalos-os/|spikes/438/|rust-toolchain\.toml$|\.github/workflows/ci\.yml$|\.github/scripts/(build-verifier|check-verifier-rebuild)\.sh$)' <<<"$changed" && echo true || echo false)"
           } | tee -a "$GITHUB_OUTPUT"
 
   # The time budget (#320). Every job has a 20-minute limit and should finish in 15. The test run is
@@ -271,6 +273,7 @@ jobs:
           (cd hyalos-os/guest && cargo fmt --check)
           cargo clippy --locked --manifest-path hyalos-os/Cargo.toml --workspace --all-targets --features task-kernel/test-trust,hyalos-audit/test-trust,task-kernel/test-switches -- -D warnings
           cargo clippy --locked --manifest-path hyalos-os/Cargo.toml --workspace --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path hyalos-os/Cargo.toml --workspace --all-targets --features task-kernel/test-trust,hyalos-audit/test-trust,task-kernel/test-switches,task-kernel/spike-contract,hyalos-audit/spike-contract,hyalos-profile/spike-contract -- -D warnings
           cargo clippy --locked --manifest-path hyalos-os/Cargo.toml -p attest --features forge-ticket --bin forging-notary -- -D warnings
           (cd hyalos-os/kernel-image && cargo clippy --release --locked -- -D warnings && cargo clippy --release --locked --features selftest -- -D warnings)
           (cd hyalos-os/guest && cargo clippy --release --locked --target wasm32-unknown-unknown -- -D warnings)
@@ -280,6 +283,14 @@ jobs:
       # (`core_s_05_5_frame_fuzzer`, S-05.5).
       - name: Test the workspace
         run: cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace --features task-kernel/test-trust,hyalos-audit/test-trust,task-kernel/test-switches
+        env:
+          HYALOS_REQUIRE_KVM: "1"
+          HYALOS_REQUIRE_LANDLOCK: "1"
+      # The Python guest spike's contract check, profile and commands (ADR-0136), compiled only with
+      # `spike-contract`. Every test runs again with it, so the pinned transcripts and the hostile
+      # guests are shown unchanged by it, and its own tests run on both backends.
+      - name: Test the workspace with the spike contract
+        run: cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace --features task-kernel/test-trust,hyalos-audit/test-trust,task-kernel/test-switches,task-kernel/spike-contract,hyalos-audit/spike-contract,hyalos-profile/spike-contract
         env:
           HYALOS_REQUIRE_KVM: "1"
           HYALOS_REQUIRE_LANDLOCK: "1"

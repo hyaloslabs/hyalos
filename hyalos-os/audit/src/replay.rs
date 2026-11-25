@@ -96,6 +96,13 @@ pub struct Host<S> {
     pub inputs: Vec<Vec<u8>>,
     pub answers: Vec<Answer>,
     pub effects: Vec<EffectRecord>,
+    /// Under a spike profile, the contract from input record 0, which every call is checked against
+    /// before the existing checks (ADR-0136).
+    #[cfg(feature = "spike-contract")]
+    pub contract: Option<crate::contract::Contract>,
+    /// When the guest first called the host, for the spike's timing. It is printed, never recorded.
+    #[cfg(feature = "spike-contract")]
+    pub first_call: std::cell::Cell<Option<std::time::Instant>>,
 }
 
 impl<S: Source> Host<S> {
@@ -105,10 +112,24 @@ impl<S: Source> Host<S> {
             inputs,
             answers: Vec::new(),
             effects: Vec::new(),
+            #[cfg(feature = "spike-contract")]
+            contract: None,
+            #[cfg(feature = "spike-contract")]
+            first_call: std::cell::Cell::new(None),
+        }
+    }
+
+    /// Notes the guest's first host call, for the spike's timing.
+    #[cfg(feature = "spike-contract")]
+    fn called(&self) {
+        if self.first_call.get().is_none() {
+            self.first_call.set(Some(std::time::Instant::now()));
         }
     }
 
     pub fn input(&self, index: i32) -> Option<&[u8]> {
+        #[cfg(feature = "spike-contract")]
+        self.called();
         self.inputs
             .get(usize::try_from(index).ok()?)
             .map(Vec::as_slice)
@@ -116,6 +137,17 @@ impl<S: Source> Host<S> {
 
     /// Checks a question's type before its bytes are read, and gives the most bytes it may have.
     pub fn pre_infer(&self, schema: i32) -> Result<usize, Reason> {
+        #[cfg(feature = "spike-contract")]
+        {
+            self.called();
+            if self
+                .contract
+                .as_ref()
+                .is_some_and(|c| !c.asks.contains(&schema))
+            {
+                return Err(Reason::UnknownSchema);
+            }
+        }
         if schema == 0 {
             Ok(MAX_QUESTION)
         } else {
@@ -142,6 +174,17 @@ impl<S: Source> Host<S> {
     }
 
     pub fn pre_effect(&self, kind: i32) -> Result<usize, Reason> {
+        #[cfg(feature = "spike-contract")]
+        {
+            self.called();
+            if self
+                .contract
+                .as_ref()
+                .is_some_and(|c| !c.may_touch.contains(&kind))
+            {
+                return Err(Reason::UnknownEffect);
+            }
+        }
         if kind != NOTIFY {
             return Err(Reason::UnknownEffect);
         }
@@ -389,7 +432,19 @@ pub fn execute_with<S: Source>(
         1 => String::new(),
         _ => task_for(version, named, &sha(guest), &inputs).ok_or(Reason::ReplayDiverged)?,
     };
-    let (host, result, fuel_used) = run(guest, Host::new(source, inputs), profile)?;
+    #[allow(unused_mut)]
+    let mut host = Host::new(source, inputs);
+    // Under a spike profile the contract is input record 0, read before the guest loads (ADR-0136).
+    #[cfg(feature = "spike-contract")]
+    if profile.enforces_contract() {
+        host.contract = Some(
+            host.inputs
+                .first()
+                .and_then(|record| crate::contract::Contract::parse(record))
+                .ok_or(Reason::BadContract)?,
+        );
+    }
+    let (host, result, fuel_used) = run(guest, host, profile)?;
     Ok(Transcript {
         version,
         profile: named.map(str::to_string),

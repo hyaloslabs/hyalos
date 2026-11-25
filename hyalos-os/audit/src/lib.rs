@@ -9,6 +9,8 @@
 pub mod answers;
 pub mod audit;
 pub mod chain;
+#[cfg(feature = "spike-contract")]
+pub mod contract;
 pub mod failure;
 pub mod files;
 pub mod record;
@@ -18,6 +20,8 @@ pub mod report;
 pub use answers::{Attempt, Verifier, Witnessed, check_answer, witnessed};
 pub use audit::{AuditInputs, Verdict, audit_record, check, claim_of, notary_key_text};
 pub use chain::{Audited, Auditor, Claim, LogSource, REKOR_KEY, public_der, signature_verifies};
+#[cfg(feature = "spike-contract")]
+pub use contract::{Contract, MAX_CONTRACT};
 pub use failure::{Failure, FailureKind};
 pub use files::{FileError, FileKind, Files, PlainFiles};
 pub use record::*;
