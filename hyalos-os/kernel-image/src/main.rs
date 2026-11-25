@@ -5,6 +5,8 @@
 
 #![no_std]
 #![no_main]
+// One of the files allowed `unsafe` (design.md §2 of docs/plans/hyalos-kernel-core).
+#![allow(unsafe_code)]
 
 extern crate alloc;
 
@@ -322,8 +324,14 @@ fn run(guest: &[u8]) -> u64 {
 }
 
 /// The monitor enters here in 64-bit ring 3 with the guest's bytes in the first two arguments.
+///
+/// # Safety
+///
+/// Only the monitor calls this, once, as the image's entry point, with `guest` pointing at `len`
+/// bytes it placed in the kernel's memory and maps read-only for the whole run (`kvm.rs`, `map`).
 #[unsafe(no_mangle)]
-pub extern "C" fn _start(guest: *const u8, len: usize) -> ! {
+pub unsafe extern "C" fn _start(guest: *const u8, len: usize) -> ! {
+    // SAFETY: the monitor placed `len` bytes at `guest`, mapped read-only for the whole run.
     let guest = unsafe { core::slice::from_raw_parts(guest, len) };
     #[cfg(feature = "selftest")]
     probe(guest);
@@ -440,7 +448,10 @@ fn probe(guest: &[u8]) {
     let table = [0u64; 2]; // an empty descriptor table to load
     unsafe {
         match guest.first().copied().unwrap_or(0) {
-            1 => ptr::write_volatile(_start as usize as *mut u8, 0x90), // change its own code
+            1 => ptr::write_volatile(
+                _start as unsafe extern "C" fn(*const u8, usize) -> ! as usize as *mut u8,
+                0x90,
+            ), // change its own code
             2 => {
                 ptr::write_volatile(HEAP_START as *mut u8, 0xc3); // run bytes it wrote
                 core::mem::transmute::<usize, extern "C" fn()>(HEAP_START)();
