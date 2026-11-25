@@ -1,6 +1,6 @@
 # ADR-0136: hyalOS checks a draft contract under spike profiles, behind `spike-contract`
 
-**Status:** Accepted
+**Status:** Proposed
 
 ## Context
 
@@ -27,6 +27,6 @@ The spike's pack decided where this lives and how it travels: everything in `hya
 
 - A spike record names `hyalos.spike/1`, which no release build or published verifier knows, so none of them reads it. That is intended: the spike's records are evidence for the findings, not records a customer authorises.
 - The spike shows the identity covers the contract, the SDK and the script. Signing or authorising that identity is capsules' concern.
-- CI's `hyalos-os` job lints and runs every test a second time with the feature, so the pinned transcripts (profile 1 since the ring 3 slice, profile 2 from this change's base commit) and the hostile guests are shown unchanged by it. Its change filter also matches `spikes/438/`, where the spike's committed evidence will live.
+- CI lints and runs every hyalOS test a second time with the feature, in a job of its own, `hyalos-os (spike contract)`, gathered into the required check like `hyalos-os` and run under the same change filter. In one job the two test runs took `hyalos-os` past its 20-minute limit. The pinned transcripts (profile 1 since the ring 3 slice, profile 2 from this change's base commit) and the hostile guests are shown unchanged by the feature. The change filter also matches `spikes/438/`, where the spike's committed evidence will live.
 - A spike profile with other settings than profile 2's (floats, memory, fuel) needs the kernel image built for it and the KVM backend to compare against that image's profile. The pack's design states that mechanism, and the slice that first needs it adds it with its own ADR.
 - Capsules replaces the draft contract, its check and the spike profiles. Nothing here is a commitment to their form.

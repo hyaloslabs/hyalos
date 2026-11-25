@@ -183,7 +183,7 @@ jobs:
   # failure, a cancellation or a job that never ran, fails it, so splitting a job never makes it optional.
   rust:
     name: build, lint, test
-    needs: [changes, lint, test, simulation, spec, hyalos-os]
+    needs: [changes, lint, test, simulation, spec, hyalos-os, hyalos-os-spike]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -194,6 +194,7 @@ jobs:
           LINT: ${{ needs.lint.result }}
           RESULTS: ${{ needs.test.result }} ${{ needs.simulation.result }} ${{ needs.spec.result }}
           HYALOS_OS: ${{ needs.hyalos-os.result }}
+          HYALOS_OS_SPIKE: ${{ needs.hyalos-os-spike.result }}
           HYALOS_OS_CHANGED: ${{ needs.changes.outputs.hyalos_os }}
         run: |
           echo "docs only: ${DOCS_ONLY:-unknown}; lint: ${LINT}; test, simulation, spec: ${RESULTS}"
@@ -214,6 +215,11 @@ jobs:
           echo "hyalos-os: ${HYALOS_OS}; changed: ${HYALOS_OS_CHANGED:-unknown}"
           if [ "${HYALOS_OS}" != "success" ] && { [ "${HYALOS_OS}" != "skipped" ] || [ "${HYALOS_OS_CHANGED}" != "false" ]; }; then
             echo "::error::hyalos-os ended '${HYALOS_OS}' with its change output '${HYALOS_OS_CHANGED:-unset}'"
+            exit 1
+          fi
+          echo "hyalos-os (spike contract): ${HYALOS_OS_SPIKE}"
+          if [ "${HYALOS_OS_SPIKE}" != "success" ] && { [ "${HYALOS_OS_SPIKE}" != "skipped" ] || [ "${HYALOS_OS_CHANGED}" != "false" ]; }; then
+            echo "::error::hyalos-os (spike contract) ended '${HYALOS_OS_SPIKE}' with its change output '${HYALOS_OS_CHANGED:-unset}'"
             exit 1
           fi
 
@@ -273,7 +279,6 @@ jobs:
           (cd hyalos-os/guest && cargo fmt --check)
           cargo clippy --locked --manifest-path hyalos-os/Cargo.toml --workspace --all-targets --features task-kernel/test-trust,hyalos-audit/test-trust,task-kernel/test-switches -- -D warnings
           cargo clippy --locked --manifest-path hyalos-os/Cargo.toml --workspace --all-targets -- -D warnings
-          cargo clippy --locked --manifest-path hyalos-os/Cargo.toml --workspace --all-targets --features task-kernel/test-trust,hyalos-audit/test-trust,task-kernel/test-switches,task-kernel/spike-contract,hyalos-audit/spike-contract,hyalos-profile/spike-contract -- -D warnings
           cargo clippy --locked --manifest-path hyalos-os/Cargo.toml -p attest --features forge-ticket --bin forging-notary -- -D warnings
           (cd hyalos-os/kernel-image && cargo clippy --release --locked -- -D warnings && cargo clippy --release --locked --features selftest -- -D warnings)
           (cd hyalos-os/guest && cargo clippy --release --locked --target wasm32-unknown-unknown -- -D warnings)
@@ -283,14 +288,6 @@ jobs:
       # (`core_s_05_5_frame_fuzzer`, S-05.5).
       - name: Test the workspace
         run: cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace --features task-kernel/test-trust,hyalos-audit/test-trust,task-kernel/test-switches
-        env:
-          HYALOS_REQUIRE_KVM: "1"
-          HYALOS_REQUIRE_LANDLOCK: "1"
-      # The Python guest spike's contract check, profile and commands (ADR-0136), compiled only with
-      # `spike-contract`. Every test runs again with it, so the pinned transcripts and the hostile
-      # guests are shown unchanged by it, and its own tests run on both backends.
-      - name: Test the workspace with the spike contract
-        run: cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace --features task-kernel/test-trust,hyalos-audit/test-trust,task-kernel/test-switches,task-kernel/spike-contract,hyalos-audit/spike-contract,hyalos-profile/spike-contract
         env:
           HYALOS_REQUIRE_KVM: "1"
           HYALOS_REQUIRE_LANDLOCK: "1"
@@ -334,6 +331,47 @@ jobs:
       # The published verifier must be rebuildable from its source in any directory (ADR-0131).
       - name: Build the verifier twice and compare
         run: .github/scripts/check-verifier-rebuild.sh
+
+  # hyalOS built with the Python guest spike's `spike-contract` feature (ADR-0136): its contract check,
+  # spike profile and commands. Every hyalOS test runs again with it, so the pinned transcripts and
+  # the hostile guests are shown unchanged by it, and the spike's own tests run on both backends. It
+  # is a job of its own because the second test run would take `hyalos-os` past its time budget.
+  hyalos-os-spike:
+    name: hyalos-os (spike contract)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.hyalos_os != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: hyalos-os
+          key: spike-contract
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build the attest programs
+        run: |
+          cargo build --release --locked --manifest-path hyalos-os/Cargo.toml -p attest --bins
+          cargo build --release --locked --manifest-path hyalos-os/Cargo.toml -p attest --features forge-ticket --bin forging-notary
+      - name: Open KVM and add the kernel image's target
+        run: |
+          rustup target add x86_64-unknown-none
+          if ! [ -r /dev/kvm ] || ! [ -w /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+      - name: Lint with the spike contract
+        run: cargo clippy --locked --manifest-path hyalos-os/Cargo.toml --workspace --all-targets --features task-kernel/test-trust,hyalos-audit/test-trust,task-kernel/test-switches,task-kernel/spike-contract,hyalos-audit/spike-contract,hyalos-profile/spike-contract -- -D warnings
+      - name: Test the workspace with the spike contract
+        run: cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace --features task-kernel/test-trust,hyalos-audit/test-trust,task-kernel/test-switches,task-kernel/spike-contract,hyalos-audit/spike-contract,hyalos-profile/spike-contract
+        env:
+          HYALOS_REQUIRE_KVM: "1"
+          HYALOS_REQUIRE_LANDLOCK: "1"
 
   # Ten thousand simulated jobs, each under the fault schedule its seed draws (ADR-0013, ADR-0104). The
   # seeds are fixed, so a failure is the change's and not luck, and the log names the one command that

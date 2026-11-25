@@ -70,7 +70,7 @@ test ran on KVM here (`/dev/kvm`, `HYALOS_REQUIRE_KVM=1`), with no `skipped:` li
 | S-03.3.e1 | `python_s_03_3_e1_one_changed_script_byte_is_refused`: `read_transcript` refuses |
 | 1.1 | `python_1_1_the_hostile_guests_end_as_listed_with_the_feature`: every `attacks()` case under `hyalos.profile/2`, both backends |
 | 1.2 | `docs/adr/0136-hyalos-spike-contract-check.md` and its row in `docs/adr/README.md`; `ABI.md` untouched. Proposed in review, Accepted in the PR's last commit |
-| 1.3 | `.github/workflows/ci.yml`: a clippy line and a test step with the three `spike-contract` features; the change filter matches `spikes/438/` |
+| 1.3 | `.github/workflows/ci.yml`: a job `hyalos-os (spike contract)` lints and tests the workspace with the three `spike-contract` features, gathered into `build, lint, test` like `hyalos-os`, which still lints and tests without them; the change filter matches `spikes/438/` |
 | 1.4 | `cargo xtask lines`: `hyalOS: 9287 / 12000 lines`; `cargo xtask hyalos-unsafe` passes (no new `unsafe`) |
 | 1.5 | `python_1_5_spike_task_equals_record_task` (`hyalos-os/monitor/tests/release_switches.rs`), against the built binary |
 | 1.6 | Before any change, `task-kernel run guest/digest.wasm evidence/fixtures/issues.tsv` under `hyalos.profile/2` at `6112dd0` on both backends: seed 0 `0cb6dd27…ca2a`, fuel 29,845; seed 7 `fa92e457…87de`, fuel 30,886; process and KVM byte-identical. Pinned in `PROFILE_2_BASE` |
@@ -89,7 +89,7 @@ On this host (WSL2, `/dev/kvm` and Landlock available), from the repository root
   `grep '^skipped:'` over all three logs: no match.
 - `--list` counts: `python_s_0` with the feature 15 (at least 14); `python_s_01_4_e1` without it 2
   (at least 1); `python_1_5_` with it 1.
-- `grep -c spike-contract .github/workflows/ci.yml`: 3.
+- `grep -c spike-contract .github/workflows/ci.yml`: 4.
 - `cargo xtask lines`: `hyalOS: 9287 / 12000 lines (77.4%)`. `cargo xtask hyalos-unsafe`: unsafe
   only in the 11 listed files. `cargo xtask docs`: ok. `cargo xtask layout`: ok.
 - The ADR-0136 index line reads Accepted after the PR's last commit.
@@ -106,6 +106,7 @@ backend and `cold_start 44 ms, run_time 51 ms` on KVM.
 
 | Plan said | Reality | Why | Contract affected |
 |---|---|---|---|
+| Suggested path 7: add the feature runs to CI's `hyalos-os` job | They are a job of their own, `hyalos-os (spike contract)`, gathered into the required check like `hyalos-os` | In one job the two test runs exceeded its 20-minute limit; `ci.yml` says to split work rather than raise a limit | n |
 | Suggested path 3: unit-test S-01.3, S-03.2 and S-03.3 in `hyalos-audit` | They are tested in the monitor's `spike_tests.rs`, on both backends; `hyalos-audit` unit-tests only the contract parser | The monitor's tests reach both backends and the real `spike-run` input reader, which a unit test in the audit cannot | n |
 | `design.md` §2 Spike timing: `cold_start` and `run_time` | The timing line also names the backend: `timing: cold_start N ms, run_time M ms, backend process\|kvm` | Slice 5's `measure.sh` compares backends, and the line then says which it measured | n |
 | `context.md` §2: the contract read lives in `execute_with` | As planned; the first host call's time is kept on `Host` (`first_call`, behind the feature) and read back by `spike-run` from the host its backend returns | `Host` is the one place both backends answer through, so the timing is measured the same way on both | n |
@@ -123,7 +124,7 @@ backend and `cold_start 44 ms, run_time 51 ms` on KVM.
 - **The seed** of `spike-run` must be decimal digits only; Rust's `u64` parser alone would accept
   `+7`.
 - **CI** runs the whole workspace's tests a second time with the feature, not a subset, so the pinned
-  transcripts and every other test are shown unchanged by it.
+  transcripts and every other test are shown unchanged by it. It runs in its own job (below).
 
 ## Discoveries
 
@@ -135,6 +136,7 @@ backend and `cold_start 44 ms, run_time 51 ms` on KVM.
 - Whole-millisecond timing read `0 ms` for the digest guest on the process backend (the dry run
   above), so after review the timing line prints milliseconds to three decimals
   (`cold_start 0.412 ms`), which Slice 5's measurements can use.
-- The extra test run adds about 4.5 minutes here (272 s) to CI's `hyalos-os` job, which has a 20-minute limit. If later
-  slices' evidence replay grows it, narrow the feature run to `-p task-kernel -p hyalos-audit -p
-  hyalos-profile` first.
+- In one job, the two test runs took CI's `hyalos-os` past its 20-minute limit (20m16s on the PR's
+  first green-test run: 9 minutes without the feature, 8 with it, then the verifier rebuild was
+  cancelled). The feature's lint and tests moved to their own job, `hyalos-os (spike contract)`,
+  which is the repository's rule for a job near its budget. Later slices' evidence replay runs there.
