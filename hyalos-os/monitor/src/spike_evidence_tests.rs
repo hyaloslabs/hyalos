@@ -240,6 +240,117 @@ fn python_committed_evidence_replays_on_both_backends() {
     }
 }
 
+/// A data line of `spikes/438/fixtures/hostile.tsv`, its `\xNN` escapes decoded, as
+/// `spikes/438/hostile.sh` decodes it.
+fn decode(text: &str) -> Vec<u8> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            assert_eq!(bytes.get(i + 1), Some(&b'x'), "hostile.tsv: {text:?}");
+            out.push(u8::from_str_radix(&text[i + 2..i + 4], 16).unwrap());
+            i += 4;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// 5.1 and 5.4: `hostile.tsv` holds S-06.1's cases, and `expected.tsv` lists every hostile case for
+/// each runtime that built (a guest with a `<runtime> profile:` line) at seed 0 with the draft
+/// contract, its SDK and the triage script, its data file being the case's lines decoded. So
+/// `python_committed_evidence_replays_on_both_backends` runs every one.
+#[test]
+fn python_5_1_5_4_every_hostile_case_is_listed_for_each_runtime() {
+    let fixture = fs::read_to_string(repo().join("spikes/438/fixtures/hostile.tsv")).unwrap();
+    let rows: Vec<(&str, &str, Vec<u8>)> = fixture
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| match l.split('\t').collect::<Vec<_>>()[..] {
+            [id, runtime, data] => (id, runtime, decode(data)),
+            _ => panic!("hostile.tsv: a line without three fields"),
+        })
+        .collect();
+    let lines = |id: &str, runtime: &str| -> Vec<&Vec<u8>> {
+        rows.iter()
+            .filter(|(i, r, _)| *i == id && (*r == "all" || *r == runtime))
+            .map(|(_, _, d)| d)
+            .collect()
+    };
+    // S-06.1.e1 to e3.
+    let utf8 = lines("utf8", "all");
+    assert!(utf8.iter().any(|d| std::str::from_utf8(d).is_err()));
+    assert_eq!(lines("record-16384", "all")[0].len(), 16_384);
+    assert_eq!(lines("record-16385", "all")[0].len(), 16_385);
+
+    let readme = fs::read_to_string(repo().join("spikes/438/README.md")).unwrap();
+    let mut runtimes: Vec<String> = fs::read_dir(repo().join("spikes/438/guests"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter_map(|n| n.strip_suffix(".wasm").map(str::to_string))
+        .filter(|r| {
+            readme
+                .lines()
+                .any(|l| l.starts_with(&format!("{r} profile: ")))
+        })
+        .collect();
+    runtimes.sort();
+    assert!(!runtimes.is_empty(), "no runtime built");
+
+    let cases = cases();
+    let mut ids: Vec<&str> = rows.iter().map(|(id, ..)| *id).collect();
+    ids.dedup();
+    let mut listed = 0;
+    for runtime in &runtimes {
+        let collide = lines("collide", runtime);
+        assert_eq!(collide.len(), 200, "{runtime}: the collide block");
+        for id in ids.iter().copied().collect::<BTreeSet<_>>() {
+            let mine = lines(id, runtime);
+            if mine.is_empty() {
+                continue;
+            }
+            let name = format!("{runtime}-hostile-{id}");
+            let case = cases
+                .iter()
+                .find(|c| c.id == name)
+                .unwrap_or_else(|| panic!("{name}: not in expected.tsv"));
+            assert_eq!(
+                case.guest,
+                format!("spikes/438/guests/{runtime}.wasm"),
+                "{name}"
+            );
+            assert_eq!(
+                [&case.contract, &case.sdk, &case.script],
+                [
+                    "spikes/438/contracts/draft",
+                    "spikes/438/sdk/draft.py",
+                    "spikes/438/scripts/triage.py"
+                ],
+                "{name}"
+            );
+            assert_eq!(case.seed, 0, "{name}");
+            let data: Vec<u8> = mine
+                .iter()
+                .flat_map(|d| d.iter().copied().chain(*b"\n"))
+                .collect();
+            assert!(
+                fs::read(path(&case.data)).unwrap() == data,
+                "{name}: {} is not the case's lines",
+                case.data
+            );
+            listed += 1;
+        }
+    }
+    assert_eq!(
+        cases.iter().filter(|c| c.id.contains("-hostile-")).count(),
+        listed,
+        "expected.tsv lists a hostile case hostile.tsv does not hold"
+    );
+}
+
 /// 3.3: the MicroPython triage run's notification and result are the digest guest's, under
 /// `hyalos.profile/2` on the fixture's lines alone, for seeds 0 and 7, and the two seeds differ.
 #[test]

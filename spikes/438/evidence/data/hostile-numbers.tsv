@@ -1,0 +1,8 @@
+4294967296	security number case 1
+-1	security number case 2
++1	security number case 3
+ 1	security number case 4
+	security number case 5
+0x10	security number case 6
+١	security number case 7
+4294967295	security the largest number taken
