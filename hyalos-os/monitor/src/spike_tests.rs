@@ -51,6 +51,24 @@ fn python_s_01_4_e2_profile_2_transcripts_hold() {
     }
 }
 
+/// S-01.3.e1 (Slice 1 of `docs/plans/hyalos-kernel-capsules`): on the kernel image built with
+/// `portable-dispatch`, the pinned profile 2 transcripts keep their hash and `fuel_used` on KVM.
+#[test]
+fn capsules_s_01_3_e1_profile_2_pins_hold_on_the_rebuilt_image() {
+    let Some(kvm) = kvm_backend("capsules_s_01_3_e1") else {
+        return;
+    };
+    let guest = fs::read(root().join("guest/digest.wasm")).unwrap();
+    let issues = root().join("evidence/fixtures/issues.tsv");
+    let inputs = read_inputs(issues.to_str().unwrap()).unwrap();
+    for &(seed, base, fuel) in PROFILE_2_BASE {
+        let t = execute(&kvm, &guest, inputs.clone(), Mode::Record { seed }).unwrap();
+        assert_eq!(t.profile.as_deref(), Some("hyalos.profile/2"));
+        assert_eq!(sha(&written(&t)), base, "seed {seed}");
+        assert_eq!(t.fuel_used, fuel, "seed {seed}");
+    }
+}
+
 /// S-01.4.e1: a default build refuses a record naming `hyalos.spike/1` as an unknown profile, and
 /// its reason table is the 29 entries it was.
 #[cfg(not(feature = "spike-contract"))]

@@ -43,18 +43,21 @@ trap 'rm -rf "$tmp"' EXIT
 profile_of() { sed -n "s/^$1 profile: \([^ ]*\).*/\1/p" "$readme" | head -1; }
 process_only() { sed -n "s/^process-only: $1 — \(.*\)/\1/p" "$readme" | head -1; }
 
-# One spike-run of the issue fixture at seed 0: its `ok:` and `timing:` lines.
+# One spike-run of the issue fixture at seed 0: its `ok:` and `timing:` lines. The whole output is
+# captured first and its first two lines taken after: a `| head -2` could close the pipe while
+# spike-run still writes, which ends it on a broken pipe and, under pipefail, fails the script.
 run_once() {
-  local profile=$1 guest=$2 backend=$3 image=${4:-}
+  local profile=$1 guest=$2 backend=$3 image=${4:-} out
   if [ "$backend" = kvm ]; then
-    HYALOS_SPIKE_PROFILE=$profile HYALOS_KERNEL="$image" "$bin" spike-run "$guest" \
+    out=$(HYALOS_SPIKE_PROFILE=$profile HYALOS_KERNEL="$image" "$bin" spike-run "$guest" \
       spikes/438/contracts/draft spikes/438/sdk/draft.py spikes/438/scripts/triage.py "$fixture" \
-      "$tmp/out.json" 0 | head -2
+      "$tmp/out.json" 0)
   else
-    HYALOS_SPIKE_PROFILE=$profile env -u HYALOS_KERNEL "$bin" spike-run "$guest" \
+    out=$(HYALOS_SPIKE_PROFILE=$profile env -u HYALOS_KERNEL "$bin" spike-run "$guest" \
       spikes/438/contracts/draft spikes/438/sdk/draft.py spikes/438/scripts/triage.py "$fixture" \
-      "$tmp/out.json" 0 | head -2
+      "$tmp/out.json" 0)
   fi
+  sed -n 1,2p <<<"$out"
 }
 
 table=$tmp/table.md

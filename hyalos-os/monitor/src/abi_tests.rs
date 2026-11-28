@@ -646,3 +646,39 @@ fn core_1_1_abi_md_names_the_interface_and_states_every_call_limit_and_reason() 
     // `read`'s one refusal is listed, as `design.md` asks.
     assert!(refusals().contains(&("read".into(), "BadPointer".into())));
 }
+
+/// A guest that counts a local up to `n` in one loop, then returns the count: the shape of guest
+/// that ran the default image off its 2 MiB stack at about 10,000 iterations (issue #503).
+fn counted_loop(n: u32) -> String {
+    guest(
+        1,
+        &format!(
+            "(local $i i32)
+            (loop $l
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br_if $l (i32.lt_u (local.get $i) (i32.const {n}))))
+            (i32.store (i32.const 0) (local.get $i))
+            {RET}"
+        ),
+    )
+}
+
+/// S-01.1.e1 (Slice 1 of `docs/plans/hyalos-kernel-capsules`): a one-loop guest of 10,000
+/// iterations ends on KVM as it does on the process backend.
+#[test]
+fn capsules_s_01_1_e1_a_10_000_iteration_loop_ends_as_on_the_process_backend() {
+    let kvm = kvm_backend("capsules_s_01_1_e1");
+    assert_eq!(words(&on_both(&kvm, &counted_loop(10_000))), [10_000]);
+}
+
+/// S-01.1.e2: a one-loop guest of 1,000,000 iterations ends as on the process backend, or
+/// `OutOfFuel` on both, and never `KernelFault`.
+#[test]
+fn capsules_s_01_1_e2_a_1_000_000_iteration_loop_never_ends_kernel_fault() {
+    let kvm = kvm_backend("capsules_s_01_1_e2");
+    let outcome = on_both(&kvm, &counted_loop(1_000_000));
+    match &outcome {
+        Err(reason) => assert_eq!(*reason, Reason::OutOfFuel),
+        Ok(_) => assert_eq!(words(&outcome), [1_000_000]),
+    }
+}

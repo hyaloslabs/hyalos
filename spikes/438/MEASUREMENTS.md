@@ -7,20 +7,24 @@ reproduced. Each is the median of three runs of the row's command, as `spike-run
 `timing:` line: the cold start is from the command's start to the guest's first host call, and the
 run time is from the start to the end of the run. Both include reading the guest and starting
 `wasmi`, and neither includes writing the record. They were taken on 2026-11-25 on an Intel Core
-Ultra 9 185H, 10 CPUs, under WSL2 (Linux 6.6.87.2), with the release build `measure.sh` makes.
+Ultra 9 185H, 10 CPUs, under WSL2 (Linux 6.6.87.2), with the release build `measure.sh` makes,
+except MicroPython's `kvm` row (Slice 1 of `docs/plans/hyalos-kernel-capsules`), taken on
+2026-11-28 on an Intel N150, 4 CPUs (Linux 6.8.0), on its KVM, so its times are not comparable
+with the process row's.
 
 ## The issue fixture
 
 Each runtime that built runs the triage task on `hyalos-os/evidence/fixtures/issues.tsv`, 40
 issues, at seed 0, under its profile (`spikes/438/README.md`): MicroPython under `hyalos.spike/1`,
-Monty under `hyalos.spike/2`. Both runtimes are process-only, so each KVM row gives the reason
-`spikes/438/README.md` records for it in place of figures. Fuel and time are not in proportion:
-Monty uses 12.5 times MicroPython's fuel and about 5 times its run time.
+Monty under `hyalos.spike/2`. MicroPython runs on both backends, on the default kernel image,
+since it builds `wasmi` with `portable-dispatch` (issue #503). Monty is process-only, so its KVM
+row gives the reason `spikes/438/README.md` records for it in place of figures. Fuel and time are
+not in proportion: Monty uses 12.5 times MicroPython's fuel and about 5 times its run time.
 
 | Runtime | Backend | Guest bytes | Cold start (ms) | Run time (ms) | Fuel | Command |
 |---|---|---|---|---|---|---|
 | micropython | process | 249,874 | 2.3 | 13.9 | 33,127,745 | `HYALOS_SPIKE_PROFILE=hyalos.spike/1 hyalos-os/target/spike/release/task-kernel spike-run spikes/438/guests/micropython.wasm spikes/438/contracts/draft spikes/438/sdk/draft.py spikes/438/scripts/triage.py hyalos-os/evidence/fixtures/issues.tsv out.json 0` |
-| micropython | kvm | — | — | — | — | process-only: does not fit KVM: the default kernel image runs out of its 2 MiB stack (`0x1e0_0000` to `0x200_0000`) and ends `KernelFault` once a guest loop runs about 10,000 iterations, because its `wasmi` dispatch does not get tail calls in the kernel build. MicroPython's start-up alone runs past that. The guest's own sizes fit: 249,874 bytes against `GUEST_MAX` 1 MiB, and 4 MiB of memory. This pack does not change the default image, so the fix is issue #503. |
+| micropython | kvm | 249,874 | 21.0 | 69.0 | 33,127,745 | `HYALOS_SPIKE_PROFILE=hyalos.spike/1 HYALOS_KERNEL=$(spikes/438/kernel.sh hyalos.spike/1) hyalos-os/target/spike/release/task-kernel spike-run spikes/438/guests/micropython.wasm spikes/438/contracts/draft spikes/438/sdk/draft.py spikes/438/scripts/triage.py hyalos-os/evidence/fixtures/issues.tsv out.json 0` |
 | monty | process | 6,945,056 | 36.8 | 71.5 | 413,707,242 | `HYALOS_SPIKE_PROFILE=hyalos.spike/2 hyalos-os/target/spike/release/task-kernel spike-run spikes/438/guests/monty.wasm spikes/438/contracts/draft spikes/438/sdk/draft.py spikes/438/scripts/triage.py hyalos-os/evidence/fixtures/issues.tsv out.json 0` |
 | monty | kvm | — | — | — | — | process-only: does not fit KVM: the guest is 6,945,056 bytes against `GUEST_MAX` 1 MiB (1,048,576 bytes), so the `spike-profile-2` image refuses it with `TooLarge` before boot. Its memory, 5 MiB, would fit the kernel's 16 MiB heap. No spike-only layout was built: one that held the guest would still leave the kernel stack overflow of issue #503, which ends any guest loop of about 10,000 iterations in `KernelFault`, and Monty's run is about 400 million fuel. That reason is inferred from #503, not shown on Monty. |
 
@@ -28,10 +32,10 @@ Monty uses 12.5 times MicroPython's fuel and about 5 times its run time.
 
 One row per hostile case of `spikes/438/fixtures/hostile.tsv` and runtime, from its committed
 record under `spikes/438/evidence/` (`spikes/438/hostile.sh` runs them, at seed 0, on the process
-backend, since both runtimes are process-only). Asked is the number of questions and how many got
-each label; the notification is the first 16 hexadecimal digits of the SHA-256 of its body. A
-refused run writes no record, so nothing it asked or sent is known; for `OutOfFuel` the fuel is
-the profile's, which the run used up.
+backend, and MicroPython's on KVM as well, with the same record). Asked is the number of
+questions and how many got each label; the notification is the first 16 hexadecimal digits of the
+SHA-256 of its body. A refused run writes no record, so nothing it asked or sent is known; for
+`OutOfFuel` the fuel is the profile's, which the run used up.
 
 | Case | Runtime | Outcome | Asked (bug, feature, security, other) | Notification SHA-256 | Result | Fuel |
 |---|---|---|---|---|---|---|
