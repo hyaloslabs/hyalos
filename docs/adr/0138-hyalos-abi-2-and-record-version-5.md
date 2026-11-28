@@ -1,6 +1,6 @@
 # ADR-0138: hyalOS frames its inputs, and `hyalos.abi/2` and record version 5 carry a task's contract
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 

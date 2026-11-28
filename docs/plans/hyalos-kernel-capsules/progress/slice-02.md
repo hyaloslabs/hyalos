@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | blocked |
+| **Status** | done |
 | **Issue** | #509 |
 | **PR** | this PR |
 | **Executor model** | Claude Opus 5.5 (`claude-opus-5-5`) |
@@ -88,6 +88,7 @@ KVM leg could not skip:
 | Suggested path 4: a test that expected `ModelRefused` for a title that is not UTF-8 at version 4 now expects `BadInputs` | No test changed | No test passes such a title through a command: the tests that run a guest on a non-UTF-8 record call `execute` in memory, which the run-start rule does not cover (design.md §2.1) | n |
 | `spike_tests.rs:433`, `:81` | `:451`, `:101` | Slice 1 added a test above them | n |
 | Files: the test fixtures move through `frame --lines` or a helper on the same split | In-memory fixtures use `fixture_lines`, built on the same split `frame --lines` uses (`inputs::lines`); the binary runs frame theirs with `framed_fixture` (unit tests) or the binary's own `frame --lines` (integration tests) | As suggested; noted for the names | n |
+| The developer sets ADR 0138 and its row `Accepted` and **Status** `done` in the pull request's last commit | The executor made that commit | The developer accepted ADR 0138 in this session, after CI and the review were clean, and asked the executor to commit it | n |
 
 ## Decisions
 
@@ -107,7 +108,4 @@ KVM leg could not skip:
 
 ## Blocked on
 
-The developer step (Shared contract, developer steps; ADR-032, ADR-035, ADR-036): set
-`docs/adr/0138-hyalos-abi-2-and-record-version-5.md`'s Status and its row in `docs/adr/README.md`
-to `Accepted` in the pull request's last commit, and set this file's **Status** to `done` in that
-commit.
+Nothing.
