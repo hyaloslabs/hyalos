@@ -6,7 +6,7 @@
 | **Type** | Feature |
 | **Size** | L — 12 slices |
 | **Modifiers** | security, performance, public-api |
-| **Issues** | #508–#519 (Slices 1–12) |
+| **Issues** | #508–#519 (Slices 1–12) · epic #522 |
 | **Owner** | retroboot |
 | **Opened** | 2026-11-25 |
 
