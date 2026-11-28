@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | blocked |
+| **Status** | done |
 | **Issue** | #508 |
 | **PR** | this PR |
 | **Executor model** | Claude Opus 5.5 (`claude-opus-5-5`) |
@@ -51,9 +51,9 @@ contract, KVM steps without `/dev/kvm`; ADR-023, ADR-036).
 | S-01.3 | S-01.3.e1 and S-01.3.e2; no pinned hash, `fuel_used` or committed record changed (`git diff origin/main -- spikes/438/evidence/*.json` is empty) |
 | S-01.3.e1 | `spike_tests::capsules_s_01_3_e1_profile_2_pins_hold_on_the_rebuilt_image`: `PROFILE_2_BASE`'s hash and `fuel_used`, for seeds 0 and 7, on KVM with the rebuilt image. KVM only: CI |
 | S-01.3.e2 | `ring_tests::capsules_s_01_3_e2_profile_1_pins_hold_on_the_rebuilt_image`: `BASE`'s hashes under `hyalos.profile/1` on KVM. KVM only: CI |
-| S-01.4 | S-01.4.e1 and S-01.4.e2; `run.sh` and `hostile.sh` on a KVM host: developer step (Blocked on) |
-| S-01.4.e1 | `spike_evidence_tests::capsules_s_01_4_e1_every_micropython_case_is_listed_both`: 12 MicroPython rows, 8 of them hostile, all `both`; each result names a committed record that exists; `micropython-raw-effect` names none. Passed here. The same refusal on both backends: `python_committed_evidence_replays_on_both_backends`'s KVM leg (CI) and `run.sh`'s two `micropython-raw-effect … refused UnknownEffect` lines (developer) |
-| S-01.4.e2 | Dry run with `auto-dispatch` restored: developer step (Blocked on) |
+| S-01.4 | S-01.4.e1 and S-01.4.e2; `run.sh` and `hostile.sh` on bot1's KVM (KVM, on the developer's host) |
+| S-01.4.e1 | `spike_evidence_tests::capsules_s_01_4_e1_every_micropython_case_is_listed_both`: 12 MicroPython rows, 8 of them hostile, all `both`; each result names a committed record that exists; `micropython-raw-effect` names none. Passed here. The same refusal on both backends: `python_committed_evidence_replays_on_both_backends`'s KVM leg (CI) and `run.sh`'s two `micropython-raw-effect … refused UnknownEffect` lines (bot1) |
+| S-01.4.e2 | Dry run with `auto-dispatch` restored, on bot1: `run.sh` exits 1 on `micropython-triage-0 on kvm: 'refused KernelFault'` (KVM, on the developer's host) |
 | 1.1 | `git grep -c auto-dispatch -- hyalos-os/review/scope.toml hyalos-os/kernel-image/Cargo.toml`: no output, exit 1. `git grep -c portable-dispatch` on the same files: `hyalos-os/kernel-image/Cargo.toml:1`, `hyalos-os/review/scope.toml:1`. `cargo xtask review-scope`: `hyalOS review scope: 50 rows agree with 3 lockfiles` |
 | 1.2 | `grep -c "process-only: micropython" spikes/438/README.md`: `0` |
 
@@ -91,18 +91,92 @@ each `ok`. The `hyalos-os (spike contract)` job (`140870807155`) ran those four 
 each `ok`: every MicroPython case, the hostile ones included, gave its committed record on KVM and
 replayed there (S-01.2.e1, S-01.4.e1's same refusal for `micropython-raw-effect`).
 
-### KVM, by the developer
+### KVM, on the developer's host
 
-To be recorded by the developer, each with who ran it, where, the command and its output:
-`HYALOS_REQUIRE_KVM=1 spikes/438/micropython/run.sh` (5 ` kvm: ` lines, 2 `micropython-raw-effect`
-lines), `spikes/438/hostile.sh` (8 `micropython-hostile-* kvm:` lines, `hostile: ok`), the ten
-`measure.sh --check` runs and the S-01.4.e2 dry run.
+The developer asked the executor to run these steps on bot1, their KVM host, on 2026-11-28
+(Deviations). bot1 is an Intel N150, 4 CPUs, Ubuntu 24.04, Linux 6.8.0-147. Its user is not in the
+`kvm` group, so each step ran in a container holding the pinned toolchain (Rust 1.99.1, with the
+`x86_64-unknown-none` and `wasm32-unknown-unknown` targets), on Docker 29.2.1, with the host's
+device passed in (`docker run --device /dev/kvm --group-add <kvm gid> --user 1000:1000`), over a
+fresh clone of this branch at `c50fd7a`. Inside it `/dev/kvm` opened read-write.
+
+Step 1, S-01.4:
+
+```
+$ HYALOS_REQUIRE_KVM=1 spikes/438/micropython/run.sh > run.log 2>&1; echo exit=$?
+exit=0
+micropython-triage-0 process: result ok 40 effects 1
+micropython-triage-0 kvm: result ok 40 effects 1
+micropython-triage-7 process: result ok 40 effects 1
+micropython-triage-7 kvm: result ok 40 effects 1
+micropython-no-notify process: result error AttributeError effects 0
+micropython-no-notify kvm: result error AttributeError effects 0
+micropython-raw-effect process: refused UnknownEffect
+micropython-raw-effect kvm: refused UnknownEffect
+micropython-triage-0 kvm: result ok 40 effects 1
+micropython: ok
+$ grep -c '^micropython-raw-effect' run.log; grep -c ' kvm: ' run.log
+2
+5
+```
+
+Step 2, S-01.4:
+
+```
+$ spikes/438/hostile.sh > hostile.log 2>&1; echo exit=$?
+exit=0
+$ grep '^micropython-hostile-.* kvm:' hostile.log
+micropython-hostile-utf8 kvm: result ok 4 effects 1
+micropython-hostile-record-16384 kvm: result ok 2 effects 1
+micropython-hostile-record-16385 kvm: result ok 2 effects 1
+micropython-hostile-numbers kvm: result ok 8 effects 1
+micropython-hostile-repr kvm: result ok 5 effects 1
+micropython-hostile-heap kvm: result error MemoryError effects 0
+micropython-hostile-distinct kvm: result ok 200 effects 1
+micropython-hostile-collide kvm: result ok 200 effects 1
+$ grep -c '^micropython-hostile-.* kvm: process-only' hostile.log; tail -n 1 hostile.log
+0
+hostile: ok
+$ git diff --exit-code -- spikes/438/evidence; echo $?
+0
+```
+
+Monty's eight hostile lines still print `kvm: process-only`, as its README line says.
+
+Step 3: `spikes/438/measure.sh` printed MicroPython's `kvm` row, `| micropython | kvm | 249,874 |
+21.0 | 69.0 | 33,127,745 | …`, the same fuel as the process row. That row replaced
+`MEASUREMENTS.md:23`, with the host it was taken on named above the table. Then:
+
+```
+$ for i in 1 2 3 4 5 6 7 8 9 10; do spikes/438/measure.sh --check >/dev/null 2>&1; echo "$?"; done
+0  (ten lines, each 0)
+$ spikes/438/measure.sh --check
+measure: 20 rows match MEASUREMENTS.md (times not compared)
+$ grep -c -E '^\| micropython \| kvm \| [0-9]' spikes/438/MEASUREMENTS.md
+1
+```
+
+Step 4, S-01.4.e2, the dry run: `portable-dispatch` changed back to `auto-dispatch` in
+`hyalos-os/kernel-image/Cargo.toml`, then:
+
+```
+$ HYALOS_REQUIRE_KVM=1 spikes/438/micropython/run.sh; echo exit=$?
+micropython-triage-0 process: result ok 40 effects 1
+run.sh: micropython-triage-0 on kvm: 'refused KernelFault', expected 'result ok 40 effects 1'
+exit=1
+```
+
+The image was then restored (`git checkout -- hyalos-os/kernel-image/Cargo.toml`,
+`spikes/438/kernel.sh hyalos.spike/1`), and `HYALOS_REQUIRE_KVM=1 spikes/438/micropython/run.sh`
+again ended `micropython-triage-0 kvm: result ok 40 effects 1` and `micropython: ok`. The clone's
+only change was `MEASUREMENTS.md`, the same as this branch's.
 
 ## Deviations
 
 | Plan said | Reality | Why | Contract affected |
 |---|---|---|---|
-| `MEASUREMENTS.md`'s MicroPython `kvm` row gets figures from `measure.sh` | Left as it was: `process-only` | Its times come only from a KVM run, which is the developer's (`measure.sh` with the `process-only:` line gone now measures the KVM leg). The developer runs `spikes/438/measure.sh` on a KVM host and puts its MicroPython `kvm` row in place of `MEASUREMENTS.md:23` | n |
+| `MEASUREMENTS.md`'s MicroPython `kvm` row gets figures from `measure.sh`, on the same host as the other rows | The row came from bot1, a different host from the other rows' (2026-11-25, WSL2), which keep their times | Its times come only from a KVM run, and the executor's host cannot run one. The paragraph above the table names both hosts, so the two MicroPython times are not read as comparable | n |
+| The developer runs the KVM steps and sets **Status** `done` | The executor ran them on bot1, the developer's KVM host, in a container given `/dev/kvm`, and set `done` | The developer asked for it in this session. Each step's command and output are above, under KVM, on the developer's host | n |
 | Suggested path 3: S-01.3's tests run the pins on KVM | They run on KVM only, and the process leg is left to the existing pin tests | `python_s_01_4_e2_profile_2_transcripts_hold` and `core_s_02_1_e1_…` already compare both backends; the new tests name the criterion and check the rebuilt image | n |
 
 ## Decisions
@@ -119,21 +193,11 @@ lines), `spikes/438/hostile.sh` (8 `micropython-hostile-* kvm:` lines, `hostile:
   session's wall-clock second falls after the signed result, so the generated fixture depends on
   timing. It passed in both CI jobs of run `46109858053`, so it is this host's timing, not this
   slice.
+- Monty's `process-only:` reason (`spikes/438/README.md:140`, and `MEASUREMENTS.md`'s Monty `kvm`
+  row) still says a layout that held its guest "would still leave the kernel stack overflow of issue
+  #503". This slice fixes that overflow, so that half of the reason is now out of date. Its first half,
+  the guest being too big for `GUEST_MAX`, still holds. This slice does not touch Monty's line.
 
 ## Blocked on
 
-The developer steps on a KVM host (Shared contract, KVM steps without `/dev/kvm`; developer steps):
-
-1. `HYALOS_REQUIRE_KVM=1 spikes/438/micropython/run.sh`, with the two `grep -c` lines of Verify
-   (2 `micropython-raw-effect` lines, 5 ` kvm: ` lines).
-2. `spikes/438/hostile.sh`, its log's 8 `micropython-hostile-* kvm:` lines, 0 `kvm: process-only`, then
-   `git diff --exit-code -- spikes/438/evidence`.
-3. `spikes/438/measure.sh` to fill `MEASUREMENTS.md`'s MicroPython `kvm` row, then the ten
-   `measure.sh --check` runs and the `grep` of that row.
-4. The S-01.4.e2 dry run: the image rebuilt with `auto-dispatch`, `run.sh` failing on the triage
-   case's `KernelFault`, then the image restored.
-
-Then the developer sets **Status** to `done` in the pull request's last commit. The stop condition
-that applies if a step fails: "Stop if any hostile MicroPython case cannot run on KVM, or gives a
-KVM record different from its process record", and "Stop if `portable-dispatch` alone does not end
-the overflow".
+Nothing.
