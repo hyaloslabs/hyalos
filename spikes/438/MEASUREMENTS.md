@@ -18,8 +18,8 @@ Each runtime that built runs the triage task on `hyalos-os/evidence/fixtures/iss
 issues, at seed 0, under its profile (`spikes/438/README.md`): MicroPython under `hyalos.spike/1`,
 Monty under `hyalos.spike/2`. MicroPython runs on both backends, on the default kernel image,
 since it builds `wasmi` with `portable-dispatch` (issue #503). Monty is process-only, so its KVM
-row gives the reason `spikes/438/README.md` records for it in place of figures. Fuel and time are not in proportion:
-Monty uses 12.5 times MicroPython's fuel and about 5 times its run time.
+row gives the reason `spikes/438/README.md` records for it in place of figures. Fuel and time are
+not in proportion: Monty uses 12.5 times MicroPython's fuel and about 5 times its run time.
 
 | Runtime | Backend | Guest bytes | Cold start (ms) | Run time (ms) | Fuel | Command |
 |---|---|---|---|---|---|---|
@@ -32,10 +32,10 @@ Monty uses 12.5 times MicroPython's fuel and about 5 times its run time.
 
 One row per hostile case of `spikes/438/fixtures/hostile.tsv` and runtime, from its committed
 record under `spikes/438/evidence/` (`spikes/438/hostile.sh` runs them, at seed 0, on the process
-backend, and MicroPython's on KVM as well, with the same record). Asked is the number of questions and how many got
-each label; the notification is the first 16 hexadecimal digits of the SHA-256 of its body. A
-refused run writes no record, so nothing it asked or sent is known; for `OutOfFuel` the fuel is
-the profile's, which the run used up.
+backend, and MicroPython's on KVM as well, with the same record). Asked is the number of
+questions and how many got each label; the notification is the first 16 hexadecimal digits of the
+SHA-256 of its body. A refused run writes no record, so nothing it asked or sent is known; for
+`OutOfFuel` the fuel is the profile's, which the run used up.
 
 | Case | Runtime | Outcome | Asked (bug, feature, security, other) | Notification SHA-256 | Result | Fuel |
 |---|---|---|---|---|---|---|
