@@ -71,7 +71,15 @@ From the repository root, without `HYALOS_REQUIRE_KVM` (the KVM gates skipped):
 
 ### KVM, by CI
 
-To be recorded from the pull request's CI run.
+CI run 46160662446 on `541f85d4899240f4ce9fe0ed75142883a322e156`, the commit that holds this slice's code:
+`gh run view 46160662446 --json conclusion,headSha --jq '.conclusion + " " + .headSha'` gives
+`success 541f85d4899240f4ce9fe0ed75142883a322e156`. Both jobs ran with `HYALOS_REQUIRE_KVM: 1`, so a
+KVM leg could not skip:
+
+- `hyalos-os` (job 141027060533): every `capsules_s_02_` and `capsules_2_` test ok, the KVM legs of
+  S-02.2.e1, e2, S-02.6.e1 and e2 included.
+- `hyalos-os (spike contract)` (job 141027060574): the same, and
+  `spike_evidence_tests::python_committed_evidence_replays_on_both_backends ... ok` (2.4, on KVM).
 
 ## Deviations
 
