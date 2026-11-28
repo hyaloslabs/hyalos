@@ -1,7 +1,7 @@
 .claude/settings.local.json
 .DS_Store
 .ai/
-.hivrr.json
+.agent-plugins.json
 .env
 .env.*
 !.env.example
