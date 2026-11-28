@@ -44,7 +44,9 @@ echo "notary signing public key: $signer"
 
 # The customer's side authorises this task for two runs: the timing call and the real task. A state
 # directory from an earlier probe already holds a round for it, so that case takes a new round.
-task=$("$monitor" task guest/digest.wasm evidence/fixtures/issues.tsv)
+# Every command reads its inputs framed, so the fixture is framed first (ADR-0138).
+"$monitor" frame "$out/issues.inputs" --lines evidence/fixtures/issues.tsv > /dev/null
+task=$("$monitor" task guest/digest.wasm "$out/issues.inputs")
 authorize="$remote/notary authorize --dir $remote/state --task $task --attempts 2"
 authorisation=$(ssh "$host" "$authorize 2>/dev/null || $authorize --again")
 
@@ -75,6 +77,6 @@ printf 'The build fails on a clean checkout' > "$out/question.txt"
     "$attest" ask "$out/timing.presentation" "$timing_run" 0 < "$out/question.txt" | sed 's/"response_id":"[^"]*"/"response_id":"…"/'
 
 # 3.1: one real task through the notary. This posts one comment on the issue named.
-"$monitor" live guest/digest.wasm evidence/fixtures/issues.tsv "$out/record.json" "$repo" "$issue"
+"$monitor" live guest/digest.wasm "$out/issues.inputs" "$out/record.json" "$repo" "$issue"
 printf '%s\n' "$signer" > "$out/notary.pub"
 "$monitor" attested "$out/record.json" --notary-public "$out/notary.pub"

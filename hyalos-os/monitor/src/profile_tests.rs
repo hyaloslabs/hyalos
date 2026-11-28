@@ -1,6 +1,7 @@
 //! Record version 4 and the one execution profile both backends build from (S-02).
 
 use super::*;
+use crate::inputs_tests::fixture_lines;
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -15,13 +16,7 @@ fn committed(path: &str) -> Vec<u8> {
 }
 
 fn fixture_inputs() -> Vec<Vec<u8>> {
-    read_inputs(
-        root()
-            .join("evidence/fixtures/issues.tsv")
-            .to_str()
-            .unwrap(),
-    )
-    .unwrap()
+    fixture_lines(&root().join("evidence/fixtures/issues.tsv"))
 }
 
 fn guest() -> Vec<u8> {

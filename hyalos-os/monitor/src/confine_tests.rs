@@ -182,6 +182,7 @@ fn core_s_04_3_the_ci_job_requires_landlock_and_runs_the_test_switches() {
 #[cfg(feature = "test-switches")]
 mod hostile {
     use super::*;
+    use crate::inputs_tests::{fixture_lines, framed_fixture};
     use crate::profile_tests::kvm_backend;
     use crate::runner::{Timing, hostile::Act};
     use hyalos_audit::{Asked, Source};
@@ -238,13 +239,7 @@ mod hostile {
             mut stream,
         } = runner::start(args).unwrap();
         let counting = Counting::default();
-        let inputs = read_inputs(
-            root()
-                .join("evidence/fixtures/issues.tsv")
-                .to_str()
-                .unwrap(),
-        )
-        .unwrap();
+        let inputs = fixture_lines(&root().join("evidence/fixtures/issues.tsv"));
         let mut timing = Timing::default();
         let outcome = runner::serve(
             &mut stream,
@@ -457,16 +452,11 @@ mod hostile {
                 Ok(String::new())
             }
         }
-        let inputs = read_inputs(
-            root()
-                .join("evidence/fixtures/issues.tsv")
-                .to_str()
-                .unwrap(),
-        );
+        let inputs = fixture_lines(&root().join("evidence/fixtures/issues.tsv"));
         let outcome = runner::serve(
             &mut stream,
             &runner::boot(&kernel, &guest).unwrap(),
-            hyalos_audit::Host::new(Peek(seen.clone(), pid), inputs.unwrap()),
+            hyalos_audit::Host::new(Peek(seen.clone(), pid), inputs),
             Instant::now() + Duration::from_secs(30),
             &mut Timing::default(),
         );
@@ -498,7 +488,10 @@ mod hostile {
         let live = Command::new(program())
             .arg("live")
             .arg(root().join("guest/digest.wasm"))
-            .arg(root().join("evidence/fixtures/issues.tsv"))
+            .arg(framed_fixture(
+                &root().join("evidence/fixtures/issues.tsv"),
+                &dir,
+            ))
             .arg(dir.join("record.json"))
             .arg("octo/real")
             .arg("1")
@@ -512,7 +505,10 @@ mod hostile {
         let run = Command::new(program())
             .arg("run")
             .arg(root().join("guest/digest.wasm"))
-            .arg(root().join("evidence/fixtures/issues.tsv"))
+            .arg(framed_fixture(
+                &root().join("evidence/fixtures/issues.tsv"),
+                &dir,
+            ))
             .arg(dir.join("transcript.json"))
             .current_dir(&dir)
             .env_clear()

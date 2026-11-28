@@ -8,6 +8,7 @@
 //! kernel booted on KVM (`kvm.rs`, chosen by setting `HYALOS_KERNEL` to the kernel image). A KVM
 //! run's machine is owned by a separate process, the machine runner (`runner.rs`).
 
+mod inputs;
 mod kvm;
 mod ledger;
 mod live;
@@ -26,6 +27,7 @@ pub(crate) use hyalos_audit::{
     check_answer, claim_of, current_task, hex, read_transcript, sha, task_for, task_of, task_v2,
     task_v4, unhex, utc, witnessed,
 };
+pub(crate) use inputs::read_v4_inputs;
 use sha2::{Digest, Sha256};
 use std::{
     env, fs,
@@ -194,15 +196,6 @@ fn replay(backend: &Backend, guest: &[u8], recorded: &Transcript) -> Result<(), 
         |answers, effects| Mode::Replay { answers, effects },
         |guest, host, profile| on_backend(backend, guest, host, profile),
     )
-}
-
-fn read_inputs(path: &str) -> Result<Vec<Vec<u8>>, String> {
-    let text = fs::read(path).map_err(|_| "cannot read inputs".to_string())?;
-    Ok(text
-        .split(|b| *b == b'\n')
-        .filter(|l| !l.is_empty())
-        .map(<[u8]>::to_vec)
-        .collect())
 }
 
 #[cfg(any(test, feature = "test-switches"))]
@@ -723,7 +716,7 @@ fn main_inner() -> Result<bool, String> {
         "run" => {
             let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
-            let inputs = read_inputs(arg(3)?)?;
+            let inputs = read_v4_inputs(arg(3)?)?;
             let seed = args.get(5).and_then(|s| s.parse().ok()).unwrap_or(0);
             let t = execute(&backend, &guest, inputs, Mode::Record { seed })
                 .map_err(|r| format!("{r:?}"))?;
@@ -758,7 +751,7 @@ fn main_inner() -> Result<bool, String> {
                 );
             }
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
-            let inputs = read_inputs(arg(3)?)?;
+            let inputs = read_v4_inputs(arg(3)?)?;
             let issue = arg(6)?.parse().map_err(|_| "bad issue number")?;
             // A second run on one path would overwrite the first run's evidence.
             if !live::record_is_fresh(arg(4)?) {
@@ -908,13 +901,15 @@ fn main_inner() -> Result<bool, String> {
             Ok(true)
         }
         "fuzz" => {
-            let inputs = read_inputs(arg(2)?)?;
+            let inputs = read_v4_inputs(arg(2)?)?;
             let rounds = arg(3)?.parse().map_err(|_| "bad count")?;
             let host = || Host::new(Mode::Record { seed: 1 }, inputs.clone());
             let (replied, refused) = kvm::fuzz(host, rounds).ok_or("no memory")?;
             println!("{rounds} random requests: {replied} answered, {refused} refused, no crash");
             Ok(true)
         }
+        // Writes a framed inputs file; reads no key and runs nothing.
+        "frame" => inputs::command(&args[2..]),
         "replay" => {
             let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
@@ -926,7 +921,7 @@ fn main_inner() -> Result<bool, String> {
         "task" => {
             // Reads a guest and its inputs only: no key, no network.
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
-            let inputs = read_inputs(arg(3)?)?;
+            let inputs = read_v4_inputs(arg(3)?)?;
             println!(
                 "{}",
                 current_task(&sha(&guest), &inputs).ok_or("the guest's hash is unreadable")?
@@ -942,7 +937,7 @@ fn main_inner() -> Result<bool, String> {
         "attacks" => {
             let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
-            run_attacks(&backend, &guest, &read_inputs(arg(3)?)?)
+            run_attacks(&backend, &guest, &read_v4_inputs(arg(3)?)?)
         }
         // Refused before any file is read: its kernels are test inputs (S-05.4).
         #[cfg(not(feature = "test-switches"))]
@@ -950,7 +945,7 @@ fn main_inner() -> Result<bool, String> {
         "bench" => {
             let backend = load_backend()?;
             let guest = fs::read(arg(2)?).map_err(|_| "cannot read guest")?;
-            let inputs = read_inputs(arg(3)?)?;
+            let inputs = read_v4_inputs(arg(3)?)?;
             let n: u32 = arg(4)?.parse().map_err(|_| "bad count")?;
             let start = Instant::now();
             let mut inferences = 0;
@@ -1000,6 +995,9 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod abi_tests;
+
+#[cfg(test)]
+mod inputs_tests;
 
 #[cfg(test)]
 mod live_tests;

@@ -255,12 +255,24 @@ fn local_2_1_task_prints_the_version_4_identity() {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_task-kernel"))
-        .arg("task")
-        .arg(&guest_file)
+    // The command reads the fixture framed, through the binary's own `frame --lines` (ADR-0138).
+    let framed =
+        std::env::temp_dir().join(format!("hyalos-local-2-1-{}.inputs", std::process::id()));
+    let made = std::process::Command::new(env!("CARGO_BIN_EXE_task-kernel"))
+        .arg("frame")
+        .arg(&framed)
+        .arg("--lines")
         .arg(&inputs_file)
         .output()
         .unwrap();
+    assert!(made.status.success());
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_task-kernel"))
+        .arg("task")
+        .arg(&guest_file)
+        .arg(&framed)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&framed);
     assert!(out.status.success());
     assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), want);
 }

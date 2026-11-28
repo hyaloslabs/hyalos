@@ -49,10 +49,12 @@ pub enum Reason {
     CanaryHeld,
     EffectFailed,
     LedgerFailed,
-    /// A spike run whose input record 0 is not a contract, refused before its guest loads. Only a
-    /// build with the `spike-contract` feature has it, and `ABI.md` does not name it (ADR-0136).
-    #[cfg(feature = "spike-contract")]
+    /// A run whose input record 0 is not a contract, refused before its guest loads. Only a spike
+    /// run raises it until `hyalos.abi/2` is implemented; that section names it (ADR-0138).
     BadContract,
+    /// An inputs file that is not a well-formed framed file, or a version 4 run's record that is
+    /// not one line of UTF-8, refused before the guest loads (ADR-0138).
+    BadInputs,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

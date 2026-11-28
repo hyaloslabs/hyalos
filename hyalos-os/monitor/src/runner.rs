@@ -60,8 +60,8 @@ pub(crate) const EFFECT: u8 = 7;
 pub(crate) const FINISHED: u8 = 8;
 pub(crate) const FAILED: u8 = 9;
 
-/// How many reasons the channel carries: 29, and `BadContract` last in a spike build (ADR-0136).
-const REASON_COUNT: usize = 29 + cfg!(feature = "spike-contract") as usize;
+/// How many reasons the channel carries, in every build (ADR-0138).
+const REASON_COUNT: usize = 31;
 
 /// Every reason, by the byte that carries it on the channel. The order is this table's own, not
 /// the `Reason` enum's, so reordering the enum changes nothing here. A new reason goes at the end.
@@ -95,9 +95,9 @@ pub(crate) const REASONS: [Reason; REASON_COUNT] = [
     Reason::CanaryHeld,
     Reason::EffectFailed,
     Reason::LedgerFailed,
-    // The holder decides it before any machine boots, so it is never in `RUNNER_REASONS`.
-    #[cfg(feature = "spike-contract")]
+    // The holder decides these before any machine boots, so neither is in `RUNNER_REASONS`.
     Reason::BadContract,
+    Reason::BadInputs,
 ];
 
 /// The reasons a runner can end a run with: what the machine and the kernel's requests give. Any

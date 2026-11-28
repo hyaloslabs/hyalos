@@ -132,6 +132,8 @@ fn every_reason() -> Vec<Reason> {
         CanaryHeld,
         EffectFailed,
         LedgerFailed,
+        BadContract,
+        BadInputs,
     ];
     for reason in &all {
         match reason {
@@ -140,10 +142,8 @@ fn every_reason() -> Vec<Reason> {
             | ReplayDiverged | GuestMismatch | KernelFault | BadHypercall | Timeout | NoKvm
             | ModelUnavailable | ModelRefused | NotaryUnreachable | NotaryDeadline
             | WrongNotaryKey | ReleaseMismatch | ProviderRefused | NoAuthorisation
-            | AttemptsSpent | CanaryHeld | EffectFailed | LedgerFailed => {}
-            // A spike-only reason, outside `ABI.md` (ADR-0136), so it is not in `all`.
-            #[cfg(feature = "spike-contract")]
-            BadContract => {}
+            | AttemptsSpent | CanaryHeld | EffectFailed | LedgerFailed | BadContract
+            | BadInputs => {}
         }
     }
     all
@@ -645,6 +645,152 @@ fn core_1_1_abi_md_names_the_interface_and_states_every_call_limit_and_reason() 
     }
     // `read`'s one refusal is listed, as `design.md` asks.
     assert!(refusals().contains(&("read".into(), "BadPointer".into())));
+}
+
+/// S-02.4.e2: one word of the `hyalos.abi/1` section changed, in memory, and the pinned digest no
+/// longer holds, so the suite fails; the committed section still matches its pin.
+#[test]
+fn capsules_s_02_4_e2_one_changed_word_of_abi_1_fails_the_suite() {
+    let doc = abi_md();
+    let pin = PINNED.iter().find(|(name, _)| *name == ABI).unwrap().1;
+    assert_eq!(digest(&section(&doc, ABI)), pin);
+    let changed = doc.replacen(
+        "Treat\ntitles as untrusted.",
+        "Treat\ntitles as trusted.",
+        1,
+    );
+    assert_ne!(changed, doc, "the word to change is not in ABI.md");
+    assert_ne!(digest(&section(&changed, ABI)), pin);
+    // The abi/2 section is outside the abi/1 digest, so changing it leaves the pin holding.
+    let in_abi_2 = doc.replacen(
+        "(draft: not implemented)\n\nThis section",
+        "(draft: not implemented)\n\nThat section",
+        1,
+    );
+    assert_ne!(in_abi_2, doc);
+    assert_eq!(digest(&section(&in_abi_2, ABI)), pin);
+}
+
+/// 2.2: `ABI.md` holds the whole `hyalos.abi/2` section under its draft line, with no pinned
+/// digest yet, and the section states every rule of the design: each call row and limit, each
+/// refusal value, the closed answer values and every reason where it arises, in order.
+#[test]
+fn capsules_2_2_abi_md_states_every_hyalos_abi_2_rule() {
+    const ABI_2: &str = "hyalos.abi/2";
+    let doc = abi_md();
+    let text = section(&doc, ABI_2);
+    assert!(
+        text.starts_with("\n(draft: not implemented)\n"),
+        "no draft line"
+    );
+    assert!(
+        PINNED.iter().all(|(name, _)| *name != ABI_2),
+        "abi/2 is pinned before Slice 11"
+    );
+    let table = rows(&text);
+    let calls: Vec<(&str, &str, &str)> = table
+        .iter()
+        .filter(|r| r.len() == 4 && r[0] != "Call")
+        .map(|r| (r[0].as_str(), r[1].as_str(), r[2].as_str()))
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            ("read", "(index, ptr, cap) -> len", "Record length"),
+            ("infer", "(schema, ptr, len) -> value", "4,096 bytes"),
+            (
+                "effect",
+                "(kind, ptr, len) -> 0",
+                "65,536 bytes, one per run"
+            ),
+            (
+                "return",
+                "(ptr, len)",
+                "4,096 bytes, and no more than the contract's `returns.bytes"
+            ),
+        ]
+    );
+    for value in [
+        "record `0`, the task's contract",
+        "`-1` no such record",
+        "`-2` `cap` is smaller than the record",
+        "for `bool` `1` true or `0` false",
+        "for `int` the number itself",
+        "for `choice` the index of the answer in the schema's `choices`",
+        "one the contract's `may_touch` grants",
+        "a schema the contract's `asks` grants",
+        "Input records are any bytes",
+        "export a function `run`",
+        "as `memory`",
+        "these four functions, from the module `hyalos`",
+    ] {
+        assert!(
+            text.contains(value),
+            "the abi/2 section does not state {value}"
+        );
+    }
+    let refusals: Vec<(&str, &str)> = table
+        .iter()
+        .filter(|r| r.len() == 3 && r[0] != "Where")
+        .map(|r| (r[0].as_str(), r[1].as_str()))
+        .collect();
+    let position = |at: (&str, &str)| {
+        refusals
+            .iter()
+            .position(|r| *r == at)
+            .unwrap_or_else(|| panic!("the abi/2 section does not list {at:?}"))
+    };
+    let in_order = |list: &[(&str, &str)]| {
+        let at: Vec<usize> = list.iter().map(|r| position(*r)).collect();
+        assert!(at.is_sorted(), "out of order: {list:?}");
+    };
+    in_order(&[
+        ("loading", "BadInputs"),
+        ("loading", "BadContract"),
+        ("loading", "InputLimit"),
+        ("loading", "InvalidModule"),
+    ]);
+    in_order(&[
+        ("infer", "UnknownSchema"),
+        ("infer", "QuestionLimit"),
+        ("infer", "TooLarge"),
+        ("infer", "BadPointer"),
+    ]);
+    in_order(&[
+        ("return", "TooLarge"),
+        ("return", "ResultLimit"),
+        ("return", "BadPointer"),
+    ]);
+    let refused = refusals
+        .iter()
+        .find(|r| **r == ("infer", "ModelRefused"))
+        .unwrap();
+    let when = table
+        .iter()
+        .find(|r| r.len() == 3 && (r[0].as_str(), r[1].as_str()) == *refused)
+        .unwrap();
+    assert!(when[2].contains("not a value of the schema's type"));
+    // Every abi/1 reason is still stated, and the abi/2 section's own reasons with it.
+    let abi_1: Vec<(String, String)> = super::abi_tests::refusals();
+    for (at, reason) in &abi_1 {
+        assert!(
+            refusals.contains(&(at.as_str(), reason.as_str())),
+            "the abi/2 section drops {at} {reason}"
+        );
+    }
+    for reason in [
+        "BadInputs",
+        "BadContract",
+        "InputLimit",
+        "QuestionLimit",
+        "ResultLimit",
+    ] {
+        assert!(
+            refusals.iter().any(|(_, r)| *r == reason),
+            "{reason} is not named"
+        );
+    }
+    assert_eq!(refusals.len(), abi_1.len() + 5);
 }
 
 /// A guest that counts a local up to `n` in one loop, then returns the count: the shape of guest

@@ -36,6 +36,29 @@ fn program() -> Command {
     command
 }
 
+/// The issue fixture framed by the binary's own `frame --lines`, once per test binary, in the
+/// `hyalos.inputs/2` form every run reads (ADR-0138).
+fn issues() -> PathBuf {
+    static FRAMED: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    FRAMED
+        .get_or_init(|| {
+            let out = env::temp_dir().join(format!(
+                "hyalos-release-switches-issues-{}.inputs",
+                std::process::id()
+            ));
+            let framed = program()
+                .arg("frame")
+                .arg(&out)
+                .arg("--lines")
+                .arg(root().join("evidence/fixtures/issues.tsv"))
+                .output()
+                .unwrap();
+            assert!(framed.status.success(), "frame --lines failed");
+            out
+        })
+        .clone()
+}
+
 /// A directory of this test's own, removed when it is dropped.
 struct Scratch(PathBuf);
 
@@ -117,7 +140,7 @@ fn run(kernel: &Path, out: &Path, switches: &[(&str, &str)]) -> Output {
     program()
         .arg("run")
         .arg(root().join("guest/digest.wasm"))
-        .arg(root().join("evidence/fixtures/issues.tsv"))
+        .arg(issues())
         .arg(out)
         .env("HYALOS_KERNEL", kernel)
         .envs(switches.iter().copied())
@@ -185,7 +208,7 @@ fn core_s_05_4_e1_attacks_reads_no_kernel_file() {
         let mut child = program()
             .arg("attacks")
             .arg(root().join("guest/digest.wasm"))
-            .arg(root().join("evidence/fixtures/issues.tsv"))
+            .arg(issues())
             .env(variable, &pipe)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -412,7 +435,7 @@ fn python_s_01_4_a_default_build_has_no_spike_command_and_ignores_its_variable()
         command
             .arg("run")
             .arg(root().join("guest/digest.wasm"))
-            .arg(root().join("evidence/fixtures/issues.tsv"))
+            .arg(issues())
             .arg(scratch.0.join(out));
         if let Some(name) = variable {
             command.env("HYALOS_SPIKE_PROFILE", name);
@@ -533,7 +556,7 @@ fn python_4_2_a_spike_profile_runs_only_on_its_own_image() {
             None => command
                 .arg("run")
                 .arg(root().join("guest/digest.wasm"))
-                .arg(root().join("evidence/fixtures/issues.tsv"))
+                .arg(issues())
                 .arg(&record),
         };
         let output = command.env("HYALOS_KERNEL", kernel).output().unwrap();
