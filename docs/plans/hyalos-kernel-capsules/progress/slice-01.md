@@ -73,9 +73,23 @@ From the repository root, without `HYALOS_REQUIRE_KVM` (the KVM gates skipped):
 
 ### KVM, by CI
 
-To be recorded: the `hyalos-os` and `hyalos-os-spike` runs of the pull request's head, read with
-`gh run view <id> --json conclusion,headSha --jq '.conclusion + " " + .headSha'`, beside
-`git rev-parse HEAD`.
+CI run `46109858053`, on the slice's code commit `283e0e9` (the commits after it change only this
+file):
+
+```
+$ gh run view 46109858053 --json conclusion,headSha --jq '.conclusion + " " + .headSha'
+success 283e0e9d960bd045b81681e17506ca1cc0c1ee28
+$ git rev-parse HEAD
+283e0e9d960bd045b81681e17506ca1cc0c1ee28
+```
+
+Both jobs set `HYALOS_REQUIRE_KVM=1`, so a test that could not reach KVM would have panicked, and
+neither log has a `skipped:` line. The `hyalos-os` job (`140870807140`) ran
+`capsules_s_01_1_e1_…`, `capsules_s_01_1_e2_…`, `capsules_s_01_3_e1_…` and `capsules_s_01_3_e2_…`,
+each `ok`. The `hyalos-os (spike contract)` job (`140870807155`) ran those four and
+`capsules_s_01_2_e2_…`, `capsules_s_01_4_e1_…` and `python_committed_evidence_replays_on_both_backends`,
+each `ok`: every MicroPython case, the hostile ones included, gave its committed record on KVM and
+replayed there (S-01.2.e1, S-01.4.e1's same refusal for `micropython-raw-effect`).
 
 ### KVM, by the developer
 
@@ -103,7 +117,8 @@ lines), `spikes/438/hostile.sh` (8 `micropython-hostile-* kvm:` lines, `hostile:
   generated refusal reads `answer 6: the session is later than the run's result` where the committed
   manifest has `answer 7`. The case (`forgery_tests.rs:589-595`, S-03.3.e3) depends on which
   session's wall-clock second falls after the signed result, so the generated fixture depends on
-  timing. CI decides whether it holds there.
+  timing. It passed in both CI jobs of run `46109858053`, so it is this host's timing, not this
+  slice.
 
 ## Blocked on
 
