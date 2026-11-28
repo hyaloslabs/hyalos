@@ -114,6 +114,22 @@ fn under_profile_1(backend: &Backend, guest: &[u8], inputs: Vec<Vec<u8>>, seed: 
     .unwrap()
 }
 
+/// S-01.3.e2 (Slice 1 of `docs/plans/hyalos-kernel-capsules`): on the kernel image built with
+/// `portable-dispatch`, the pinned profile 1 transcripts keep their hash on KVM.
+#[test]
+fn capsules_s_01_3_e2_profile_1_pins_hold_on_the_rebuilt_image() {
+    let Some(kvm) = kvm_backend("capsules_s_01_3_e2") else {
+        return;
+    };
+    let guest = fs::read(root().join("guest/digest.wasm")).unwrap();
+    let issues = root().join("evidence/fixtures/issues.tsv");
+    let inputs = read_inputs(issues.to_str().unwrap()).unwrap();
+    for &(seed, base) in BASE {
+        let t = under_profile_1(&kvm, &guest, inputs.clone(), seed);
+        assert_eq!(sha(&written(&t)), base, "seed {seed}");
+    }
+}
+
 #[test]
 fn core_s_02_1_e2_a_guest_out_of_fuel_ends_as_on_the_base_commit() {
     let Some(kvm) = kvm_backend("core_s_02_1_e2") else {

@@ -9,10 +9,10 @@
 # file the line names, and a refused case writes none. The script stops unless every outcome is the
 # one the line gives. It ends with "micropython: ok".
 #
-# MicroPython is listed `process`: the default kernel image cannot run it (README.md, the
-# `process-only: micropython` line, and issue #503). On a host with KVM the script still runs the
-# triage case once on KVM and stops unless it ends `KernelFault` there, so a fix to the kernel image
-# is noticed here and the cases can then be listed `both`.
+# MicroPython is listed `both`: the default kernel image runs it since it builds `wasmi` with
+# `portable-dispatch` (issue #503, Slice 1 of docs/plans/hyalos-kernel-capsules). After the cases,
+# the script runs the triage case once more on KVM and stops if it ends `KernelFault` there, so a
+# return of the stack overflow is noticed. With `HYALOS_REQUIRE_KVM` set, a host without KVM fails.
 #
 # Needs cargo and python3. The spike's task-kernel build goes to its own target directory.
 set -euo pipefail
@@ -85,10 +85,14 @@ if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
   line=$(spike_run kvm spikes/438/guests/micropython.wasm spikes/438/contracts/draft \
     spikes/438/sdk/draft.py spikes/438/scripts/triage.py hyalos-os/evidence/fixtures/issues.tsv \
     "$tmp/kvm.json" 0)
-  [ "$line" = "refused: KernelFault" ] \
-    || fail "on KVM the triage case gave '$line', not KernelFault: see issue #503, then list the cases both"
-  echo "micropython-triage-0 kvm: refused KernelFault (process-only, issue #503)"
+  [ "$line" != "refused: KernelFault" ] \
+    || fail "on KVM the triage case ended KernelFault: the kernel stack overflow of issue #503 is back"
+  got=$(outcome "$line" "$tmp/kvm.json")
+  want=$(awk -F'\t' '$1 == "micropython-triage-0" { print $9 }' spikes/438/evidence/expected.tsv)
+  [ "$got" = "$want" ] || fail "on KVM the triage case gave '$got', expected '$want'"
+  echo "micropython-triage-0 kvm: $got"
 else
   echo "micropython: no KVM here, so the KVM check did not run"
+  [ -z "${HYALOS_REQUIRE_KVM:-}" ] || fail "HYALOS_REQUIRE_KVM is set and /dev/kvm cannot be opened"
 fi
 echo "micropython: ok"

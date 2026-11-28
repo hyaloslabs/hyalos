@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 hyalos-profile = { path = "../profile" }
-wasmi = { version = "=2.0.3", default-features = false, features = ["stable", "validate", "memory64", "auto-dispatch", "libm"] }
+wasmi = { version = "=2.0.3", default-features = false, features = ["stable", "validate", "memory64", "portable-dispatch", "libm"] }
 
 [features]
 selftest = []

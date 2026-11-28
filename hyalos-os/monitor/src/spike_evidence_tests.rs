@@ -240,6 +240,65 @@ fn python_committed_evidence_replays_on_both_backends() {
     }
 }
 
+/// S-01.4.e1 (Slice 1 of `docs/plans/hyalos-kernel-capsules`): every MicroPython case in
+/// `expected.tsv`, the eight hostile ones included, lists `both`; each that ends with a result
+/// names a committed record that exists, and a refused one names none. So
+/// `python_committed_evidence_replays_on_both_backends` gives each the same outcome on both
+/// backends.
+#[test]
+fn capsules_s_01_4_e1_every_micropython_case_is_listed_both() {
+    let cases: Vec<Case> = cases()
+        .into_iter()
+        .filter(|c| c.id.starts_with("micropython-"))
+        .collect();
+    assert_eq!(cases.len(), 12, "the MicroPython cases");
+    assert_eq!(
+        cases.iter().filter(|c| c.id.contains("-hostile-")).count(),
+        8,
+        "the hostile MicroPython cases"
+    );
+    for case in &cases {
+        assert!(case.both, "{}: listed process only", case.id);
+        match (&case.outcome, &case.record) {
+            (Outcome::Result { .. }, Some(record)) => assert!(
+                fs::metadata(path(record)).is_ok_and(|m| m.len() > 0),
+                "{}: no committed record {record}",
+                case.id
+            ),
+            (Outcome::Refused(_), None) => {}
+            _ => panic!(
+                "{}: a result needs a record and a refusal has none",
+                case.id
+            ),
+        }
+    }
+    assert!(!process_only().contains("micropython"));
+}
+
+/// S-01.2.e2: the committed triage record with one hex digit of its first answer's
+/// `question_sha256` changed still parses, and replay ends `ReplayDiverged` on both backends.
+#[test]
+fn capsules_s_01_2_e2_a_changed_question_digest_diverges_on_both_backends() {
+    let kvm = kvm_backend("capsules_s_01_2_e2");
+    let guest = fs::read(path(MICROPYTHON)).unwrap();
+    let committed = fs::read(path("spikes/438/evidence/micropython-triage-0.json")).unwrap();
+    let mut t = read_transcript(&committed).unwrap();
+    let digest = &mut t.answers[0].question_sha256;
+    let changed = if digest.starts_with('0') { "1" } else { "0" };
+    digest.replace_range(0..1, changed);
+    let tampered = read_transcript(&written(&t)).expect("the changed record still parses");
+    assert_ne!(written(&tampered), committed);
+    for backend in [Some(&Backend::Process), kvm.as_ref()]
+        .into_iter()
+        .flatten()
+    {
+        assert_eq!(
+            replay(backend, &guest, &tampered),
+            Err(Reason::ReplayDiverged)
+        );
+    }
+}
+
 /// A data line of `spikes/438/fixtures/hostile.tsv`, its `\xNN` escapes decoded, as
 /// `spikes/438/hostile.sh` decodes it.
 fn decode(text: &str) -> Vec<u8> {

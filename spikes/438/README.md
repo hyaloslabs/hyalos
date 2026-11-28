@@ -96,16 +96,18 @@ with no added import.
 
 micropython profile: hyalos.spike/1
 
-process-only: micropython — does not fit KVM: the default kernel image runs out of its 2 MiB stack (`0x1e0_0000` to `0x200_0000`) and ends `KernelFault` once a guest loop runs about 10,000 iterations, because its `wasmi` dispatch does not get tail calls in the kernel build. MicroPython's start-up alone runs past that. The guest's own sizes fit: 249,874 bytes against `GUEST_MAX` 1 MiB, and 4 MiB of memory. This pack does not change the default image, so the fix is issue #503.
+MicroPython runs on both backends. The default kernel image builds `wasmi` with `portable-dispatch`, which ended the stack overflow of issue #503 that used to end its loops in `KernelFault` on KVM (Slice 1 of `docs/plans/hyalos-kernel-capsules`). The guest's own sizes fit: 249,874 bytes against `GUEST_MAX` 1 MiB, and 4 MiB of memory.
 
 ```bash
 spikes/438/micropython/build.sh   # two clean builds, compared; ends with the size and SHA-256
 spikes/438/micropython/run.sh     # the micropython-* cases of evidence/expected.tsv; ends "micropython: ok"
 ```
 
-`run.sh` runs each case on the backends `evidence/expected.tsv` lists and writes its record. On a
-host with KVM it also checks that the triage case still ends `KernelFault` there, so a fix for
-#503 shows up as a failure and the cases can then be listed `both`.
+`run.sh` runs each case on the backends `evidence/expected.tsv` lists, every MicroPython case on
+both, and writes its record from the process leg; the KVM leg's record must be the same bytes. It
+then runs the triage case once more on KVM and fails unless it gives its result there, so a return
+of #503's `KernelFault` is noticed. On a host without KVM the first case's KVM leg fails the
+script.
 
 ## Monty
 
@@ -187,10 +189,10 @@ spikes/438/measure.sh --check     # stops unless MEASUREMENTS.md has the same fi
 ```
 
 `hostile.sh` decodes each case into `evidence/data/`, runs it at seed 0 on the backends its
-runtime runs on (the process backend for both, by their `process-only:` lines), writes the record
+runtime runs on (both for MicroPython, the process backend for Monty by its `process-only:` line), writes the record
 of each run that ends with a result, and prints each run's outcome in `expected.tsv`'s form and
 its reach: the labels asked, the notification's SHA-256, the result and the fuel. `expected.tsv`'s
-hostile lines were copied from that output by hand. No hostile case ended `Timeout`, since none ran
-on KVM, so none has a `process-only:` line of its own. What the cases could steer is in
+hostile lines were copied from that output by hand. No hostile case has a `process-only:` line of
+its own: each MicroPython case runs on KVM too, and gives the process leg's record there. What the cases could steer is in
 `MEASUREMENTS.md`, and what it means for capsules in the pack's findings ADR
 (`docs/plans/hyalos-kernel-python/decisions/ADR-008-findings-adopt-micropython-monty-is-not-ready.md`).
