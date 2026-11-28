@@ -324,7 +324,8 @@ foreground and let it finish.
 ```bash
 HYALOS_REQUIRE_KVM=1 HYALOS_REQUIRE_LANDLOCK=1 cargo test --release --locked --manifest-path hyalos-os/Cargo.toml --workspace --features task-kernel/test-trust,hyalos-audit/test-trust,task-kernel/test-switches
 HYALOS_REQUIRE_KVM=1 HYALOS_REQUIRE_LANDLOCK=1 cargo test --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel --test release_switches
-cargo run --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel -- fuzz hyalos-os/evidence/fixtures/issues.tsv 100000
+cargo run --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel -- frame /tmp/hyalos-issues.inputs --lines hyalos-os/evidence/fixtures/issues.tsv
+cargo run --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel -- fuzz /tmp/hyalos-issues.inputs 100000
 cargo run --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel -- probe-host
 ```
 

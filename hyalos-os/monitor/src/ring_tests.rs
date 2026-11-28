@@ -6,6 +6,7 @@
 //! `HYALOS_REQUIRE_KVM` turns a host without KVM into a failure.
 
 use super::*;
+use crate::inputs_tests::fixture_lines;
 use crate::profile_tests::{kvm_backend, selftest_kvm_backend};
 use std::path::Path;
 
@@ -60,13 +61,7 @@ fn core_s_02_1_e1_the_digest_guest_gives_the_base_commits_transcript_in_ring_3()
         return;
     };
     let guest = fs::read(root().join("guest/digest.wasm")).unwrap();
-    let inputs = read_inputs(
-        root()
-            .join("evidence/fixtures/issues.tsv")
-            .to_str()
-            .unwrap(),
-    )
-    .unwrap();
+    let inputs = fixture_lines(&root().join("evidence/fixtures/issues.tsv"));
     for &(seed, base) in BASE {
         // Under the profile the pins were made with, on this build's `wasmi` (ADR-0134).
         let ring_3 = under_profile_1(&kvm, &guest, inputs.clone(), seed);
@@ -123,7 +118,7 @@ fn capsules_s_01_3_e2_profile_1_pins_hold_on_the_rebuilt_image() {
     };
     let guest = fs::read(root().join("guest/digest.wasm")).unwrap();
     let issues = root().join("evidence/fixtures/issues.tsv");
-    let inputs = read_inputs(issues.to_str().unwrap()).unwrap();
+    let inputs = fixture_lines(&issues);
     for &(seed, base) in BASE {
         let t = under_profile_1(&kvm, &guest, inputs.clone(), seed);
         assert_eq!(sha(&written(&t)), base, "seed {seed}");
@@ -295,13 +290,7 @@ fn core_s_02_every_hostile_kernel_ends_as_before_in_ring_3() {
     if kvm_backend("core_s_02 hostile kernels").is_none() {
         return;
     }
-    let inputs = read_inputs(
-        root()
-            .join("evidence/fixtures/issues.tsv")
-            .to_str()
-            .unwrap(),
-    )
-    .unwrap();
+    let inputs = fixture_lines(&root().join("evidence/fixtures/issues.tsv"));
     for (name, kernel, want) in hostile_kernels() {
         let hostile = Backend::Kvm {
             kernel,

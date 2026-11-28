@@ -299,9 +299,12 @@ jobs:
           HYALOS_REQUIRE_KVM: "1"
           HYALOS_REQUIRE_LANDLOCK: "1"
       # The request handler on 100,000 hostile requests from its fixed seed (S-05.5), in the release
-      # build the step above made. A panic or crash ends it with a failing status.
+      # build the step above made. A panic or crash ends it with a failing status. The fixture is
+      # framed first, since every command reads the framed form only (ADR-0138).
       - name: Fuzz the request handler
-        run: cargo run --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel -- fuzz hyalos-os/evidence/fixtures/issues.tsv 100000
+        run: |
+          cargo run --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel -- frame "$RUNNER_TEMP/issues.inputs" --lines hyalos-os/evidence/fixtures/issues.tsv
+          cargo run --release --locked --manifest-path hyalos-os/Cargo.toml -p task-kernel -- fuzz "$RUNNER_TEMP/issues.inputs" 100000
       # What the runner's KVM leaves a taken-over kernel (S-03.3 of docs/plans/hyalos-kernel-core). A
       # reachable instruction is a stated limit (exit 1); a probe that could not test (exit 2) fails.
       - name: Probe what the runner's KVM exposes

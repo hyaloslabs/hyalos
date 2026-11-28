@@ -3,6 +3,7 @@
 //! provider or the public log, and every key and credential is made up in a temporary directory.
 
 use super::*;
+use crate::inputs_tests::{fixture_lines, framed_fixture};
 use crate::live::{Attest, Live};
 use std::{
     io::{BufRead, BufReader},
@@ -154,13 +155,9 @@ impl Rig {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest/digest.wasm"),
         )
         .unwrap());
-        let inputs = read_inputs(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../evidence/fixtures/issues.tsv")
-                .to_str()
-                .unwrap(),
-        )
-        .unwrap();
+        let inputs = fixture_lines(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../evidence/fixtures/issues.tsv"),
+        );
         let made = Command::new(built("notary"))
             .args(["authorize", "--dir"])
             .arg(self.dir.join("notary"))
@@ -209,13 +206,9 @@ impl Rig {
     fn refused_run(&self, attest: Option<Attest>) -> (Reason, Vec<serde_json::Value>) {
         let guest =
             fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../guest/digest.wasm")).unwrap();
-        let inputs = read_inputs(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../evidence/fixtures/issues.tsv")
-                .to_str()
-                .unwrap(),
-        )
-        .unwrap();
+        let inputs = fixture_lines(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../evidence/fixtures/issues.tsv"),
+        );
         let mode = Mode::Live(Live::new("test.invalid/none", 0, attest).unwrap());
         let mut links = Vec::new();
         let mut append = |link: serde_json::Value| {
@@ -588,13 +581,9 @@ fn record_s_01_5_e2_that_record_relabelled_as_version_2_never_replays() {
 }
 
 fn version_2_run() -> Transcript {
-    let inputs = read_inputs(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../evidence/fixtures/issues.tsv")
-            .to_str()
-            .unwrap(),
-    )
-    .unwrap();
+    let inputs = fixture_lines(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../evidence/fixtures/issues.tsv"),
+    );
     crate::execute_as(
         2,
         &Backend::Process,
@@ -646,7 +635,7 @@ fn record_s_02_3_e1_the_task_command_prints_what_the_run_logs() {
     let printed = Command::new(program)
         .arg("task")
         .arg(&guest_file)
-        .arg(&inputs_file)
+        .arg(framed_fixture(&inputs_file, &rig.dir))
         .env_clear()
         .output()
         .unwrap();
@@ -657,7 +646,7 @@ fn record_s_02_3_e1_the_task_command_prints_what_the_run_logs() {
         links.push(link);
         Ok((links.len() - 1, hash))
     };
-    let inputs = read_inputs(inputs_file.to_str().unwrap()).unwrap();
+    let inputs = fixture_lines(&inputs_file);
     // This test reads the intent link; how the run then ended is not what it checks.
     let _ = declared_run(
         &mut append,
@@ -798,11 +787,17 @@ fn live_command(
         .unwrap()
         .join("task-kernel");
     assert!(program.exists(), "the monitor is not built");
+    // The framed fixture goes beside the run's directory, which must stay empty.
+    let beside = dir.with_extension("inputs");
+    fs::create_dir_all(&beside).unwrap();
     let mut command = Command::new(program);
     command
         .arg("live")
         .arg(root.join("guest/digest.wasm"))
-        .arg(root.join("evidence/fixtures/issues.tsv"))
+        .arg(framed_fixture(
+            &root.join("evidence/fixtures/issues.tsv"),
+            &beside,
+        ))
         .arg(&record)
         .arg(repo)
         .arg("1")

@@ -3,9 +3,7 @@
 //! script, each a whole file with its newlines, then the data file's lines as `run` reads them. The
 //! audit reads the contract from record 0 and holds every call to it, on either backend.
 
-use crate::{
-    Backend, CURRENT_VERSION, Mode, load_backend, on_backend, read_inputs, sha, task_v4, unhex,
-};
+use crate::{Backend, CURRENT_VERSION, Mode, load_backend, on_backend, sha, task_v4, unhex};
 use hyalos_audit::Contract;
 use hyalos_profile::Profile;
 use std::{env, fs, time::Instant};
@@ -81,9 +79,18 @@ pub(crate) fn inputs(
     };
     let sdk = whole(sdk, "SDK")?;
     let script = whole(script, "script")?;
-    let data = read_inputs(data).map_err(|_| "cannot read the data file".to_string())?;
+    let data = fs::read(data).map_err(|_| "cannot read the data file".to_string())?;
     let contract = fs::read(contract).unwrap_or_default();
-    Ok([vec![contract, sdk, script], data].concat())
+    Ok([vec![contract, sdk, script], split_lines(&data)].concat())
+}
+
+/// A spike data file's records: its non-empty lines. The spike keeps the line form the default
+/// commands no longer read, until the rig is removed (ADR-0138).
+pub(crate) fn split_lines(data: &[u8]) -> Vec<Vec<u8>> {
+    data.split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .map(<[u8]>::to_vec)
+        .collect()
 }
 
 /// A seed of decimal digits only, as a `u64`.

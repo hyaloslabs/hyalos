@@ -5,6 +5,7 @@
 //! host without KVM into a failure.
 
 use super::*;
+use crate::inputs_tests::fixture_lines;
 use crate::profile_tests::kvm_backend;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -434,7 +435,7 @@ fn python_3_3_micropython_triage_matches_the_digest_guest() {
             |guest, host, profile| on_backend(&Backend::Process, guest, host, profile),
         )
         .unwrap();
-        let lines = read_inputs(&path(FIXTURE)).unwrap();
+        let lines = fixture_lines(std::path::Path::new(&path(FIXTURE)));
         let rust = execute(&Backend::Process, &digest, lines, Mode::Record { seed }).unwrap();
         assert_eq!(rust.profile.as_deref(), Some("hyalos.profile/2"));
         let bodies = |t: &Transcript| -> Vec<String> {

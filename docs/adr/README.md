@@ -151,3 +151,4 @@ One decision per file, named `NNNN-short-title.md`, numbered in the order propos
 | [0135](0135-hyalos-review-scope-and-advisory-check.md) | hyalOS's review scope follows its lockfiles, and its upstreams' advisories fail a daily check | Accepted |
 | [0136](0136-hyalos-spike-contract-check.md) | hyalOS checks a draft contract under spike profiles, behind `spike-contract` | Accepted |
 | [0137](0137-hyalos-spike-2-floats-and-a-kernel-image-that-names-its-profile.md) | `hyalos.spike/2` allows deterministic floats, and a spike kernel image names its own profile | Accepted |
+| [0138](0138-hyalos-abi-2-and-record-version-5.md) | hyalOS frames its inputs, and `hyalos.abi/2` and record version 5 carry a task's contract | Accepted |

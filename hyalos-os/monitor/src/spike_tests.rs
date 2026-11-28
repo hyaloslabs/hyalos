@@ -4,6 +4,7 @@
 //! proves. `HYALOS_REQUIRE_KVM` turns a host without KVM into a failure.
 
 use super::*;
+use crate::inputs_tests::fixture_lines;
 use crate::profile_tests::kvm_backend;
 use std::path::Path;
 
@@ -40,7 +41,7 @@ fn python_s_01_4_e2_profile_2_transcripts_hold() {
     };
     let guest = fs::read(root().join("guest/digest.wasm")).unwrap();
     let issues = root().join("evidence/fixtures/issues.tsv");
-    let inputs = read_inputs(issues.to_str().unwrap()).unwrap();
+    let inputs = fixture_lines(&issues);
     for &(seed, base, fuel) in PROFILE_2_BASE {
         for backend in [&Backend::Process, &kvm] {
             let t = execute(backend, &guest, inputs.clone(), Mode::Record { seed }).unwrap();
@@ -60,7 +61,7 @@ fn capsules_s_01_3_e1_profile_2_pins_hold_on_the_rebuilt_image() {
     };
     let guest = fs::read(root().join("guest/digest.wasm")).unwrap();
     let issues = root().join("evidence/fixtures/issues.tsv");
-    let inputs = read_inputs(issues.to_str().unwrap()).unwrap();
+    let inputs = fixture_lines(&issues);
     for &(seed, base, fuel) in PROFILE_2_BASE {
         let t = execute(&kvm, &guest, inputs.clone(), Mode::Record { seed }).unwrap();
         assert_eq!(t.profile.as_deref(), Some("hyalos.profile/2"));
@@ -70,7 +71,8 @@ fn capsules_s_01_3_e1_profile_2_pins_hold_on_the_rebuilt_image() {
 }
 
 /// S-01.4.e1: a default build refuses a record naming `hyalos.spike/1` as an unknown profile, and
-/// its reason table is the 29 entries it was.
+/// its reason table is the 31 entries every build has since `BadContract` and `BadInputs` joined it
+/// (ADR-0138).
 #[cfg(not(feature = "spike-contract"))]
 #[test]
 fn python_s_01_4_e1_a_default_build_refuses_a_spike_record() {
@@ -93,7 +95,7 @@ fn python_s_01_4_e1_a_default_build_refuses_a_spike_record() {
         "unknown profile hyalos.spike/1"
     );
     assert_eq!(hyalos_profile::lookup("hyalos.spike/1"), None);
-    assert_eq!(runner::REASONS.len(), 29);
+    assert_eq!(runner::REASONS.len(), 31);
 }
 
 #[cfg(feature = "spike-contract")]
@@ -104,6 +106,22 @@ mod with_the_feature {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+
+    /// 2.4: the spike keeps its own line split of its data file, so `spike-run` reads the file's
+    /// non-empty lines as its records, as the default commands' line form did before the framed
+    /// form replaced it (ADR-0138). Deleted with the spike rig.
+    #[test]
+    fn capsules_2_4_the_spike_split_keeps_its_lines() {
+        assert_eq!(
+            spike::split_lines(b"a\nb\n\nc"),
+            [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
+        );
+        let data = root().join("evidence/fixtures/issues.tsv");
+        assert_eq!(
+            spike::split_lines(&fs::read(&data).unwrap()),
+            fixture_lines(&data)
+        );
+    }
 
     const DRAFT: &[u8] = br#"{"asks":[0],"may_touch":[0]}"#;
     const NO_EFFECT: &[u8] = br#"{"asks":[0],"may_touch":[]}"#;
@@ -448,7 +466,7 @@ mod with_the_feature {
     fn python_the_default_spike_profile_runs_on_the_default_image() {
         assert_eq!(spike::profile().unwrap().name, SPIKE);
         assert!(hyalos_profile::SPIKE_1.same_settings(hyalos_profile::CURRENT));
-        assert_eq!(runner::REASONS.last(), Some(&Reason::BadContract));
+        assert!(runner::REASONS.contains(&Reason::BadContract));
         assert!(!runner::RUNNER_REASONS.contains(&Reason::BadContract));
     }
 

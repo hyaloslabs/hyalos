@@ -6,6 +6,7 @@
 //! `HYALOS_REQUIRE_KVM` turns a host without it into a failure.
 
 use super::*;
+use crate::inputs_tests::{fixture_lines, framed_fixture};
 use crate::profile_tests::kvm_backend;
 #[cfg(feature = "test-switches")]
 use crate::profile_tests::selftest_kvm_backend;
@@ -27,13 +28,7 @@ fn root() -> &'static Path {
 }
 
 fn fixture_inputs() -> Vec<Vec<u8>> {
-    read_inputs(
-        root()
-            .join("evidence/fixtures/issues.tsv")
-            .to_str()
-            .unwrap(),
-    )
-    .unwrap()
+    fixture_lines(&root().join("evidence/fixtures/issues.tsv"))
 }
 
 /// What a source was asked to do, shared with the test that owns it.
@@ -462,17 +457,10 @@ fn core_s_04_4_the_holder_ends_a_silent_or_slow_runner_at_the_deadline() {
 #[test]
 fn core_s_04_4_the_reason_table_is_closed_and_every_message_round_trips() {
     let names: Vec<String> = runner::REASONS.iter().map(|r| format!("{r:?}")).collect();
-    // A spike build appends `BadContract`, and only there (ADR-0136).
-    let spike = if cfg!(feature = "spike-contract") {
-        " BadContract"
-    } else {
-        ""
-    };
+    // The same table in every build (ADR-0138).
     assert_eq!(
         names.join(" "),
-        format!(
-            "InvalidModule BadImport BadExport OutOfFuel GuestTrap BadPointer TooLarge UnknownSchema UnknownEffect EffectLimit NoResult ReplayDiverged GuestMismatch KernelFault BadHypercall Timeout NoKvm ModelUnavailable ModelRefused NotaryUnreachable NotaryDeadline WrongNotaryKey ReleaseMismatch ProviderRefused NoAuthorisation AttemptsSpent CanaryHeld EffectFailed LedgerFailed{spike}"
-        )
+        "InvalidModule BadImport BadExport OutOfFuel GuestTrap BadPointer TooLarge UnknownSchema UnknownEffect EffectLimit NoResult ReplayDiverged GuestMismatch KernelFault BadHypercall Timeout NoKvm ModelUnavailable ModelRefused NotaryUnreachable NotaryDeadline WrongNotaryKey ReleaseMismatch ProviderRefused NoAuthorisation AttemptsSpent CanaryHeld EffectFailed LedgerFailed BadContract BadInputs"
     );
     // A new reason fails to compile here until it has a byte.
     for reason in runner::REASONS {
@@ -505,9 +493,9 @@ fn core_s_04_4_the_reason_table_is_closed_and_every_message_round_trips() {
             | Reason::AttemptsSpent
             | Reason::CanaryHeld
             | Reason::EffectFailed
-            | Reason::LedgerFailed => {}
-            #[cfg(feature = "spike-contract")]
-            Reason::BadContract => {}
+            | Reason::LedgerFailed
+            | Reason::BadContract
+            | Reason::BadInputs => {}
         }
     }
     let decode = |bytes: &[u8]| (bytes[5], bytes[6..].to_vec());
@@ -591,7 +579,10 @@ fn core_s_04_4_a_fuzzed_channel_never_panics_or_performs_an_unasked_effect() {
                     3 => Request::Infer(small, bytes).encode(),
                     4 => Request::Effect(small, bytes).encode(),
                     5 => Request::Finished(bytes, next()).encode(),
-                    6 => Request::Failed(runner::REASONS[(next() % 29) as usize]).encode(),
+                    6 => Request::Failed(
+                        runner::REASONS[(next() % runner::REASONS.len() as u64) as usize],
+                    )
+                    .encode(),
                     7 => {
                         let mut frame = Request::PreEffect(0).encode();
                         let at = (next() as usize) % frame.len();
@@ -1147,7 +1138,10 @@ fn core_s_04_1_a_live_run_checks_the_runner_before_its_chain() {
     let output = Command::new(&program)
         .arg("live")
         .arg(root().join("guest/digest.wasm"))
-        .arg(root().join("evidence/fixtures/issues.tsv"))
+        .arg(framed_fixture(
+            &root().join("evidence/fixtures/issues.tsv"),
+            &dir,
+        ))
         .arg(dir.join("record.json"))
         .arg("octo/real")
         .arg("1")
@@ -1296,7 +1290,10 @@ fn core_6_1_the_attacks_command_prints_the_previous_commits_lines() {
     let output = Command::new(program)
         .arg("attacks")
         .arg(root().join("guest/digest.wasm"))
-        .arg(root().join("evidence/fixtures/issues.tsv"))
+        .arg(framed_fixture(
+            &root().join("evidence/fixtures/issues.tsv"),
+            &dir,
+        ))
         .env_clear()
         .env("HYALOS_KERNEL", dir.join("kernel"))
         .env("HYALOS_SELFTEST_KERNEL", dir.join("selftest"))

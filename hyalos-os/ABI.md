@@ -70,6 +70,82 @@ memory and fuel limits are the profile's.
 Each input record is one line of UTF-8, with no newline: `<issue number>\t<issue title>`. Treat
 titles as untrusted.
 
+## `hyalos.abi/2`
+
+(draft: not implemented)
+
+This section is the next interface, written whole before any backend implements it. Until the
+line above is removed, no run uses it: runs write record version 4 under `hyalos.abi/1`. The
+commit that removes the line pins this section's digest, and the section is never edited after
+(ADR-0138).
+
+A guest is a `wasm32-unknown-unknown` module. It must export a function `run` with no parameters
+and no result, and its linear memory as `memory`. It has no start function.
+
+Its only imports are these four functions, from the module `hyalos`. All values are `i32`.
+
+| Call | Signature | Limit | Results |
+|---|---|---|---|
+| `read` | `(index, ptr, cap) -> len` | Record length | Copies input record `index` to `ptr` and returns its length. Every input record can be read, record `0`, the task's contract, included. `-1` no such record, `-2` `cap` is smaller than the record |
+| `infer` | `(schema, ptr, len) -> value` | 4,096 bytes | Asks the approved model the question at `ptr` under a schema the contract's `asks` grants, and returns the answer as a value of that schema's type: for `bool` `1` true or `0` false, for `int` the number itself, from the schema's `min` to its `max`, and for `choice` the index of the answer in the schema's `choices`, from `0` |
+| `effect` | `(kind, ptr, len) -> 0` | 65,536 bytes, one per run | Performs effect `kind`, one the contract's `may_touch` grants, with the body at `ptr`, and returns `0`. Kind `0` sends one notification |
+| `return` | `(ptr, len)` | 4,096 bytes, and no more than the contract's `returns.bytes` | Ends the run with these bytes as its result. It never returns to the guest |
+
+A refusal is not a return value: it ends the run with the reason below, and no later call is
+made. The loading checks run in the order listed, before the guest loads. A call's argument checks
+(`UnknownSchema`, `QuestionLimit`, `TooLarge` and `BadPointer` for `infer`; `UnknownEffect`,
+`EffectLimit`, `TooLarge` and `BadPointer` for `effect`; `TooLarge`, `ResultLimit` and `BadPointer`
+for `return`) run in the order listed, so the first that fails is the reason. The reasons after
+them come from a live run or a replay once those checks pass.
+
+| Where | Reason | When |
+|---|---|---|
+| loading | `BadInputs` | The inputs file is not the framed form below |
+| loading | `BadContract` | Record `0` is missing or is not a contract |
+| loading | `InputLimit` | There are fewer records than the contract and its `code` records, a code record is over 16,384 bytes, or the data records are outside the contract's `accepts` |
+| loading | `InvalidModule` | The bytes are not a module the profile accepts, for example one using floats, SIMD, atomics or a start function |
+| loading | `BadImport` | An import other than the four calls, or one of them with another type |
+| loading | `BadExport` | No `run` function with no parameters and no result, or no `memory` export |
+| `read` | `BadPointer` | The record does not fit in the guest's memory at `ptr` |
+| `infer` | `UnknownSchema` | `schema` is not one the contract's `asks` grants |
+| `infer` | `QuestionLimit` | The run has already asked the contract's `questions` questions |
+| `infer` | `TooLarge` | `len` is over 4,096 |
+| `infer` | `BadPointer` | The question is not inside the guest's memory |
+| `infer` | `ModelUnavailable` | A live run's attestation tool could not be run or finish, or failed in a way it did not name |
+| `infer` | `ModelRefused` | A live run's question is not UTF-8, or the answer is not a value of the schema's type or not attested by the presentation it names |
+| `infer` | `NotaryUnreachable` | A live run has no notary, or cannot reach it |
+| `infer` | `NotaryDeadline` | The notary did not answer in time |
+| `infer` | `WrongNotaryKey` | The notary signed with a key the operator did not trust |
+| `infer` | `ReleaseMismatch` | The notary is not the pinned release |
+| `infer` | `ProviderRefused` | The model's provider refused the request |
+| `infer` | `NoAuthorisation` | The notary holds no authorisation for this run |
+| `infer` | `AttemptsSpent` | The authorisation's attempts are spent |
+| `infer` | `CanaryHeld` | The notary's canary holds new sessions |
+| `infer` | `LedgerFailed` | The run's signed start time cannot be read or waited for |
+| `infer` | `ReplayDiverged` | A replay asked a question the record does not hold |
+| `effect` | `UnknownEffect` | `kind` is not one the contract's `may_touch` grants |
+| `effect` | `EffectLimit` | The run already performed its one effect |
+| `effect` | `TooLarge` | `len` is over 65,536 |
+| `effect` | `BadPointer` | The body is not inside the guest's memory |
+| `effect` | `EffectFailed` | A live run could not perform the effect |
+| `effect` | `ReplayDiverged` | A replay sent a body the record does not hold |
+| `return` | `TooLarge` | `len` is over 4,096 |
+| `return` | `ResultLimit` | `len` is over the contract's `returns.bytes` |
+| `return` | `BadPointer` | The result is not inside the guest's memory |
+| running | `OutOfFuel` | The guest used all its fuel |
+| running | `GuestTrap` | The guest trapped, for example by growing its memory past the profile's limit or recursing without bound |
+| running | `NoResult` | `run` returned without calling `return` |
+
+The guest has no files, network, processes, threads, clock, randomness or floating point. Its
+memory and fuel limits are the profile's.
+
+Input records are any bytes: a record may hold newlines, be empty or not be UTF-8. The inputs
+file frames each one, `hyalos.inputs/2`: the 15 bytes `hyalos.inputs/2` and a newline, the number
+of records as a big-endian `u32`, at most 4,096, then each record as its length, a big-endian
+`u32` of at most 16,777,216, and its bytes, and nothing after the last record. Record `0` is the
+contract, the next `code` records are the runtime's code, and the rest are data. Treat data as
+untrusted. A record of a run under this interface is version 5 and names `hyalos.abi/2`.
+
 ## Not part of the interface
 
 These reasons come from a backend or a run's setting rather than from a call, so no version of the
